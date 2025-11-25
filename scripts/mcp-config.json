@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "admz": {
+      "command": "python",
+      "args": ["-m", "admz", "mcp"],
+      "cwd": "/mnt/c/AxisSecrets",
+      "env": {
+        "VAULT_ADDR": "https://vault.example.com",
+        "VAULT_TOKEN": "your-vault-token-here",
+        "VAULT_MOUNT_POINT": "secret",
+        "VAULT_PATH_PREFIX": "devices"
+      }
+    }
+  }
+}

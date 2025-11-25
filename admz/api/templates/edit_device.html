@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Edit Device: {{ device.nickname|default(device.device_id) }}</h1>
+</div>
+
+<div class="form-container">
+    <form id="edit-device-form" action="/api/devices/{{ device.device_id }}" method="PUT">
+        <div class="form-group">
+            <label for="device_id">Device ID</label>
+            <input type="text" id="device_id" name="device_id" value="{{ device.device_id }}" disabled>
+            <small>Device ID cannot be changed</small>
+        </div>
+
+        <div class="form-group">
+            <label for="nickname">Nickname</label>
+            <input type="text" id="nickname" name="nickname" value="{{ device.nickname|default('') }}">
+        </div>
+
+        <div class="form-group">
+            <label for="host">Host *</label>
+            <input type="text" id="host" name="host" value="{{ device.host }}" required>
+        </div>
+
+        <div class="form-group">
+            <label for="model">Model</label>
+            <input type="text" id="model" name="model" value="{{ device.model|default('') }}">
+        </div>
+
+        <div class="form-group">
+            <label for="serial_number">Serial Number</label>
+            <input type="text" id="serial_number" name="serial_number" value="{{ device.serial_number|default('') }}">
+        </div>
+
+        <div class="form-group">
+            <label for="location">Location</label>
+            <input type="text" id="location" name="location" value="{{ device.location|default('') }}">
+        </div>
+
+        <div class="form-group">
+            <label for="firmware_version">Firmware Version</label>
+            <input type="text" id="firmware_version" name="firmware_version" value="{{ device.firmware_version|default('') }}">
+        </div>
+
+        <div class="form-group">
+            <label for="tags">Tags (comma-separated)</label>
+            <input type="text" id="tags" name="tags" value="{{ device.tags|join(', ') if device.tags else '' }}">
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="button">Save Changes</button>
+            <a href="/device/{{ device.device_id }}" class="button button-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<div id="message" class="message" style="display: none;"></div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.getElementById('edit-device-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const formData = new FormData(e.target);
+    const data = {
+        host: formData.get('host'),
+        nickname: formData.get('nickname') || undefined,
+        model: formData.get('model') || undefined,
+        serial_number: formData.get('serial_number') || undefined,
+        location: formData.get('location') || undefined,
+        firmware_version: formData.get('firmware_version') || undefined,
+        tags: formData.get('tags') ? formData.get('tags').split(',').map(t => t.trim()) : []
+    };
+
+    try {
+        const response = await fetch('/api/devices/{{ device.device_id }}', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+
+        if (response.ok) {
+            window.location.href = '/device/{{ device.device_id }}';
+        } else {
+            const error = await response.json();
+            showMessage('Error: ' + error.detail, 'error');
+        }
+    } catch (error) {
+        showMessage('Error: ' + error.message, 'error');
+    }
+});
+
+function showMessage(text, type) {
+    const msg = document.getElementById('message');
+    msg.textContent = text;
+    msg.className = 'message ' + type;
+    msg.style.display = 'block';
+}
+</script>
+{% endblock %}

@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Search Devices</h1>
+</div>
+
+<div class="search-container">
+    <form action="/search" method="GET">
+        <div class="search-group">
+            <input type="text" name="query" placeholder="Search by ID, nickname, location, model..." value="{{ query }}">
+            <button type="submit" class="button">Search</button>
+        </div>
+    </form>
+</div>
+
+{% if query %}
+<div class="search-results">
+    <h2>Results for "{{ query }}"</h2>
+    <p class="results-count">Found {{ devices|length }} device(s)</p>
+
+    <div class="devices-grid">
+        {% if devices %}
+            {% for device in devices %}
+            <div class="device-card">
+                <h3>
+                    <a href="/device/{{ device.device_id }}">
+                        {{ device.nickname|default(device.device_id) }}
+                    </a>
+                </h3>
+                <p><strong>ID:</strong> {{ device.device_id }}</p>
+                <p><strong>Host:</strong> {{ device.host }}</p>
+                {% if device.location %}
+                <p><strong>Location:</strong> {{ device.location }}</p>
+                {% endif %}
+                {% if device.model %}
+                <p><strong>Model:</strong> {{ device.model }}</p>
+                {% endif %}
+                {% if device.tags %}
+                <div class="tags">
+                    {% for tag in device.tags %}
+                    <span class="tag">{{ tag }}</span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        {% else %}
+            <p class="no-results">No devices found matching "{{ query }}"</p>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+{% endblock %}

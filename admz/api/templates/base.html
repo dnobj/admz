@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{{ title|default("ADMZ") }}{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="navbar-brand">
+                <a href="/" class="navbar-item">ADMZ</a>
+            </div>
+            <div class="navbar-menu">
+                <a href="/" class="navbar-item">Devices</a>
+                <a href="/search" class="navbar-item">Search</a>
+                <a href="/add-device" class="navbar-item">Add Device</a>
+                <a href="/api/docs" class="navbar-item">API Docs</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>ADMZ - Axis Device Management Zone v1.0.0</p>
+        </div>
+    </footer>
+
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

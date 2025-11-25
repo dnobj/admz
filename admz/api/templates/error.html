@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="error-page">
+    <h1>{{ error|default("Error") }}</h1>
+    <p class="error-message">{{ message|default("An error occurred") }}</p>
+    <a href="/" class="button">Back to Devices</a>
+</div>
+{% endblock %}

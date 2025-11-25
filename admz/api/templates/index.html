@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Device List</h1>
+    <a href="/add-device" class="button">Add Device</a>
+</div>
+
+<div class="devices-grid">
+    {% if devices %}
+        {% for device in devices %}
+        <div class="device-card">
+            <h3>
+                <a href="/device/{{ device.device_id }}">
+                    {{ device.nickname|default(device.device_id) }}
+                </a>
+            </h3>
+            <p><strong>ID:</strong> {{ device.device_id }}</p>
+            <p><strong>Host:</strong> {{ device.host }}</p>
+            {% if device.location %}
+            <p><strong>Location:</strong> {{ device.location }}</p>
+            {% endif %}
+            {% if device.model %}
+            <p><strong>Model:</strong> {{ device.model }}</p>
+            {% endif %}
+            {% if device.tags %}
+            <div class="tags">
+                {% for tag in device.tags %}
+                <span class="tag">{{ tag }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    {% else %}
+        <p class="no-devices">No devices found. <a href="/add-device">Add a device</a> to get started.</p>
+    {% endif %}
+</div>
+{% endblock %}

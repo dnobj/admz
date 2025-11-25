@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Add Account</h1>
+    <p>Device: <a href="/device/{{ device.device_id }}">{{ device.nickname|default(device.device_id) }}</a></p>
+</div>
+
+<div class="form-container">
+    <form id="add-account-form" action="/api/devices/{{ device.device_id }}/accounts" method="POST">
+        <div class="form-group">
+            <label for="account_id">Account ID *</label>
+            <input type="text" id="account_id" name="account_id" required>
+            <small>Unique identifier for the account (e.g., aoa-agent, admin)</small>
+        </div>
+
+        <div class="form-group">
+            <label for="username">Username *</label>
+            <input type="text" id="username" name="username" required>
+        </div>
+
+        <div class="form-group">
+            <label for="password">Password *</label>
+            <input type="password" id="password" name="password" required>
+        </div>
+
+        <div class="form-group">
+            <label for="account_type">Account Type</label>
+            <select id="account_type" name="account_type">
+                <option value="service">Service</option>
+                <option value="admin">Admin</option>
+                <option value="viewer">Viewer</option>
+                <option value="operator">Operator</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="purpose">Purpose</label>
+            <input type="text" id="purpose" name="purpose">
+            <small>Brief description of what this account is used for</small>
+        </div>
+
+        <div class="form-group">
+            <label for="permissions">Permissions (comma-separated)</label>
+            <input type="text" id="permissions" name="permissions">
+            <small>e.g., read, write, configure, view_logs</small>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="button">Add Account</button>
+            <a href="/device/{{ device.device_id }}" class="button button-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<div id="message" class="message" style="display: none;"></div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.getElementById('add-account-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const formData = new FormData(e.target);
+    const data = {
+        account_id: formData.get('account_id'),
+        username: formData.get('username'),
+        password: formData.get('password'),
+        account_type: formData.get('account_type'),
+        purpose: formData.get('purpose') || undefined,
+        permissions: formData.get('permissions') ? formData.get('permissions').split(',').map(p => p.trim()) : []
+    };
+
+    try {
+        const response = await fetch('/api/devices/{{ device.device_id }}/accounts', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+
+        if (response.ok) {
+            window.location.href = '/device/{{ device.device_id }}';
+        } else {
+            const error = await response.json();
+            showMessage('Error: ' + error.detail, 'error');
+        }
+    } catch (error) {
+        showMessage('Error: ' + error.message, 'error');
+    }
+});
+
+function showMessage(text, type) {
+    const msg = document.getElementById('message');
+    msg.textContent = text;
+    msg.className = 'message ' + type;
+    msg.style.display = 'block';
+}
+</script>
+{% endblock %}

@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <h1>{{ device.nickname|default(device.device_id) }}</h1>
+    <div class="actions">
+        <a href="/device/{{ device.device_id }}/edit" class="button">Edit</a>
+        <a href="/device/{{ device.device_id }}/add-account" class="button">Add Account</a>
+    </div>
+</div>
+
+<div class="device-info">
+    <h2>Device Information</h2>
+    <table>
+        <tr>
+            <th>Device ID</th>
+            <td>{{ device.device_id }}</td>
+        </tr>
+        {% if device.nickname %}
+        <tr>
+            <th>Nickname</th>
+            <td>{{ device.nickname }}</td>
+        </tr>
+        {% endif %}
+        <tr>
+            <th>Host</th>
+            <td>{{ device.host }}</td>
+        </tr>
+        {% if device.ip_address %}
+        <tr>
+            <th>IP Address</th>
+            <td>{{ device.ip_address }}</td>
+        </tr>
+        {% endif %}
+        {% if device.serial_number %}
+        <tr>
+            <th>Serial Number</th>
+            <td>{{ device.serial_number }}</td>
+        </tr>
+        {% endif %}
+        {% if device.mac_address %}
+        <tr>
+            <th>MAC Address</th>
+            <td>{{ device.mac_address }}</td>
+        </tr>
+        {% endif %}
+        {% if device.model %}
+        <tr>
+            <th>Model</th>
+            <td>{{ device.model }}</td>
+        </tr>
+        {% endif %}
+        {% if device.firmware_version %}
+        <tr>
+            <th>Firmware Version</th>
+            <td>{{ device.firmware_version }}</td>
+        </tr>
+        {% endif %}
+        {% if device.location %}
+        <tr>
+            <th>Location</th>
+            <td>{{ device.location }}</td>
+        </tr>
+        {% endif %}
+        {% if device.warranty_expiration %}
+        <tr>
+            <th>Warranty Expiration</th>
+            <td>{{ device.warranty_expiration }}</td>
+        </tr>
+        {% endif %}
+        {% if device.tags %}
+        <tr>
+            <th>Tags</th>
+            <td>
+                <div class="tags">
+                    {% for tag in device.tags %}
+                    <span class="tag">{{ tag }}</span>
+                    {% endfor %}
+                </div>
+            </td>
+        </tr>
+        {% endif %}
+    </table>
+</div>
+
+<div class="accounts-section">
+    <h2>Accounts</h2>
+    {% if accounts %}
+        <table class="accounts-table">
+            <thead>
+                <tr>
+                    <th>Account ID</th>
+                    <th>Username</th>
+                    <th>Type</th>
+                    <th>Purpose</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for account in accounts %}
+                <tr>
+                    <td>{{ account.account_id }}</td>
+                    <td>{{ account.username }}</td>
+                    <td>{{ account.account_type|default("N/A") }}</td>
+                    <td>{{ account.purpose|default("N/A") }}</td>
+                    <td>
+                        <a href="/device/{{ device.device_id }}/account/{{ account.account_id }}" class="button-small">View</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p class="no-accounts">No accounts found for this device.</p>
+    {% endif %}
+</div>
+
+<div class="actions-footer">
+    <a href="/" class="button">Back to Devices</a>
+</div>
+{% endblock %}

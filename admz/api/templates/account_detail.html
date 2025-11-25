@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Account: {{ account.account_id }}</h1>
+    <p>Device: <a href="/device/{{ device.device_id }}">{{ device.nickname|default(device.device_id) }}</a></p>
+</div>
+
+<div class="account-info">
+    <h2>Account Information</h2>
+    <table>
+        <tr>
+            <th>Account ID</th>
+            <td>{{ account.account_id }}</td>
+        </tr>
+        <tr>
+            <th>Username</th>
+            <td>{{ account.username }}</td>
+        </tr>
+        {% if account.account_type %}
+        <tr>
+            <th>Account Type</th>
+            <td>{{ account.account_type }}</td>
+        </tr>
+        {% endif %}
+        {% if account.purpose %}
+        <tr>
+            <th>Purpose</th>
+            <td>{{ account.purpose }}</td>
+        </tr>
+        {% endif %}
+        {% if account.permissions %}
+        <tr>
+            <th>Permissions</th>
+            <td>
+                <ul>
+                    {% for permission in account.permissions %}
+                    <li>{{ permission }}</li>
+                    {% endfor %}
+                </ul>
+            </td>
+        </tr>
+        {% endif %}
+    </table>
+</div>
+
+<div class="warning-box">
+    <p><strong>Note:</strong> Password is not displayed for security reasons. Use the API to retrieve credentials programmatically.</p>
+    <p>API Endpoint: <code>GET /api/devices/{{ device.device_id }}/credentials?account_id={{ account.account_id }}</code></p>
+</div>
+
+<div class="actions-footer">
+    <a href="/device/{{ device.device_id }}" class="button">Back to Device</a>
+    <a href="/" class="button">Back to Devices</a>
+</div>
+{% endblock %}
