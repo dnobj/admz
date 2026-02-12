@@ -1446,6 +1446,397 @@ User wants to decline the plan   │ LLM (conversational)
 
 ---
 
+## MCP Execution Model — How the Catalog Is Actually Used
+
+This is the most important design decision: where does the
+intelligence live for translating "change the resolution" into
+an actual HTTP call to the device?
+
+### The three options
+
+#### Option A: Typed MCP tools (one tool per operation)
+
+```
+MCP tools:
+  - set_resolution(device_id, width, height)
+  - get_resolution(device_id)
+  - set_compression(device_id, level)
+  - create_ssh_user(device_id, username, public_key)
+  - factory_reset(device_id)
+  - ... hundreds more
+```
+
+The MCP server contains all the translation logic. The LLM just
+picks the right tool and fills in the arguments.
+
+**Pros:**
+- Type-safe — parameters are validated before execution
+- Easy for the LLM — just pick a tool from the list
+- Each tool is testable in isolation
+
+**Cons:**
+- **Hundreds of tools.** VAPIX has ~120 operations, param.cgi
+  alone has ~50 parameter groups. Tool lists this long degrade
+  LLM tool selection accuracy significantly.
+- **Every new operation = new code.** Adding a catalog YAML file
+  isn't enough; you also need a new Python function, tests,
+  parameter mapping. The catalog becomes redundant — the real
+  logic is in Python.
+- **Combinatorial parameter complexity.** `param.cgi` takes
+  arbitrary `key=value` pairs from dozens of namespaces. You'd
+  need either one mega-tool with hundreds of optional parameters,
+  or hundreds of small tools — one per parameter group.
+- **Doesn't scale to multi-family.** Adding ACS means writing
+  another set of typed tools. Undocumented APIs can't have typed
+  tools since their signatures aren't known in advance.
+
+**Verdict: doesn't scale. Ruled out.**
+
+#### Option B: Raw HTTP passthrough
+
+```
+MCP tools:
+  - execute_http(device_id, method, path, headers, body)
+```
+
+The MCP server is a dumb HTTP proxy. The LLM reads docs and
+constructs the full HTTP request.
+
+**Pros:**
+- Maximally flexible — any HTTP call to any API
+- Trivially simple MCP server
+- Works for any API family, including undocumented
+
+**Cons:**
+- **No guardrails.** The LLM can call any endpoint — the risk
+  model can't classify arbitrary paths it hasn't seen before.
+- **LLM must handle auth, URL construction, response parsing.**
+  Digest auth is particularly tricky — it's a multi-step
+  challenge-response. LLMs can't do this.
+- **No generation awareness.** The LLM has to know whether to
+  use query params (legacy CGI) vs JSON body (JSON-RPC) vs
+  RESTful paths (config-rest). Error-prone.
+- **Hallucination risk.** Without the catalog constraining what's
+  valid, the LLM may invent endpoints or parameters.
+
+**Verdict: too dangerous, too error-prone. Ruled out.**
+
+#### Option C: Catalog-in-the-loop (the right answer)
+
+```
+MCP tools (for operations):
+  - query_catalog(device_id, intent)        → returns docs
+  - execute_operation(device_id, operation_id, params)  → executes
+```
+
+Two tools. That's it. The LLM reads documentation, decides what
+to do, and the MCP server handles the mechanical execution.
+
+**How it works, step by step:**
+
+```
+User: "Set lobby-cam to 1080p"
+
+Step 1 — LLM calls query_catalog:
+┌────────────────────────────────────────────────────┐
+│ query_catalog(                                     │
+│   device_id = "lobby-cam",                         │
+│   intent = "set resolution"                        │
+│ )                                                  │
+└────────────────────────────────────────────────────┘
+
+Step 2 — MCP server runs the resolver:
+  a. Maps "set resolution" to index key "change-resolution"
+  b. Reads index/by-task.yaml → gets file paths:
+     - vapix/cgi/param.cgi/groups/root.Image.yaml
+     - vapix/cgi/param.cgi/update.yaml
+     - vapix/cgi/param.cgi/_cgi.yaml
+  c. Checks device profile: lobby-cam is P1455-LE fw 11.6,
+     supports param.cgi, no config-rest yet
+  d. Loads the matching files (~60 lines of YAML)
+  e. Checks risk: root.Image is "normal" risk
+
+Step 3 — MCP returns documentation to LLM:
+┌────────────────────────────────────────────────────┐
+│ {                                                  │
+│   "operations": [                                  │
+│     {                                              │
+│       "id": "param.cgi:update",                    │
+│       "endpoint": "/axis-cgi/param.cgi",           │
+│       "method": "GET",                             │
+│       "params_template": {                         │
+│         "action": "update",                        │
+│         "root.Image.I0.Resolution": "<value>"      │
+│       },                                           │
+│       "parameter_docs": {                          │
+│         "Resolution": {                            │
+│           "type": "enum",                          │
+│           "valid_values_from":                      │
+│             "Properties.Image.Resolution",          │
+│           "examples": ["1920x1080", "1280x720"]    │
+│         }                                          │
+│       },                                           │
+│       "risk_level": "normal",                      │
+│       "notes": "Will briefly interrupt stream"     │
+│     }                                              │
+│   ],                                               │
+│   "device": {                                      │
+│     "model": "P1455-LE",                           │
+│     "firmware": "11.6",                            │
+│     "generation": "legacy-cgi"                     │
+│   }                                                │
+│ }                                                  │
+└────────────────────────────────────────────────────┘
+
+Step 4 — LLM reads the docs and proposes a plan:
+  "I'll set lobby-cam to 1080p by calling param.cgi:update
+   with root.Image.I0.Resolution=1920x1080. This may briefly
+   interrupt the stream. Proceed?"
+
+Step 5 — User approves. LLM calls execute_operation:
+┌────────────────────────────────────────────────────┐
+│ execute_operation(                                  │
+│   device_id = "lobby-cam",                         │
+│   operation_id = "param.cgi:update",               │
+│   params = {                                       │
+│     "root.Image.I0.Resolution": "1920x1080"        │
+│   }                                                │
+│ )                                                  │
+└────────────────────────────────────────────────────┘
+
+Step 6 — MCP server handles the mechanical parts:
+  a. Looks up operation_id in catalog → gets endpoint, method,
+     generation, auth requirements
+  b. Gets credentials from registry for lobby-cam
+  c. Builds the HTTP request based on generation:
+     - legacy-cgi: GET /axis-cgi/param.cgi?action=update&
+                   root.Image.I0.Resolution=1920x1080
+     - json-rpc: POST with JSON body (if it were that type)
+     - config-rest: PUT/POST to REST path (if it were that type)
+  d. Handles digest auth (challenge-response)
+  e. Makes the HTTP call
+  f. Parses the response according to the operation's
+     response format spec
+  g. Returns structured result to LLM
+
+Step 7 — MCP returns result:
+┌────────────────────────────────────────────────────┐
+│ {                                                  │
+│   "success": true,                                 │
+│   "operation_id": "param.cgi:update",              │
+│   "device_id": "lobby-cam",                        │
+│   "response": "OK",                                │
+│   "warnings": ["Stream may have briefly restarted"]│
+│ }                                                  │
+└────────────────────────────────────────────────────┘
+
+Step 8 — LLM tells user:
+  "Done. Resolution set to 1920x1080 on lobby-cam."
+```
+
+### Why Option C is right
+
+**The LLM handles what it's good at:**
+- Reading documentation and understanding which parameters to use
+- Choosing between multiple valid approaches
+- Explaining tradeoffs to the user ("this will interrupt the stream")
+- Adjusting when the user gives feedback ("not 4K, use 1080p")
+
+**The MCP server handles what code is good at:**
+- Digest auth (multi-step challenge-response — LLMs can't do this)
+- URL construction from generation-specific rules
+- Response parsing and error extraction
+- Risk classification (mechanical lookup)
+- Credential retrieval from the registry
+
+**The catalog is the intelligence:**
+- Adding a new operation means adding a YAML file. No code changes.
+- The resolver filters docs based on device capability — the LLM
+  only sees operations that work on the target device.
+- The risk model constrains what can be executed.
+- Undocumented APIs work the same way — the YAML just has
+  `status: undocumented` and the LLM warns the user.
+
+### The execute_operation tool in detail
+
+```python
+# This is the entire execution logic — one tool, all operations.
+
+async def execute_operation(
+    device_id: str,
+    operation_id: str,
+    params: Dict[str, str],
+) -> Dict[str, Any]:
+    """
+    Execute a catalog operation against a device.
+
+    The operation_id comes from query_catalog results.
+    The params come from the LLM's reading of the docs.
+    """
+    # 1. Load operation spec from catalog
+    operation = catalog.get_operation(operation_id)
+    if not operation:
+        return {"error": f"Unknown operation: {operation_id}"}
+
+    # 2. Risk check (Gate 2)
+    risk = catalog.get_risk_level(operation_id)
+    if risk == "dangerous":
+        return block_dangerous(operation_id, operation)
+
+    # 3. Get credentials + device info
+    device = registry.get_device_info(device_id)
+    creds = registry.get_credentials(device_id)
+
+    # 4. Build HTTP request based on generation
+    request = build_request(operation, device, params)
+    #   - legacy-cgi → GET with query params
+    #   - json-rpc → POST with JSON body
+    #   - config-rest → REST method + path + JSON body
+
+    # 5. Execute with auth
+    response = await http_client.request(
+        method=request.method,
+        url=f"https://{device['host']}{request.path}",
+        params=request.query_params,
+        json=request.json_body,
+        auth=DigestAuth(creds['username'], creds['password']),
+    )
+
+    # 6. Parse response per operation spec
+    result = parse_response(operation, response)
+
+    # 7. Add warnings if service-affecting
+    if risk == "service-affecting":
+        result["warnings"] = [operation.get("service_impact", "")]
+
+    return result
+```
+
+The `build_request` function is the only part that needs to know
+about VAPIX generations. It's ~50 lines covering three cases:
+
+```python
+def build_request(operation, device, params):
+    gen = operation["generation"]
+
+    if gen == "legacy-cgi":
+        # params become query parameters
+        query = {"action": operation["request"]["query"]["action"]}
+        query.update(params)
+        return Request(
+            method=operation["method"],
+            path=operation["endpoint"],
+            query_params=query,
+        )
+
+    elif gen == "json-rpc":
+        # params go into JSON body
+        body = dict(operation["request"]["body"])
+        body["params"] = params
+        return Request(
+            method="POST",
+            path=operation["endpoint"],
+            json_body=body,
+        )
+
+    elif gen == "config-rest":
+        # params become JSON body, path from operation
+        return Request(
+            method=operation["method"],
+            path=operation["base_path"] + operation.get("path", ""),
+            json_body=params,
+        )
+```
+
+That's it. Three generation handlers. Not hundreds of typed tools.
+
+### MCP tool inventory (complete)
+
+With the catalog-in-the-loop model, the full set of MCP tools is:
+
+```
+Registry tools (existing):
+  list_devices            — list all devices
+  get_device              — device info by ID/nickname
+  search_devices          — filter by tags, model, location
+  list_accounts           — accounts for a device
+  get_credentials         — retrieve auth credentials
+  register_device         — add a device
+  add_account             — add account to device
+  update_device           — update device metadata
+  delete_device           — remove a device
+  delete_account          — remove an account
+  capture_credentials     — generate OOB credential entry URL
+  check_capture_status    — check if credentials were entered
+
+Catalog + execution tools (new):
+  query_catalog           — "what can I do on this device for X?"
+                            Returns filtered operation docs.
+  execute_operation       — run a catalog operation against a device.
+                            Handles auth, HTTP, response parsing.
+  confirm_dangerous       — confirm a blocked dangerous operation
+                            (single-use token from execute_operation)
+
+Interrogation tools (new):
+  interrogate_device      — discover device capabilities,
+                            populate device profile in registry
+
+Discovery tools (new, from network discovery work):
+  scan_network            — discover devices on the network
+  probe_device            — targeted probe of a specific IP
+```
+
+That's ~17 tools total. The LLM sees a clean, manageable list.
+The complexity lives in the catalog YAML, not in tool proliferation.
+
+### Why this works for non-VAPIX families too
+
+The same two-tool pattern (`query_catalog` + `execute_operation`)
+works for every API family. The catalog YAML describes the operation.
+The executor adapter handles the transport:
+
+```
+LLM: query_catalog("acs-server-01", "list recordings")
+MCP: loads acs/rest/recordings/list.yaml → returns docs
+LLM: reads docs, calls execute_operation(
+       "acs-server-01", "acs:recordings:list", {date: "2024-01-15"})
+MCP: ACSExecutor builds REST request with Windows auth → executes
+```
+
+The LLM doesn't know or care whether it's talking to a camera
+via VAPIX or a server via ACS REST. It reads docs, picks params,
+calls `execute_operation`. The MCP server routes to the right
+executor adapter based on the operation's family prefix.
+
+### When the LLM calls query_catalog multiple times
+
+Sometimes the LLM needs to learn before it can act. This is
+expected and efficient:
+
+```
+Round 1: query_catalog("lobby-cam", "change resolution")
+  → LLM learns: Resolution is an enum, valid values come
+    from Properties.Image.Resolution. But what are the
+    actual valid values for this specific camera?
+
+Round 2: execute_operation("lobby-cam",
+           "param.cgi:list", {group: "Properties.Image"})
+  → LLM gets: Properties.Image.Resolution=1920x1080,1280x720,...
+  → Now it knows the valid enum values for this camera.
+
+Round 3: execute_operation("lobby-cam",
+           "param.cgi:update",
+           {"root.Image.I0.Resolution": "1920x1080"})
+  → Done.
+```
+
+Three tool calls, total. The first returns ~60 lines of YAML.
+The second returns device-specific property values. The third
+makes the change. This is how an expert human would do it too:
+check the docs, check the device, make the change.
+
+---
+
 ## Catalog Size Estimation
 
 Rough estimate of the full catalog at maturity:
