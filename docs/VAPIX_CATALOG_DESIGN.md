@@ -1179,16 +1179,59 @@ Tool(
 )
 ```
 
-### Re-interrogation
+### When to interrogate (event-driven, not polled)
 
-Interrogation results become stale when:
-- Device firmware is upgraded
-- Device is factory-reset
-- Device configuration changes significantly
+A device's capability set doesn't change during normal operation. An
+AXIS P5655 running firmware 11.8 supports the same APIs today as it
+will next week. Interrogation is therefore **event-driven**, not
+time-based. There's no polling loop or periodic re-probe.
 
-The resolver can check the `interrogation_timestamp` and warn if results
-are older than a configurable threshold (e.g., 24 hours, 7 days). The
-LLM or user can re-run interrogation at any time.
+**Triggers:**
+
+| Event | Action | Depth |
+|---|---|---|
+| Device first added to registry | Auto-interrogate | standard |
+| Firmware upgrade detected | Re-interrogate | standard |
+| Factory reset detected | Re-interrogate | standard |
+| User/LLM explicitly requests | On-demand | any (user picks) |
+
+**How firmware upgrades are detected:** The `basic` depth is cheap
+(one HTTP call, ~1 second). A lightweight version check can be done
+opportunistically — e.g., before executing an operation, the executor
+makes a quick basicdeviceinfo call and compares the returned firmware
+version against the cached one. If it differs, flag the interrogation
+data as stale and suggest re-interrogation before proceeding. This is
+NOT periodic polling — it's a cheap side-check on an operation that
+was already going to talk to the device anyway.
+
+**The timestamp is a safety net, not a scheduler.** The stored
+`interrogation_timestamp` exists so the resolver can warn about very
+old data ("interrogation data is 6 months old — firmware may have
+changed"), not to trigger automatic re-probes. The warning threshold
+is configurable (default: 30 days) and just surfaces an advisory, it
+doesn't block operations.
+
+```yaml
+# ~/.admz/config.yaml
+interrogation:
+  auto_on_register: true           # interrogate when device is added
+  stale_warning_days: 30           # warn if data older than this
+  auto_version_check: true         # compare firmware version before ops
+```
+
+**Auto-interrogation on device registration:**
+
+```
+register_device("lobby-cam", ip="192.168.1.100", ...)
+  → device saved to registry
+  → if auto_on_register and credentials available:
+      → run interrogate_device("lobby-cam", depth="standard")
+      → cache results immediately
+  → device ready for catalog-resolved operations
+```
+
+This means a newly registered device with credentials is immediately
+usable — no separate "now run interrogation" step needed.
 
 ---
 
