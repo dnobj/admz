@@ -1500,3 +1500,314 @@ The catalog repo would have CI that runs on every PR:
 | **Offline-capable** | Local clone, no runtime network dependency |
 | **LLM-friendly** | YAML is readable; filtered subsets fit in context easily |
 | **Scales to hundreds of ops** | ~320 files at maturity, index files stay small |
+
+---
+
+## Beyond VAPIX — Multi-API-Family Architecture
+
+VAPIX is the first API family ADMZ supports, but not the last.
+Planned future families include:
+
+| API family | What it talks to | Protocol | Auth model |
+|---|---|---|---|
+| `vapix` | Axis cameras/devices (on-device) | HTTP to device IP | Digest/Basic per-device |
+| `vapix-undocumented` | Same devices, unofficial endpoints | HTTP to device IP | Same as vapix |
+| `acs` | AXIS Camera Station (VMS) | REST to Windows server | Windows auth / API key |
+| `aoa` | AXIS Object Analytics (ACAP) | VAPIX + ACAP framework APIs | Digest (via device) |
+| `onvif` | Any ONVIF-conformant device | SOAP/WS to device IP | WS-Security tokens |
+| `body-worn` | AXIS Body Worn Manager | REST to cloud/server | OAuth/API key |
+
+Each family has fundamentally different:
+- **Transport**: HTTP to a device IP vs REST to a server vs SOAP
+- **Authentication**: Digest auth vs Windows auth vs API keys vs OAuth
+- **Discovery**: apidiscovery.cgi vs ACS server API vs ONVIF probes
+- **Operation shape**: CGI params vs JSON REST vs SOAP envelopes
+
+But they share:
+- **Risk classification**: A factory reset is dangerous whether it's VAPIX or ACS
+- **Plan approval**: Gate 1 (semantic) and Gate 2 (safety) apply to all families
+- **Index concept**: "I want to do X" → "here are the operations" works for any API
+- **Device/target registry**: Everything has an address, credentials, capabilities
+
+### What to namespace now (cheap, prevents pain later)
+
+#### 1. Catalog directory: top-level API family prefix
+
+Current design:
+```
+vapix-catalog/
+├── cgi/
+├── config-rest/
+├── devices/
+├── firmware/
+└── index/
+```
+
+Better — add a top-level family directory:
+```
+operations-catalog/
+├── vapix/
+│   ├── cgi/
+│   ├── config-rest/
+│   ├── devices/
+│   ├── firmware/
+│   └── index/
+│
+├── vapix-undocumented/
+│   ├── endpoints/
+│   ├── index/
+│   └── README.md              # discovery notes, status, caveats
+│
+├── acs/
+│   ├── rest/                  # ACS REST API operations
+│   ├── servers/               # ACS server profiles (like devices/)
+│   └── index/
+│
+├── aoa/                       # may be thin — wraps VAPIX ACAP APIs
+│   ├── operations/
+│   └── index/
+│
+└── schema/                    # shared schemas (risk levels, etc.)
+```
+
+This is just a directory rename. All existing file references become
+`vapix/cgi/param.cgi/...` instead of `cgi/param.cgi/...`. The resolver
+prefixes the family when loading files.
+
+The catalog repo name also changes from `vapix-catalog` to
+`operations-catalog` (or `admz-catalog`). VAPIX is still the majority
+of the content, but it's no longer the only resident.
+
+#### 2. Index files: scoped per family, plus a cross-family index
+
+Each API family has its own `index/` with `by-task.yaml`, `by-risk.yaml`,
+etc. These are self-contained — `vapix/index/by-task.yaml` only
+references files under `vapix/`.
+
+Additionally, a top-level cross-family index enables queries that
+span families:
+
+```yaml
+# index/by-task.yaml (cross-family)
+#
+# Maps tasks to operations across all API families.
+# Entries reference family-scoped paths.
+
+configure-analytics:
+  - vapix/cgi/param.cgi/groups/root.Analytics.yaml
+  - aoa/operations/configure-scenario.yaml
+
+manage-recordings:
+  - vapix/cgi/record.cgi/start.yaml
+  - acs/rest/recordings/list.yaml
+  - acs/rest/recordings/export.yaml
+
+manage-users:
+  - vapix/cgi/pwdgrp.cgi/add-user.yaml
+  - acs/rest/users/create.yaml
+```
+
+The resolver checks: does the target device/server support this
+API family? If lobby-cam is a VAPIX device, filter out the `acs/`
+entries. If acs-server-01 is an ACS instance, filter out `vapix/`.
+
+#### 3. Registry: API family as a device property
+
+The device registry already stores metadata per device. Add an
+`api_families` field:
+
+```python
+# A camera
+{
+    "device_id": "lobby-cam",
+    "api_families": ["vapix"],           # discovered via interrogation
+    "host": "192.168.1.100",
+    ...
+}
+
+# A camera with analytics
+{
+    "device_id": "parking-cam",
+    "api_families": ["vapix", "aoa"],    # AOA detected via ACAP list
+    "host": "192.168.1.101",
+    ...
+}
+
+# An ACS server
+{
+    "device_id": "acs-server-01",
+    "api_families": ["acs"],
+    "host": "192.168.1.200",
+    "port": 55756,
+    ...
+}
+```
+
+The resolver uses `api_families` to know which catalog subtrees
+are relevant for a given target.
+
+#### 4. Executor: adapter per API family
+
+The executor — the component that actually makes HTTP calls — needs
+to know HOW to talk to each family:
+
+```
+admz/
+├── executor/
+│   ├── base.py                # abstract: execute(operation, target) → result
+│   ├── vapix.py               # digest auth, HTTP to device IP, CGI conventions
+│   ├── acs.py                 # Windows auth or API key, REST to server
+│   ├── aoa.py                 # thin wrapper around vapix executor
+│   └── onvif.py               # SOAP/WS-Security (future)
+```
+
+Each adapter handles:
+- Building the HTTP request from operation YAML
+- Authentication for its family
+- Response parsing
+- Error mapping to a common format
+
+The MCP tool `execute_operation` delegates to the right adapter
+based on the operation's API family prefix:
+
+```python
+def execute_operation(operation_path, device_id, params):
+    family = operation_path.split("/")[0]   # "vapix", "acs", etc.
+    adapter = get_executor(family)          # VAPIXExecutor, ACSExecutor
+    device = registry.get_device(device_id)
+    return adapter.execute(operation_path, device, params)
+```
+
+#### 5. Interrogation: adapter per API family
+
+Same pattern as the executor. How you discover capabilities is
+family-specific:
+
+```
+VAPIX interrogation:
+  basicdeviceinfo.cgi → apidiscovery.cgi → Properties.*
+
+ACS interrogation:
+  GET /acs/api/version → GET /acs/api/capabilities
+  → enumerate cameras, users, recording schedules
+
+AOA interrogation:
+  VAPIX interrogation first, then:
+  list installed ACAPs → check if AOA is installed
+  → query AOA-specific config endpoints
+```
+
+But the interface is the same:
+
+```python
+class Interrogator(ABC):
+    @abstractmethod
+    async def interrogate(self, device, depth) -> InterrogationResult:
+        ...
+
+class VAPIXInterrogator(Interrogator): ...
+class ACSInterrogator(Interrogator): ...
+```
+
+### Undocumented APIs — a special case
+
+Undocumented APIs are interesting because they're **discovered at
+runtime**, not curated in advance. During VAPIX interrogation,
+`apidiscovery.cgi` may return API IDs that aren't in the catalog.
+
+```
+apidiscovery returns:
+  - basic-device-info (v1.2)      → in catalog ✓
+  - io-port-management (v1.0)     → in catalog ✓
+  - custom-firmware-api (v1.0)    → NOT in catalog ✗
+
+Action:
+  1. Store in device's interrogation data under "unknown_apis"
+  2. Log: "Device lobby-cam reports API 'custom-firmware-api'
+           not found in catalog"
+  3. Optionally: attempt getSupportedMethods on the unknown CGI
+     to discover its operations automatically
+  4. Store raw method list under vapix-undocumented/ locally
+  5. Flag for potential catalog contribution
+```
+
+The `vapix-undocumented/` directory in the catalog is for APIs
+that have been manually investigated and documented (with caveats),
+not for auto-discovered raw method lists. The auto-discovered data
+lives in the local device registry until someone investigates and
+promotes it to the catalog.
+
+```yaml
+# vapix-undocumented/endpoints/custom-analytics.yaml
+#
+# Status: discovered, partially documented
+# Source: reverse-engineering from browser dev tools
+# Tested on: P1455-LE fw 11.8, Q6215-LE fw 11.11
+# Caveats:
+#   - Not documented by Axis, may break on firmware updates
+#   - No stability guarantees
+#   - Use at own risk
+
+endpoint: /axis-cgi/analytics-internal.cgi
+generation: json-rpc
+status: undocumented            # catalog resolver shows a warning
+stability: unstable             # shown to LLM so it can warn the user
+discovered_via: apidiscovery    # or "browser-devtools", "firmware-analysis"
+
+methods:
+  getScenarios:
+    description: "List configured analytics scenarios (internal)"
+    request: { method: getScenarios }
+    response_shape: { scenarios: [{ id, name, type }] }
+```
+
+Operations with `status: undocumented` trigger a warning in the
+resolver response: "This operation is undocumented and may not be
+stable across firmware versions." The LLM surfaces this to the user.
+
+### What stays generic (no changes needed)
+
+These components are already API-family-agnostic:
+
+- **Risk classification model**: `read-only / normal / service-affecting
+  / dangerous` applies to any API. Factory reset via VAPIX and
+  "delete all recordings" via ACS are both `dangerous`.
+- **Plan approval gates**: Gate 1 (semantic, LLM layer) and Gate 2
+  (risk check, MCP layer) work regardless of API family.
+- **Device registry interface**: Already stores arbitrary metadata.
+  Adding `api_families` is a new field, not a schema change.
+- **Network discovery**: Already protocol-agnostic (mDNS, SSDP,
+  ONVIF, HTTP probes). The `DeviceType` enum already includes
+  `ACCESS_CONTROL` and `NETWORK_SWITCH`.
+- **MCP tool interface**: `get_available_operations(device_id, task)`
+  doesn't change — it just returns results from multiple families.
+
+### Migration path: VAPIX-first, extend later
+
+The architecture supports multiple families, but we build VAPIX
+first and add families incrementally:
+
+```
+Phase 1 (now):     VAPIX catalog only, but directory structure
+                   already has the vapix/ prefix.
+                   Executor has VAPIXExecutor.
+                   Interrogation has VAPIXInterrogator.
+
+Phase 2:           Add vapix-undocumented/ for known unofficial APIs.
+                   Interrogation flags unknown APIs from apidiscovery.
+                   No new executor needed (same HTTP transport).
+
+Phase 3:           Add aoa/ — thin layer, mostly references VAPIX
+                   operations + ACAP-specific config endpoints.
+
+Phase 4:           Add acs/ — new executor (REST + Windows auth),
+                   new interrogator, new catalog subtree.
+                   ACS server profiles in acs/servers/.
+
+Phase 5 (future):  ONVIF, Body Worn, third-party integrations.
+```
+
+Each phase adds a directory to the catalog, an executor adapter,
+and an interrogator adapter. The resolver, risk model, plan approval,
+MCP tools, and device registry don't change — they're already
+family-agnostic.
