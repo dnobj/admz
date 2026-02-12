@@ -1,0 +1,34 @@
+id: factorydefault.cgi:factory-reset
+cgi: factorydefault.cgi
+
+method: GET
+request:
+  query: {}
+  content_type: null
+
+response:
+  format: text
+  success: "OK"
+  description: >
+    Device will reboot and return to factory defaults.
+    Response may not be received if network settings change.
+
+risk_level: dangerous
+danger_description: >
+  Factory reset ERASES ALL CONFIGURATION including:
+  - All user accounts and passwords
+  - Network settings (IP address will change to DHCP)
+  - All installed ACAP applications
+  - All analytics configurations
+  - All stream profiles and image settings
+  - HTTPS certificates
+  The device will be unreachable until reconfigured.
+
+rollback:
+  strategy: none
+  description: >
+    Factory reset is irreversible. Full device reconfiguration
+    is required after execution.
+
+requires:
+  auth_level: admin

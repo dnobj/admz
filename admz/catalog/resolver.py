@@ -1,0 +1,259 @@
+"""
+Catalog resolver — maps (device, intent) to filtered operation docs.
+
+This is the brain of query_catalog. Given a device and a task intent,
+it finds the relevant operations, filters by device capabilities,
+and returns documentation the LLM can read.
+"""
+
+import logging
+from typing import Any, Dict, List, Optional
+
+from admz.catalog.loader import CatalogLoader
+from admz.catalog.models import ResolverResult
+
+logger = logging.getLogger(__name__)
+
+# Synonyms for fuzzy intent matching.  Maps common words/phrases to
+# canonical task-index keys.
+_INTENT_SYNONYMS: Dict[str, List[str]] = {
+    "resolution": ["change-resolution"],
+    "set resolution": ["change-resolution"],
+    "image size": ["change-resolution"],
+    "compression": ["change-compression"],
+    "quality": ["change-compression"],
+    "framerate": ["change-framerate"],
+    "fps": ["change-framerate"],
+    "frame rate": ["change-framerate"],
+    "rotate": ["rotate-image"],
+    "rotation": ["rotate-image"],
+    "flip": ["rotate-image"],
+    "mirror": ["rotate-image"],
+    "stream profile": ["configure-stream-profile"],
+    "stream": ["configure-stream-profile"],
+    "hostname": ["set-hostname"],
+    "host name": ["set-hostname"],
+    "network": ["configure-network"],
+    "ip": ["configure-ip"],
+    "ip address": ["configure-ip"],
+    "dns": ["configure-dns"],
+    "ntp": ["configure-ntp"],
+    "time server": ["configure-ntp"],
+    "timezone": ["set-timezone"],
+    "time zone": ["set-timezone"],
+    "time": ["check-time"],
+    "date": ["check-time"],
+    "device info": ["get-device-info"],
+    "model": ["get-device-info"],
+    "serial": ["get-device-info"],
+    "firmware": ["check-firmware"],
+    "firmware version": ["check-firmware"],
+    "identify": ["identify-device"],
+    "apis": ["discover-apis"],
+    "capabilities": ["discover-apis"],
+    "what can": ["discover-apis"],
+    "user": ["manage-users"],
+    "users": ["manage-users"],
+    "account": ["manage-users"],
+    "add user": ["add-user"],
+    "create user": ["add-user"],
+    "remove user": ["remove-user"],
+    "delete user": ["remove-user"],
+    "factory reset": ["factory-reset"],
+    "factory default": ["factory-reset"],
+    "reset": ["factory-reset"],
+}
+
+
+class CatalogResolver:
+    """Maps (device, intent) to relevant operation documents."""
+
+    def __init__(self, loader: CatalogLoader):
+        self.loader = loader
+
+    def resolve(
+        self,
+        device_id: str,
+        intent: str,
+        family: str = "vapix",
+        device_info: Optional[Dict[str, Any]] = None,
+    ) -> ResolverResult:
+        """
+        Resolve an intent to filtered operation docs for a device.
+
+        Args:
+            device_id: Device identifier.
+            intent: User intent string (e.g., "set resolution").
+            family: API family (default "vapix").
+            device_info: Device metadata from registry. If provided,
+                used for capability filtering.
+
+        Returns:
+            ResolverResult with operations, parameter groups, and metadata.
+        """
+        # 1. Map intent to task index keys
+        task_keys = self._match_intent(intent, family)
+
+        if not task_keys:
+            return ResolverResult(
+                operations=[],
+                parameter_groups=[],
+                device={"device_id": device_id, **(device_info or {})},
+                risk_summary={},
+                notes=[f"No matching operations found for intent: '{intent}'"],
+            )
+
+        # 2. Collect all file paths from matched task keys
+        task_index = self.loader.load_index(family, "by-task")
+        file_paths: List[str] = []
+        for key in task_keys:
+            paths = task_index.get(key, [])
+            for p in paths:
+                if p not in file_paths:
+                    file_paths.append(p)
+
+        # 3. Load all referenced files
+        loaded = self.loader.load_files(family, file_paths)
+
+        # 4. Separate operations from parameter groups
+        operations: List[Dict[str, Any]] = []
+        parameter_groups: List[Dict[str, Any]] = []
+        risk_counts: Dict[str, int] = {}
+        notes: List[str] = []
+
+        for fp, data in loaded.items():
+            if not data:
+                continue
+
+            # Enrich with CGI metadata
+            cgi_name = data.get("cgi")
+            if cgi_name:
+                cgi_meta = self.loader.get_cgi_metadata(family, cgi_name)
+                if cgi_meta:
+                    data["_endpoint"] = cgi_meta.endpoint
+                    data["_generation"] = cgi_meta.generation
+                    data["_auth"] = cgi_meta.auth
+
+            # Parameter group files have a "group" key
+            if "group" in data:
+                # Filter by device capabilities if we have info
+                if device_info and not self._device_supports_group(
+                    data, device_info
+                ):
+                    continue
+                parameter_groups.append(data)
+            elif "id" in data:
+                # Operation file
+                risk = data.get("risk_level", "normal")
+                risk_counts[risk] = risk_counts.get(risk, 0) + 1
+
+                # Add warnings for risky operations
+                if risk == "dangerous":
+                    desc = data.get("danger_description", "")
+                    notes.append(f"WARNING: {data['id']} is dangerous. {desc}")
+                elif risk == "service-affecting":
+                    impact = data.get("service_impact", "")
+                    notes.append(f"Note: {data['id']} may affect service. {impact}")
+
+                operations.append(data)
+
+        # 5. Also load _cgi.yaml for each referenced CGI
+        cgi_names = set()
+        for op in operations:
+            if op.get("cgi"):
+                cgi_names.add(op["cgi"])
+        for pg in parameter_groups:
+            if pg.get("cgi"):
+                cgi_names.add(pg["cgi"])
+
+        cgi_metadata = {}
+        for cgi_name in cgi_names:
+            meta = self.loader.get_cgi_metadata(family, cgi_name)
+            if meta:
+                cgi_metadata[cgi_name] = {
+                    "endpoint": meta.endpoint,
+                    "generation": meta.generation,
+                    "auth": meta.auth,
+                    "min_firmware": meta.min_firmware,
+                }
+
+        # Attach CGI metadata to each operation for the LLM
+        for op in operations:
+            cgi_name = op.get("cgi")
+            if cgi_name and cgi_name in cgi_metadata:
+                op["_cgi"] = cgi_metadata[cgi_name]
+
+        device_data = {"device_id": device_id}
+        if device_info:
+            device_data.update(device_info)
+
+        return ResolverResult(
+            operations=operations,
+            parameter_groups=parameter_groups,
+            device=device_data,
+            risk_summary=risk_counts,
+            notes=notes,
+        )
+
+    def _match_intent(self, intent: str, family: str) -> List[str]:
+        """
+        Map a user intent string to task index keys.
+
+        Uses synonym table first, then falls back to substring match
+        against index keys.
+        """
+        intent_lower = intent.lower().strip()
+
+        # 1. Check synonyms (exact match on intent)
+        if intent_lower in _INTENT_SYNONYMS:
+            return _INTENT_SYNONYMS[intent_lower]
+
+        # 2. Check if intent contains a synonym key
+        matched = []
+        for synonym, keys in _INTENT_SYNONYMS.items():
+            if synonym in intent_lower:
+                for k in keys:
+                    if k not in matched:
+                        matched.append(k)
+        if matched:
+            return matched
+
+        # 3. Direct match against task index keys
+        task_index = self.loader.load_index(family, "by-task")
+        direct = []
+        for key in task_index:
+            # Check if intent words appear in the key or vice versa
+            key_words = set(key.replace("-", " ").split())
+            intent_words = set(intent_lower.replace("-", " ").split())
+            if key_words & intent_words:
+                direct.append(key)
+        if direct:
+            return direct
+
+        # 4. If the intent looks like it might be an index key, try it
+        slug = intent_lower.replace(" ", "-")
+        if slug in task_index:
+            return [slug]
+
+        return []
+
+    def _device_supports_group(
+        self, group_data: Dict[str, Any], device_info: Dict[str, Any]
+    ) -> bool:
+        """Check if a device supports a parameter group."""
+        requires = group_data.get("requires", {})
+        if not requires:
+            return True
+
+        # Check required properties
+        device_props = device_info.get("properties", {})
+        for prop in requires.get("properties", []):
+            if device_props and prop not in device_props:
+                return False
+
+        return True
+
+    def list_available_tasks(self, family: str = "vapix") -> List[str]:
+        """List all task keys in the index."""
+        task_index = self.loader.load_index(family, "by-task")
+        return sorted(task_index.keys())

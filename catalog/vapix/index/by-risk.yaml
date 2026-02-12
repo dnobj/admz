@@ -1,0 +1,22 @@
+# Risk index — maps risk levels to operation files.
+#
+# Used by Gate 2 (mechanical risk check) in the MCP server.
+
+read-only:
+  - cgi/param.cgi/list.yaml
+  - cgi/basicdeviceinfo.cgi/getAllProperties.yaml
+  - cgi/basicdeviceinfo.cgi/getAllUnrestrictedProperties.yaml
+  - cgi/apidiscovery.cgi/getApiList.yaml
+  - cgi/firmwaremanagement.cgi/status.yaml
+  - cgi/network.cgi/getNetworkInfo.yaml
+  - cgi/time.cgi/get-date.yaml
+
+normal:
+  - cgi/param.cgi/update.yaml
+  - cgi/pwdgrp.cgi/add-user.yaml
+
+service-affecting:
+  - cgi/pwdgrp.cgi/remove-user.yaml
+
+dangerous:
+  - cgi/factorydefault.cgi/factory-reset.yaml

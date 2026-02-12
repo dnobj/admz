@@ -1,0 +1,22 @@
+id: pwdgrp.cgi:remove-user
+cgi: pwdgrp.cgi
+
+method: GET
+request:
+  query:
+    action: remove
+    user: "{username}"
+  content_type: null
+
+response:
+  format: text
+  success: "OK"
+  error_prefix: "# Error:"
+
+risk_level: service-affecting
+service_impact: >
+  Removing a user will immediately revoke their access. Any active
+  sessions using this account will be terminated.
+
+requires:
+  auth_level: admin

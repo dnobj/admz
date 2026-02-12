@@ -1,0 +1,8 @@
+endpoint: /axis-cgi/param.cgi
+generation: legacy-cgi
+auth: digest
+min_firmware: null
+description: >
+  Central parameter store. Read and write all device configuration
+  via key=value pairs in the root.* namespace. The oldest and most
+  universal VAPIX endpoint — works on every Axis device ever made.

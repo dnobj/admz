@@ -1,0 +1,35 @@
+group: root.StreamProfile
+cgi: param.cgi
+read_action: list
+write_action: update
+
+description: >
+  Video stream profiles. Each profile (S0, S1, ...) defines a named
+  set of stream parameters. Uses channel indexing: root.StreamProfile.S0,
+  root.StreamProfile.S1, etc.
+
+channel_indexed: true
+channel_key: "S"
+
+parameters:
+  Name:
+    type: string
+    description: Human-readable profile name.
+    auth_level: admin
+
+  Description:
+    type: string
+    description: Profile description.
+    auth_level: admin
+
+  Parameters:
+    type: string
+    description: >
+      URL-encoded stream parameters. Format matches /axis-cgi/mjpg/video.cgi
+      query string. e.g. "resolution=1920x1080&compression=30&fps=15"
+    auth_level: admin
+
+service_impact: >
+  Changing stream profiles may cause active streams using this profile
+  to restart. Clients connected to this profile will experience a brief
+  interruption.

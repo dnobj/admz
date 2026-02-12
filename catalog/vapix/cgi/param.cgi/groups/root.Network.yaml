@@ -1,0 +1,58 @@
+group: root.Network
+cgi: param.cgi
+read_action: list
+write_action: update
+
+description: >
+  Network configuration including hostname, DNS, IPv4/IPv6 settings,
+  and interface configuration.
+
+channel_indexed: false
+
+parameters:
+  HostName:
+    type: string
+    description: Device hostname (also used in mDNS).
+    auth_level: admin
+
+  DNSServer1:
+    type: string
+    description: Primary DNS server IP address.
+    auth_level: admin
+
+  DNSServer2:
+    type: string
+    description: Secondary DNS server IP address.
+    auth_level: admin
+
+  DomainName:
+    type: string
+    description: DNS domain name.
+    auth_level: admin
+
+  "BootProto":
+    type: enum
+    description: IP assignment method.
+    valid_values: ["dhcp", "none"]
+    auth_level: admin
+
+  "IPAddress":
+    type: string
+    description: Static IPv4 address.
+    auth_level: admin
+
+  "SubnetMask":
+    type: string
+    description: IPv4 subnet mask.
+    auth_level: admin
+
+  "DefaultRouter":
+    type: string
+    description: Default gateway IP address.
+    auth_level: admin
+
+  "IPv6.Enabled":
+    type: boolean
+    description: Enable IPv6 on this interface.
+    valid_values: ["yes", "no"]
+    auth_level: admin

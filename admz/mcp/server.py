@@ -3,11 +3,20 @@ MCP server implementation for ADMZ device management.
 
 This server provides tools for LLMs to interact with the ADMZ device registry,
 enabling credential management, device discovery, and device operations.
+
+Catalog-in-the-loop tools:
+  - query_catalog: returns filtered operation docs for a device + intent
+  - execute_operation: runs a single catalog operation
+  - create_plan: submits a multi-step plan for review
+  - execute_plan: runs an approved plan autonomously
+  - get_plan_status: checks progress of a running plan
 """
 
 import asyncio
 import json
 import logging
+import os
+import secrets
 from typing import Any, Dict, List, Optional
 
 from mcp.server import Server
@@ -17,6 +26,10 @@ from mcp.types import Tool, TextContent
 from admz import create_device_registry
 from admz.device_registry import DeviceRegistry
 from admz.api.capture import capture_store, CaptureStatus
+from admz.catalog.loader import CatalogLoader
+from admz.catalog.resolver import CatalogResolver
+from admz.executor.vapix import VAPXExecutor
+from admz.plans.engine import PlanEngine
 from admz.exceptions import (
     DeviceNotFoundError,
     AccountNotFoundError,
@@ -41,15 +54,43 @@ class ADMZMCPServer:
     - Account management
     """
 
-    def __init__(self, registry: Optional[DeviceRegistry] = None):
+    def __init__(
+        self,
+        registry: Optional[DeviceRegistry] = None,
+        catalog_path: Optional[str] = None,
+    ):
         """
         Initialize ADMZ MCP server.
 
         Args:
             registry: Device registry instance. If None, will create from environment.
+            catalog_path: Path to the operations catalog directory.
+                If None, uses ADMZ_CATALOG_PATH env var or ./catalog.
         """
         self.server = Server("admz")
         self.registry = registry or create_device_registry()
+
+        # Catalog and resolver
+        catalog_path = catalog_path or os.getenv(
+            "ADMZ_CATALOG_PATH",
+            os.path.join(os.path.dirname(__file__), "..", "..", "catalog"),
+        )
+        self.catalog = CatalogLoader(catalog_path)
+        self.resolver = CatalogResolver(self.catalog)
+
+        # Executors (one per API family)
+        vapix_executor = VAPXExecutor()
+        self.executors = {"vapix": vapix_executor}
+
+        # Plan engine
+        self.plan_engine = PlanEngine(
+            catalog=self.catalog,
+            registry=self.registry,
+            executors=self.executors,
+        )
+
+        # Dangerous operation confirm tokens (token → operation details)
+        self._confirm_tokens: Dict[str, Dict[str, Any]] = {}
 
         # Register tool handlers
         self._register_handlers()
@@ -327,6 +368,202 @@ class ADMZMCPServer:
                         "required": ["token"],
                     },
                 ),
+                # --- Catalog + Execution tools ---
+                Tool(
+                    name="query_catalog",
+                    description=(
+                        "Look up what operations are available for a device and task. "
+                        "Returns filtered documentation from the operations catalog — "
+                        "operation specs, parameter groups, risk levels, and CGI metadata. "
+                        "Use this BEFORE execute_operation to understand what's available "
+                        "and what parameters to use. The returned docs are the source of "
+                        "truth for building operation calls."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID to query for",
+                            },
+                            "intent": {
+                                "type": "string",
+                                "description": (
+                                    "What you want to do, in natural language. "
+                                    "e.g. 'change resolution', 'configure NTP', "
+                                    "'add user', 'check firmware'"
+                                ),
+                            },
+                            "family": {
+                                "type": "string",
+                                "description": "API family (default: 'vapix')",
+                                "default": "vapix",
+                            },
+                        },
+                        "required": ["device_id", "intent"],
+                    },
+                ),
+                Tool(
+                    name="execute_operation",
+                    description=(
+                        "Execute a single catalog operation against a device. "
+                        "The operation_id and params should come from query_catalog results. "
+                        "Handles authentication, HTTP request construction, and response "
+                        "parsing automatically. Dangerous operations will be blocked and "
+                        "return a confirm_token — use confirm_dangerous_operation to proceed."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID to execute on",
+                            },
+                            "operation_id": {
+                                "type": "string",
+                                "description": (
+                                    "Operation ID from the catalog "
+                                    "(e.g. 'param.cgi:update', 'basicdeviceinfo.cgi:getAllProperties')"
+                                ),
+                            },
+                            "params": {
+                                "type": "object",
+                                "description": (
+                                    "Parameters for the operation. For param.cgi:update, "
+                                    "these are the key=value pairs (e.g. "
+                                    "{'root.Image.I0.Resolution': '1920x1080'}). "
+                                    "For param.cgi:list, include 'group' key."
+                                ),
+                                "additionalProperties": {"type": "string"},
+                            },
+                            "family": {
+                                "type": "string",
+                                "description": "API family (default: 'vapix')",
+                                "default": "vapix",
+                            },
+                        },
+                        "required": ["device_id", "operation_id", "params"],
+                    },
+                ),
+                Tool(
+                    name="confirm_dangerous_operation",
+                    description=(
+                        "Confirm and execute a dangerous operation that was blocked by "
+                        "the risk gate. Requires the confirm_token returned by "
+                        "execute_operation when it blocks a dangerous operation. "
+                        "Tokens are single-use and expire after 5 minutes."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "The single-use confirmation token",
+                            },
+                        },
+                        "required": ["confirm_token"],
+                    },
+                ),
+                # --- Plan tools ---
+                Tool(
+                    name="create_plan",
+                    description=(
+                        "Create a multi-step execution plan for review. "
+                        "Submit a list of operations with concrete parameters. "
+                        "The plan is validated against the catalog and risk-classified. "
+                        "Returns a plan summary for the user to approve. "
+                        "Does NOT execute — call execute_plan after approval."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "description": {
+                                "type": "string",
+                                "description": "Human-readable plan description",
+                            },
+                            "steps": {
+                                "type": "array",
+                                "description": "List of plan steps",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "operation_id": {
+                                            "type": "string",
+                                            "description": "Catalog operation ID",
+                                        },
+                                        "device_id": {
+                                            "type": "string",
+                                            "description": "Target device ID",
+                                        },
+                                        "params": {
+                                            "type": "object",
+                                            "description": "Operation parameters",
+                                            "additionalProperties": {"type": "string"},
+                                        },
+                                        "description": {
+                                            "type": "string",
+                                            "description": "Human-readable step description",
+                                        },
+                                        "depends_on": {
+                                            "type": "array",
+                                            "items": {"type": "integer"},
+                                            "description": "Step numbers this depends on",
+                                        },
+                                    },
+                                    "required": ["operation_id", "device_id", "params"],
+                                },
+                            },
+                            "on_failure": {
+                                "type": "string",
+                                "enum": ["stop", "skip_dependents", "continue"],
+                                "description": (
+                                    "What to do when a step fails. "
+                                    "'stop': abort remaining steps (safe default). "
+                                    "'skip_dependents': skip dependent steps, continue others. "
+                                    "'continue': keep going regardless."
+                                ),
+                                "default": "stop",
+                            },
+                        },
+                        "required": ["description", "steps"],
+                    },
+                ),
+                Tool(
+                    name="execute_plan",
+                    description=(
+                        "Execute an approved plan. Runs all steps autonomously — "
+                        "does not pause for per-step approval. For plans with steps "
+                        "on different devices, runs devices in parallel. "
+                        "Returns results for all steps including any errors."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "plan_id": {
+                                "type": "string",
+                                "description": "Plan ID from create_plan",
+                            },
+                        },
+                        "required": ["plan_id"],
+                    },
+                ),
+                Tool(
+                    name="get_plan_status",
+                    description=(
+                        "Check the status and progress of a plan. "
+                        "Use for long-running fleet plans to monitor progress."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "plan_id": {
+                                "type": "string",
+                                "description": "Plan ID to check",
+                            },
+                        },
+                        "required": ["plan_id"],
+                    },
+                ),
             ]
 
         @self.server.call_tool()
@@ -383,6 +620,39 @@ class ADMZMCPServer:
                 elif name == "check_capture_status":
                     result = await self._check_capture_status(
                         arguments["token"],
+                    )
+                # --- Catalog + Execution tools ---
+                elif name == "query_catalog":
+                    result = await self._query_catalog(
+                        arguments["device_id"],
+                        arguments["intent"],
+                        arguments.get("family", "vapix"),
+                    )
+                elif name == "execute_operation":
+                    result = await self._execute_operation(
+                        arguments["device_id"],
+                        arguments["operation_id"],
+                        arguments.get("params", {}),
+                        arguments.get("family", "vapix"),
+                    )
+                elif name == "confirm_dangerous_operation":
+                    result = await self._confirm_dangerous(
+                        arguments["confirm_token"],
+                    )
+                # --- Plan tools ---
+                elif name == "create_plan":
+                    result = await self._create_plan(
+                        arguments["description"],
+                        arguments["steps"],
+                        arguments.get("on_failure", "stop"),
+                    )
+                elif name == "execute_plan":
+                    result = await self._execute_plan(
+                        arguments["plan_id"],
+                    )
+                elif name == "get_plan_status":
+                    result = await self._get_plan_status(
+                        arguments["plan_id"],
                     )
                 else:
                     raise ValueError(f"Unknown tool: {name}")
@@ -648,6 +918,251 @@ class ADMZMCPServer:
             result["message"] = "This capture session has expired."
 
         return result
+
+    # ------------------------------------------------------------------
+    # Catalog + Execution handlers
+    # ------------------------------------------------------------------
+
+    async def _query_catalog(
+        self, device_id: str, intent: str, family: str
+    ) -> Dict[str, Any]:
+        """Look up available operations for a device and intent."""
+        # Get device info for capability filtering
+        device_info = None
+        if self.registry.device_exists(device_id):
+            device_info = self.registry.get_device_info(device_id)
+
+        result = self.resolver.resolve(
+            device_id=device_id,
+            intent=intent,
+            family=family,
+            device_info=device_info,
+        )
+
+        return {
+            "success": True,
+            "operations": result.operations,
+            "parameter_groups": result.parameter_groups,
+            "device": result.device,
+            "risk_summary": result.risk_summary,
+            "notes": result.notes,
+        }
+
+    async def _execute_operation(
+        self,
+        device_id: str,
+        operation_id: str,
+        params: Dict[str, str],
+        family: str,
+    ) -> Dict[str, Any]:
+        """Execute a single catalog operation."""
+        # Check risk level — block dangerous operations
+        risk = self.catalog.get_risk_level(family, operation_id)
+        if risk == "dangerous":
+            op = self.catalog.get_operation(family, operation_id)
+            token = secrets.token_urlsafe(32)
+            self._confirm_tokens[token] = {
+                "device_id": device_id,
+                "operation_id": operation_id,
+                "params": params,
+                "family": family,
+            }
+            return {
+                "blocked": True,
+                "risk_level": "dangerous",
+                "reason": op.danger_description if op else "This operation is classified as dangerous.",
+                "confirm_token": token,
+                "confirm_tool": "confirm_dangerous_operation",
+                "message": (
+                    "This operation is blocked because it is classified as dangerous. "
+                    "Present the reason to the user and ask for explicit confirmation. "
+                    "If confirmed, call confirm_dangerous_operation with the token."
+                ),
+            }
+
+        # Load operation spec
+        operation = self.catalog.get_operation(family, operation_id)
+        if not operation:
+            return {
+                "success": False,
+                "error": f"Operation '{operation_id}' not found in {family} catalog",
+            }
+
+        # Get executor
+        executor = self.executors.get(family)
+        if not executor:
+            return {
+                "success": False,
+                "error": f"No executor available for API family '{family}'",
+            }
+
+        # Get device info and credentials
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+
+        device = self.registry.get_device_info(device_id)
+        device["device_id"] = device_id
+        credentials = self.registry.get_credentials(device_id)
+
+        # Build operation dict
+        op_dict = {
+            "id": operation.id,
+            "cgi": operation.cgi,
+            "method": operation.method,
+            "risk_level": operation.risk_level,
+            "request": operation.request,
+            "response": operation.response,
+            "requires": operation.requires,
+            "_endpoint": operation.endpoint,
+            "_generation": operation.generation,
+            "_auth": operation.auth,
+            "service_impact": operation.service_impact,
+        }
+
+        result = await executor.execute(op_dict, device, credentials, params)
+
+        response: Dict[str, Any] = {
+            "success": result.success,
+            "operation_id": result.operation_id,
+            "device_id": result.device_id,
+            "status_code": result.status_code,
+            "duration_ms": result.duration_ms,
+        }
+
+        if result.success:
+            response["data"] = result.parsed_data
+        else:
+            response["error"] = result.error
+
+        if result.warnings:
+            response["warnings"] = result.warnings
+
+        return response
+
+    async def _confirm_dangerous(self, confirm_token: str) -> Dict[str, Any]:
+        """Confirm and execute a blocked dangerous operation."""
+        details = self._confirm_tokens.pop(confirm_token, None)
+        if not details:
+            return {
+                "success": False,
+                "error": "Invalid or expired confirmation token.",
+            }
+
+        # Re-run execution, bypassing the risk check
+        operation = self.catalog.get_operation(
+            details["family"], details["operation_id"]
+        )
+        if not operation:
+            return {
+                "success": False,
+                "error": f"Operation '{details['operation_id']}' no longer found in catalog",
+            }
+
+        executor = self.executors.get(details["family"])
+        if not executor:
+            return {
+                "success": False,
+                "error": f"No executor for family '{details['family']}'",
+            }
+
+        device = self.registry.get_device_info(details["device_id"])
+        device["device_id"] = details["device_id"]
+        credentials = self.registry.get_credentials(details["device_id"])
+
+        op_dict = {
+            "id": operation.id,
+            "cgi": operation.cgi,
+            "method": operation.method,
+            "risk_level": operation.risk_level,
+            "request": operation.request,
+            "response": operation.response,
+            "requires": operation.requires,
+            "_endpoint": operation.endpoint,
+            "_generation": operation.generation,
+            "_auth": operation.auth,
+            "service_impact": operation.service_impact,
+        }
+
+        result = await executor.execute(
+            op_dict, device, credentials, details["params"]
+        )
+
+        response: Dict[str, Any] = {
+            "success": result.success,
+            "confirmed_dangerous": True,
+            "operation_id": result.operation_id,
+            "device_id": result.device_id,
+            "status_code": result.status_code,
+            "duration_ms": result.duration_ms,
+        }
+
+        if result.success:
+            response["data"] = result.parsed_data
+        else:
+            response["error"] = result.error
+
+        return response
+
+    # ------------------------------------------------------------------
+    # Plan handlers
+    # ------------------------------------------------------------------
+
+    async def _create_plan(
+        self,
+        description: str,
+        steps: List[Dict[str, Any]],
+        on_failure: str,
+    ) -> Dict[str, Any]:
+        """Create a plan for review."""
+        try:
+            plan = self.plan_engine.create_plan(
+                description=description,
+                steps=steps,
+                on_failure=on_failure,
+            )
+        except ValueError as e:
+            return {
+                "success": False,
+                "error": str(e),
+            }
+
+        return {
+            "success": True,
+            "message": (
+                "Plan created and ready for review. Present the summary "
+                "to the user. If approved, call execute_plan with the plan_id."
+            ),
+            **plan.to_summary(),
+        }
+
+    async def _execute_plan(self, plan_id: str) -> Dict[str, Any]:
+        """Execute an approved plan."""
+        try:
+            plan = await self.plan_engine.execute_plan(plan_id)
+        except ValueError as e:
+            return {
+                "success": False,
+                "error": str(e),
+            }
+
+        return {
+            "success": True,
+            **plan.to_results(),
+        }
+
+    async def _get_plan_status(self, plan_id: str) -> Dict[str, Any]:
+        """Check plan progress."""
+        status = self.plan_engine.get_plan_status(plan_id)
+        if not status:
+            return {
+                "success": False,
+                "error": f"Plan not found: {plan_id}",
+            }
+
+        return {
+            "success": True,
+            **status,
+        }
 
     async def run(self):
         """Run the MCP server with stdio transport."""

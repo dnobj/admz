@@ -1,0 +1,88 @@
+# Task index — maps user intents to operation files.
+#
+# Keys are task slugs. Values are lists of file paths (relative to
+# the catalog vapix/ root) that are relevant for that task.
+
+change-resolution:
+  - cgi/param.cgi/groups/root.Image.yaml
+  - cgi/param.cgi/update.yaml
+  - cgi/param.cgi/list.yaml
+
+change-compression:
+  - cgi/param.cgi/groups/root.Image.yaml
+  - cgi/param.cgi/update.yaml
+  - cgi/param.cgi/list.yaml
+
+change-framerate:
+  - cgi/param.cgi/groups/root.Image.yaml
+  - cgi/param.cgi/update.yaml
+  - cgi/param.cgi/list.yaml
+
+rotate-image:
+  - cgi/param.cgi/groups/root.Image.yaml
+  - cgi/param.cgi/update.yaml
+
+configure-stream-profile:
+  - cgi/param.cgi/groups/root.StreamProfile.yaml
+  - cgi/param.cgi/update.yaml
+  - cgi/param.cgi/list.yaml
+
+set-hostname:
+  - cgi/param.cgi/groups/root.Network.yaml
+  - cgi/param.cgi/update.yaml
+
+configure-network:
+  - cgi/param.cgi/groups/root.Network.yaml
+  - cgi/param.cgi/update.yaml
+  - cgi/param.cgi/list.yaml
+  - cgi/network.cgi/getNetworkInfo.yaml
+
+configure-dns:
+  - cgi/param.cgi/groups/root.Network.yaml
+  - cgi/param.cgi/update.yaml
+
+configure-ip:
+  - cgi/param.cgi/groups/root.Network.yaml
+  - cgi/param.cgi/update.yaml
+  - cgi/network.cgi/getNetworkInfo.yaml
+
+configure-ntp:
+  - cgi/param.cgi/groups/root.Time.yaml
+  - cgi/param.cgi/update.yaml
+  - cgi/param.cgi/list.yaml
+
+set-timezone:
+  - cgi/param.cgi/groups/root.Time.yaml
+  - cgi/param.cgi/update.yaml
+
+check-time:
+  - cgi/time.cgi/get-date.yaml
+  - cgi/param.cgi/groups/root.Time.yaml
+  - cgi/param.cgi/list.yaml
+
+get-device-info:
+  - cgi/basicdeviceinfo.cgi/getAllProperties.yaml
+
+identify-device:
+  - cgi/basicdeviceinfo.cgi/getAllUnrestrictedProperties.yaml
+  - cgi/basicdeviceinfo.cgi/getAllProperties.yaml
+
+discover-apis:
+  - cgi/apidiscovery.cgi/getApiList.yaml
+
+check-firmware:
+  - cgi/firmwaremanagement.cgi/status.yaml
+  - cgi/basicdeviceinfo.cgi/getAllProperties.yaml
+
+manage-users:
+  - cgi/pwdgrp.cgi/add-user.yaml
+  - cgi/pwdgrp.cgi/remove-user.yaml
+
+add-user:
+  - cgi/pwdgrp.cgi/add-user.yaml
+
+remove-user:
+  - cgi/pwdgrp.cgi/remove-user.yaml
+
+factory-reset:
+  - cgi/factorydefault.cgi/factory-reset.yaml

@@ -1,0 +1,23 @@
+id: apidiscovery.cgi:getApiList
+cgi: apidiscovery.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: getApiList
+
+response:
+  format: json
+  data_path: data.apiList
+  description: >
+    Returns array of {id, version, name} for all APIs on this device.
+    Use to discover what capabilities a device has.
+
+risk_level: read-only
+
+requires:
+  auth_level: viewer
