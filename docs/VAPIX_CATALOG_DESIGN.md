@@ -1235,6 +1235,217 @@ usable — no separate "now run interrogation" step needed.
 
 ---
 
+## Plan Approval and Execution Safety
+
+Two separate gates protect the user from unwanted device changes.
+They live at different layers and serve different purposes:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  User / Chat UI                                         │
+│                                                         │
+│  "Change the resolution to 4K on lobby-cam"             │
+│                                                         │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │  LLM                                              │  │
+│  │                                                   │  │
+│  │  Resolves catalog → builds plan → presents it:    │  │
+│  │  "I'll set Image.I0.Resolution=3840x2160 via      │  │
+│  │   param.cgi on lobby-cam. Proceed?"               │  │
+│  │                                                   │  │
+│  │  ┌─ GATE 1: Plan Approval (semantic) ──────────┐  │  │
+│  │  │  User sees the plan in natural language.     │  │  │
+│  │  │  Can approve, decline, or decline with       │  │  │
+│  │  │  feedback ("no, that camera is 1080p max,    │  │  │
+│  │  │  try 1080p instead").                        │  │  │
+│  │  │  This is conversational — the LLM adjusts.   │  │  │
+│  │  └──────────────────────────────────────────────┘  │  │
+│  │                                                   │  │
+│  │  User approves → LLM calls MCP tool               │  │
+│  │                                                   │  │
+│  │  ┌───────────────────────────────────────────┐    │  │
+│  │  │  MCP Server                               │    │  │
+│  │  │                                           │    │  │
+│  │  │  ┌─ GATE 2: Risk Check (mechanical) ──┐   │    │  │
+│  │  │  │  Catalog says this op is:           │   │    │  │
+│  │  │  │  - read-only → execute immediately  │   │    │  │
+│  │  │  │  - normal → execute (Gate 1 enough) │   │    │  │
+│  │  │  │  - service-affecting → warn + exec  │   │    │  │
+│  │  │  │  - dangerous → BLOCK, return error  │   │    │  │
+│  │  │  │    with explanation back to LLM     │   │    │  │
+│  │  │  └─────────────────────────────────────┘   │    │  │
+│  │  │                                           │    │  │
+│  │  │  Execute → return result                  │    │  │
+│  │  └───────────────────────────────────────────┘    │  │
+│  └───────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Gate 1: Plan Approval (LLM/client layer)
+
+**Purpose:** "Is this the right plan?"
+
+This is a semantic question only the user can answer. The LLM
+proposes a plan in natural language, the user reads it and decides.
+
+```
+LLM: "I'll change the resolution on lobby-cam to 4K by setting
+      Image.I0.Resolution=3840x2160 via param.cgi. This will
+      interrupt the current video stream briefly. Proceed?"
+
+User options:
+  → "Yes"
+  → "No" (LLM asks what to do instead)
+  → "No — that camera maxes out at 1080p, use that instead"
+       (LLM adjusts and re-proposes)
+  → "Yes, and also bump the compression to 30"
+       (LLM incorporates and re-proposes or just does both)
+```
+
+This is standard LLM tool-use behavior. In Claude Code, the
+permission mode controls whether the LLM asks before each tool
+call or auto-executes. The plan presentation is just the LLM
+being a good assistant — describing what it's about to do.
+
+**This gate does NOT live in the MCP server.** The MCP server
+has no concept of "the user wants 1080p not 4K" — that's a
+conversational concern. The MCP server just executes operations.
+
+### Gate 2: Risk Check (MCP server layer)
+
+**Purpose:** "Is this operation safe to execute?"
+
+This is a mechanical check based on the catalog's risk
+classification (by-risk.yaml). It catches cases where:
+
+- The LLM misunderstands the severity of an operation
+- The user approves a plan without realizing step 3 of 5 is
+  a factory reset
+- A client other than Claude Code calls the MCP with no
+  permission model at all
+
+```
+Risk level     │ MCP behavior
+───────────────┼──────────────────────────────────────────
+read-only      │ Execute immediately, no check
+normal         │ Execute (Gate 1 was sufficient)
+service-       │ Execute, but include a warning in the
+affecting      │ response: "Note: this interrupted the
+               │ video stream for ~2 seconds"
+dangerous      │ BLOCK execution. Return an error to the
+               │ LLM: "This operation (factory reset) is
+               │ classified as dangerous. The user must
+               │ explicitly confirm via confirm_dangerous_
+               │ operation() before it will execute."
+```
+
+The `dangerous` category is intentionally small — only factory
+resets, firmware operations, user deletion, firewall changes.
+Everything else flows through without MCP-side blocking.
+
+### Why both gates matter
+
+The gates serve different trust boundaries:
+
+**Gate 1 alone is not enough** because:
+- The LLM might present a dangerous operation casually ("I'll
+  just reset the network settings...") and the user might say
+  "sure" without understanding the implication
+- Not all MCP clients have Claude Code's permission model —
+  a script or a different LLM client might call the MCP
+  directly with no human in the loop
+- Defense in depth: the catalog KNOWS which operations are
+  destructive — that knowledge should be enforced, not just
+  informational
+
+**Gate 2 alone is not enough** because:
+- The MCP has no concept of user intent — it can't tell the
+  user "you said 4K but this camera maxes at 1080p"
+- Most operations are not dangerous, and an MCP-side gate on
+  every operation would be redundant and annoying
+- The user needs to see the plan in context, not as a raw
+  tool call — "I'll set these 3 parameters" is more useful
+  than "confirm: param.cgi action=update&group=root.Image..."
+
+### The `confirm_dangerous_operation` flow
+
+When Gate 2 blocks a dangerous operation, the flow is:
+
+```
+1. LLM calls: execute_operation(device="lobby-cam",
+              operation="factory-reset", ...)
+
+2. MCP returns error:
+   {
+     "blocked": true,
+     "risk_level": "dangerous",
+     "reason": "Factory reset will erase all configuration
+                including accounts, network settings, and
+                installed applications.",
+     "confirm_token": "abc123",
+     "confirm_tool": "confirm_dangerous_operation"
+   }
+
+3. LLM presents this to the user:
+   "The MCP server blocked this because factory reset is
+    classified as dangerous. It will erase all configuration.
+    Do you want me to confirm and proceed?"
+
+4. User: "Yes, I understand, go ahead"
+
+5. LLM calls: confirm_dangerous_operation(
+              confirm_token="abc123")
+
+6. MCP executes the operation.
+```
+
+The confirm token is single-use and short-lived (5 minutes).
+This prevents replay and ensures the confirmation is fresh.
+
+### Configurable MCP safety mode
+
+Different deployments need different safety levels:
+
+```yaml
+# ~/.admz/config.yaml
+safety:
+  mode: "standard"          # "permissive" | "standard" | "strict"
+```
+
+| Mode | read-only | normal | service-affecting | dangerous |
+|---|---|---|---|---|
+| `permissive` | execute | execute | execute | warn + execute |
+| `standard` | execute | execute | warn + execute | block |
+| `strict` | execute | warn + execute | block | block |
+
+- **permissive**: Lab/test environment. Trust the LLM + user.
+  Still warns on dangerous ops but doesn't block.
+- **standard**: Default. Blocks only the truly dangerous stuff.
+  Good for managed deployments where the user knows what
+  they're doing but mistakes are costly.
+- **strict**: Production/critical infrastructure. Even
+  service-affecting operations (restart, network changes)
+  require explicit confirmation via the MCP. For environments
+  where an accidental stream interruption is unacceptable.
+
+### Summary: where each concern lives
+
+```
+Concern                          │ Where it's handled
+─────────────────────────────────┼───────────────────────
+"Is this the right operation?"   │ LLM (Gate 1)
+"Did I pick the right device?"   │ LLM (Gate 1)
+"Are the parameter values right?"│ LLM (Gate 1)
+User wants to modify the plan    │ LLM (conversational)
+User wants to decline the plan   │ LLM (conversational)
+"Is this operation destructive?" │ MCP (Gate 2, catalog)
+"Block factory resets"           │ MCP (Gate 2, config)
+"Warn on service interruptions"  │ MCP (Gate 2, config)
+"Is this client authorized?"     │ MCP (auth, future)
+```
+
+---
+
 ## Catalog Size Estimation
 
 Rough estimate of the full catalog at maturity:
