@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Enter Credentials — {{ device.get('nickname', session.device_id) }}{% endblock %}
+
+{% block content %}
+<div style="max-width:480px;margin:40px auto;">
+  <h1>Enter Credentials</h1>
+
+  <div style="background:#f5f5f5;padding:16px;border-radius:8px;margin-bottom:24px;">
+    <p style="margin:0 0 8px;"><strong>Device:</strong>
+      {{ device.get('nickname', session.device_id) }}
+      {% if device.get('model') %}<span style="color:#666;"> ({{ device.get('model') }})</span>{% endif %}
+    </p>
+    <p style="margin:0 0 8px;"><strong>Host:</strong> {{ device.get('host', 'N/A') }}</p>
+    <p style="margin:0 0 8px;"><strong>Account:</strong> {{ session.account_id }}</p>
+    {% if session.purpose %}
+    <p style="margin:0;"><strong>Purpose:</strong> {{ session.purpose }}</p>
+    {% endif %}
+  </div>
+
+  <p style="color:#666;font-size:14px;">
+    These credentials will be stored securely and are <strong>never</strong>
+    sent to the AI assistant.
+  </p>
+
+  <form method="POST" action="/capture/{{ token }}" autocomplete="off">
+    <div style="margin-bottom:16px;">
+      <label for="username" style="display:block;margin-bottom:4px;font-weight:600;">Username</label>
+      <input type="text" id="username" name="username" required
+             autocomplete="off" spellcheck="false"
+             style="width:100%;padding:8px 12px;border:1px solid #ccc;border-radius:4px;font-size:16px;box-sizing:border-box;">
+    </div>
+
+    <div style="margin-bottom:24px;">
+      <label for="password" style="display:block;margin-bottom:4px;font-weight:600;">Password</label>
+      <input type="password" id="password" name="password" required
+             autocomplete="new-password"
+             style="width:100%;padding:8px 12px;border:1px solid #ccc;border-radius:4px;font-size:16px;box-sizing:border-box;">
+    </div>
+
+    <button type="submit"
+            style="width:100%;padding:12px;background:#2563eb;color:#fff;border:none;border-radius:6px;font-size:16px;cursor:pointer;font-weight:600;">
+      Save Credentials
+    </button>
+  </form>
+</div>
+{% endblock %}

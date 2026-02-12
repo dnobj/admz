@@ -16,6 +16,7 @@ from mcp.types import Tool, TextContent
 
 from admz import create_device_registry
 from admz.device_registry import DeviceRegistry
+from admz.api.capture import capture_store, CaptureStatus
 from admz.exceptions import (
     DeviceNotFoundError,
     AccountNotFoundError,
@@ -268,6 +269,64 @@ class ADMZMCPServer:
                         "required": ["device_id", "account_id"],
                     },
                 ),
+                Tool(
+                    name="capture_credentials",
+                    description=(
+                        "Generate a secure one-time URL where the user can enter device "
+                        "credentials in their browser, OUTSIDE the chat context. "
+                        "Credentials entered via this URL never appear in the LLM context. "
+                        "Present the returned URL to the user as a clickable link. "
+                        "The ADMZ web server must be running (default: http://localhost:8000)."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID to store credentials for",
+                            },
+                            "account_id": {
+                                "type": "string",
+                                "description": "Account identifier (default: 'default')",
+                                "default": "default",
+                            },
+                            "account_type": {
+                                "type": "string",
+                                "description": "Account type (e.g. 'service', 'admin')",
+                                "default": "service",
+                            },
+                            "purpose": {
+                                "type": "string",
+                                "description": "Description of what this account is for",
+                                "default": "",
+                            },
+                            "base_url": {
+                                "type": "string",
+                                "description": "Base URL of the ADMZ web server",
+                                "default": "http://localhost:8000",
+                            },
+                        },
+                        "required": ["device_id"],
+                    },
+                ),
+                Tool(
+                    name="check_capture_status",
+                    description=(
+                        "Check whether a credential capture session has been completed. "
+                        "Returns status only — never returns the actual credentials. "
+                        "Use after presenting a capture_credentials URL to the user."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "token": {
+                                "type": "string",
+                                "description": "The capture session token returned by capture_credentials",
+                            },
+                        },
+                        "required": ["token"],
+                    },
+                ),
             ]
 
         @self.server.call_tool()
@@ -312,6 +371,18 @@ class ADMZMCPServer:
                     result = await self._delete_account(
                         arguments["device_id"],
                         arguments["account_id"],
+                    )
+                elif name == "capture_credentials":
+                    result = await self._capture_credentials(
+                        arguments["device_id"],
+                        arguments.get("account_id", "default"),
+                        arguments.get("account_type", "service"),
+                        arguments.get("purpose", ""),
+                        arguments.get("base_url", "http://localhost:8000"),
+                    )
+                elif name == "check_capture_status":
+                    result = await self._check_capture_status(
+                        arguments["token"],
                     )
                 else:
                     raise ValueError(f"Unknown tool: {name}")
@@ -511,6 +582,72 @@ class ADMZMCPServer:
             "device_id": device_id,
             "account_id": account_id,
         }
+
+    async def _capture_credentials(
+        self,
+        device_id: str,
+        account_id: str,
+        account_type: str,
+        purpose: str,
+        base_url: str,
+    ) -> Dict[str, Any]:
+        """Create a credential capture session and return the URL."""
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device '{device_id}' not found")
+
+        session = capture_store.create_session(
+            device_id=device_id,
+            account_id=account_id,
+            account_type=account_type,
+            purpose=purpose,
+        )
+
+        base_url = base_url.rstrip("/")
+        url = f"{base_url}/capture/{session.token}"
+
+        return {
+            "success": True,
+            "message": (
+                "Credential capture URL generated. "
+                "Present this link to the user — credentials entered via "
+                "this URL will NOT appear in the chat context."
+            ),
+            "url": url,
+            "token": session.token,
+            "device_id": device_id,
+            "account_id": account_id,
+            "expires_in_seconds": int(session.ttl),
+        }
+
+    async def _check_capture_status(self, token: str) -> Dict[str, Any]:
+        """Check whether a capture session has been completed."""
+        session = capture_store.get_session(token)
+        if session is None:
+            return {
+                "success": True,
+                "status": "expired_or_not_found",
+                "message": "This capture session has expired or does not exist.",
+            }
+
+        status = session.effective_status.value
+        result: Dict[str, Any] = {
+            "success": True,
+            "status": status,
+            "device_id": session.device_id,
+            "account_id": session.account_id,
+        }
+
+        if status == "completed":
+            result["message"] = (
+                f"Credentials for {session.device_id}/{session.account_id} "
+                "have been saved successfully."
+            )
+        elif status == "pending":
+            result["message"] = "Waiting for the user to enter credentials."
+        else:
+            result["message"] = "This capture session has expired."
+
+        return result
 
     async def run(self):
         """Run the MCP server with stdio transport."""

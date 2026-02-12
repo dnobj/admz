@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block title %}Credentials Saved{% endblock %}
+
+{% block content %}
+<div style="max-width:480px;margin:60px auto;text-align:center;">
+  <div style="font-size:48px;margin-bottom:16px;">&#10003;</div>
+  <h1>Credentials Saved</h1>
+  <p style="color:#666;">
+    Credentials for <strong>{{ device_id }}</strong> / <strong>{{ account_id }}</strong>
+    have been stored securely.
+  </p>
+  <p style="color:#666;font-size:14px;margin-top:24px;">
+    You can close this tab and return to your chat session.<br>
+    This link is now expired and cannot be reused.
+  </p>
+</div>
+{% endblock %}
