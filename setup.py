@@ -29,6 +29,7 @@ setup(
     python_requires=">=3.8",
     install_requires=[
         "hvac>=2.0.0",  # HashiCorp Vault client
+        "cryptography>=41.0.0",  # Password encryption for SQLite backend
         "flask>=3.0.0",  # Web UI framework
     ],
     extras_require={
