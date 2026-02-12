@@ -1837,6 +1837,748 @@ check the docs, check the device, make the change.
 
 ---
 
+## Execution Plans — Batch Operations with Single Approval
+
+### The problem with step-by-step approval
+
+The execution model above works for single operations. But real
+configuration tasks often require many calls:
+
+- **Deploy a camera from scratch**: set hostname, IP config,
+  resolution, compression, framerate, motion detection zones,
+  user accounts, NTP, DNS, HTTPS cert, ONVIF settings.
+  Easily 20-40 VAPIX calls.
+
+- **Standardize a fleet**: apply the same configuration to 50
+  cameras. That's 50 × 20 = 1,000 calls.
+
+- **Audit compliance**: read configuration from every device,
+  compare against a baseline. Hundreds of read-only calls.
+
+Requiring the user to approve each call individually makes this
+unusable. The user wants to describe the goal, review the plan
+once, hit "go", and walk away.
+
+### The plan as the approval artifact
+
+An execution plan is a concrete, ordered list of operations with
+actual parameters — not a vague description, but the real calls
+the MCP will make. The LLM generates it. The user approves it.
+The MCP executes it autonomously.
+
+```
+User: "Set up parking-cam with our standard outdoor config"
+
+LLM: (calls query_catalog multiple times to gather the right
+      operations, reads the "standard outdoor" config template
+      from previous conversations or a config file)
+
+LLM presents plan:
+┌─────────────────────────────────────────────────────────┐
+│  Execution plan for parking-cam (P3265-LVE, fw 11.11)  │
+│                                                         │
+│  14 operations, estimated time: ~8 seconds              │
+│  Risk summary: 0 dangerous, 2 service-affecting,        │
+│                12 normal                                │
+│                                                         │
+│  Step  Operation                   Risk    Params       │
+│  ─────────────────────────────────────────────────────  │
+│   1    param.cgi:update            normal  hostname     │
+│        root.Network.HostName = "parking-cam"            │
+│                                                         │
+│   2    param.cgi:update            normal  resolution   │
+│        root.Image.I0.Resolution = "1920x1080"           │
+│        root.Image.I0.Compression = 30                   │
+│                                                         │
+│   3    param.cgi:update            normal  framerate    │
+│        root.Image.I0.MaxFrameRate = 15                  │
+│                                                         │
+│   4    param.cgi:update            svc-aff stream prof  │
+│        root.StreamProfile.S0.Name = "Main"              │
+│        root.StreamProfile.S0.Parameters = ...           │
+│        NOTE: may restart active streams                  │
+│                                                         │
+│  ...10 more steps...                                    │
+│                                                         │
+│  14    param.cgi:update            normal  NTP          │
+│        root.Time.NTPServer = "pool.ntp.org"             │
+│                                                         │
+│  Approve this plan? [yes / edit / cancel]               │
+└─────────────────────────────────────────────────────────┘
+```
+
+The user sees exactly what will happen. They can:
+- **Approve** → MCP executes all 14 steps autonomously
+- **Edit** → "skip step 4, I'll set stream profiles separately"
+- **Cancel** → nothing happens
+
+### Plan data structure
+
+```python
+@dataclass
+class PlanStep:
+    """One operation in an execution plan."""
+    step_number: int
+    operation_id: str              # "param.cgi:update"
+    device_id: str                 # "parking-cam"
+    params: Dict[str, str]         # the actual parameters
+    description: str               # human-readable summary
+    risk_level: str                # from catalog
+    depends_on: List[int] = []     # step numbers this depends on
+    condition: Optional[str] = None  # "only if step 2 succeeded"
+
+@dataclass
+class ExecutionPlan:
+    """A batch of operations approved for autonomous execution."""
+    plan_id: str                   # unique identifier
+    created_by: str                # "llm-session-xyz"
+    created_at: datetime
+    description: str               # "Standard outdoor config for parking-cam"
+    steps: List[PlanStep]
+    risk_summary: Dict[str, int]   # {"normal": 12, "service-affecting": 2}
+    status: str                    # "pending_approval" | "approved" | "executing"
+                                   # | "completed" | "failed" | "cancelled"
+    approval_token: Optional[str]  # set when user approves
+    results: List[StepResult] = [] # populated during execution
+```
+
+### Plan-aware MCP tools
+
+The MCP gets three new tools for plan management:
+
+```
+Plan tools:
+  create_plan         — LLM submits a complete plan for approval
+  execute_plan        — execute an approved plan (autonomous)
+  get_plan_status     — check progress of a running plan
+```
+
+#### `create_plan` — LLM submits a plan
+
+The LLM calls this after using `query_catalog` to figure out
+what operations are needed. The plan contains concrete operation
+calls, not abstract intents.
+
+```python
+async def create_plan(
+    description: str,
+    steps: List[Dict],        # [{operation_id, device_id, params, ...}]
+) -> Dict[str, Any]:
+    """
+    Validate and store an execution plan.
+
+    Does NOT execute — returns the plan for user review.
+    """
+    # 1. Validate every operation_id exists in catalog
+    # 2. Validate params against operation specs where possible
+    # 3. Compute risk summary from catalog risk classifications
+    # 4. Check for dangerous operations — flag them prominently
+    # 5. Verify all referenced devices exist in registry
+    # 6. Store plan with status="pending_approval"
+
+    return {
+        "plan_id": plan.plan_id,
+        "status": "pending_approval",
+        "step_count": len(steps),
+        "risk_summary": risk_summary,
+        "dangerous_steps": [...],     # highlighted for the LLM
+        "estimated_duration_seconds": estimate,
+        "plan_summary": formatted_table,  # for LLM to show user
+    }
+```
+
+The LLM receives this back and presents it to the user. The plan
+summary is formatted so the LLM can display it clearly. The LLM
+does NOT need to reformat — it can pass through the summary.
+
+#### `execute_plan` — run an approved plan
+
+```python
+async def execute_plan(
+    plan_id: str,
+) -> Dict[str, Any]:
+    """
+    Execute all steps in an approved plan.
+
+    Runs autonomously — does not pause for per-step approval.
+    Returns results for all steps.
+    """
+    plan = plan_store.get(plan_id)
+
+    results = []
+    for step in plan.steps:
+        # Check dependencies
+        if not dependencies_met(step, results):
+            results.append(StepResult(
+                step=step.step_number,
+                status="skipped",
+                reason="dependency failed",
+            ))
+            continue
+
+        # Execute (same logic as execute_operation)
+        result = await execute_single_operation(
+            step.device_id,
+            step.operation_id,
+            step.params,
+        )
+        results.append(result)
+
+        # On failure: check plan's failure policy
+        if not result.success:
+            if plan.on_failure == "stop":
+                break
+            elif plan.on_failure == "skip_dependents":
+                continue  # deps will be auto-skipped
+            # "continue" → keep going regardless
+
+    return {
+        "plan_id": plan_id,
+        "status": "completed" if all_ok else "failed",
+        "steps_total": len(plan.steps),
+        "steps_succeeded": count_ok,
+        "steps_failed": count_fail,
+        "steps_skipped": count_skip,
+        "results": results,
+        "duration_seconds": elapsed,
+    }
+```
+
+#### `get_plan_status` — check progress
+
+For long-running plans (fleet operations), the LLM (or user)
+can poll for progress:
+
+```python
+async def get_plan_status(plan_id: str) -> Dict[str, Any]:
+    return {
+        "plan_id": plan_id,
+        "status": plan.status,
+        "progress": f"{completed}/{total}",
+        "current_step": current_step_number,
+        "results_so_far": results,
+        "errors": [r for r in results if not r.success],
+    }
+```
+
+### Plan execution: what the MCP does autonomously
+
+Once approved, plan execution requires NO further LLM interaction.
+The MCP server iterates through steps sequentially:
+
+```
+execute_plan("plan-abc123")
+
+  Step 1/14: param.cgi:update on parking-cam
+    → GET /axis-cgi/param.cgi?action=update&
+          root.Network.HostName=parking-cam
+    → 200 OK ✓  (142ms)
+
+  Step 2/14: param.cgi:update on parking-cam
+    → GET /axis-cgi/param.cgi?action=update&
+          root.Image.I0.Resolution=1920x1080&
+          root.Image.I0.Compression=30
+    → 200 OK ✓  (89ms)
+
+  ...
+
+  Step 14/14: param.cgi:update on parking-cam
+    → GET /axis-cgi/param.cgi?action=update&
+          root.Time.NTPServer=pool.ntp.org
+    → 200 OK ✓  (76ms)
+
+  Plan complete: 14/14 succeeded, 0 failed, 0 skipped
+  Total duration: 6.2 seconds
+```
+
+The user walks away after approval. The LLM presents the final
+results when the user comes back.
+
+### Failure handling policies
+
+Plans have a configurable failure policy:
+
+```yaml
+on_failure: stop            # abort remaining steps (safe default)
+on_failure: skip_dependents # skip steps that depend on failed step,
+                            # continue independent steps
+on_failure: continue        # keep going regardless (for reads/audits)
+```
+
+The LLM chooses the appropriate policy based on the task:
+- Deploying a camera → `stop` (partial config is worse than none)
+- Auditing a fleet → `continue` (one unreachable camera shouldn't
+  stop the audit of 49 others)
+- Sequential dependencies → `skip_dependents` (if hostname fails,
+  skip HTTPS cert that needs the hostname, but still do NTP)
+
+### Rollback on plan failure
+
+When a plan fails partway through and `on_failure: stop`:
+
+```
+Step 1: set hostname         ✓
+Step 2: set resolution       ✓
+Step 3: set stream profile   ✗ FAILED (invalid parameter)
+Step 4-14: not executed
+
+Plan failed at step 3. Steps 1-2 succeeded.
+Rollback available for steps 1-2.
+```
+
+The MCP returns the failure plus a rollback plan:
+
+```json
+{
+  "status": "failed",
+  "failed_at_step": 3,
+  "error": "Invalid parameter: root.StreamProfile.S0.Parameters",
+  "rollback_available": true,
+  "rollback_plan_id": "rollback-abc123",
+  "rollback_steps": [
+    {"step": 2, "operation": "param.cgi:update",
+     "params": {"root.Image.I0.Resolution": "1280x720",
+                "root.Image.I0.Compression": 20},
+     "description": "Revert resolution to previous values"},
+    {"step": 1, "operation": "param.cgi:update",
+     "params": {"root.Network.HostName": "axis-accc8e012345"},
+     "description": "Revert hostname to previous value"}
+  ]
+}
+```
+
+How does it know the previous values? Before each write operation,
+the executor reads the current value using the corresponding
+read operation. This is why the operation YAML files include
+`rollback.strategy`:
+
+```yaml
+# From param.cgi/update.yaml
+rollback:
+  strategy: revert-params
+  description: >
+    Read current values before update, store them, re-apply
+    on rollback via another update call.
+```
+
+The plan executor does this automatically:
+
+```python
+# Before executing a write step:
+if operation.rollback and operation.rollback.strategy == "revert-params":
+    # Read current values first
+    current = await execute_single_operation(
+        step.device_id,
+        "param.cgi:list",
+        {group: extract_group(step.params)},
+    )
+    # Store for potential rollback
+    step.rollback_data = current
+```
+
+The rollback plan is itself a plan — it goes through the same
+approval flow. The LLM presents it to the user:
+
+"Plan failed at step 3 (invalid stream profile parameter).
+Steps 1-2 already applied (hostname + resolution). Want me
+to roll back those changes?"
+
+### Fleet plans — the same config on many devices
+
+For fleet operations, the LLM generates a plan with repeated
+operations across multiple devices:
+
+```
+User: "Apply standard outdoor config to all parking cameras"
+
+LLM: (searches for devices with tag "parking", finds 12 cameras)
+     (generates plan: 14 operations × 12 devices = 168 steps)
+
+Plan summary:
+  168 operations across 12 devices
+  12 cameras: parking-01 through parking-12
+  14 config steps per camera (same as single-camera plan)
+  Risk: 0 dangerous, 24 service-affecting, 144 normal
+  Estimated duration: ~45 seconds
+
+  Failure policy: skip_dependents
+  (if one camera is unreachable, continue with the rest)
+```
+
+The plan is flat — 168 steps. But the LLM presents it grouped
+by device for readability. Internally it's a simple list that
+the executor iterates through.
+
+For fleet plans, parallelism is desirable. The executor could
+run operations on different devices concurrently (since they're
+independent), while keeping operations on the same device
+sequential:
+
+```python
+# Group steps by device
+by_device = group_by(plan.steps, key=lambda s: s.device_id)
+
+# Execute devices in parallel, steps within each device sequential
+results = await asyncio.gather(*[
+    execute_device_steps(device_id, steps)
+    for device_id, steps in by_device.items()
+])
+```
+
+This turns 168 sequential calls (~45s) into 12 parallel batches
+of 14 calls (~4s). The user barely waits.
+
+### Plan storage and history
+
+Plans are persisted so they can be:
+- **Audited**: "who ran what on which devices and when?"
+- **Re-run**: "apply the same plan to 5 new cameras"
+- **Templated**: "save this as the standard outdoor config plan"
+
+```
+admz plan history
+  PLAN-001  2024-01-15 14:30  "Deploy parking-cam"        14 steps  ✓ completed
+  PLAN-002  2024-01-15 15:00  "Fleet: outdoor standard"  168 steps  ✓ completed
+  PLAN-003  2024-01-16 09:15  "Audit NTP compliance"      50 steps  ✓ completed
+  PLAN-004  2024-01-16 10:00  "Update firmware lobby-cam"   3 steps  ✗ failed step 2
+
+admz plan show PLAN-001
+  (displays full plan with results)
+
+admz plan rerun PLAN-001 --device new-parking-cam
+  (creates a new plan from template, replacing device_id)
+```
+
+### Updated MCP tool inventory
+
+```
+Registry tools (existing):
+  list_devices, get_device, search_devices,
+  list_accounts, get_credentials,
+  register_device, add_account, update_device,
+  delete_device, delete_account,
+  capture_credentials, check_capture_status
+
+Catalog tools:
+  query_catalog           — "what can I do on this device for X?"
+
+Single-operation execution:
+  execute_operation       — run one operation (for exploration,
+                            one-off reads, interactive use)
+  confirm_dangerous       — confirm a blocked dangerous operation
+
+Plan execution:
+  create_plan             — submit a multi-step plan for review
+  execute_plan            — run an approved plan autonomously
+  get_plan_status         — check progress of a running plan
+
+Interrogation:
+  interrogate_device      — discover device capabilities
+
+Discovery:
+  scan_network            — find devices on the network
+  probe_device            — targeted probe of a specific IP
+```
+
+21 tools total. Clean separation between interactive use
+(query_catalog + execute_operation) and batch use
+(create_plan + execute_plan).
+
+---
+
+## Implementation Roadmap — What Needs to Be Built
+
+Here's everything that needs to exist for the catalog-in-the-loop
+architecture with execution plans. Grouped by component, roughly
+in build order.
+
+### 1. Catalog repository (the YAML files)
+
+**Status:** not started — needs a new repo
+**What it is:** the `operations-catalog` git repo
+
+```
+operations-catalog/
+├── vapix/
+│   ├── cgi/
+│   │   ├── param.cgi/
+│   │   │   ├── _cgi.yaml
+│   │   │   ├── list.yaml
+│   │   │   ├── update.yaml
+│   │   │   └── groups/
+│   │   │       ├── root.Image.yaml
+│   │   │       ├── root.Network.yaml
+│   │   │       └── ...
+│   │   ├── basicdeviceinfo.cgi/
+│   │   ├── apidiscovery.cgi/
+│   │   └── ...
+│   ├── devices/
+│   ├── firmware/
+│   └── index/
+│       ├── by-task.yaml
+│       ├── by-feature.yaml
+│       └── by-risk.yaml
+├── schema/
+│   └── *.schema.yaml
+└── scripts/
+    └── validate.py
+```
+
+**Build approach:** start with 5-10 of the most common CGIs
+(param.cgi, basicdeviceinfo.cgi, network.cgi, time.cgi,
+apidiscovery.cgi). These cover the majority of daily configuration
+tasks. Add more incrementally.
+
+**Priority:** HIGH — everything else depends on this.
+
+### 2. Catalog loader (`admz/catalog/`)
+
+**Status:** not started
+**What it does:** reads YAML from the local catalog clone
+
+```python
+# admz/catalog/loader.py
+
+class CatalogLoader:
+    """Reads operation YAML files from the catalog directory."""
+
+    def __init__(self, catalog_path: str):
+        self.catalog_path = Path(catalog_path)
+
+    def get_operation(self, operation_id: str) -> Operation:
+        """Load a single operation by ID."""
+
+    def get_cgi_metadata(self, cgi_name: str) -> CgiMetadata:
+        """Load _cgi.yaml for a CGI endpoint."""
+
+    def get_parameter_group(self, group: str) -> ParameterGroup:
+        """Load a param.cgi parameter group file."""
+
+    def get_device_profile(self, model: str) -> DeviceProfile:
+        """Load a device capability profile."""
+```
+
+**Complexity:** LOW — it's just YAML file loading with caching.
+
+### 3. Resolver (`admz/catalog/resolver.py`)
+
+**Status:** not started
+**What it does:** the query_catalog brain — maps intent + device
+to filtered operation docs
+
+```python
+# admz/catalog/resolver.py
+
+class CatalogResolver:
+    """Maps (device, intent) → relevant operation documents."""
+
+    def __init__(self, loader: CatalogLoader, registry: DeviceRegistry):
+        self.loader = loader
+        self.registry = registry
+        self.task_index = loader.load_index("by-task")
+        self.risk_index = loader.load_index("by-risk")
+
+    def resolve(
+        self,
+        device_id: str,
+        intent: str,
+    ) -> ResolverResult:
+        """
+        1. Map intent to index keys (fuzzy/semantic match)
+        2. Look up file paths from task index
+        3. Filter by device capabilities (model, firmware)
+        4. Load matching files
+        5. Annotate with risk levels
+        6. Return filtered docs
+        """
+```
+
+**Complexity:** MEDIUM — the intent-to-index-key mapping is the
+interesting part. Options:
+- Simple keyword matching (fast, good enough for v1)
+- Embedding similarity against index keys (better for v2)
+- LLM does the mapping itself (pass the index keys to the LLM
+  and let it pick — surprisingly effective)
+
+### 4. Executor (`admz/executor/`)
+
+**Status:** not started
+**What it does:** builds and sends HTTP requests from operation specs
+
+```
+admz/executor/
+├── base.py            # abstract executor interface
+├── vapix.py           # VAPIX executor (digest auth, 3 generations)
+├── http_client.py     # shared async HTTP with retry, timeout
+└── models.py          # Request, Response, StepResult dataclasses
+```
+
+Key implementation detail — the `build_request` function:
+
+```python
+# admz/executor/vapix.py
+
+class VAPXExecutor(BaseExecutor):
+
+    async def execute(self, operation, device, params) -> StepResult:
+        creds = await self.registry.get_credentials(device.device_id)
+        request = self.build_request(operation, device, params)
+
+        response = await self.http_client.request(
+            method=request.method,
+            url=f"https://{device.host}{request.path}",
+            params=request.query_params,
+            json=request.json_body,
+            auth=DigestAuth(creds.username, creds.password),
+            timeout=operation.get("timeout", 10),
+        )
+
+        return self.parse_response(operation, response)
+
+    def build_request(self, operation, device, params):
+        gen = operation["generation"]
+        if gen == "legacy-cgi":
+            ...  # query params
+        elif gen == "json-rpc":
+            ...  # JSON body
+        elif gen == "config-rest":
+            ...  # REST path + body
+```
+
+**Complexity:** MEDIUM — digest auth handling is the fiddly part,
+but `httpx` handles it natively. The three generation handlers
+are straightforward.
+
+**Dependency:** needs catalog loader + device registry.
+
+### 5. Plan engine (`admz/plans/`)
+
+**Status:** not started
+**What it does:** plan creation, validation, execution, rollback
+
+```
+admz/plans/
+├── models.py          # PlanStep, ExecutionPlan, StepResult
+├── engine.py          # plan validation, execution loop
+├── rollback.py        # pre-read values, generate rollback plans
+└── store.py           # plan persistence (SQLite)
+```
+
+**Complexity:** MEDIUM-HIGH — the execution loop with dependency
+tracking, failure policies, rollback data capture, and parallel
+fleet execution is the most complex new component.
+
+**Dependency:** needs executor + catalog loader.
+
+### 6. MCP tool additions (`admz/mcp/server.py`)
+
+**Status:** existing server needs new tools added
+**What to add:**
+
+```python
+# New tools:
+#   query_catalog    → CatalogResolver.resolve()
+#   execute_operation → Executor.execute()
+#   confirm_dangerous → risk gate confirmation
+#   create_plan      → PlanEngine.create()
+#   execute_plan     → PlanEngine.execute()
+#   get_plan_status  → PlanEngine.status()
+#   interrogate_device → Interrogator.interrogate()
+#   scan_network     → DiscoveryOrchestrator.scan()
+#   probe_device     → DiscoveryOrchestrator.probe()
+```
+
+**Complexity:** LOW — these are thin wrappers that delegate to
+the components above. The MCP tools are glue code.
+
+**Dependency:** needs all of the above.
+
+### 7. Interrogator (`admz/interrogator/`)
+
+**Status:** not started
+**What it does:** discovers device capabilities via API calls
+
+```
+admz/interrogator/
+├── base.py            # abstract interrogator interface
+├── vapix.py           # VAPIX: basicdeviceinfo → apidiscovery → properties
+└── models.py          # InterrogationResult, DeviceCapabilities
+```
+
+The interrogator is what populates the device profile in the
+registry — so the resolver knows what operations a device supports.
+
+**Complexity:** MEDIUM — the VAPIX interrogation flow has 3 stages
+that must be tried in order, with graceful fallback for older
+firmware that doesn't support apidiscovery.
+
+**Dependency:** needs executor (it makes VAPIX calls to interrogate).
+
+### Build order
+
+```
+                    ┌─────────────────┐
+                    │  1. Catalog repo │ ← YAML files, no code
+                    │     (YAML)       │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │  2. Catalog     │ ← load + cache YAML
+                    │     loader      │
+                    └────────┬────────┘
+                             │
+                ┌────────────┼────────────┐
+                │            │            │
+       ┌────────▼───┐  ┌────▼─────┐  ┌───▼──────────┐
+       │ 3. Resolver │  │4. Exec-  │  │ 5. Interro-  │
+       │   (query)   │  │  utor    │  │    gator     │
+       └────────┬────┘  └────┬─────┘  └───┬──────────┘
+                │            │            │
+                └────────────┼────────────┘
+                             │
+                    ┌────────▼────────┐
+                    │  6. Plan engine │ ← validation, execution,
+                    │                 │   rollback, fleet parallel
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │  7. MCP tools   │ ← thin wrappers
+                    │                 │
+                    └─────────────────┘
+```
+
+Steps 3, 4, 5 can be built in parallel since they only depend
+on the loader. The plan engine depends on the executor. MCP tools
+depend on everything.
+
+### What already exists and just needs wiring
+
+- **Device registry** ✓ — SQLite + Vault backends, working
+- **Network discovery** ✓ — mDNS, SSDP, ONVIF, ARP, HTTP probe
+- **MCP server** ✓ — registry tools working, just needs new tools
+- **Credential capture** ✓ — OOB web flow working
+- **Factory pattern** ✓ — backend selection working
+
+### What's new
+
+| Component | New files | Estimated size | Complexity |
+|---|---|---|---|
+| Catalog repo (YAML) | ~50 initially | ~3K lines YAML | Low (manual) |
+| Catalog loader | 2-3 .py | ~200 lines | Low |
+| Resolver | 1-2 .py | ~300 lines | Medium |
+| Executor | 3-4 .py | ~400 lines | Medium |
+| Plan engine | 3-4 .py | ~500 lines | Medium-High |
+| Interrogator | 2-3 .py | ~300 lines | Medium |
+| MCP tool additions | 1 .py (extend) | ~300 lines | Low |
+| **Total new code** | **~15 files** | **~2,000 lines** | |
+
+~2,000 lines of new Python code to go from "registry only" to
+"full catalog-in-the-loop with execution plans." The catalog
+YAML is the larger effort, but it's incremental — start with
+5-10 CGIs, add more as needed.
+
+---
+
 ## Catalog Size Estimation
 
 Rough estimate of the full catalog at maturity:
