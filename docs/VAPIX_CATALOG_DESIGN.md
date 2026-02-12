@@ -900,36 +900,53 @@ at runtime. Works in air-gapped environments — just copy the repo manually.
 
 ---
 
-## Edge Discovery → PR Contribution Flow
+## Catalog Maintenance
 
-When an ADMZ instance connects to a device that isn't well-represented
-in the catalog, it can auto-generate contributions:
+### Who maintains it
+
+The catalog is maintained by a small group of contributors who:
+- Understand the VAPIX API surface (have access to real devices)
+- Understand the YAML schema and file conventions
+- Are comfortable with git workflows (branches, PRs, reviews)
+- Have write access to the catalog repo
+
+This is intentionally **not** automated from field clients. Automated
+edge-discovery-to-PR pipelines add significant complexity (auth token
+management on every client, merge conflict resolution, validation of
+auto-generated YAML, noisy PRs from edge-case devices) for questionable
+value. The catalog is a curated knowledge base, not a telemetry sink.
+
+### How contributions happen
+
+A contributor with access to a device (e.g., a new model or firmware):
 
 ```
-1. ADMZ connects to camera, runs:
+1. Manually query the device to understand its API surface:
    - GET  /axis-cgi/basicdeviceinfo.cgi → model, firmware, soc
    - POST /axis-cgi/apidiscovery.cgi    → supported API list
    - GET  /axis-cgi/param.cgi?action=list&group=Properties → capabilities
+   - GET  /axis-cgi/param.cgi?action=listdefinitions&listformat=xmlschema
 
-2. Compares against local catalog:
-   - devices/p5655-e.yaml says firmware 11.0 supports X, Y, Z
-   - But this device is on firmware 11.8 and also supports A, B
+2. Write or update YAML files in a feature branch:
+   - New device profile in devices/
+   - New or updated operation files in cgi/
+   - Updated index entries in index/
 
-3. Auto-generates updated YAML:
-   - Adds firmware 11.8 entry to devices/p5655-e.yaml
-   - Adds new API entries discovered via apidiscovery
+3. Open a PR. CI validates:
+   - YAML schema conformance
+   - Index file paths point to real files
+   - No duplicate operation IDs
 
-4. Commits to branch: contrib/p5655-e-fw11.8-discovery
-   Opens PR to central repo with:
-   - What was discovered
-   - Which device (model + serial, anonymized)
-   - Diff of new capabilities
-
-5. PR gets reviewed (human or CI), merged into main
+4. Another contributor reviews and merges.
 ```
 
-This means the catalog improves organically as more devices are encountered
-in the field. Every ADMZ instance is a potential contributor.
+### Clients are read-only consumers
+
+ADMZ client installations only ever **read** the catalog. They `git clone`
+on first run and `git pull` on startup. They never write to the repo,
+never open PRs, never need repo credentials beyond read access.
+
+This keeps the client simple and the catalog clean.
 
 ---
 
