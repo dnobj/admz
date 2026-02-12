@@ -950,6 +950,248 @@ This keeps the client simple and the catalog clean.
 
 ---
 
+## Device Interrogation — Runtime Capability Discovery
+
+The catalog tells you "what operations exist in VAPIX." But for a specific
+device on the network, you need to ask IT what it actually supports. This
+is **device interrogation** — a built-in MCP operation that probes a real
+device and caches the results locally.
+
+This is distinct from the catalog:
+
+| | Central catalog | Device interrogation |
+|---|---|---|
+| Answers | "What VAPIX operations exist?" | "What does THIS device support?" |
+| Source | Hand-curated YAML files | Live queries to the device |
+| Storage | Git repo (read-only clone) | Local device registry (SQLite/Vault) |
+| When | Pulled on startup | Run on-demand per device |
+
+### Why bake it into the MCP
+
+Device interrogation is always the same sequence of VAPIX calls. It doesn't
+need LLM judgment — it's deterministic. Making it a native MCP tool means:
+
+- The LLM can trigger it with a single call, no plan needed
+- Results are structured and stored consistently
+- It runs fast (direct HTTP calls, no LLM round-trips)
+- It's the foundation for everything else — you need to know what a device
+  supports before the resolver can filter catalog operations for it
+
+### Interrogation depths
+
+Not every situation needs a full probe. A tiered approach lets you get
+just what you need:
+
+```
+interrogate_device(
+    device_id="lobby-cam",        # must exist in registry with IP + creds
+    depth="standard"              # "basic" | "standard" | "full"
+)
+```
+
+#### `basic` — Identity only (~1 second, 1-2 HTTP calls)
+
+Answers: "What is this device?"
+
+```
+Calls:
+  1. POST /axis-cgi/basicdeviceinfo.cgi
+     → method: getAllProperties
+
+Stores:
+  - model (ProdNbr)
+  - full_name (ProdFullName)
+  - product_type (ProdType)
+  - serial_number (SerialNumber)
+  - firmware_version (Version)
+  - soc (Soc)
+  - architecture (Architecture)
+```
+
+Useful for: initial device registration, quick verification after
+network discovery, confirming a device is reachable and responsive.
+
+#### `standard` — Identity + API surface (~3-5 seconds, 3-4 HTTP calls)
+
+Answers: "What is this device and what can it do?"
+
+```
+Calls:
+  1. POST /axis-cgi/basicdeviceinfo.cgi
+     → method: getAllProperties
+
+  2. POST /axis-cgi/apidiscovery.cgi
+     → method: getApiList
+     → returns: list of supported API IDs + versions
+
+  3. GET /axis-cgi/param.cgi?action=list&group=Properties
+     → returns: all Properties.* capability flags
+     → e.g. Properties.PTZ.PTZ=yes, Properties.Audio.Audio=yes
+
+  4. GET /axis-cgi/param.cgi?action=list&group=Brand
+     → returns: brand identity (redundant but cross-validates)
+
+Stores (in addition to basic):
+  - supported_apis: [{id, version, name, status}, ...]
+  - capabilities: {ptz: true, audio: true, io_ports: 4, ...}
+  - properties_raw: {Properties.PTZ.PTZ: "yes", ...}
+  - interrogation_depth: "standard"
+  - interrogation_timestamp: "2026-02-12T..."
+```
+
+This is the default. Gives the resolver everything it needs to
+filter catalog operations for this device. Enough for most tasks.
+
+#### `full` — Complete parameter introspection (~10-30 seconds, many HTTP calls)
+
+Answers: "What is every configurable parameter on this device?"
+
+```
+Calls (in addition to standard):
+  5. GET /axis-cgi/param.cgi?action=listdefinitions
+        &listformat=xmlschema&group=Image
+     → returns: every Image.* parameter with type, valid values, ranges
+
+  6. GET /axis-cgi/param.cgi?action=listdefinitions
+        &listformat=xmlschema&group=StreamProfile
+     → returns: every StreamProfile.* parameter
+
+  7. GET /axis-cgi/param.cgi?action=listdefinitions
+        &listformat=xmlschema&group=Network
+     → (repeat for each major param group)
+
+  8. For each JSON-RPC API discovered in step 2:
+     POST /axis-cgi/{api}.cgi → method: getSupportedVersions
+     → returns: exact version range supported
+
+Stores (in addition to standard):
+  - param_definitions: {group: {param: {type, values, range}, ...}, ...}
+  - api_versions: {api_id: [versions], ...}
+  - interrogation_depth: "full"
+```
+
+This is expensive but gives complete device knowledge. Useful when
+a catalog contributor is documenting a new device, or when the LLM
+needs to know exact valid values for a parameter.
+
+### What gets stored and where
+
+Interrogation results go into the **existing device registry** — the
+same SQLite or Vault backend that already stores device metadata. They
+are stored as part of the device's metadata, not in the catalog repo.
+
+```python
+# Conceptual — stored in registry metadata for the device
+{
+    "device_id": "lobby-cam",
+    "ip": "192.168.1.100",
+    "model": "P5655-E",
+
+    # From interrogation:
+    "interrogation": {
+        "depth": "standard",
+        "timestamp": "2026-02-12T14:30:00Z",
+        "firmware_version": "11.8.2",
+        "soc": "Artpec-7",
+        "supported_apis": [
+            {"id": "basic-device-info", "version": "1.2"},
+            {"id": "api-discovery", "version": "1.0"},
+            {"id": "io-port-management", "version": "1.0"},
+            {"id": "stream-profiles", "version": "1.0"},
+            ...
+        ],
+        "capabilities": {
+            "ptz": true,
+            "audio": true,
+            "io_ports": 4,
+            "sd_card": true,
+            "ir_led": true,
+            "max_resolution": "1920x1080"
+        }
+    }
+}
+```
+
+### How interrogation connects to the catalog resolver
+
+```
+1. LLM: "change resolution on lobby-cam"
+
+2. Resolver checks: does lobby-cam have interrogation data?
+   → Yes, standard depth, from 2 hours ago.
+
+3. From interrogation data:
+   - firmware: 11.8.2 → supports param.cgi, not config-rest
+   - Properties.Image.Resolution exists → image operations apply
+
+4. From catalog index (by-task.yaml):
+   - "change-resolution" → root.Image.yaml, root.StreamProfile.yaml
+
+5. Both files reference param.cgi, device supports param.cgi → match.
+
+6. Load and return those files to the LLM.
+```
+
+If the device hasn't been interrogated yet:
+
+```
+1. LLM: "change resolution on lobby-cam"
+
+2. Resolver checks: no interrogation data for lobby-cam.
+
+3. Returns: "Device lobby-cam has not been interrogated.
+   Run interrogate_device first to discover its capabilities."
+
+   (Or: resolver auto-triggers a basic interrogation if the
+   device has credentials in the registry.)
+```
+
+### MCP tool definition
+
+```python
+Tool(
+    name="interrogate_device",
+    description=(
+        "Probe a device over VAPIX to discover its model, firmware, "
+        "supported APIs, and capabilities. Results are cached in the "
+        "device registry and used by the catalog resolver to determine "
+        "which operations are available for this device. "
+        "Depth: 'basic' (identity only, fast), 'standard' (identity + "
+        "API surface + capabilities, default), 'full' (complete parameter "
+        "introspection, slow but exhaustive)."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "device_id": {
+                "type": "string",
+                "description": "Device ID or nickname from the registry"
+            },
+            "depth": {
+                "type": "string",
+                "enum": ["basic", "standard", "full"],
+                "default": "standard",
+                "description": "How deeply to probe the device"
+            }
+        },
+        "required": ["device_id"]
+    }
+)
+```
+
+### Re-interrogation
+
+Interrogation results become stale when:
+- Device firmware is upgraded
+- Device is factory-reset
+- Device configuration changes significantly
+
+The resolver can check the `interrogation_timestamp` and warn if results
+are older than a configurable threshold (e.g., 24 hours, 7 days). The
+LLM or user can re-run interrogation at any time.
+
+---
+
 ## Catalog Size Estimation
 
 Rough estimate of the full catalog at maturity:
