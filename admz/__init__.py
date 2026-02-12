@@ -26,4 +26,5 @@ __all__ = [
     "AuthenticationError",
     "ConfigurationError",
     "BackendError",
+    "discovery",
 ]

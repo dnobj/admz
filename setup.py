@@ -32,6 +32,14 @@ setup(
         "flask>=3.0.0",  # Web UI framework
     ],
     extras_require={
+        "discovery": [
+            "zeroconf>=0.131.0",
+            "async-upnp-client>=0.40.0",
+            "WSDiscovery>=2.0.0",
+            "httpx>=0.27.0",
+            "scapy>=2.5.0",
+            "pysnmp>=6.0.0",
+        ],
         "dev": [
             "pytest>=7.0.0",
             "pytest-cov>=4.0.0",
