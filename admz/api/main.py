@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 
 from admz.factory import create_device_registry
-from admz.api.routes import devices, web, capture
+from admz.api.routes import devices, web, capture, discovery
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -67,6 +67,7 @@ async def shutdown_event():
 # Include routers
 app.include_router(devices.router, prefix="/api", tags=["devices"])
 app.include_router(capture.router, tags=["capture"])
+app.include_router(discovery.router, prefix="/api", tags=["discovery"])
 app.include_router(web.router, tags=["web"])
 
 

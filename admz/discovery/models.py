@@ -39,6 +39,7 @@ AXIS_OUI_PREFIXES: Set[str] = {
     "00:40:8C",
     "AC:CC:8E",
     "B8:A4:4F",
+    "E8:27:25",
 }
 
 

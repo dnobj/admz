@@ -98,6 +98,15 @@ class HTTPProbe(DiscoveryProtocolBase):
                     dev.vapix_available = True
                     dev.manufacturer = "Axis Communications"
 
+                # Newer Axis firmware (AXIS OS 12+) uses Apache and
+                # references *.axis.com in the Content-Security-Policy.
+                if not dev.is_axis:
+                    csp = resp.headers.get("content-security-policy", "")
+                    if ".axis.com" in csp:
+                        dev.is_axis = True
+                        dev.manufacturer = "Axis Communications"
+                        dev.vapix_available = True
+
             except Exception:
                 pass
 

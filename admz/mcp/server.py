@@ -26,6 +26,7 @@ from mcp.types import Tool, TextContent
 from admz import create_device_registry
 from admz.device_registry import DeviceRegistry
 from admz.api.capture import capture_store, CaptureStatus
+from admz.discovery import discover_devices as run_discovery
 from admz.catalog.loader import CatalogLoader
 from admz.catalog.resolver import CatalogResolver
 from admz.executor.vapix import VAPXExecutor
@@ -564,6 +565,39 @@ class ADMZMCPServer:
                         "required": ["plan_id"],
                     },
                 ),
+                # --- Discovery tool ---
+                Tool(
+                    name="discover_devices_on_network",
+                    description=(
+                        "Scan the local network for Axis cameras and other devices "
+                        "using mDNS, SSDP, ONVIF, ARP, HTTP/VAPIX, and SNMP. "
+                        "Returns discovered devices with metadata. "
+                        "Use this to find devices before registering them."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "timeout": {
+                                "type": "number",
+                                "description": "Per-protocol timeout in seconds (default: 5.0)",
+                                "default": 5.0,
+                            },
+                            "axis_only": {
+                                "type": "boolean",
+                                "description": "Only return Axis devices (default: false)",
+                                "default": False,
+                            },
+                            "subnet": {
+                                "type": "string",
+                                "description": (
+                                    "Subnet for ARP scan in CIDR "
+                                    "(e.g. '192.168.1.0/24'). Auto-detected if omitted."
+                                ),
+                            },
+                        },
+                        "required": [],
+                    },
+                ),
             ]
 
         @self.server.call_tool()
@@ -654,6 +688,9 @@ class ADMZMCPServer:
                     result = await self._get_plan_status(
                         arguments["plan_id"],
                     )
+                # --- Discovery ---
+                elif name == "discover_devices_on_network":
+                    result = await self._discover_devices(arguments)
                 else:
                     raise ValueError(f"Unknown tool: {name}")
 
@@ -1162,6 +1199,39 @@ class ADMZMCPServer:
         return {
             "success": True,
             **status,
+        }
+
+    # ------------------------------------------------------------------
+    # Discovery handler
+    # ------------------------------------------------------------------
+
+    async def _discover_devices(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Discover devices on the local network."""
+        devices = await run_discovery(
+            timeout=arguments.get("timeout", 5.0),
+            axis_only=arguments.get("axis_only", False),
+            subnet=arguments.get("subnet"),
+        )
+        return {
+            "success": True,
+            "count": len(devices),
+            "devices": [
+                {
+                    "ip_address": d.ip_address,
+                    "mac_address": d.mac_address,
+                    "hostname": d.hostname,
+                    "model": d.model,
+                    "serial_number": d.serial_number,
+                    "firmware_version": d.firmware_version,
+                    "manufacturer": d.manufacturer,
+                    "friendly_name": d.friendly_name,
+                    "device_type": d.device_type.value,
+                    "is_axis": d.is_axis,
+                    "vapix_available": d.vapix_available,
+                    "discovered_by": [p.value for p in d.discovered_by],
+                }
+                for d in devices
+            ],
         }
 
     async def run(self):

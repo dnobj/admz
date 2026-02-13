@@ -10,6 +10,7 @@ Requires: pip install zeroconf
 
 import asyncio
 import logging
+import sys
 from typing import Dict, List, Optional
 
 from admz.discovery.base import DiscoveryProtocolBase
@@ -59,14 +60,15 @@ class MDNSDiscovery(DiscoveryProtocolBase):
 
             def _handle(
                 self,
-                zc: Zeroconf,
-                service_type: str,
-                name: str,
-                state_change: ServiceStateChange,
+                zeroconf: Zeroconf = None,
+                service_type: str = "",
+                name: str = "",
+                state_change: ServiceStateChange = None,
+                **kwargs,
             ) -> None:
                 if state_change != ServiceStateChange.Added:
                     return
-                asyncio.ensure_future(self._resolve(zc, service_type, name))
+                asyncio.ensure_future(self._resolve(zeroconf, service_type, name))
 
             async def _resolve(
                 self, zc: Zeroconf, service_type: str, name: str
@@ -126,6 +128,14 @@ class MDNSDiscovery(DiscoveryProtocolBase):
                     if dev.device_type == DeviceType.UNKNOWN:
                         dev.device_type = DeviceType.CAMERA
 
+        # On Windows, zeroconf requires SelectorEventLoop for UDP multicast.
+        # ProactorEventLoop (the default) silently fails to receive datagrams.
+        if sys.platform == "win32":
+            return await self._discover_via_selector(
+                devices, _Listener, IPVersion, AsyncZeroconf,
+                AsyncServiceBrowser, timeout,
+            )
+
         azc = AsyncZeroconf(ip_version=IPVersion.V4Only)
         listener = _Listener(azc)
 
@@ -143,6 +153,49 @@ class MDNSDiscovery(DiscoveryProtocolBase):
         await asyncio.sleep(timeout)
 
         # Clean up
+        for browser in browsers:
+            await browser.async_cancel()
+        await azc.async_close()
+
+        return list(devices.values())
+
+    async def _discover_via_selector(
+        self, devices, _Listener, IPVersion, AsyncZeroconf,
+        AsyncServiceBrowser, timeout,
+    ):
+        """Run mDNS discovery in a SelectorEventLoop thread on Windows."""
+        loop = asyncio.get_event_loop()
+
+        def _run_in_selector():
+            """Run zeroconf browse inside a dedicated SelectorEventLoop."""
+            sel_loop = asyncio.SelectorEventLoop()
+            return sel_loop.run_until_complete(
+                self._browse(devices, _Listener, IPVersion, AsyncZeroconf,
+                             AsyncServiceBrowser, timeout)
+            )
+
+        return await loop.run_in_executor(None, _run_in_selector)
+
+    async def _browse(
+        self, devices, _Listener, IPVersion, AsyncZeroconf,
+        AsyncServiceBrowser, timeout,
+    ):
+        """Core browse logic that runs inside any event loop."""
+        azc = AsyncZeroconf(ip_version=IPVersion.V4Only)
+        listener = _Listener(azc)
+
+        all_types = AXIS_SERVICE_TYPES + GENERAL_SERVICE_TYPES
+        browsers = []
+        for stype in all_types:
+            browser = AsyncServiceBrowser(
+                azc.zeroconf,
+                stype,
+                handlers=[listener._handle],
+            )
+            browsers.append(browser)
+
+        await asyncio.sleep(timeout)
+
         for browser in browsers:
             await browser.async_cancel()
         await azc.async_close()
