@@ -105,6 +105,18 @@ def _parse_arp_table(output: str, subnet: Optional[str] = None) -> List[Discover
     return devices
 
 
+def _merge_device_lists(
+    primary: List[DiscoveredDevice],
+    secondary: List[DiscoveredDevice],
+) -> List[DiscoveredDevice]:
+    """Merge two device lists, deduplicating by IP address."""
+    by_ip = {d.ip_address: d for d in primary if d.ip_address}
+    for dev in secondary:
+        if dev.ip_address and dev.ip_address not in by_ip:
+            by_ip[dev.ip_address] = dev
+    return list(by_ip.values())
+
+
 class ARPScanner(DiscoveryProtocolBase):
     """Discover devices via ARP broadcast on the local subnet."""
 
@@ -123,12 +135,13 @@ class ARPScanner(DiscoveryProtocolBase):
         return "ARP Scanner"
 
     async def discover(self, timeout: float = 5.0) -> List[DiscoveredDevice]:
-        # Try scapy first for active ARP scan
+        # Try scapy for active ARP scan
         devices = await self._scapy_scan(timeout)
 
-        # Fall back to reading the OS ARP table
-        if not devices:
-            devices = await self._arp_table_fallback()
+        # Always merge in the OS ARP table — it catches devices that
+        # scapy misses (e.g. WiFi multicast filtering, permissions).
+        table_devices = await self._arp_table_fallback()
+        devices = _merge_device_lists(devices, table_devices)
 
         if self._axis_only:
             devices = [d for d in devices if d.is_axis]
