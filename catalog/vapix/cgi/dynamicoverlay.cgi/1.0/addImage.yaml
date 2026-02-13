@@ -1,0 +1,26 @@
+id: dynamicoverlay.cgi:addImage
+cgi: dynamicoverlay.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: addImage
+    params:
+      camera: "{camera}"
+      overlayPath: "{overlayPath}"
+      position: "{position}"
+
+response:
+  format: json
+  data_path: data
+  fields:
+    - identity
+
+risk_level: normal
+
+requires:
+  auth_level: operator

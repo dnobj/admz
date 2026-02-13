@@ -1,0 +1,18 @@
+id: serverreport.cgi:get-report
+cgi: serverreport.cgi
+
+method: GET
+
+request:
+  query: {}
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Returns server report as plain text with diagnostics.
+
+risk_level: read-only
+
+requires:
+  auth_level: admin

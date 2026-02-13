@@ -1,0 +1,6 @@
+endpoint: /axis-cgi/geolocation/get.cgi
+generation: legacy-cgi
+min_firmware: "6.50"
+description: >
+  Get device geographic position (latitude, longitude, heading)
+  in WGS-84 format. Supports DD, DDMM, and DDMMSS coordinate formats.

@@ -1,0 +1,22 @@
+id: record-continuous-addconfiguration.cgi:add-continuous
+cgi: record-continuous-addconfiguration.cgi
+
+method: GET
+
+request:
+  query:
+    diskid: "{diskid}"
+    eventid: "{eventid}"
+    options: "{options}"
+  content_type: null
+
+response:
+  format: xml
+  description: >
+    Configures continuous recording to the specified disk.
+    Options include resolution parameter (e.g., resolution=640x480).
+
+risk_level: normal
+
+requires:
+  auth_level: admin

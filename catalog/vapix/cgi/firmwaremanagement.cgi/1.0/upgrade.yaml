@@ -1,0 +1,25 @@
+id: firmwaremanagement.cgi:upgrade
+cgi: firmwaremanagement.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: multipart/form-data
+  body:
+    json:
+      apiVersion: "1.0"
+      method: upgrade
+    file: "{firmware_file}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: dangerous
+notes: >
+  Firmware upgrade with optional auto-rollback. Device reboots
+  after upgrade. Use factoryDefaultMode: none|soft|hard.
+
+requires:
+  auth_level: admin

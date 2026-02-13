@@ -1,0 +1,45 @@
+group: root.Brand
+cgi: param.cgi
+read_action: list
+write_action: null
+description: >
+  Read-only brand and product identification parameters.
+  Includes brand, product name, product number, firmware version,
+  and web URL.
+
+parameters:
+  Brand:
+    type: string
+    description: Device manufacturer brand name (e.g., AXIS).
+    auth_level: viewer
+    readonly: true
+
+  ProdFullName:
+    type: string
+    description: Full product name (e.g., AXIS P1375 Network Camera).
+    auth_level: viewer
+    readonly: true
+
+  ProdNbr:
+    type: string
+    description: Product article number.
+    auth_level: viewer
+    readonly: true
+
+  ProdShortName:
+    type: string
+    description: Short product name.
+    auth_level: viewer
+    readonly: true
+
+  ProdType:
+    type: string
+    description: Product type (e.g., Network Camera, Video Encoder).
+    auth_level: viewer
+    readonly: true
+
+  WebURL:
+    type: string
+    description: Product web page URL.
+    auth_level: viewer
+    readonly: true

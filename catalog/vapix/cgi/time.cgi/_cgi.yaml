@@ -1,7 +1,0 @@
-endpoint: /axis-cgi/date.cgi
-generation: legacy-cgi
-auth: digest
-min_firmware: null
-description: >
-  Date and time query. Returns the device's current system time.
-  For NTP and timezone configuration, use param.cgi with root.Time group.

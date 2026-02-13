@@ -1,0 +1,20 @@
+id: disks-list.cgi:list-disks
+cgi: disks-list.cgi
+
+method: GET
+
+request:
+  query:
+    diskid: "{diskid}"
+  content_type: null
+
+response:
+  format: xml
+  description: >
+    Returns XML with disk information including diskid, totalsize,
+    freesize, cleanuplevel, and mounted status.
+
+risk_level: read-only
+
+requires:
+  auth_level: admin

@@ -1,0 +1,26 @@
+id: mqtt-event.cgi:configureEventPublication
+cgi: mqtt-event.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: configureEventPublication
+    params:
+      eventFilterList: "{eventFilterList}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: normal
+
+rollback:
+  strategy: revert-config
+  read_action: getEventPublicationConfig
+
+requires:
+  auth_level: admin

@@ -32,7 +32,7 @@ class TestCatalogLoader:
         assert meta is not None
         assert meta.endpoint == "/axis-cgi/param.cgi"
         assert meta.generation == "legacy-cgi"
-        assert meta.auth == "digest"
+        assert meta.auth is None  # auth is device-level, not endpoint-level
 
     def test_load_cgi_metadata_json_rpc(self, loader):
         meta = loader.get_cgi_metadata("vapix", "basicdeviceinfo.cgi")

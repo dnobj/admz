@@ -1,0 +1,18 @@
+id: accesslog.cgi:get-accesslog
+cgi: accesslog.cgi
+
+method: GET
+
+request:
+  query: {}
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Returns HTTP access log entries as plain text.
+
+risk_level: read-only
+
+requires:
+  auth_level: admin

@@ -1,0 +1,27 @@
+group: root.AudioSource
+cgi: param.cgi
+read_action: list
+write_action: update
+description: >
+  Audio source configuration. Enable/disable audio input,
+  configure codec, sample rate, and input type per audio channel.
+channel_indexed: true
+channel_key: "A"
+
+parameters:
+  Enabled:
+    type: enum
+    valid_values: ["yes", "no"]
+    description: Enable or disable this audio source.
+    auth_level: admin
+
+  InputType:
+    type: enum
+    valid_values: ["mic", "line", "digital"]
+    description: Audio input type (microphone, line-in, digital).
+    auth_level: admin
+
+  Name:
+    type: string
+    description: Friendly name for this audio source.
+    auth_level: admin

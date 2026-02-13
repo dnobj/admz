@@ -1,0 +1,19 @@
+id: geolocation-get.cgi:get-position
+cgi: geolocation-get.cgi
+
+method: GET
+
+request:
+  query: {}
+  content_type: null
+
+response:
+  format: xml
+  description: >
+    Returns PositionResponse XML with Location (Lat, Lng, Heading),
+    Text, ValidPosition, and ValidHeading flags.
+
+risk_level: read-only
+
+requires:
+  auth_level: admin

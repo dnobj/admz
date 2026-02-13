@@ -1,0 +1,21 @@
+id: serverreport.cgi:get-report-tar
+cgi: serverreport.cgi
+
+method: GET
+
+request:
+  query:
+    tar_all: ""
+  content_type: null
+
+response:
+  format: binary
+  content_type: application/x-tar
+  description: >
+    Returns comprehensive diagnostics as a tar archive including
+    system logs, configuration, and persistent log data.
+
+risk_level: read-only
+
+requires:
+  auth_level: admin

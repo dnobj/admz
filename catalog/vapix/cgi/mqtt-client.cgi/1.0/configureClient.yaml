@@ -1,0 +1,36 @@
+id: mqtt-client.cgi:configureClient
+cgi: mqtt-client.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: configureClient
+    params:
+      server:
+        protocol: "{protocol}"
+        host: "{host}"
+        port: "{port}"
+      username: "{username}"
+      password: "{password}"
+      clientId: "{clientId}"
+      keepAliveInterval: "{keepAliveInterval}"
+      connectTimeout: "{connectTimeout}"
+      cleanSession: "{cleanSession}"
+      autoReconnect: "{autoReconnect}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: normal
+
+rollback:
+  strategy: revert-config
+  read_action: getClientStatus
+
+requires:
+  auth_level: admin

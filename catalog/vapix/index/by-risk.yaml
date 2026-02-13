@@ -1,22 +1,128 @@
 # Risk index — maps risk levels to operation files.
 #
 # Used by Gate 2 (mechanical risk check) in the MCP server.
+#
+# Paths include version folder: 1.0/ for json-rpc, unversioned/ for legacy-cgi.
 
 read-only:
-  - cgi/param.cgi/list.yaml
-  - cgi/basicdeviceinfo.cgi/getAllProperties.yaml
-  - cgi/basicdeviceinfo.cgi/getAllUnrestrictedProperties.yaml
-  - cgi/apidiscovery.cgi/getApiList.yaml
-  - cgi/firmwaremanagement.cgi/status.yaml
-  - cgi/network.cgi/getNetworkInfo.yaml
-  - cgi/time.cgi/get-date.yaml
+  # param.cgi
+  - cgi/param.cgi/unversioned/list.yaml
+  # basicdeviceinfo.cgi
+  - cgi/basicdeviceinfo.cgi/1.0/getAllProperties.yaml
+  - cgi/basicdeviceinfo.cgi/1.0/getAllUnrestrictedProperties.yaml
+  # apidiscovery.cgi
+  - cgi/apidiscovery.cgi/1.0/getApiList.yaml
+  # firmwaremanagement.cgi
+  - cgi/firmwaremanagement.cgi/1.0/status.yaml
+  # date.cgi
+  - cgi/date.cgi/unversioned/get-date.yaml
+  # lightcontrol.cgi
+  - cgi/lightcontrol.cgi/1.0/getLightInformation.yaml
+  # capturemode.cgi
+  - cgi/capturemode.cgi/1.0/getCaptureModes.yaml
+  # dynamicoverlay.cgi
+  - cgi/dynamicoverlay.cgi/1.0/list.yaml
+  # ntp.cgi
+  - cgi/ntp.cgi/1.0/getNTPInfo.yaml
+  # findmydevice.cgi
+  # (not read-only — find triggers audible/visual)
+  # featureflag.cgi
+  - cgi/featureflag.cgi/1.0/listAll.yaml
+  - cgi/featureflag.cgi/1.0/get.yaml
+  # mqtt-client.cgi
+  - cgi/mqtt-client.cgi/1.0/getClientStatus.yaml
+  # mqtt-event.cgi
+  - cgi/mqtt-event.cgi/1.0/getEventPublicationConfig.yaml
+  # io-portmanagement.cgi
+  - cgi/io-portmanagement.cgi/1.0/getPorts.yaml
+  # com-ptz.cgi
+  - cgi/com-ptz.cgi/unversioned/query-presets.yaml
+  - cgi/com-ptz.cgi/unversioned/info.yaml
+  # logs
+  - cgi/systemlog.cgi/unversioned/get-systemlog.yaml
+  - cgi/accesslog.cgi/unversioned/get-accesslog.yaml
+  - cgi/serverreport.cgi/unversioned/get-report.yaml
+  - cgi/serverreport.cgi/unversioned/get-report-tar.yaml
+  - cgi/auditlog.cgi/unversioned/get-auditlog.yaml
+  # geolocation
+  - cgi/geolocation-get.cgi/unversioned/get-position.yaml
+  # storage
+  - cgi/disks-list.cgi/unversioned/list-disks.yaml
+  - cgi/record-list.cgi/unversioned/list-recordings.yaml
+  # applications
+  - cgi/applications-list.cgi/unversioned/list.yaml
+  # network_settings
+  - cgi/network_settings.cgi/1.0/getNetworkInfo.yaml
 
 normal:
-  - cgi/param.cgi/update.yaml
-  - cgi/pwdgrp.cgi/add-user.yaml
+  # param.cgi
+  - cgi/param.cgi/unversioned/update.yaml
+  # pwdgrp.cgi
+  - cgi/pwdgrp.cgi/unversioned/add-user.yaml
+  # lightcontrol.cgi
+  - cgi/lightcontrol.cgi/1.0/activateLight.yaml
+  - cgi/lightcontrol.cgi/1.0/deactivateLight.yaml
+  - cgi/lightcontrol.cgi/1.0/setManualIntensity.yaml
+  # dynamicoverlay.cgi
+  - cgi/dynamicoverlay.cgi/1.0/addText.yaml
+  - cgi/dynamicoverlay.cgi/1.0/addImage.yaml
+  - cgi/dynamicoverlay.cgi/1.0/remove.yaml
+  # ntp.cgi
+  - cgi/ntp.cgi/1.0/setNTPClientConfiguration.yaml
+  # findmydevice.cgi
+  - cgi/findmydevice.cgi/1.0/find.yaml
+  - cgi/findmydevice.cgi/1.0/stop.yaml
+  # featureflag.cgi
+  - cgi/featureflag.cgi/1.0/set.yaml
+  # mqtt-client.cgi
+  - cgi/mqtt-client.cgi/1.0/configureClient.yaml
+  - cgi/mqtt-client.cgi/1.0/activateClient.yaml
+  - cgi/mqtt-client.cgi/1.0/deactivateClient.yaml
+  # mqtt-event.cgi
+  - cgi/mqtt-event.cgi/1.0/configureEventPublication.yaml
+  # io-portmanagement.cgi
+  - cgi/io-portmanagement.cgi/1.0/setPorts.yaml
+  - cgi/io-portmanagement.cgi/1.0/setStateSequence.yaml
+  # com-ptz.cgi
+  - cgi/com-ptz.cgi/unversioned/move.yaml
+  - cgi/com-ptz.cgi/unversioned/relative-move.yaml
+  - cgi/com-ptz.cgi/unversioned/continuous-move.yaml
+  - cgi/com-ptz.cgi/unversioned/stop.yaml
+  - cgi/com-ptz.cgi/unversioned/goto-preset.yaml
+  - cgi/com-ptz.cgi/unversioned/home.yaml
+  # geolocation
+  - cgi/geolocation-set.cgi/unversioned/set-position.yaml
+  # storage
+  - cgi/record-continuous-addconfiguration.cgi/unversioned/add-continuous.yaml
+  # applications
+  - cgi/applications-control.cgi/unversioned/control.yaml
+  # network_settings
+  - cgi/network_settings.cgi/1.0/setHostnameConfiguration.yaml
+  - cgi/network_settings.cgi/1.0/setResolverConfiguration.yaml
+  # firmwaremanagement.cgi
+  - cgi/firmwaremanagement.cgi/1.0/commit.yaml
 
 service-affecting:
-  - cgi/pwdgrp.cgi/remove-user.yaml
+  # pwdgrp.cgi
+  - cgi/pwdgrp.cgi/unversioned/remove-user.yaml
+  # restart.cgi
+  - cgi/restart.cgi/unversioned/restart.yaml
+  # capturemode.cgi
+  - cgi/capturemode.cgi/1.0/setCaptureMode.yaml
+  # firmwaremanagement.cgi
+  - cgi/firmwaremanagement.cgi/1.0/rollback.yaml
+  - cgi/firmwaremanagement.cgi/1.0/reboot.yaml
+  # disks-format.cgi
+  - cgi/disks-format.cgi/unversioned/format-disk.yaml
+  # applications
+  - cgi/applications-upload.cgi/unversioned/upload.yaml
+  # network_settings (IP change can disconnect)
+  - cgi/network_settings.cgi/1.0/setIPv4AddressConfiguration.yaml
 
 dangerous:
-  - cgi/factorydefault.cgi/factory-reset.yaml
+  # factorydefault.cgi
+  - cgi/factorydefault.cgi/unversioned/factory-reset.yaml
+  # hardfactorydefault.cgi
+  - cgi/hardfactorydefault.cgi/unversioned/hard-factory-reset.yaml
+  # firmwaremanagement.cgi
+  - cgi/firmwaremanagement.cgi/1.0/upgrade.yaml

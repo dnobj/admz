@@ -1,0 +1,20 @@
+id: firmwaremanagement.cgi:reboot
+cgi: firmwaremanagement.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: reboot
+
+response:
+  format: json
+  data_path: data
+
+risk_level: service-affecting
+
+requires:
+  auth_level: admin

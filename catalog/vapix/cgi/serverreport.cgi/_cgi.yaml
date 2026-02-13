@@ -1,0 +1,7 @@
+endpoint: /axis-cgi/serverreport.cgi
+generation: legacy-cgi
+min_firmware: null
+description: >
+  Server report and diagnostics. Returns comprehensive device
+  diagnostic information including logs, configuration, and
+  system state. Supports tar archive output.

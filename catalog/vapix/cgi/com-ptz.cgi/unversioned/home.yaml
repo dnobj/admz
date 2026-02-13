@@ -1,0 +1,19 @@
+id: com-ptz.cgi:home
+cgi: com-ptz.cgi
+
+method: GET
+
+request:
+  query:
+    move: home
+    camera: "{camera}"
+  content_type: null
+
+response:
+  format: text
+  success: ""
+
+risk_level: normal
+
+requires:
+  auth_level: operator

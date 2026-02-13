@@ -1,0 +1,6 @@
+endpoint: /axis-cgi/systemlog.cgi
+generation: legacy-cgi
+min_firmware: null
+description: >
+  System log retrieval. Returns the device system log (syslog)
+  as plain text.

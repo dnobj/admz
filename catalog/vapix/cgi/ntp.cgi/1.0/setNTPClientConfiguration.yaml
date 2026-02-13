@@ -1,0 +1,28 @@
+id: ntp.cgi:setNTPClientConfiguration
+cgi: ntp.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: setNTPClientConfiguration
+    params:
+      enabled: "{enabled}"
+      serversSource: "{serversSource}"
+      staticServers: "{staticServers}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: normal
+
+rollback:
+  strategy: revert-params
+  read_action: getNTPInfo
+
+requires:
+  auth_level: admin

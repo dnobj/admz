@@ -1,0 +1,6 @@
+endpoint: /axis-cgi/accesslog.cgi
+generation: legacy-cgi
+min_firmware: null
+description: >
+  Access log retrieval. Returns the HTTP access log showing
+  all requests made to the device.

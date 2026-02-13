@@ -1,6 +1,5 @@
 endpoint: /axis-cgi/param.cgi
 generation: legacy-cgi
-auth: digest
 min_firmware: null
 description: >
   Central parameter store. Read and write all device configuration

@@ -1,0 +1,21 @@
+id: disks-format.cgi:format-disk
+cgi: disks-format.cgi
+
+method: GET
+
+request:
+  query:
+    diskid: "{diskid}"
+    filesystem: "{filesystem}"
+  content_type: null
+
+response:
+  format: xml
+  description: >
+    Returns job ID for the format operation. Use job.cgi to check
+    progress. Supported filesystems: vfat, ext4.
+
+risk_level: service-affecting
+
+requires:
+  auth_level: admin

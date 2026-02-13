@@ -1,8 +1,0 @@
-endpoint: /axis-cgi/network_settings.cgi
-generation: json-rpc
-auth: digest
-min_firmware: "9.80"
-api_id: network-settings
-description: >
-  Network interface configuration via JSON-RPC. More structured
-  alternative to root.Network.* parameters for modern firmware.

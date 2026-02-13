@@ -1,6 +1,5 @@
 endpoint: /axis-cgi/firmwaremanagement.cgi
 generation: json-rpc
-auth: digest
 min_firmware: "9.80"
 api_id: firmware-manager
 description: >

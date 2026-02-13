@@ -1,0 +1,6 @@
+endpoint: /axis-cgi/disks/format.cgi
+generation: legacy-cgi
+min_firmware: null
+description: >
+  Format a storage disk. Initiates an asynchronous format job.
+  Use job.cgi to check progress. Supports vfat and ext4 filesystems.

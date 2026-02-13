@@ -1,0 +1,53 @@
+group: root.GuardTour
+cgi: param.cgi
+read_action: list
+write_action: update
+description: >
+  Guard tour configuration. Define preset-based and recorded
+  tours with configurable move speed, wait time, and random
+  ordering. Dynamic group with G# (tour) and T# (preset) indexing.
+channel_indexed: true
+channel_key: "G"
+
+parameters:
+  Name:
+    type: string
+    description: Name of the guard tour.
+    auth_level: operator
+
+  Running:
+    type: enum
+    valid_values: ["yes", "no"]
+    description: Start or stop the guard tour.
+    auth_level: operator
+
+  RandomEnabled:
+    type: enum
+    valid_values: ["yes", "no"]
+    description: Visit presets in random order.
+    auth_level: operator
+
+  Tour.T#.PresetNbr:
+    type: integer
+    description: Preset position number in this tour stop.
+    auth_level: operator
+
+  Tour.T#.Position:
+    type: integer
+    description: Order position in the tour sequence.
+    auth_level: operator
+
+  Tour.T#.MoveSpeed:
+    type: integer
+    range: [0, 100]
+    description: Movement speed between presets.
+    auth_level: operator
+
+  Tour.T#.WaitTime:
+    type: integer
+    description: Dwell time at preset in seconds.
+    auth_level: operator
+
+requires:
+  properties:
+    - Properties.GuardTour.GuardTour
