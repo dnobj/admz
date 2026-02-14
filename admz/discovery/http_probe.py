@@ -96,6 +96,7 @@ class HTTPProbe(DiscoveryProtocolBase):
                 if axis_setup.lower() == "vapix":
                     dev.is_axis = True
                     dev.vapix_available = True
+                    dev.factory_default = True
                     dev.manufacturer = "Axis Communications"
 
                 # Newer Axis firmware (AXIS OS 12+) uses Apache and
@@ -111,16 +112,87 @@ class HTTPProbe(DiscoveryProtocolBase):
                 pass
 
             # 2. Try VAPIX basicdeviceinfo (may fail without auth)
+            #    AXIS OS 12+ requires POST; older firmware uses GET.
             if dev.is_axis:
                 try:
-                    resp = await client.get(
-                        f"http://{ip}/axis-cgi/basicdeviceinfo.cgi"
+                    import json as _json
+                    post_body = _json.dumps(
+                        {"apiVersion": "1.0", "method": "getAllProperties"}
                     )
+                    resp = await client.post(
+                        f"http://{ip}/axis-cgi/basicdeviceinfo.cgi",
+                        content=post_body,
+                        headers={"Content-Type": "application/json"},
+                    )
+                    # Fall back to GET for older firmware
+                    if resp.status_code in (405, 404):
+                        resp = await client.get(
+                            f"http://{ip}/axis-cgi/basicdeviceinfo.cgi"
+                        )
+
                     if resp.status_code == 200:
-                        await self._parse_basic_device_info(dev, resp.text)
+                        # Verify response is real device info, not an
+                        # API error (e.g. method-not-supported).
+                        body = resp.text
+                        is_error = False
+                        try:
+                            data = _json.loads(body)
+                            if "error" in data and "data" not in data:
+                                is_error = True
+                        except (ValueError, TypeError):
+                            pass
+
+                        if not is_error:
+                            await self._parse_basic_device_info(dev, body)
+                            # Only mark factory_default if param.cgi is
+                            # also open (it always requires auth when a
+                            # password is configured).
+                            if not dev.factory_default:
+                                try:
+                                    pr = await client.get(
+                                        f"http://{ip}/axis-cgi/param.cgi"
+                                        "?action=list&group=root.Brand"
+                                    )
+                                    if pr.status_code == 200:
+                                        dev.factory_default = True
+                                    elif pr.status_code == 401:
+                                        # On AXIS OS 12+, factory-default
+                                        # devices return 401 with
+                                        # Axis-Setup: vapix on all endpoints.
+                                        ax = pr.headers.get("axis-setup", "")
+                                        if ax.lower() == "vapix":
+                                            dev.factory_default = True
+                                except Exception:
+                                    pass
                     elif resp.status_code == 401:
                         # Auth required — device is configured, but still Axis
                         dev.vapix_available = True
+                        # Factory-default devices return Axis-Setup: vapix
+                        # on 401 responses (POST requires auth even when
+                        # no password is set on AXIS OS 12+).
+                        axis_setup = resp.headers.get("axis-setup", "")
+                        if axis_setup.lower() == "vapix":
+                            dev.factory_default = True
+                            # GET may still work without auth for device info
+                            try:
+                                get_resp = await client.get(
+                                    f"http://{ip}/axis-cgi/basicdeviceinfo.cgi"
+                                )
+                                if get_resp.status_code == 200:
+                                    body = get_resp.text
+                                    is_api_error = False
+                                    try:
+                                        data = _json.loads(body)
+                                        if "error" in data and "data" not in data:
+                                            is_api_error = True
+                                    except (ValueError, TypeError):
+                                        pass
+                                    if not is_api_error:
+                                        await self._parse_basic_device_info(
+                                            dev, body
+                                        )
+                            except Exception:
+                                pass
                 except Exception:
                     pass
 

@@ -6,10 +6,34 @@
 <div style="max-width:480px;margin:60px auto;text-align:center;">
   <div style="font-size:48px;margin-bottom:16px;">&#10003;</div>
   <h1>Credentials Saved</h1>
+
+  {% if is_batch %}
+  <p style="color:#666;">
+    Credentials for <strong>{{ account_id }}</strong> have been saved
+    to <strong>{{ saved|length if saved is defined else device_ids|length }}</strong> device{{ 's' if (saved|length if saved is defined else device_ids|length) != 1 else '' }}:
+  </p>
+  <ul style="text-align:left;display:inline-block;margin:12px 0;">
+    {% for did in (saved if saved is defined else device_ids) %}
+    <li style="margin-bottom:4px;"><strong>{{ did }}</strong></li>
+    {% endfor %}
+  </ul>
+  {% if errors is defined and errors %}
+  <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:12px;margin-top:16px;text-align:left;">
+    <p style="margin:0 0 8px;color:#991b1b;font-weight:600;">Partial errors:</p>
+    <ul style="margin:0;padding-left:20px;">
+      {% for err in errors %}
+      <li style="color:#991b1b;font-size:14px;">{{ err.device_id }}: {{ err.error }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  {% else %}
   <p style="color:#666;">
     Credentials for <strong>{{ device_id }}</strong> / <strong>{{ account_id }}</strong>
     have been stored securely.
   </p>
+  {% endif %}
+
   <p style="color:#666;font-size:14px;margin-top:24px;">
     You can close this tab and return to your chat session.<br>
     This link is now expired and cannot be reused.

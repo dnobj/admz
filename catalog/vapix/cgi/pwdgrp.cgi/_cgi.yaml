@@ -1,5 +1,6 @@
 endpoint: /axis-cgi/pwdgrp.cgi
 generation: legacy-cgi
+auth: digest
 min_firmware: null
 description: >
   User and group management. Create, modify, and delete device

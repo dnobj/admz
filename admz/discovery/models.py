@@ -88,6 +88,7 @@ class DiscoveredDevice:
     # HTTP probe
     http_server_header: Optional[str] = None
     vapix_available: bool = False
+    factory_default: bool = False
 
     # SNMP
     snmp_sys_descr: Optional[str] = None
@@ -137,6 +138,7 @@ class DiscoveredDevice:
         # Merge boolean flags
         self.vapix_available = self.vapix_available or other.vapix_available
         self.is_axis = self.is_axis or other.is_axis
+        self.factory_default = self.factory_default or other.factory_default
 
         # Merge lists (deduplicate)
         for list_fld in ("onvif_scopes", "mdns_services", "discovered_by"):
@@ -166,6 +168,7 @@ class DiscoveredDevice:
             "nickname": self.friendly_name or self.hostname or "",
             "manufacturer": self.manufacturer or "",
             "device_type": self.device_type.value,
+            "auth_method": "none" if self.factory_default else "digest",
             "tags": self._auto_tags(),
             "metadata": {
                 "discovered_by": [p.value for p in self.discovered_by],
@@ -174,6 +177,7 @@ class DiscoveredDevice:
                 "is_axis": self.is_axis,
                 "onvif_xaddrs": self.onvif_xaddrs,
                 "vapix_available": self.vapix_available,
+                "factory_default": self.factory_default,
             },
         }
 
@@ -187,4 +191,6 @@ class DiscoveredDevice:
             tags.append("vapix")
         if self.onvif_xaddrs:
             tags.append("onvif")
+        if self.factory_default:
+            tags.append("factory-default")
         return tags

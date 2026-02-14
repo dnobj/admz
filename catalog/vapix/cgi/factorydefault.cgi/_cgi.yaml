@@ -1,5 +1,6 @@
 endpoint: /axis-cgi/factorydefault.cgi
 generation: legacy-cgi
+auth: digest
 min_firmware: null
 description: >
   Factory reset. Restores the device to factory default settings.

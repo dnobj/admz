@@ -11,11 +11,12 @@ from fastapi import APIRouter, Request, Depends, HTTPException, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 
 from admz.api.capture import capture_store, CaptureStatus
 from admz.device_registry import DeviceRegistry
 from admz.exceptions import DeviceNotFoundError, BackendError
+from admz.fleet_settings import fleet_settings
 
 
 router = APIRouter()
@@ -103,15 +104,16 @@ async def capture_form(
         )
 
     if session.effective_status == CaptureStatus.COMPLETED:
-        return templates.TemplateResponse(
-            "capture_done.html",
-            {
-                "request": request,
-                "title": "Credentials Saved",
-                "device_id": session.device_id,
-                "account_id": session.account_id,
-            },
-        )
+        ctx = {
+            "request": request,
+            "title": "Credentials Saved",
+            "device_id": session.device_id,
+            "account_id": session.account_id,
+        }
+        if session.is_batch:
+            ctx["device_ids"] = session.all_device_ids
+            ctx["is_batch"] = True
+        return templates.TemplateResponse("capture_done.html", ctx)
 
     if session.effective_status == CaptureStatus.EXPIRED:
         return templates.TemplateResponse(
@@ -120,11 +122,16 @@ async def capture_form(
             status_code=410,
         )
 
-    # Get device info for display
-    try:
-        device = registry.get_device_info(session.device_id)
-    except DeviceNotFoundError:
-        device = {"device_id": session.device_id}
+    # Build device info for display
+    is_batch = session.is_batch
+    devices: List[Dict] = []
+    for did in session.all_device_ids:
+        try:
+            info = registry.get_device_info(did)
+            info["device_id"] = did
+        except DeviceNotFoundError:
+            info = {"device_id": did}
+        devices.append(info)
 
     return templates.TemplateResponse(
         "capture_form.html",
@@ -133,7 +140,9 @@ async def capture_form(
             "title": "Enter Credentials",
             "token": token,
             "session": session,
-            "device": device,
+            "device": devices[0] if devices else {},
+            "devices": devices,
+            "is_batch": is_batch,
         },
     )
 
@@ -156,7 +165,6 @@ async def capture_submit(
             status_code=410,
         )
 
-    # Store credentials directly in the registry
     account_data = {
         "username": username,
         "password": password,
@@ -164,29 +172,28 @@ async def capture_submit(
         "purpose": session.purpose,
     }
 
-    try:
-        if registry.account_exists(session.device_id, session.account_id):
-            # Remove and re-add to update
-            registry.remove_account(session.device_id, session.account_id)
-        registry.add_account(session.device_id, session.account_id, account_data)
-    except DeviceNotFoundError:
-        return templates.TemplateResponse(
-            "error.html",
-            {
-                "request": request,
-                "error": "Device Not Found",
-                "message": f"Device '{session.device_id}' no longer exists.",
-                "title": "Error",
-            },
-            status_code=404,
-        )
-    except BackendError as e:
+    # Store credentials for all target devices (batch or single)
+    saved: List[str] = []
+    errors: List[Dict] = []
+
+    for did in session.all_device_ids:
+        try:
+            if registry.account_exists(did, session.account_id):
+                registry.remove_account(did, session.account_id)
+            registry.add_account(did, session.account_id, account_data)
+            saved.append(did)
+        except DeviceNotFoundError:
+            errors.append({"device_id": did, "error": "Device not found"})
+        except BackendError as e:
+            errors.append({"device_id": did, "error": str(e)})
+
+    if not saved:
         return templates.TemplateResponse(
             "error.html",
             {
                 "request": request,
                 "error": "Storage Error",
-                "message": str(e),
+                "message": "Failed to save credentials for any device.",
                 "title": "Error",
             },
             status_code=500,
@@ -195,12 +202,90 @@ async def capture_submit(
     # Mark session as completed (token is now single-use)
     capture_store.complete_session(token)
 
+    ctx = {
+        "request": request,
+        "title": "Credentials Saved",
+        "device_id": session.device_id,
+        "account_id": session.account_id,
+    }
+
+    if session.is_batch:
+        ctx["is_batch"] = True
+        ctx["device_ids"] = session.all_device_ids
+        ctx["saved"] = saved
+        ctx["errors"] = errors
+
+    return templates.TemplateResponse("capture_done.html", ctx)
+
+
+# ── Fleet setting capture (password never touches LLM) ─────────────────
+
+@router.get("/capture/fleet/{token}", response_class=HTMLResponse, tags=["capture"])
+async def fleet_capture_form(request: Request, token: str):
+    """Render the fleet setting capture form."""
+    session = capture_store.get_fleet_session(token)
+
+    if session is None:
+        return templates.TemplateResponse(
+            "capture_expired.html",
+            {"request": request, "title": "Link Expired"},
+            status_code=410,
+        )
+
+    if session.effective_status == CaptureStatus.COMPLETED:
+        return templates.TemplateResponse(
+            "capture_fleet_done.html",
+            {
+                "request": request,
+                "title": "Setting Saved",
+                "setting_key": session.setting_key,
+                "label": session.label,
+            },
+        )
+
+    if session.effective_status == CaptureStatus.EXPIRED:
+        return templates.TemplateResponse(
+            "capture_expired.html",
+            {"request": request, "title": "Link Expired"},
+            status_code=410,
+        )
+
     return templates.TemplateResponse(
-        "capture_done.html",
+        "capture_fleet_form.html",
         {
             "request": request,
-            "title": "Credentials Saved",
-            "device_id": session.device_id,
-            "account_id": session.account_id,
+            "title": "Set Fleet Password",
+            "token": token,
+            "session": session,
+        },
+    )
+
+
+@router.post("/capture/fleet/{token}", response_class=HTMLResponse, tags=["capture"])
+async def fleet_capture_submit(
+    request: Request,
+    token: str,
+    password: str = Form(...),
+):
+    """Process the submitted fleet password."""
+    session = capture_store.get_fleet_session(token)
+
+    if session is None or session.effective_status != CaptureStatus.PENDING:
+        return templates.TemplateResponse(
+            "capture_expired.html",
+            {"request": request, "title": "Link Expired"},
+            status_code=410,
+        )
+
+    fleet_settings.set(session.setting_key, password)
+    capture_store.complete_fleet_session(token)
+
+    return templates.TemplateResponse(
+        "capture_fleet_done.html",
+        {
+            "request": request,
+            "title": "Setting Saved",
+            "setting_key": session.setting_key,
+            "label": session.label,
         },
     )

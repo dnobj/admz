@@ -154,12 +154,16 @@ rollback-firmware:
 manage-users:
   - cgi/pwdgrp.cgi/unversioned/add-user.yaml
   - cgi/pwdgrp.cgi/unversioned/remove-user.yaml
+  - cgi/pwdgrp.cgi/unversioned/update-user.yaml
 
 add-user:
   - cgi/pwdgrp.cgi/unversioned/add-user.yaml
 
 remove-user:
   - cgi/pwdgrp.cgi/unversioned/remove-user.yaml
+
+change-password:
+  - cgi/pwdgrp.cgi/unversioned/update-user.yaml
 
 # --- System ---
 
