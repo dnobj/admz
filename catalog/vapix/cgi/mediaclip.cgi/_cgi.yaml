@@ -1,0 +1,8 @@
+endpoint: /axis-cgi/mediaclip.cgi
+generation: legacy-cgi
+min_firmware: "5.40"
+description: >
+  Audio clip management. Play, upload, remove, and download
+  audio clips for alarm announcements and notifications.
+  Supports WAV, MP3, AU, Opus, and Vorbis formats.
+  Requires Properties.Audio.Audio=yes.

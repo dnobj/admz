@@ -1,0 +1,20 @@
+id: zipstream.cgi:getStatus
+cgi: zipstream.cgi
+
+method: GET
+request:
+  query:
+    schemaversion: "{schemaversion}"
+    camera: "{camera}"
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Returns XML with current Zipstream settings including
+    strength, GOP mode, FPS mode, and profile.
+
+risk_level: read-only
+
+requires:
+  auth_level: viewer

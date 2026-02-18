@@ -1,0 +1,18 @@
+id: shockdetection.cgi:getSensitivityLevel
+cgi: shockdetection.cgi
+
+method: GET
+request:
+  query:
+    schemaversion: "{schemaversion}"
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Returns XML with the current sensitivity level (0-100).
+
+risk_level: read-only
+
+requires:
+  auth_level: operator

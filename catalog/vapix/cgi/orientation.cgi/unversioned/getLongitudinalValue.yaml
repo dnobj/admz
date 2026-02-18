@@ -1,0 +1,19 @@
+id: orientation.cgi:getLongitudinalValue
+cgi: orientation.cgi
+
+method: GET
+request:
+  query:
+    schemaversion: "{schemaversion}"
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Returns XML with LongitudinalValue (0-359 degrees).
+    Indicates the camera's forward tilt angle.
+
+risk_level: read-only
+
+requires:
+  auth_level: operator

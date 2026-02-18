@@ -1,0 +1,22 @@
+series: t85
+product_line: network-switches
+display_name: T85 Series Network Switches
+applies_to: "T85xx PoE network switches (T8504, T8508, T8516, T8524)"
+
+hints:
+  - id: t85-no-vapix
+    topic: vapix-support
+    summary: T85 series switches do not support VAPIX
+    text: >
+      No T85 series switch supports VAPIX. They share a common
+      proprietary web management interface and REST API.
+    tags: [api, limitation]
+
+  - id: t85-poe-management
+    topic: poe-management
+    summary: T85 series PoE port management
+    text: >
+      All T85 series switches support PoE+ (802.3at) with per-port
+      power management. Port status, power budget, and PoE enable/disable
+      are controlled via the proprietary management interface.
+    tags: [poe, management]

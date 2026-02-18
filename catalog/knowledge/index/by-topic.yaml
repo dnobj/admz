@@ -1,0 +1,22 @@
+vapix-support:
+  - products/t8516.yaml
+  - series/t85.yaml
+  - series/c17.yaml
+  - product-lines/network-switches.yaml
+  - product-lines/network-speakers.yaml
+
+poe-management:
+  - products/t8516.yaml
+  - series/t85.yaml
+  - product-lines/network-switches.yaml
+
+audio-playback:
+  - products/c1710.yaml
+  - series/c17.yaml
+  - product-lines/network-speakers.yaml
+
+sip-config:
+  - products/c1710.yaml
+
+device-management:
+  - product-lines/network-switches.yaml

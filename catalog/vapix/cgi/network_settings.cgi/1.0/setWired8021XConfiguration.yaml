@@ -1,0 +1,28 @@
+id: network_settings.cgi:setWired8021XConfiguration
+cgi: network_settings.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: setWired8021XConfiguration
+    params:
+      deviceName: "{deviceName}"
+      enabled: "{enabled:bool}"
+      identity: "{identity}"
+      EAPOLVersion: "{EAPOLVersion:int}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: service-affecting
+service_impact: >
+  Changing 802.1X configuration may disconnect the device
+  from the network if authentication fails.
+
+requires:
+  auth_level: admin

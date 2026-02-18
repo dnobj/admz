@@ -1,0 +1,19 @@
+id: orientation.cgi:getLateralValue
+cgi: orientation.cgi
+
+method: GET
+request:
+  query:
+    schemaversion: "{schemaversion}"
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Returns XML with LateralValue (0-180 degrees).
+    Indicates the camera's sideways tilt angle.
+
+risk_level: read-only
+
+requires:
+  auth_level: operator

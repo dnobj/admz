@@ -1,0 +1,25 @@
+id: jpg-image.cgi:snapshot
+cgi: jpg-image.cgi
+
+method: GET
+request:
+  query:
+    camera: "{camera}"
+    resolution: "{resolution}"
+    compression: "{compression}"
+    rotation: "{rotation}"
+    squarepixel: "{squarepixel}"
+    text: "{text}"
+    textstring: "{textstring}"
+  content_type: null
+
+response:
+  format: binary
+  content_type: image/jpeg
+  description: >
+    Returns raw JPEG image data. Save to a .jpg file.
+
+risk_level: read-only
+
+requires:
+  auth_level: viewer

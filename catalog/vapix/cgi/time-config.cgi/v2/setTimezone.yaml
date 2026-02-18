@@ -1,0 +1,17 @@
+id: time-config.cgi:setTimezone
+cgi: time-config.cgi
+
+method: PATCH
+base_path: /config/rest/time/v2
+path: /timeZone/iana
+
+request:
+  content_type: application/json
+
+response:
+  format: json
+
+risk_level: normal
+
+requires:
+  auth_level: admin

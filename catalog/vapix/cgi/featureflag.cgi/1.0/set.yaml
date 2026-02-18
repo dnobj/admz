@@ -10,7 +10,7 @@ request:
     apiVersion: "1.0"
     method: set
     params:
-      flagValues: "{flagValues}"
+      flagValues: "{flagValues:array}"
 
 response:
   format: json

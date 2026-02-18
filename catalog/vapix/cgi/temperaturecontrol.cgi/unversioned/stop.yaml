@@ -1,0 +1,19 @@
+id: temperaturecontrol.cgi:stop
+cgi: temperaturecontrol.cgi
+
+method: GET
+request:
+  query:
+    action: stop
+    device: "{device}"
+    id: "{id}"
+  content_type: null
+
+response:
+  format: text
+  success: "OK"
+
+risk_level: normal
+
+requires:
+  auth_level: admin

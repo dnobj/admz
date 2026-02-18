@@ -1,0 +1,8 @@
+endpoint: /config/rest/cert/v1
+generation: config-rest
+min_firmware: "11.8"
+api_id: cert
+description: >
+  Certificate management. List, create, upload, and remove TLS/SSL
+  certificates and CA certificates. Manage keystores and CSR
+  generation for the device's HTTPS and 802.1X configurations.

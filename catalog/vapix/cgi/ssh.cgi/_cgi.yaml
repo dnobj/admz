@@ -1,0 +1,7 @@
+endpoint: /config/rest/ssh/v2
+generation: config-rest
+min_firmware: "11.8"
+api_id: ssh
+description: >
+  SSH user management. List, add, modify, and remove SSH users
+  for secure shell access to the device.

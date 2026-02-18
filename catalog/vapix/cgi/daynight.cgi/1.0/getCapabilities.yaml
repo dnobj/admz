@@ -1,0 +1,26 @@
+id: daynight.cgi:getCapabilities
+cgi: daynight.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: getCapabilities
+    params:
+      channel: "{channel:int}"
+
+response:
+  format: json
+  data_path: data
+  fields:
+    - AutotuneSupport
+    - IrPassSupport
+    - NightDayShiftLevelSupport
+
+risk_level: read-only
+
+requires:
+  auth_level: operator

@@ -1,0 +1,23 @@
+id: com-serial.cgi:read
+cgi: com-serial.cgi
+
+method: GET
+request:
+  query:
+    port: "{port}"
+    read: "{read}"
+    wait: "{wait}"
+    timeout: "{timeout}"
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Reads data from the serial port. Returns hex-encoded
+    bytes in #data# format. Specify number of bytes to
+    read and timeout in milliseconds.
+
+risk_level: read-only
+
+requires:
+  auth_level: viewer

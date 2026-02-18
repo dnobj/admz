@@ -8,6 +8,13 @@ request:
     diskid: "{diskid}"
     filesystem: "{filesystem}"
   content_type: null
+  params:
+    diskid:
+      description: Disk ID to format (from list-disks response).
+      required: true
+    filesystem:
+      description: "Filesystem type: vfat or ext4."
+      required: true
 
 response:
   format: xml
@@ -16,6 +23,9 @@ response:
     progress. Supported filesystems: vfat, ext4.
 
 risk_level: service-affecting
+notes: >
+  Returns a job ID. Poll with job.cgi to check completion.
+  Formatting can take minutes depending on disk size.
 
 requires:
   auth_level: admin

@@ -10,7 +10,7 @@ request:
     apiVersion: "1.0"
     method: get
     params:
-      names: "{names}"
+      names: "{names:array}"
 
 response:
   format: json

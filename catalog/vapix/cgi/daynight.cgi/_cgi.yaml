@@ -1,0 +1,8 @@
+endpoint: /axis-cgi/daynight.cgi
+generation: json-rpc
+min_firmware: "7.10"
+api_id: daynight
+description: >
+  Day/night mode control. Configure IR cut filter behavior,
+  shift levels, and dwell times for automatic day-to-night
+  and night-to-day transitions.

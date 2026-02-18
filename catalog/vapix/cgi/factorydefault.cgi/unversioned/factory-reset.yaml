@@ -9,6 +9,7 @@ request:
 response:
   format: text
   success: "OK"
+  expect_timeout: true
   description: >
     Device will reboot and return to factory defaults.
     Response may not be received if network settings change.

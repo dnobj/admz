@@ -10,6 +10,16 @@ request:
     starttime: "{starttime}"
     stoptime: "{stoptime}"
   content_type: null
+  params:
+    eventid:
+      description: Filter recordings by event ID.
+      required: false
+    starttime:
+      description: "Start time filter (ISO 8601, e.g. 2024-01-15T00:00:00)."
+      required: false
+    stoptime:
+      description: "End time filter (ISO 8601, e.g. 2024-01-16T00:00:00)."
+      required: false
 
 response:
   format: xml

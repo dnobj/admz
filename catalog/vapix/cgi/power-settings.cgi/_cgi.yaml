@@ -1,0 +1,8 @@
+endpoint: /axis-cgi/power-settings.cgi
+generation: json-rpc
+min_firmware: "9.80"
+api_id: power-settings
+description: >
+  Power management and PoE settings. Query power consumption,
+  configure power profiles, manage power consumers, and control
+  power saving modes.

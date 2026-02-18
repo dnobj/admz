@@ -370,6 +370,23 @@ table tr:last-child td {
     color: var(--primary-color);
 }
 
+/* Password reveal */
+.password-reveal {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.password-value {
+    font-family: 'Courier New', monospace;
+    font-size: 0.95rem;
+    background-color: var(--background-color);
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    min-width: 8rem;
+    user-select: all;
+}
+
 /* Actions footer */
 .actions-footer {
     display: flex;

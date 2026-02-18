@@ -1,0 +1,17 @@
+id: log-config.cgi:writeMessage
+cgi: log-config.cgi
+
+method: POST
+base_path: /config/rest/log/v1alpha
+path: /writeMessage
+
+request:
+  content_type: application/json
+
+response:
+  format: json
+
+risk_level: normal
+
+requires:
+  auth_level: admin

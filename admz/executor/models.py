@@ -15,6 +15,12 @@ class ExecutionRequest:
     query_params: Optional[Dict[str, str]] = None
     json_body: Optional[Dict[str, Any]] = None
     content_type: Optional[str] = None
+    # Multipart/form-data support (firmware upgrade, ACAP upload)
+    form_data: Optional[Dict[str, str]] = None
+    file_path: Optional[str] = None
+    file_field_name: str = "file"
+    # Per-operation timeout override (seconds)
+    timeout_override: Optional[float] = None
 
 
 @dataclass

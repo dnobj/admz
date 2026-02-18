@@ -1,0 +1,21 @@
+id: recordedtour.cgi:play
+cgi: recordedtour.cgi
+
+method: POST
+request:
+  query:
+    schemaversion: "{schemaversion}"
+    recordedtourid: "{recordedtourid}"
+    loop: "{loop}"
+    loopdelay: "{loopdelay}"
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Starts playback of the specified recorded tour.
+
+risk_level: normal
+
+requires:
+  auth_level: operator

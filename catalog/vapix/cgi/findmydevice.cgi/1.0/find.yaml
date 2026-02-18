@@ -10,7 +10,7 @@ request:
     apiVersion: "1.0"
     method: find
     params:
-      duration: "{duration}"
+      duration: "{duration:int}"
 
 response:
   format: json

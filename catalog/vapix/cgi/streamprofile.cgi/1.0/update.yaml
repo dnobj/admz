@@ -1,0 +1,25 @@
+id: streamprofile.cgi:update
+cgi: streamprofile.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: update
+    params:
+      streamProfile:
+        - name: "{name}"
+          description: "{description}"
+          parameters: "{parameters}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: normal
+
+requires:
+  auth_level: operator

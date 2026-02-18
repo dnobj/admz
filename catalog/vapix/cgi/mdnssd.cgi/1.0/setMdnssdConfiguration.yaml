@@ -1,0 +1,23 @@
+id: mdnssd.cgi:setMdnssdConfiguration
+cgi: mdnssd.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: setMdnssdConfiguration
+    params:
+      enabled: "{enabled:bool}"
+      friendlyName: "{friendlyName}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: normal
+
+requires:
+  auth_level: admin

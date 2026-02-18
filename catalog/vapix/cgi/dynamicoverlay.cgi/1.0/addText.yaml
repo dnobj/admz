@@ -13,7 +13,7 @@ request:
       camera: "{camera}"
       text: "{text}"
       position: "{position}"
-      fontSize: "{fontSize}"
+      fontSize: "{fontSize:int}"
       textColor: "{textColor}"
       textBGColor: "{textBGColor}"
 

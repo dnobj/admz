@@ -517,6 +517,236 @@ Device profiles also carry no tags — they're pure facts about hardware.
 
 ---
 
+## Typed Placeholders
+
+Operation YAML files use `{placeholder}` syntax to mark values that the
+user provides at execution time. By default, placeholders are treated as
+strings. For JSON-RPC operations that require native JSON types (integers,
+booleans, arrays, objects), use the **typed placeholder** syntax:
+
+```
+{name:type}
+```
+
+Supported types:
+
+| Type     | Coercion                                | Example YAML                           | JSON Result           |
+|----------|-----------------------------------------|----------------------------------------|-----------------------|
+| `str`    | No conversion (default)                 | `host: "{host}"`                       | `"192.168.1.1"`       |
+| `int`    | `int(value)`                            | `port: "{port:int}"`                   | `8883`                |
+| `float`  | `float(value)`                          | `speed: "{speed:float}"`               | `0.5`                 |
+| `bool`   | `true/1/yes` → `true`, else `false`     | `enabled: "{enabled:bool}"`            | `true`                |
+| `array`  | `json.loads(value)` — expects JSON array| `servers: "{servers:array}"`           | `["ntp1", "ntp2"]`    |
+| `object` | `json.loads(value)` — expects JSON obj  | `config: "{config:object}"`            | `{"key": "val"}`      |
+
+Untyped `{name}` defaults to `str` for backward compatibility.
+
+### Embedded (compound) placeholders
+
+Some legacy CGI operations combine multiple values in a single query
+parameter. Use multiple placeholders in one string:
+
+```yaml
+request:
+  query:
+    continuouspantiltmove: "{panSpeed},{tiltSpeed}"
+```
+
+The executor resolves each placeholder independently via string
+interpolation. Embedded placeholders are always strings — type
+coercion only applies to whole-value placeholders.
+
+### Nested templates
+
+JSON-RPC operations with structured request bodies use nested dicts
+in the YAML template. The executor resolves placeholders recursively
+at any depth:
+
+```yaml
+request:
+  body:
+    apiVersion: "1.0"
+    method: configureClient
+    params:
+      server:
+        protocol: "{protocol}"
+        host: "{host}"
+        port: "{port:int}"
+      keepAliveInterval: "{keepAliveInterval:int}"
+      cleanSession: "{cleanSession:bool}"
+```
+
+If a placeholder's param is not provided by the user, the key is
+omitted from the resolved body. This lets optional params be left out
+without explicit "null" handling.
+
+---
+
+## Param Rules
+
+Operations can declare dependency rules between parameters using the
+`param_rules` field. These rules are informational — surfaced to the
+LLM via `query_catalog` so it knows which params must be provided
+together. The executor does not enforce them.
+
+```yaml
+param_rules:
+  - rule: requires
+    params: [port, sequence]
+
+  - rule: value_requires
+    if_param: configurationMode
+    equals: "static"
+    then_required: [address, prefixLength]
+
+  - rule: mutex
+    params: [staticServers, dhcpServers]
+```
+
+### Rule types
+
+| Rule              | Meaning                                                  |
+|-------------------|----------------------------------------------------------|
+| `requires`        | All listed params must be provided together               |
+| `value_requires`  | If `if_param` equals `equals`, then `then_required` must be provided |
+| `mutex`           | Only one of the listed params may be provided             |
+
+Rules are returned in `query_catalog` results and included in
+`execute_operation` op_dict for LLM consumption.
+
+---
+
+## Notes Convention
+
+The `notes` field provides free-form operational context that doesn't
+fit structured conventions. Available at two levels:
+
+### CGI-level notes (`_cgi.yaml`)
+
+Endpoint-wide context that applies to all operations on this CGI:
+
+```yaml
+# cgi/factorydefault.cgi/_cgi.yaml
+endpoint: /axis-cgi/factorydefault.cgi
+generation: legacy-cgi
+auth: digest
+notes: >
+  Device reboots after any operation on this endpoint.
+  Response may not be received if network settings change.
+```
+
+### Operation-level notes
+
+Per-operation context that's specific to one action:
+
+```yaml
+# cgi/io-portmanagement.cgi/1.0/setStateSequence.yaml
+notes: >
+  Output ports only. Sequence is array of {state, time} objects
+  where time is in milliseconds.
+```
+
+### Inheritance
+
+If an operation doesn't have its own `notes`, it inherits the CGI-level
+notes from `_cgi.yaml`. If both exist, only the operation-level notes
+are used (no merging).
+
+Notes are surfaced to the LLM via `query_catalog` and `execute_operation`.
+Use them for: value format requirements, timing constraints, expected
+device behavior, side effects, and any other context the LLM needs.
+
+---
+
+## Response Formats
+
+The `response.format` field tells the executor how to parse the HTTP
+response body:
+
+| Format   | Behavior                                                      |
+|----------|---------------------------------------------------------------|
+| `text`   | Plain text. Checked against `success`/`error_prefix` patterns |
+| `json`   | Parsed as JSON. JSON-RPC errors checked. `data_path` extraction |
+| `xml`    | Parsed via `ElementTree`. Returns dict with `@`-prefixed attrs |
+| `binary` | Saved to temp file. Returns `{file_path, size_bytes}`          |
+
+### Binary responses
+
+For operations that return binary data (tar archives, firmware files),
+use `format: binary` with a `content_type` hint:
+
+```yaml
+response:
+  format: binary
+  content_type: application/x-tar
+```
+
+The executor saves the response body to a temp file (not decoded as
+text) and returns the file path + size in `parsed_data`.
+
+### Timeout override
+
+Any operation can specify a per-request timeout (seconds) in the
+`request` section. This overrides the executor's default (15s):
+
+```yaml
+request:
+  timeout: 120
+```
+
+This is important for operations that take longer than usual:
+server reports, firmware uploads, disk formatting, etc.
+
+### XML responses
+
+Operations with `format: xml` are parsed using `xml.etree.ElementTree`
+into a Python dict with these conventions:
+
+- Attributes are prefixed with `@` (e.g., `@diskid`)
+- Text content stored under `#text`
+- Repeated child elements become lists
+- Leaf text elements become plain strings
+- Namespace URIs are stripped from tags and attributes
+- On parse failure, falls back to raw text with a warning
+
+### Expected timeout
+
+Some operations (factory-reset, restart) cause the device to reboot.
+The HTTP connection will time out, but that's the **expected** outcome.
+Mark these with `expect_timeout: true` in the response section:
+
+```yaml
+response:
+  format: text
+  expect_timeout: true
+```
+
+When `expect_timeout` is set and the request times out, the executor
+returns `success=True` with a warning instead of an error.
+
+### Parameter documentation
+
+Operations can document their parameters using a `request.params`
+section. This metadata is purely informational — surfaced via
+`query_catalog` so the LLM knows what each parameter does and which
+are required. The executor does not enforce it.
+
+```yaml
+request:
+  query:
+    diskid: "{diskid}"
+    filesystem: "{filesystem}"
+  params:
+    diskid:
+      description: Disk ID to format (from list-disks response).
+      required: true
+    filesystem:
+      description: "Filesystem type: vfat or ext4."
+      required: true
+```
+
+---
+
 ## Index Files — The Routing Layer
 
 Index files are the **only place tags exist**. They live in `index/` and
@@ -2374,7 +2604,7 @@ Key implementation detail — the `build_request` function:
 ```python
 # admz/executor/vapix.py
 
-class VAPXExecutor(BaseExecutor):
+class VapixExecutor(BaseExecutor):
 
     async def execute(self, operation, device, params) -> StepResult:
         creds = await self.registry.get_credentials(device.device_id)

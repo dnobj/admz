@@ -1,0 +1,17 @@
+id: ssh.cgi:modifyUser
+cgi: ssh.cgi
+
+method: PATCH
+base_path: /config/rest/ssh/v2
+path: /users/{username}
+
+request:
+  content_type: application/json
+
+response:
+  format: json
+
+risk_level: normal
+
+requires:
+  auth_level: admin

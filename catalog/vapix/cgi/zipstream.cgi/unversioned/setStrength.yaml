@@ -1,0 +1,20 @@
+id: zipstream.cgi:setStrength
+cgi: zipstream.cgi
+
+method: GET
+request:
+  query:
+    schemaversion: "{schemaversion}"
+    camera: "{camera}"
+    strength: "{strength}"
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Sets Zipstream strength. Values: off, 10, 20, 30, 40, 50.
+
+risk_level: normal
+
+requires:
+  auth_level: admin

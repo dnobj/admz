@@ -1,0 +1,17 @@
+id: firewall.cgi:deactivate
+cgi: firewall.cgi
+
+method: PATCH
+base_path: /config/rest/firewall/v1
+path: /activated
+
+request:
+  content_type: application/json
+
+response:
+  format: json
+
+risk_level: normal
+
+requires:
+  auth_level: admin

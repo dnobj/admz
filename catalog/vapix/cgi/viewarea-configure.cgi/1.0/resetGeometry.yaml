@@ -1,0 +1,23 @@
+id: viewarea-configure.cgi:resetGeometry
+cgi: viewarea-configure.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: resetGeometry
+    params:
+      viewArea:
+        id: "{id:int}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: normal
+
+requires:
+  auth_level: admin

@@ -6,6 +6,7 @@ method: GET
 request:
   query: {}
   content_type: null
+  timeout: 120
 
 response:
   format: text

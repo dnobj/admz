@@ -1,0 +1,21 @@
+id: zipstream.cgi:setGop
+cgi: zipstream.cgi
+
+method: GET
+request:
+  query:
+    schemaversion: "{schemaversion}"
+    camera: "{camera}"
+    gopmode: "{gopmode}"
+    maxgoplength: "{maxgoplength}"
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Sets GOP mode (fixed/dynamic) and max GOP length (1-1023).
+
+risk_level: normal
+
+requires:
+  auth_level: admin

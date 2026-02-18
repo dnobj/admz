@@ -6,3 +6,6 @@ description: >
   Factory reset. Restores the device to factory default settings.
   EXTREMELY DESTRUCTIVE — erases all configuration, accounts,
   installed applications, and network settings.
+notes: >
+  Device reboots after any operation on this endpoint.
+  Response may not be received if network settings change.

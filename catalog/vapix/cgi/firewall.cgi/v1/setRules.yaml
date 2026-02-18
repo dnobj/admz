@@ -1,0 +1,21 @@
+id: firewall.cgi:setRules
+cgi: firewall.cgi
+
+method: POST
+base_path: /config/rest/firewall/v1
+path: /conf/setRules
+
+request:
+  content_type: application/json
+
+response:
+  format: json
+
+risk_level: service-affecting
+service_impact: >
+  Setting firewall rules may block network connections.
+  Rules are pending until confirmed. They auto-revert
+  after the fallback timeout if not confirmed.
+
+requires:
+  auth_level: admin

@@ -1,0 +1,20 @@
+model: T8516
+series: t85
+product_line: network-switches
+
+hints:
+  - id: t8516-no-vapix
+    topic: vapix-support
+    summary: T8516 does not support VAPIX
+    text: >
+      The T8516 PoE+ switch has no VAPIX API. It uses proprietary
+      REST APIs on port 80. Do not attempt VAPIX operations.
+    tags: [api, limitation]
+
+  - id: t8516-poe-api
+    topic: poe-management
+    summary: PoE control via proprietary API
+    text: >
+      PoE per-port control is available via undocumented REST endpoints.
+      Details TBD as APIs are reverse-engineered.
+    tags: [poe, api]

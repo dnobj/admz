@@ -1,0 +1,17 @@
+id: snmp.cgi:setV3Config
+cgi: snmp.cgi
+
+method: PATCH
+base_path: /config/rest/snmp/v1
+path: /snmpV3
+
+request:
+  content_type: application/json
+
+response:
+  format: json
+
+risk_level: normal
+
+requires:
+  auth_level: admin

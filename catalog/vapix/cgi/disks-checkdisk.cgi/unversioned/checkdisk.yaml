@@ -1,0 +1,21 @@
+id: disks-checkdisk.cgi:checkdisk
+cgi: disks-checkdisk.cgi
+
+method: GET
+request:
+  query:
+    diskid: "{diskid}"
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Returns a job ID that can be polled with job.cgi.
+
+risk_level: service-affecting
+service_impact: >
+  Disk may be temporarily unavailable during check.
+  Recording will be paused on the checked disk.
+
+requires:
+  auth_level: admin

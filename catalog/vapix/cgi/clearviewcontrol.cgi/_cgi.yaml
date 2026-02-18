@@ -1,0 +1,8 @@
+endpoint: /axis-cgi/clearviewcontrol.cgi
+generation: json-rpc
+min_firmware: "7.10"
+api_id: clear-view
+description: >
+  Clear view control (wiper/washer). Start and stop the
+  wiper/washer system on supported outdoor cameras to
+  clear the lens of rain, dirt, or ice.

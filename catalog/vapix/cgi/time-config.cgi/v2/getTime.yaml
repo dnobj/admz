@@ -1,0 +1,14 @@
+id: time-config.cgi:getTime
+cgi: time-config.cgi
+
+method: GET
+base_path: /config/rest/time/v2
+path: /time
+
+response:
+  format: json
+
+risk_level: read-only
+
+requires:
+  auth_level: viewer

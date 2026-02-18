@@ -1,0 +1,19 @@
+id: ledcontrol.cgi:setColor
+cgi: ledcontrol.cgi
+
+method: GET
+request:
+  query:
+    action: set
+    color: "{color}"
+    led: "{led}"
+  content_type: null
+
+response:
+  format: text
+  success: "OK"
+
+risk_level: normal
+
+requires:
+  auth_level: admin

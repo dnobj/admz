@@ -60,6 +60,7 @@ class CatalogLoader:
             min_firmware=data.get("min_firmware"),
             api_id=data.get("api_id"),
             description=data.get("description", ""),
+            notes=data.get("notes"),
         )
         self._cgi_cache[cache_key] = meta
         return meta
@@ -139,6 +140,10 @@ class CatalogLoader:
             min_api_version=data.get("min_api_version"),
             danger_description=data.get("danger_description"),
             service_impact=data.get("service_impact"),
+            notes=data.get("notes"),
+            param_rules=data.get("param_rules"),
+            base_path=data.get("base_path"),
+            path=data.get("path"),
         )
 
         # Enrich with CGI metadata
@@ -147,6 +152,9 @@ class CatalogLoader:
             op.endpoint = cgi_meta.endpoint
             op.generation = cgi_meta.generation
             op.auth = cgi_meta.auth
+            # Inherit CGI-level notes if operation has none
+            if not op.notes and cgi_meta.notes:
+                op.notes = cgi_meta.notes
 
         return op
 

@@ -1,0 +1,20 @@
+id: siren_and_light.cgi:getCapabilities
+cgi: siren_and_light.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: getCapabilities
+
+response:
+  format: json
+  data_path: data
+
+risk_level: read-only
+
+requires:
+  auth_level: operator

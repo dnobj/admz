@@ -1,0 +1,6 @@
+endpoint: /axis-cgi/applications/license.cgi
+generation: legacy-cgi
+min_firmware: "5.50"
+description: >
+  Application license management. Upload and remove license
+  keys for installed ACAP applications.

@@ -10,7 +10,7 @@ request:
     apiVersion: "1.0"
     method: setResolverConfiguration
     params:
-      staticNameServers: "{staticNameServers}"
+      staticNameServers: "{staticNameServers:array}"
 
 response:
   format: json

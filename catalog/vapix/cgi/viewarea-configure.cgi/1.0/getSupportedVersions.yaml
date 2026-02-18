@@ -1,0 +1,22 @@
+id: viewarea-configure.cgi:getSupportedVersions
+cgi: viewarea-configure.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: getSupportedVersions
+
+response:
+  format: json
+  data_path: data
+  fields:
+    - apiVersions
+
+risk_level: read-only
+
+requires:
+  auth_level: admin

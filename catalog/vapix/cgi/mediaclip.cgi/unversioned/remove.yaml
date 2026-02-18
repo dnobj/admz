@@ -1,0 +1,18 @@
+id: mediaclip.cgi:remove
+cgi: mediaclip.cgi
+
+method: GET
+request:
+  query:
+    action: remove
+    clip: "{clip}"
+  content_type: null
+
+response:
+  format: text
+  success: "OK"
+
+risk_level: normal
+
+requires:
+  auth_level: admin

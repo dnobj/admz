@@ -1,0 +1,23 @@
+model: C1710
+series: c17
+product_line: network-speakers
+
+hints:
+  - id: c1710-audio-api
+    topic: audio-playback
+    summary: C1710 supports VAPIX audio playback APIs
+    text: >
+      The C1710 network speaker supports VAPIX for configuration and
+      audio playback. Use the Audio API (audiocontrol.cgi) for volume
+      control and media clip management. Streaming audio can be sent
+      via the media upload API.
+    tags: [audio, api, vapix]
+
+  - id: c1710-sip
+    topic: sip-config
+    summary: C1710 supports SIP for VoIP integration
+    text: >
+      The C1710 includes a SIP client for VoIP integration. SIP
+      configuration is available via VAPIX parameter groups under
+      root.Network.SIP.
+    tags: [sip, voip, network]

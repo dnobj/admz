@@ -1,0 +1,6 @@
+endpoint: /axis-cgi/disks/networkshare/remove.cgi
+generation: legacy-cgi
+min_firmware: "5.00"
+description: >
+  Remove a network share. Unmounts and removes the share
+  configuration from the device.

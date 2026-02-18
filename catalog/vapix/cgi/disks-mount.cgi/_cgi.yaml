@@ -1,0 +1,5 @@
+endpoint: /axis-cgi/disks/mount.cgi
+generation: legacy-cgi
+min_firmware: "5.00"
+description: >
+  Disk mount/unmount. Mount or unmount a storage device.

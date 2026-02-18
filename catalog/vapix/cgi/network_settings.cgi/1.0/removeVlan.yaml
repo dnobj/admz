@@ -1,0 +1,25 @@
+id: network_settings.cgi:removeVlan
+cgi: network_settings.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: removeVlan
+    params:
+      interfaceName: "{interfaceName}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: service-affecting
+service_impact: >
+  Removing a VLAN may disconnect the device if it is the
+  active management interface.
+
+requires:
+  auth_level: admin

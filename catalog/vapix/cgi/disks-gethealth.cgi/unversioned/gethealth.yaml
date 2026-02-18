@@ -1,0 +1,17 @@
+id: disks-gethealth.cgi:gethealth
+cgi: disks-gethealth.cgi
+
+method: GET
+request:
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Returns XML with health data including overall health
+    status, wear level percentage, and temperature.
+
+risk_level: read-only
+
+requires:
+  auth_level: admin

@@ -1,0 +1,8 @@
+endpoint: /axis-cgi/customhttpheader.cgi
+generation: json-rpc
+min_firmware: "9.80"
+api_id: customhttpheader
+description: >
+  Custom HTTP header management. Add, list, and remove custom
+  HTTP response headers for CORS, security headers, or other
+  custom header needs.

@@ -10,7 +10,7 @@ request:
     apiVersion: "1.0"
     method: configureEventPublication
     params:
-      eventFilterList: "{eventFilterList}"
+      eventFilterList: "{eventFilterList:array}"
 
 response:
   format: json

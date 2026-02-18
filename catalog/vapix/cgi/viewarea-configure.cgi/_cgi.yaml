@@ -1,0 +1,7 @@
+endpoint: /axis-cgi/viewarea/configure.cgi
+generation: json-rpc
+min_firmware: "7.10"
+api_id: view-area
+description: >
+  View area configuration. Set and reset the geometry of
+  configurable view areas (digital pan/tilt/zoom regions).

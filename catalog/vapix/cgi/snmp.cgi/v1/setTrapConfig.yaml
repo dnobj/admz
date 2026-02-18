@@ -1,0 +1,17 @@
+id: snmp.cgi:setTrapConfig
+cgi: snmp.cgi
+
+method: PATCH
+base_path: /config/rest/snmp/v1
+path: /snmpV1V2Common/trap
+
+request:
+  content_type: application/json
+
+response:
+  format: json
+
+risk_level: normal
+
+requires:
+  auth_level: admin

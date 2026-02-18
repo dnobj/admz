@@ -1,0 +1,22 @@
+product_line: network-switches
+display_name: Network Switches
+applies_to: "All Axis network switches"
+
+hints:
+  - id: switches-no-vapix
+    topic: vapix-support
+    summary: Axis switches use proprietary APIs, not VAPIX
+    text: >
+      Axis network switches are a fundamentally different product
+      category from cameras. They do not run AXIS OS and have no
+      VAPIX support. Management is via their proprietary web UI/API.
+    tags: [api, limitation, management]
+
+  - id: switches-management
+    topic: device-management
+    summary: Switch management via proprietary web interface
+    text: >
+      Axis switches are managed through a proprietary web interface
+      on port 80/443. Features include VLAN configuration, PoE
+      management, port status monitoring, and firmware updates.
+    tags: [management, web-ui]

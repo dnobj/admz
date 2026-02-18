@@ -1,0 +1,7 @@
+endpoint: /axis-cgi/orientation/getlongitudinalvalue.cgi
+generation: legacy-cgi
+min_firmware: "9.10"
+description: >
+  Orientation reporting. Read the camera's physical orientation
+  (longitudinal and lateral tilt angles) from built-in sensors.
+  Requires Properties.Orientation.Reporting=yes.

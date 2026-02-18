@@ -7,9 +7,13 @@ Handles all three VAPIX generations:
   - config-rest: REST methods with JSON body
 """
 
+import json as json_module
 import logging
+import os
+import re
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
+from xml.etree import ElementTree
 
 import httpx
 
@@ -19,12 +23,29 @@ from admz.executor.models import ExecutionRequest, StepResult
 logger = logging.getLogger(__name__)
 
 
+class _BearerAuth(httpx.Auth):
+    """Bearer token authentication for httpx."""
+
+    def __init__(self, token: str):
+        self._token = token
+
+    def auth_flow(self, request: httpx.Request):
+        request.headers["Authorization"] = f"Bearer {self._token}"
+        yield request
+
+
 class VapixExecutor(BaseExecutor):
     """Executor for VAPIX operations on Axis cameras/devices."""
 
-    def __init__(self, timeout: float = 15.0, verify_ssl: bool = False):
+    def __init__(
+        self,
+        timeout: float = 15.0,
+        verify_ssl: bool = False,
+        retries: int = 1,
+    ):
         self._timeout = timeout
         self._verify_ssl = verify_ssl
+        self._retries = retries
 
     @property
     def family(self) -> str:
@@ -55,27 +76,56 @@ class VapixExecutor(BaseExecutor):
             # Build the HTTP request from operation spec
             request = self.build_request(operation, params)
 
-            # Determine scheme
-            scheme = "https" if device.get("https", True) else "http"
+            # Determine scheme from device auth profile
+            auth_info = device.get("auth")
+            if auth_info and isinstance(auth_info, dict):
+                scheme = auth_info.get("scheme", "http")
+            else:
+                scheme = "http"
             port = device.get("port", 443 if scheme == "https" else 80)
             url = f"{scheme}://{host}:{port}{request.path}"
 
-            # Resolve auth from device profile (device-wide setting)
-            auth = self._resolve_auth(device, credentials)
+            # Resolve auth from device profile (protocol-aware)
+            auth = self._resolve_auth(device, credentials, scheme)
 
+            # Per-operation timeout override (e.g., firmware upload)
+            effective_timeout = request.timeout_override or self._timeout
+
+            transport = httpx.AsyncHTTPTransport(
+                retries=self._retries, verify=self._verify_ssl
+            )
             async with httpx.AsyncClient(
-                verify=self._verify_ssl, timeout=self._timeout
+                transport=transport, timeout=effective_timeout
             ) as client:
-                response = await client.request(
-                    method=request.method,
-                    url=url,
-                    params=request.query_params,
-                    json=request.json_body,
-                    auth=auth,
-                    headers={"Content-Type": request.content_type}
-                    if request.content_type
-                    else None,
-                )
+                if request.file_path:
+                    # Multipart/form-data with file upload
+                    with open(request.file_path, "rb") as f:
+                        files = {
+                            request.file_field_name: (
+                                os.path.basename(request.file_path),
+                                f,
+                                "application/octet-stream",
+                            )
+                        }
+                        response = await client.request(
+                            method=request.method,
+                            url=url,
+                            data=request.form_data or {},
+                            files=files,
+                            auth=auth,
+                        )
+                else:
+                    response = await client.request(
+                        method=request.method,
+                        url=url,
+                        params=request.query_params,
+                        json=request.json_body,
+                        auth=auth,
+                        headers={"Content-Type": request.content_type}
+                        if request.content_type
+                        and request.content_type != "multipart/form-data"
+                        else None,
+                    )
 
             elapsed = (time.monotonic() - start) * 1000
 
@@ -84,6 +134,15 @@ class VapixExecutor(BaseExecutor):
                 operation, response, op_id, device_id, elapsed
             )
 
+        except FileNotFoundError:
+            elapsed = (time.monotonic() - start) * 1000
+            return StepResult(
+                operation_id=op_id,
+                device_id=device_id,
+                success=False,
+                error=f"File not found: {getattr(request, 'file_path', 'unknown')}",
+                duration_ms=elapsed,
+            )
         except httpx.ConnectError as e:
             elapsed = (time.monotonic() - start) * 1000
             return StepResult(
@@ -95,11 +154,25 @@ class VapixExecutor(BaseExecutor):
             )
         except httpx.TimeoutException:
             elapsed = (time.monotonic() - start) * 1000
+            effective_timeout = getattr(request, 'timeout_override', None) or self._timeout
+            # Operations like factory-reset/restart cause the device to
+            # reboot — the timeout is the *expected* outcome.
+            if operation.get("response", {}).get("expect_timeout"):
+                return StepResult(
+                    operation_id=op_id,
+                    device_id=device_id,
+                    success=True,
+                    warnings=[
+                        f"Request timed out after {effective_timeout}s "
+                        "(expected — device is rebooting)"
+                    ],
+                    duration_ms=elapsed,
+                )
             return StepResult(
                 operation_id=op_id,
                 device_id=device_id,
                 success=False,
-                error=f"Request timed out after {self._timeout}s",
+                error=f"Request timed out after {effective_timeout}s",
                 duration_ms=elapsed,
             )
         except Exception as e:
@@ -115,24 +188,102 @@ class VapixExecutor(BaseExecutor):
 
     @staticmethod
     def _resolve_auth(
-        device: Dict[str, Any], credentials: Dict[str, Any]
+        device: Dict[str, Any],
+        credentials: Dict[str, Any],
+        scheme: str = "http",
     ) -> Optional[httpx.Auth]:
-        """Resolve HTTP auth from device profile, default to digest.
+        """Resolve HTTP auth from device profile, protocol-aware.
 
-        Authentication is device-wide on Axis devices, controlled by
-        ``Network.HTTP.AuthenticationPolicy``.  The auth method is
-        detected during credential probing and stored in the device
-        profile as ``auth_method``.
+        Axis devices have per-protocol auth policies controlled by
+        ``Network.HTTP.AuthenticationPolicy``.  The default policy
+        (``Recommended``) uses Digest over HTTP and Basic over HTTPS.
+
+        The structured ``auth`` dict in device info maps each protocol
+        to its auth method.  Falls back to the legacy ``auth_method``
+        field for backward compatibility.
         """
-        method = device.get("auth_method", "digest")
+        auth_info = device.get("auth")
+        if auth_info and isinstance(auth_info, dict):
+            method = auth_info.get(scheme, "digest")
+        else:
+            # Legacy fallback
+            method = device.get("auth_method", "digest")
+
         username = credentials.get("username", "")
         password = credentials.get("password", "")
         if method == "none":
             return None
         elif method == "basic":
             return httpx.BasicAuth(username, password)
+        elif method == "bearer":
+            token = credentials.get("token", password)
+            return _BearerAuth(token)
         else:  # "digest" or unknown
             return httpx.DigestAuth(username, password)
+
+    # Matches {name} or {name:type} placeholders in YAML templates
+    _PLACEHOLDER_RE = re.compile(r"\{(\w+)(?::(\w+))?\}")
+
+    @staticmethod
+    def _coerce_value(value: str, type_hint: str) -> Any:
+        """Coerce a string value to the type specified by a placeholder hint.
+
+        Supports: int, float, bool, array, object.  Default is str.
+        """
+        if type_hint == "int":
+            return int(value)
+        elif type_hint == "float":
+            return float(value)
+        elif type_hint == "bool":
+            return value.lower() in ("true", "1", "yes")
+        elif type_hint in ("array", "object"):
+            return json_module.loads(value)
+        return value  # "str" or default
+
+    def _resolve_template(
+        self, template: Any, params: Dict[str, str]
+    ) -> Any:
+        """Resolve placeholders in a YAML template recursively.
+
+        Handles three patterns:
+          - Whole-value: "{name}" or "{name:type}" — resolved + type-coerced
+          - Embedded: "{a},{b}" or "prefix-{x}" — string interpolation
+          - Nested dicts/lists: walked recursively
+        """
+        if isinstance(template, str):
+            # Case 1: Whole-value placeholder "{name}" or "{name:type}"
+            m = re.fullmatch(r"\{(\w+)(?::(\w+))?\}", template)
+            if m:
+                name, type_hint = m.group(1), m.group(2) or "str"
+                if name in params:
+                    return self._coerce_value(params[name], type_hint)
+                return None  # param not provided — omit key
+
+            # Case 2: Embedded placeholders "{a},{b}" or "prefix-{x}-suffix"
+            if "{" in template:
+                def _replace(m: re.Match) -> str:
+                    name = m.group(1)
+                    return params.get(name, m.group(0))
+                result = self._PLACEHOLDER_RE.sub(_replace, template)
+                if result == template:
+                    return template  # nothing resolved
+                return result
+
+            return template  # literal string, no placeholders
+
+        elif isinstance(template, dict):
+            resolved = {}
+            for k, v in template.items():
+                val = self._resolve_template(v, params)
+                if val is not None:
+                    resolved[k] = val
+            return resolved if resolved else None
+
+        elif isinstance(template, list):
+            return [self._resolve_template(item, params) for item in template]
+
+        # Numbers, booleans from YAML — pass through as-is
+        return template
 
     def build_request(
         self, operation: Dict[str, Any], params: Dict[str, str]
@@ -140,17 +291,25 @@ class VapixExecutor(BaseExecutor):
         """
         Build an HTTP request from an operation spec and user params.
 
-        Routes to the correct builder based on the operation's generation.
+        Routes to the correct builder based on content-type first,
+        then the operation's generation.
         """
+        endpoint = (
+            operation.get("_endpoint")
+            or operation.get("endpoint", "")
+        )
+
+        # Check content_type first — multipart overrides generation
+        request_spec = operation.get("request", {})
+        content_type = request_spec.get("content_type", "")
+        if content_type == "multipart/form-data":
+            return self._build_multipart(operation, endpoint, params)
+
         # Generation comes from _cgi.yaml, enriched by loader/resolver
         generation = (
             operation.get("_generation")
             or operation.get("generation")
             or "legacy-cgi"
-        )
-        endpoint = (
-            operation.get("_endpoint")
-            or operation.get("endpoint", "")
         )
 
         if generation == "legacy-cgi":
@@ -172,26 +331,26 @@ class VapixExecutor(BaseExecutor):
         request_spec = operation.get("request", {})
         query_template = request_spec.get("query", {})
 
-        # Start with template params (like action=update)
+        # Resolve template values (handles whole-value, embedded, compound)
         query: Dict[str, str] = {}
         for k, v in query_template.items():
-            # Skip template placeholders that aren't filled
-            if isinstance(v, str) and v.startswith("{") and v.endswith("}"):
-                placeholder = v[1:-1]
-                if placeholder in params:
-                    query[k] = params[placeholder]
-            else:
-                query[k] = str(v)
+            resolved = self._resolve_template(v, params)
+            if resolved is not None:
+                query[k] = str(resolved)
 
-        # Add user params (for param.cgi, these are the key=value pairs)
+        # Add user params not already in query (for param.cgi key=value pairs)
         for k, v in params.items():
             if k not in query:
                 query[k] = str(v)
+
+        timeout_val = request_spec.get("timeout")
+        timeout_override = float(timeout_val) if timeout_val else None
 
         return ExecutionRequest(
             method=operation.get("method", "GET"),
             path=endpoint,
             query_params=query if query else None,
+            timeout_override=timeout_override,
         )
 
     def _build_json_rpc(
@@ -200,23 +359,34 @@ class VapixExecutor(BaseExecutor):
         endpoint: str,
         params: Dict[str, str],
     ) -> ExecutionRequest:
-        """Build a JSON-RPC request (POST with JSON body)."""
+        """Build a JSON-RPC request (POST with JSON body).
+
+        Resolves typed placeholders in the body template recursively,
+        coercing values to native JSON types (int, bool, array, etc.).
+        Falls back to putting params under "params" key if the template
+        has no placeholders (backward compat with param.cgi-style ops).
+        """
         request_spec = operation.get("request", {})
         body_template = request_spec.get("body", {})
 
-        body: Dict[str, Any] = {}
-        for k, v in body_template.items():
-            body[k] = v
+        # Resolve the entire body template recursively
+        body = self._resolve_template(body_template, params) or {}
 
-        # Add user params to the body
-        if params:
+        # Backward compat: if template resolution didn't produce a "params"
+        # key but user provided params, put them there (e.g., operations
+        # with no typed placeholders yet)
+        if "params" not in body and params:
             body["params"] = params
+
+        timeout_val = request_spec.get("timeout")
+        timeout_override = float(timeout_val) if timeout_val else None
 
         return ExecutionRequest(
             method="POST",
             path=endpoint,
             json_body=body,
             content_type="application/json",
+            timeout_override=timeout_override,
         )
 
     def _build_config_rest(
@@ -235,6 +405,10 @@ class VapixExecutor(BaseExecutor):
             if placeholder in full_path:
                 full_path = full_path.replace(placeholder, v)
 
+        request_spec = operation.get("request", {})
+        timeout_val = request_spec.get("timeout")
+        timeout_override = float(timeout_val) if timeout_val else None
+
         return ExecutionRequest(
             method=operation.get("method", "GET"),
             path=full_path,
@@ -242,7 +416,118 @@ class VapixExecutor(BaseExecutor):
             content_type="application/json"
             if operation.get("method", "GET") != "GET"
             else None,
+            timeout_override=timeout_override,
         )
+
+    def _build_multipart(
+        self,
+        operation: Dict[str, Any],
+        endpoint: str,
+        params: Dict[str, str],
+    ) -> ExecutionRequest:
+        """Build a multipart/form-data request (firmware upgrade, ACAP upload)."""
+        request_spec = operation.get("request", {})
+        body_template = request_spec.get("body", {})
+
+        form_data: Dict[str, str] = {}
+        file_path = None
+
+        for key, value in body_template.items():
+            if isinstance(value, str) and value.startswith("{") and value.endswith("}"):
+                # Placeholder like "{firmware_file}" — resolve from params
+                placeholder = value[1:-1]
+                resolved = params.get(placeholder) or params.get("firmware_file") or params.get("file")
+                if resolved:
+                    file_path = resolved
+            elif isinstance(value, dict):
+                # Nested dict (e.g., the JSON envelope) — serialize + merge user params
+                merged = dict(value)
+                extra_params = {
+                    k: v for k, v in params.items()
+                    if k not in ("firmware_file", "file")
+                }
+                if extra_params:
+                    merged["params"] = extra_params
+                form_data[key] = json_module.dumps(merged)
+            else:
+                form_data[key] = str(value)
+
+        timeout_val = request_spec.get("timeout")
+        timeout_override = float(timeout_val) if timeout_val else None
+
+        return ExecutionRequest(
+            method="POST",
+            path=endpoint,
+            content_type="multipart/form-data",
+            form_data=form_data if form_data else None,
+            file_path=file_path,
+            timeout_override=timeout_override,
+        )
+
+    @staticmethod
+    def _content_type_extension(content_type: str) -> str:
+        """Map a content type to a file extension for binary responses."""
+        mapping = {
+            "application/x-tar": ".tar",
+            "application/gzip": ".tar.gz",
+            "application/zip": ".zip",
+            "application/octet-stream": ".bin",
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+        }
+        return mapping.get(content_type, ".bin")
+
+    @staticmethod
+    def _strip_ns(tag: str) -> str:
+        """Strip XML namespace URI from a tag name."""
+        if tag.startswith("{"):
+            return tag.split("}", 1)[1]
+        return tag
+
+    @classmethod
+    def _xml_to_dict(cls, element: ElementTree.Element) -> Any:
+        """Convert an ElementTree element to a dict recursively.
+
+        Conventions:
+          - Attributes are prefixed with ``@``
+          - Text content stored under ``#text``
+          - Repeated child tags become lists
+          - Leaf text elements become plain strings
+          - Namespace URIs are stripped from tags and attributes
+        """
+        tag = cls._strip_ns(element.tag)
+        result: Dict[str, Any] = {}
+
+        # Attributes
+        for attr_name, attr_val in element.attrib.items():
+            result[f"@{cls._strip_ns(attr_name)}"] = attr_val
+
+        # Children
+        children: Dict[str, List[Any]] = {}
+        for child in element:
+            child_tag = cls._strip_ns(child.tag)
+            child_val = cls._xml_to_dict(child)
+            # Unwrap single-key dicts where key matches the tag
+            if isinstance(child_val, dict) and list(child_val.keys()) == [child_tag]:
+                child_val = child_val[child_tag]
+            children.setdefault(child_tag, []).append(child_val)
+
+        for child_tag, vals in children.items():
+            result[child_tag] = vals if len(vals) > 1 else vals[0]
+
+        # Text content
+        text = (element.text or "").strip()
+        if text:
+            if result:
+                result["#text"] = text
+            else:
+                # Leaf element with only text — return plain string
+                return {tag: text}
+
+        if not result and not text:
+            return {tag: None}
+
+        return {tag: result}
 
     def _parse_response(
         self,
@@ -255,12 +540,19 @@ class VapixExecutor(BaseExecutor):
         """Parse an HTTP response according to the operation spec."""
         resp_spec = operation.get("response", {})
         fmt = resp_spec.get("format", "text")
-        body = response.text
         warnings = []
 
         # Check for service impact
         if operation.get("service_impact"):
             warnings.append(operation["service_impact"])
+
+        # For binary format, avoid decoding response body as text
+        if fmt == "binary" and response.status_code < 400:
+            return self._parse_binary_response(
+                resp_spec, response, op_id, device_id, elapsed, warnings
+            )
+
+        body = response.text
 
         if response.status_code == 401:
             return StepResult(
@@ -307,6 +599,17 @@ class VapixExecutor(BaseExecutor):
             except Exception as e:
                 success = False
                 error = f"Failed to parse JSON response: {e}"
+        elif fmt == "xml":
+            try:
+                root = ElementTree.fromstring(body)
+                parsed_data = self._xml_to_dict(root)
+                # Unwrap single root element for convenience
+                if isinstance(parsed_data, dict) and len(parsed_data) == 1:
+                    parsed_data = next(iter(parsed_data.values()))
+            except ElementTree.ParseError as e:
+                logger.warning("XML parse failed for %s: %s", op_id, e)
+                parsed_data = body.strip()
+                warnings.append(f"XML parse failed, returning raw text: {e}")
         else:
             # Text format — check success/error patterns
             success_pattern = resp_spec.get("success")
@@ -330,6 +633,40 @@ class VapixExecutor(BaseExecutor):
             response_body=body,
             parsed_data=parsed_data,
             error=error,
+            warnings=warnings,
+            duration_ms=elapsed,
+        )
+
+    def _parse_binary_response(
+        self,
+        resp_spec: Dict[str, Any],
+        response: httpx.Response,
+        op_id: str,
+        device_id: str,
+        elapsed: float,
+        warnings: List[str],
+    ) -> StepResult:
+        """Handle binary response format — save to temp file, return path."""
+        import tempfile
+
+        content_type = resp_spec.get(
+            "content_type", "application/octet-stream"
+        )
+        suffix = self._content_type_extension(content_type)
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=suffix, prefix=f"{op_id}_"
+        ) as f:
+            f.write(response.content)
+            file_path = f.name
+
+        size = len(response.content)
+        return StepResult(
+            operation_id=op_id,
+            device_id=device_id,
+            success=True,
+            status_code=response.status_code,
+            response_body=f"<binary {size} bytes saved to {file_path}>",
+            parsed_data={"file_path": file_path, "size_bytes": size},
             warnings=warnings,
             duration_ms=elapsed,
         )

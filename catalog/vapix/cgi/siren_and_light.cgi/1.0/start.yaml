@@ -1,0 +1,24 @@
+id: siren_and_light.cgi:start
+cgi: siren_and_light.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: start
+    params:
+      id: "{id}"
+      profile: "{profile}"
+      duration: "{duration:int}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: normal
+
+requires:
+  auth_level: operator

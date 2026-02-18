@@ -1,0 +1,21 @@
+id: mediaclip.cgi:play
+cgi: mediaclip.cgi
+
+method: GET
+request:
+  query:
+    action: play
+    clip: "{clip}"
+    volume: "{volume}"
+    repeat: "{repeat}"
+    audiooutputid: "{audiooutputid}"
+  content_type: null
+
+response:
+  format: text
+  success: "OK"
+
+risk_level: normal
+
+requires:
+  auth_level: operator

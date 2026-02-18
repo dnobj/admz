@@ -9,8 +9,9 @@ request:
   body:
     apiVersion: "1.0"
     method: setCaptureMode
-    channel: "{channel}"
-    captureModeId: "{captureModeId}"
+    params:
+      channel: "{channel:int}"
+      captureModeId: "{captureModeId:int}"
 
 response:
   format: json

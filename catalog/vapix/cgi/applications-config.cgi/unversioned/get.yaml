@@ -1,0 +1,19 @@
+id: applications-config.cgi:get
+cgi: applications-config.cgi
+
+method: POST
+request:
+  query:
+    action: get
+    name: "{name}"
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Returns XML with the configuration parameter value.
+
+risk_level: read-only
+
+requires:
+  auth_level: admin

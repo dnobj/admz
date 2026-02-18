@@ -17,6 +17,16 @@
             <th>Username</th>
             <td>{{ account.username }}</td>
         </tr>
+        <tr>
+            <th>Password</th>
+            <td>
+                <div class="password-reveal">
+                    <code class="password-value" id="password-value">••••••••</code>
+                    <button class="button-small" id="reveal-btn" onclick="togglePassword()">Reveal</button>
+                    <button class="button-small button-secondary" id="copy-btn" onclick="copyPassword()" style="display:none;">Copy</button>
+                </div>
+            </td>
+        </tr>
         {% if account.account_type %}
         <tr>
             <th>Account Type</th>
@@ -44,13 +54,65 @@
     </table>
 </div>
 
-<div class="warning-box">
-    <p><strong>Note:</strong> Password is not displayed for security reasons. Use the API to retrieve credentials programmatically.</p>
-    <p>API Endpoint: <code>GET /api/devices/{{ device.device_id }}/credentials?account_id={{ account.account_id }}</code></p>
-</div>
-
 <div class="actions-footer">
     <a href="/device/{{ device.device_id }}" class="button">Back to Device</a>
     <a href="/" class="button">Back to Devices</a>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let passwordRevealed = false;
+let cachedPassword = null;
+
+async function togglePassword() {
+    const el = document.getElementById('password-value');
+    const btn = document.getElementById('reveal-btn');
+    const copyBtn = document.getElementById('copy-btn');
+
+    if (passwordRevealed) {
+        el.textContent = '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022';
+        btn.textContent = 'Reveal';
+        copyBtn.style.display = 'none';
+        passwordRevealed = false;
+        return;
+    }
+
+    if (cachedPassword) {
+        el.textContent = cachedPassword;
+        btn.textContent = 'Hide';
+        copyBtn.style.display = '';
+        passwordRevealed = true;
+        return;
+    }
+
+    btn.textContent = 'Loading...';
+    btn.disabled = true;
+    try {
+        const deviceId = encodeURIComponent('{{ device.device_id }}');
+        const accountId = encodeURIComponent('{{ account.account_id }}');
+        const resp = await fetch(`/api/devices/${deviceId}/credentials?account_id=${accountId}`);
+        if (!resp.ok) throw new Error('Failed to fetch credentials');
+        const data = await resp.json();
+        cachedPassword = data.password || '(empty)';
+        el.textContent = cachedPassword;
+        btn.textContent = 'Hide';
+        copyBtn.style.display = '';
+        passwordRevealed = true;
+    } catch (err) {
+        el.textContent = 'Error: ' + err.message;
+        btn.textContent = 'Retry';
+    }
+    btn.disabled = false;
+}
+
+async function copyPassword() {
+    if (cachedPassword) {
+        await navigator.clipboard.writeText(cachedPassword);
+        const btn = document.getElementById('copy-btn');
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    }
+}
+</script>
 {% endblock %}

@@ -9,6 +9,7 @@ request:
 
 response:
   format: text
+  expect_timeout: true
   description: >
     Device reboots after responding. Connection will be lost.
 

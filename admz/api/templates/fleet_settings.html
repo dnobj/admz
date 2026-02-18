@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Fleet Settings</h1>
+</div>
+
+{% if settings %}
+<div class="account-info">
+    <h2>Settings</h2>
+    <table>
+        {% for key, value in settings.items() %}
+        <tr>
+            <th>{{ key }}</th>
+            <td>
+                {% if 'password' in key.lower() %}
+                <div class="password-reveal">
+                    <code class="password-value" id="pw-{{ loop.index }}">••••••••</code>
+                    <button class="button-small" id="btn-{{ loop.index }}" onclick="toggleFleetPassword('{{ key }}', {{ loop.index }})">Reveal</button>
+                    <button class="button-small button-secondary" id="copy-{{ loop.index }}" onclick="copyFleetPassword({{ loop.index }})" style="display:none;">Copy</button>
+                </div>
+                {% else %}
+                <code>{{ value }}</code>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% else %}
+<div class="account-info">
+    <p class="no-accounts">No fleet settings configured.</p>
+</div>
+{% endif %}
+
+<div class="actions-footer">
+    <a href="/" class="button">Back to Devices</a>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const cache = {};
+
+async function toggleFleetPassword(key, idx) {
+    const el = document.getElementById('pw-' + idx);
+    const btn = document.getElementById('btn-' + idx);
+    const copyBtn = document.getElementById('copy-' + idx);
+
+    if (el.dataset.revealed === 'true') {
+        el.textContent = '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022';
+        el.dataset.revealed = 'false';
+        btn.textContent = 'Reveal';
+        copyBtn.style.display = 'none';
+        return;
+    }
+
+    if (cache[key]) {
+        el.textContent = cache[key];
+        el.dataset.revealed = 'true';
+        btn.textContent = 'Hide';
+        copyBtn.style.display = '';
+        return;
+    }
+
+    btn.textContent = 'Loading...';
+    btn.disabled = true;
+    try {
+        const resp = await fetch('/api/fleet/settings/' + encodeURIComponent(key));
+        if (!resp.ok) throw new Error('Failed to fetch');
+        const data = await resp.json();
+        cache[key] = data.value || '(empty)';
+        el.textContent = cache[key];
+        el.dataset.revealed = 'true';
+        btn.textContent = 'Hide';
+        copyBtn.style.display = '';
+    } catch (err) {
+        el.textContent = 'Error: ' + err.message;
+        btn.textContent = 'Retry';
+    }
+    btn.disabled = false;
+}
+
+async function copyFleetPassword(idx) {
+    const el = document.getElementById('pw-' + idx);
+    if (el.dataset.revealed === 'true') {
+        await navigator.clipboard.writeText(el.textContent);
+        const btn = document.getElementById('copy-' + idx);
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    }
+}
+</script>
+{% endblock %}

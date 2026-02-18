@@ -162,7 +162,8 @@ class DiscoveredDevice:
 
     def to_registry_dict(self) -> Dict:
         """Convert to a dict compatible with ``DeviceRegistry.add_device``."""
-        return {
+        auth_method = "none" if self.factory_default else "digest"
+        d = {
             "host": self.ip_address or "",
             "ip_address": self.ip_address or "",
             "mac_address": self.mac_address or "",
@@ -172,7 +173,12 @@ class DiscoveredDevice:
             "nickname": self.friendly_name or self.hostname or "",
             "manufacturer": self.manufacturer or "",
             "device_type": self.device_type.value,
-            "auth_method": "none" if self.factory_default else "digest",
+            "auth_method": auth_method,
+            "auth": {
+                "http": auth_method,
+                "https": auth_method,
+                "scheme": "http",
+            },
             "tags": self._auto_tags(),
             "metadata": {
                 "discovered_by": [p.value for p in self.discovered_by],
@@ -184,6 +190,7 @@ class DiscoveredDevice:
                 "factory_default": self.factory_default,
             },
         }
+        return d
 
     def _auto_tags(self) -> List[str]:
         tags: List[str] = []

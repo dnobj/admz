@@ -1,0 +1,22 @@
+id: disks-raid.cgi:getStatus
+cgi: disks-raid.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: getStatus
+
+response:
+  format: json
+  data_path: data
+  fields:
+    - raids
+
+risk_level: read-only
+
+requires:
+  auth_level: operator

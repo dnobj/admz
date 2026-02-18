@@ -36,6 +36,10 @@ configure-stream-profile:
   - cgi/param.cgi/unversioned/groups/root.StreamProfile.yaml
   - cgi/param.cgi/unversioned/update.yaml
   - cgi/param.cgi/unversioned/list.yaml
+  - cgi/streamprofile.cgi/1.0/list.yaml
+  - cgi/streamprofile.cgi/1.0/create.yaml
+  - cgi/streamprofile.cgi/1.0/update.yaml
+  - cgi/streamprofile.cgi/1.0/remove.yaml
 
 set-capture-mode:
   - cgi/capturemode.cgi/1.0/getCaptureModes.yaml
@@ -46,6 +50,42 @@ manage-overlays:
   - cgi/dynamicoverlay.cgi/1.0/addText.yaml
   - cgi/dynamicoverlay.cgi/1.0/addImage.yaml
   - cgi/dynamicoverlay.cgi/1.0/remove.yaml
+
+# --- Day/Night & Optics ---
+
+configure-daynight:
+  - cgi/daynight.cgi/1.0/getCapabilities.yaml
+  - cgi/daynight.cgi/1.0/getConfiguration.yaml
+  - cgi/daynight.cgi/1.0/setConfiguration.yaml
+
+control-optics:
+  - cgi/opticscontrol.cgi/1.0/getCapabilities.yaml
+  - cgi/opticscontrol.cgi/1.0/getOptics.yaml
+  - cgi/opticscontrol.cgi/1.0/setFocus.yaml
+  - cgi/opticscontrol.cgi/1.0/setMagnification.yaml
+  - cgi/opticscontrol.cgi/1.0/performAutofocus.yaml
+  - cgi/opticscontrol.cgi/1.0/reset.yaml
+
+manage-focus:
+  - cgi/opticscontrol.cgi/1.0/setFocus.yaml
+  - cgi/opticscontrol.cgi/1.0/performAutofocus.yaml
+  - cgi/opticscontrol.cgi/1.0/reset.yaml
+  - cgi/opticscontrol.cgi/1.0/getOptics.yaml
+
+manage-view-areas:
+  - cgi/viewarea-info.cgi/1.0/list.yaml
+  - cgi/viewarea-info.cgi/1.0/getSupportedVersions.yaml
+  - cgi/viewarea-configure.cgi/1.0/setGeometry.yaml
+  - cgi/viewarea-configure.cgi/1.0/resetGeometry.yaml
+
+set-orientation:
+  - cgi/orientation.cgi/unversioned/getLongitudinalValue.yaml
+  - cgi/orientation.cgi/unversioned/getLateralValue.yaml
+
+manage-privacy-masks:
+  - cgi/pencil.cgi/1.0/getFilterCapabilities.yaml
+  - cgi/pencil.cgi/1.0/getSelectedFilter.yaml
+  - cgi/pencil.cgi/1.0/setSelectedFilter.yaml
 
 # --- PTZ ---
 
@@ -70,6 +110,13 @@ configure-guard-tour:
   - cgi/param.cgi/unversioned/update.yaml
   - cgi/param.cgi/unversioned/list.yaml
 
+manage-guard-tours-recorded:
+  - cgi/recordedtour.cgi/unversioned/list.yaml
+  - cgi/recordedtour.cgi/unversioned/play.yaml
+  - cgi/recordedtour.cgi/unversioned/stop.yaml
+  - cgi/recordedtour.cgi/unversioned/record.yaml
+  - cgi/recordedtour.cgi/unversioned/remove.yaml
+
 # --- Network ---
 
 set-hostname:
@@ -82,6 +129,7 @@ configure-network:
   - cgi/param.cgi/unversioned/update.yaml
   - cgi/param.cgi/unversioned/list.yaml
   - cgi/network_settings.cgi/1.0/getNetworkInfo.yaml
+  - cgi/network_settings.cgi/1.0/setGlobalProxyConfiguration.yaml
 
 configure-dns:
   - cgi/param.cgi/unversioned/groups/root.Network.yaml
@@ -93,6 +141,56 @@ configure-ip:
   - cgi/param.cgi/unversioned/update.yaml
   - cgi/network_settings.cgi/1.0/getNetworkInfo.yaml
   - cgi/network_settings.cgi/1.0/setIPv4AddressConfiguration.yaml
+
+# --- VLAN & 802.1X ---
+
+configure-vlan:
+  - cgi/network_settings.cgi/1.0/addVlan.yaml
+  - cgi/network_settings.cgi/1.0/removeVlan.yaml
+  - cgi/network_settings.cgi/1.0/getNetworkInfo.yaml
+
+configure-8021x:
+  - cgi/network_settings.cgi/1.0/setWired8021XConfiguration.yaml
+  - cgi/network_settings.cgi/1.0/getNetworkInfo.yaml
+
+configure-proxy:
+  - cgi/network_settings.cgi/1.0/setGlobalProxyConfiguration.yaml
+  - cgi/network_settings.cgi/1.0/getNetworkInfo.yaml
+
+configure-ipv6:
+  - cgi/network_settings.cgi/1.0/setIPv6AddressConfiguration.yaml
+  - cgi/network_settings.cgi/1.0/getNetworkInfo.yaml
+
+# --- mDNS & HTTP Headers ---
+
+configure-mdns:
+  - cgi/mdnssd.cgi/1.0/getMdnssdInfo.yaml
+  - cgi/mdnssd.cgi/1.0/setMdnssdConfiguration.yaml
+
+configure-http-headers:
+  - cgi/customhttpheader.cgi/1.0/list.yaml
+  - cgi/customhttpheader.cgi/1.0/set.yaml
+  - cgi/customhttpheader.cgi/1.0/remove.yaml
+
+# --- Config-REST Infrastructure ---
+
+configure-snmp:
+  - cgi/snmp.cgi/v1/getConfiguration.yaml
+  - cgi/snmp.cgi/v1/setConfiguration.yaml
+  - cgi/snmp.cgi/v1/getV1V2Config.yaml
+  - cgi/snmp.cgi/v1/setV3Config.yaml
+  - cgi/snmp.cgi/v1/setTrapConfig.yaml
+
+configure-time-modern:
+  - cgi/time-config.cgi/v2/getTime.yaml
+  - cgi/time-config.cgi/v2/setTime.yaml
+  - cgi/time-config.cgi/v2/getTimezone.yaml
+  - cgi/time-config.cgi/v2/setTimezone.yaml
+
+manage-persistent-log:
+  - cgi/log-config.cgi/v1/getPersistentStatus.yaml
+  - cgi/log-config.cgi/v1/setPersistentEnabled.yaml
+  - cgi/log-config.cgi/v1/writeMessage.yaml
 
 # --- Time ---
 
@@ -215,12 +313,54 @@ configure-mqtt-events:
   - cgi/mqtt-event.cgi/1.0/getEventPublicationConfig.yaml
   - cgi/mqtt-event.cgi/1.0/configureEventPublication.yaml
 
+# --- Snapshot ---
+
+take-snapshot:
+  - cgi/jpg-image.cgi/unversioned/snapshot.yaml
+
+# --- System Health ---
+
+check-system-ready:
+  - cgi/systemready.cgi/1.0/systemReady.yaml
+  - cgi/systemready.cgi/1.0/getSupportedVersions.yaml
+
+check-heartbeat:
+  - cgi/heartbeat.cgi/1.0/heartbeat.yaml
+
+stream-status:
+  - cgi/streamstatus.cgi/1.0/getAllStreams.yaml
+  - cgi/streamstatus.cgi/1.0/getSupportedVersions.yaml
+
+check-overlay-modifiers:
+  - cgi/overlaymodifiers.cgi/unversioned/list.yaml
+
 # --- Storage ---
 
 manage-storage:
   - cgi/disks-list.cgi/unversioned/list-disks.yaml
   - cgi/disks-format.cgi/unversioned/format-disk.yaml
+  - cgi/job.cgi/unversioned/check-job.yaml
   - cgi/param.cgi/unversioned/groups/root.Storage.yaml
+  - cgi/disks-checkdisk.cgi/unversioned/checkdisk.yaml
+  - cgi/disks-repair.cgi/unversioned/repair.yaml
+  - cgi/disks-mount.cgi/unversioned/mount.yaml
+  - cgi/disks-getcapabilities.cgi/unversioned/getcapabilities.yaml
+  - cgi/disks-gethealth.cgi/unversioned/gethealth.yaml
+
+manage-network-shares:
+  - cgi/networkshare-add.cgi/unversioned/add.yaml
+  - cgi/networkshare-bind.cgi/unversioned/bind.yaml
+  - cgi/networkshare-remove.cgi/unversioned/remove.yaml
+  - cgi/disks-list.cgi/unversioned/list-disks.yaml
+
+configure-power:
+  - cgi/power-settings.cgi/1.0/getCapabilities.yaml
+  - cgi/power-settings.cgi/1.0/getPowerStatus.yaml
+  - cgi/power-settings.cgi/1.0/getPowerProfiles.yaml
+  - cgi/power-settings.cgi/1.0/setPowerProfile.yaml
+
+check-disk-job:
+  - cgi/job.cgi/unversioned/check-job.yaml
 
 manage-recordings:
   - cgi/record-list.cgi/unversioned/list-recordings.yaml
@@ -233,7 +373,91 @@ manage-applications:
   - cgi/applications-control.cgi/unversioned/control.yaml
   - cgi/applications-upload.cgi/unversioned/upload.yaml
 
+configure-application:
+  - cgi/applications-config.cgi/unversioned/get.yaml
+  - cgi/applications-config.cgi/unversioned/set.yaml
+
+manage-app-license:
+  - cgi/applications-license.cgi/unversioned/upload.yaml
+  - cgi/applications-license.cgi/unversioned/remove.yaml
+
+# --- Security (Config-REST) ---
+
+manage-certificates:
+  - cgi/cert.cgi/v1/listCertificates.yaml
+  - cgi/cert.cgi/v1/getCertificate.yaml
+  - cgi/cert.cgi/v1/listCACertificates.yaml
+  - cgi/cert.cgi/v1/generateCSR.yaml
+  - cgi/cert.cgi/v1/installCertificate.yaml
+  - cgi/cert.cgi/v1/removeCertificate.yaml
+
+manage-ssh:
+  - cgi/ssh.cgi/v2/listUsers.yaml
+  - cgi/ssh.cgi/v2/addUser.yaml
+  - cgi/ssh.cgi/v2/modifyUser.yaml
+  - cgi/ssh.cgi/v2/removeUser.yaml
+
+manage-firewall:
+  - cgi/firewall.cgi/v1/getStatus.yaml
+  - cgi/firewall.cgi/v1/activate.yaml
+  - cgi/firewall.cgi/v1/deactivate.yaml
+  - cgi/firewall.cgi/v1/listRules.yaml
+  - cgi/firewall.cgi/v1/setRules.yaml
+  - cgi/firewall.cgi/v1/confirmRules.yaml
+
+# --- Specialized Hardware ---
+
+control-siren:
+  - cgi/siren_and_light.cgi/1.0/getCapabilities.yaml
+  - cgi/siren_and_light.cgi/1.0/getStatus.yaml
+  - cgi/siren_and_light.cgi/1.0/start.yaml
+  - cgi/siren_and_light.cgi/1.0/stop.yaml
+
+control-wiper:
+  - cgi/clearviewcontrol.cgi/1.0/getServiceInfo.yaml
+  - cgi/clearviewcontrol.cgi/1.0/start.yaml
+  - cgi/clearviewcontrol.cgi/1.0/stop.yaml
+
+monitor-temperature:
+  - cgi/temperaturecontrol.cgi/unversioned/statusall.yaml
+  - cgi/temperaturecontrol.cgi/unversioned/start.yaml
+  - cgi/temperaturecontrol.cgi/unversioned/stop.yaml
+
+control-leds:
+  - cgi/ledcontrol.cgi/unversioned/getStatus.yaml
+  - cgi/ledcontrol.cgi/unversioned/setEnabled.yaml
+  - cgi/ledcontrol.cgi/unversioned/setColor.yaml
+
+monitor-shock:
+  - cgi/shockdetection.cgi/unversioned/getEnabled.yaml
+  - cgi/shockdetection.cgi/unversioned/setEnabled.yaml
+  - cgi/shockdetection.cgi/unversioned/getSensitivityLevel.yaml
+
+manage-media-clips:
+  - cgi/mediaclip.cgi/unversioned/play.yaml
+  - cgi/mediaclip.cgi/unversioned/stop.yaml
+  - cgi/mediaclip.cgi/unversioned/remove.yaml
+
 # --- Feature Flags ---
+
+configure-zipstream:
+  - cgi/zipstream.cgi/unversioned/getStatus.yaml
+  - cgi/zipstream.cgi/unversioned/setStrength.yaml
+  - cgi/zipstream.cgi/unversioned/setGop.yaml
+  - cgi/zipstream.cgi/unversioned/setFpsMode.yaml
+
+audio-streaming:
+  - cgi/audio-receive.cgi/unversioned/receive.yaml
+  - cgi/audio-transmit.cgi/unversioned/transmit.yaml
+
+serial-port:
+  - cgi/com-serial.cgi/unversioned/write.yaml
+  - cgi/com-serial.cgi/unversioned/read.yaml
+
+manage-raid:
+  - cgi/disks-raid.cgi/1.0/getStatus.yaml
+  - cgi/disks-raid.cgi/1.0/getCapabilities.yaml
+  - cgi/disks-raid.cgi/1.0/recreateRaid.yaml
 
 manage-feature-flags:
   - cgi/featureflag.cgi/1.0/listAll.yaml

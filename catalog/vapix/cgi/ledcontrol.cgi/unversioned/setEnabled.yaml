@@ -1,0 +1,18 @@
+id: ledcontrol.cgi:setEnabled
+cgi: ledcontrol.cgi
+
+method: GET
+request:
+  query:
+    action: set
+    enabled: "{enabled}"
+  content_type: null
+
+response:
+  format: text
+  success: "OK"
+
+risk_level: normal
+
+requires:
+  auth_level: admin

@@ -1,0 +1,8 @@
+endpoint: /axis-cgi/siren_and_light.cgi
+generation: json-rpc
+min_firmware: "10.0"
+api_id: siren-and-light
+description: >
+  Siren and light control. Manage alarm sirens and strobe
+  lights on supported devices. Create profiles, start/stop
+  alarm patterns, and run health checks.

@@ -1,0 +1,20 @@
+id: applications-config.cgi:set
+cgi: applications-config.cgi
+
+method: POST
+request:
+  query:
+    action: set
+    name: "{name}"
+    value: "{value}"
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Sets the specified application configuration parameter.
+
+risk_level: normal
+
+requires:
+  auth_level: admin

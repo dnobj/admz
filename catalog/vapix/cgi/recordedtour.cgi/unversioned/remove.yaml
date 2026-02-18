@@ -1,0 +1,19 @@
+id: recordedtour.cgi:remove
+cgi: recordedtour.cgi
+
+method: POST
+request:
+  query:
+    schemaversion: "{schemaversion}"
+    recordedtourid: "{recordedtourid}"
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Permanently removes the specified recorded tour.
+
+risk_level: normal
+
+requires:
+  auth_level: operator

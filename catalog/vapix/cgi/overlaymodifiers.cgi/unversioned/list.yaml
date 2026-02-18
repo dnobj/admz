@@ -1,0 +1,19 @@
+id: overlaymodifiers.cgi:list
+cgi: overlaymodifiers.cgi
+
+method: GET
+request:
+  query:
+    action: list
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Returns a list of supported overlay modifier variables,
+    one per line, with name and description.
+
+risk_level: read-only
+
+requires:
+  auth_level: viewer

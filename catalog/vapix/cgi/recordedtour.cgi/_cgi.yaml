@@ -1,0 +1,7 @@
+endpoint: /axis-cgi/recordedtour/list.cgi
+generation: legacy-cgi
+min_firmware: "5.50"
+description: >
+  Recorded guard tour management. Record, play, stop, and remove
+  PTZ guard tours that replay recorded camera movements. Unlike
+  preset tours, recorded tours capture smooth continuous motion.

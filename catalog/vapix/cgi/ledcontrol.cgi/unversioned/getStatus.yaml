@@ -1,0 +1,19 @@
+id: ledcontrol.cgi:getStatus
+cgi: ledcontrol.cgi
+
+method: GET
+request:
+  query:
+    action: status
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Returns the current LED state (enabled/disabled)
+    and color/pattern information.
+
+risk_level: read-only
+
+requires:
+  auth_level: operator

@@ -11,7 +11,7 @@ request:
     method: setManualIntensity
     params:
       lightID: "{lightID}"
-      intensity: "{intensity}"
+      intensity: "{intensity:int}"
 
 response:
   format: json

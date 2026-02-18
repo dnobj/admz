@@ -1,0 +1,6 @@
+endpoint: /axis-cgi/disks/getcapabilities.cgi
+generation: legacy-cgi
+min_firmware: "5.00"
+description: >
+  Disk capabilities. Query the supported disk features and
+  filesystem types for the device.

@@ -1,0 +1,20 @@
+id: recordedtour.cgi:list
+cgi: recordedtour.cgi
+
+method: POST
+request:
+  query:
+    schemaversion: "{schemaversion}"
+    camera: "{camera}"
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Returns XML with recorded tour list including IDs,
+    names, and status.
+
+risk_level: read-only
+
+requires:
+  auth_level: viewer

@@ -1,0 +1,17 @@
+id: audio-transmit.cgi:transmit
+cgi: audio-transmit.cgi
+
+method: POST
+request:
+  content_type: audio/basic
+  description: >
+    POST raw audio data to the device speaker.
+    Content-Type must match the audio codec.
+
+response:
+  format: text
+
+risk_level: normal
+
+requires:
+  auth_level: operator

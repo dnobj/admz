@@ -1,0 +1,7 @@
+endpoint: /axis-cgi/ledcontrol.cgi
+generation: legacy-cgi
+min_firmware: "5.50"
+description: >
+  LED status indicator control. Query and set the behavior
+  of the device status LED. Can disable LED for covert
+  installations or set custom patterns.

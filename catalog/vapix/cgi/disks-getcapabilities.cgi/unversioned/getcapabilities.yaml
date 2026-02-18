@@ -1,0 +1,19 @@
+id: disks-getcapabilities.cgi:getcapabilities
+cgi: disks-getcapabilities.cgi
+
+method: GET
+request:
+  query:
+    diskid: "{diskid}"
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Returns XML with supported capabilities including
+    filesystem types (ext4, vfat), encryption support, etc.
+
+risk_level: read-only
+
+requires:
+  auth_level: admin

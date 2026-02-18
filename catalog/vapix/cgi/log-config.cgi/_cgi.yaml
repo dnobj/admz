@@ -1,0 +1,10 @@
+endpoint: /config/rest/log/v1alpha
+generation: config-rest
+min_firmware: "11.8"
+api_id: log
+description: >
+  Log configuration (alpha). Enable persistent logging,
+  clear log files, and write custom log messages with
+  RFC 5424 severity levels.
+notes: >
+  This is an alpha API and may change in future firmware versions.

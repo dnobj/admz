@@ -54,6 +54,7 @@ class ProbeResult:
     device_info: Optional[Dict] = field(default_factory=dict)
     detail: str = ""
     auth_method: Optional[str] = None  # "none", "digest", "basic"
+    auth: Optional[Dict[str, str]] = None  # {"http": "digest", "https": "basic", "scheme": "http"}
 
     def to_dict(self, include_credentials: bool = False) -> Dict:
         """Serialize the result.
@@ -68,6 +69,8 @@ class ProbeResult:
         }
         if self.auth_method:
             d["auth_method"] = self.auth_method
+        if self.auth:
+            d["auth"] = self.auth
         if self.device_info:
             d["device_info"] = self.device_info
         if include_credentials and self.username is not None:
@@ -107,6 +110,62 @@ def _parse_www_authenticate(headers) -> str:
     return "digest"
 
 
+async def _detect_auth_schemes(host: str, timeout: float = 5.0) -> Dict[str, str]:
+    """Probe HTTP and HTTPS to detect per-protocol auth methods.
+
+    Sends unauthenticated requests to trigger 401 responses, then
+    parses ``WWW-Authenticate`` headers to determine the auth method
+    for each protocol.  Also determines the preferred scheme based
+    on which protocols are reachable.
+
+    Returns a dict like::
+
+        {"http": "digest", "https": "basic", "scheme": "http"}
+    """
+    import httpx as _httpx
+
+    result: Dict[str, str] = {}
+    reachable: List[str] = []
+
+    for scheme in ("http", "https"):
+        url = f"{scheme}://{host}/axis-cgi/basicdeviceinfo.cgi"
+        try:
+            async with _httpx.AsyncClient(
+                verify=False, timeout=timeout
+            ) as client:
+                resp = await client.post(
+                    url,
+                    content=json.dumps(
+                        {"apiVersion": "1.0", "method": "getAllProperties"}
+                    ),
+                    headers={"Content-Type": "application/json"},
+                )
+                if resp.status_code == 401:
+                    result[scheme] = _parse_www_authenticate(resp.headers)
+                    reachable.append(scheme)
+                elif resp.status_code == 200:
+                    # No auth required on this scheme
+                    result[scheme] = "none"
+                    reachable.append(scheme)
+                else:
+                    # Reachable but unexpected status
+                    result[scheme] = "digest"  # safe default
+                    reachable.append(scheme)
+        except Exception:
+            # Scheme not reachable — skip it
+            logger.debug("%s not reachable on %s", scheme.upper(), host)
+
+    # Prefer HTTP (digest is more universally supported than basic)
+    if "http" in reachable:
+        result["scheme"] = "http"
+    elif "https" in reachable:
+        result["scheme"] = "https"
+    else:
+        result["scheme"] = "http"  # fallback
+
+    return result
+
+
 async def probe_credentials(
     host: str,
     *,
@@ -127,7 +186,8 @@ async def probe_credentials(
 
     The device's authentication method is detected from the
     ``WWW-Authenticate`` header on the first 401 response and used
-    for all subsequent credential attempts.
+    for all subsequent credential attempts.  After a successful probe,
+    both HTTP and HTTPS are tested to build a per-protocol auth map.
 
     Args:
         host: IP address or hostname to probe.
@@ -137,8 +197,37 @@ async def probe_credentials(
         timeout: HTTP request timeout in seconds.
 
     Returns:
-        ProbeResult with status, auth_method, and optional device info.
+        ProbeResult with status, auth_method, auth dict, and optional device info.
     """
+    result = await _probe_credentials_core(
+        host,
+        credentials_list=credentials_list,
+        try_no_auth=try_no_auth,
+        try_legacy_defaults=try_legacy_defaults,
+        timeout=timeout,
+    )
+
+    # Enrich successful results with per-protocol auth detection
+    if result.status in (ProbeStatus.FACTORY_DEFAULT, ProbeStatus.AUTHENTICATED):
+        try:
+            auth_schemes = await _detect_auth_schemes(host, timeout=timeout)
+            if auth_schemes:
+                result.auth = auth_schemes
+        except Exception:
+            logger.debug("Auth scheme detection failed for %s", host)
+
+    return result
+
+
+async def _probe_credentials_core(
+    host: str,
+    *,
+    credentials_list: Optional[List[Tuple[str, str]]] = None,
+    try_no_auth: bool = True,
+    try_legacy_defaults: bool = True,
+    timeout: float = 10.0,
+) -> ProbeResult:
+    """Core probe logic — tests credentials without auth scheme detection."""
     try:
         import httpx
     except ImportError:

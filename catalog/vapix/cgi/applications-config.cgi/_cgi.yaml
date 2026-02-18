@@ -1,0 +1,6 @@
+endpoint: /axis-cgi/applications/config.cgi
+generation: legacy-cgi
+min_firmware: "11.2"
+description: >
+  Application configuration. Get and set global application
+  settings like AllowUnsigned and AllowRoot.

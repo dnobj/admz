@@ -10,7 +10,7 @@ request:
     apiVersion: "1.0"
     method: setPorts
     params:
-      ports: "{ports}"
+      ports: "{ports:array}"
 
 response:
   format: json

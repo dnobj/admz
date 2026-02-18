@@ -1,0 +1,20 @@
+id: customhttpheader.cgi:set
+cgi: customhttpheader.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: set
+
+response:
+  format: json
+  data_path: data
+
+risk_level: normal
+
+requires:
+  auth_level: admin

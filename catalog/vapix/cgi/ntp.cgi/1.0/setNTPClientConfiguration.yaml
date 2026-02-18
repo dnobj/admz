@@ -10,9 +10,9 @@ request:
     apiVersion: "1.0"
     method: setNTPClientConfiguration
     params:
-      enabled: "{enabled}"
+      enabled: "{enabled:bool}"
       serversSource: "{serversSource}"
-      staticServers: "{staticServers}"
+      staticServers: "{staticServers:array}"
 
 response:
   format: json
@@ -23,6 +23,12 @@ risk_level: normal
 rollback:
   strategy: revert-params
   read_action: getNTPInfo
+
+param_rules:
+  - rule: value_requires
+    if_param: serversSource
+    equals: "static"
+    then_required: [staticServers]
 
 requires:
   auth_level: admin

@@ -1,0 +1,6 @@
+endpoint: /axis-cgi/disks/networkshare/add.cgi
+generation: legacy-cgi
+min_firmware: "5.00"
+description: >
+  Add a network share (SMB/CIFS). Configures a remote
+  file share for edge storage recording.

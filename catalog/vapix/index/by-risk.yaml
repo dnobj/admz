@@ -49,10 +49,97 @@ read-only:
   # storage
   - cgi/disks-list.cgi/unversioned/list-disks.yaml
   - cgi/record-list.cgi/unversioned/list-recordings.yaml
+  # job.cgi
+  - cgi/job.cgi/unversioned/check-job.yaml
   # applications
   - cgi/applications-list.cgi/unversioned/list.yaml
   # network_settings
   - cgi/network_settings.cgi/1.0/getNetworkInfo.yaml
+  # jpg-image.cgi
+  - cgi/jpg-image.cgi/unversioned/snapshot.yaml
+  # systemready.cgi
+  - cgi/systemready.cgi/1.0/systemReady.yaml
+  - cgi/systemready.cgi/1.0/getSupportedVersions.yaml
+  # heartbeat.cgi
+  - cgi/heartbeat.cgi/1.0/heartbeat.yaml
+  # streamstatus.cgi
+  - cgi/streamstatus.cgi/1.0/getAllStreams.yaml
+  - cgi/streamstatus.cgi/1.0/getSupportedVersions.yaml
+  # overlaymodifiers.cgi
+  - cgi/overlaymodifiers.cgi/unversioned/list.yaml
+  # streamprofile.cgi
+  - cgi/streamprofile.cgi/1.0/list.yaml
+  # disks-getcapabilities.cgi
+  - cgi/disks-getcapabilities.cgi/unversioned/getcapabilities.yaml
+  # disks-gethealth.cgi
+  - cgi/disks-gethealth.cgi/unversioned/gethealth.yaml
+  # daynight.cgi
+  - cgi/daynight.cgi/1.0/getCapabilities.yaml
+  - cgi/daynight.cgi/1.0/getConfiguration.yaml
+  # opticscontrol.cgi
+  - cgi/opticscontrol.cgi/1.0/getCapabilities.yaml
+  - cgi/opticscontrol.cgi/1.0/getOptics.yaml
+  # viewarea-info.cgi
+  - cgi/viewarea-info.cgi/1.0/list.yaml
+  - cgi/viewarea-info.cgi/1.0/getSupportedVersions.yaml
+  # viewarea-configure.cgi
+  - cgi/viewarea-configure.cgi/1.0/getSupportedVersions.yaml
+  # orientation.cgi
+  - cgi/orientation.cgi/unversioned/getLongitudinalValue.yaml
+  - cgi/orientation.cgi/unversioned/getLateralValue.yaml
+  # pencil.cgi
+  - cgi/pencil.cgi/1.0/getFilterCapabilities.yaml
+  - cgi/pencil.cgi/1.0/getSelectedFilter.yaml
+  # cert.cgi
+  - cgi/cert.cgi/v1/listCertificates.yaml
+  - cgi/cert.cgi/v1/getCertificate.yaml
+  - cgi/cert.cgi/v1/listCACertificates.yaml
+  # ssh.cgi
+  - cgi/ssh.cgi/v2/listUsers.yaml
+  # firewall.cgi
+  - cgi/firewall.cgi/v1/getStatus.yaml
+  - cgi/firewall.cgi/v1/listRules.yaml
+  # snmp.cgi
+  - cgi/snmp.cgi/v1/getConfiguration.yaml
+  - cgi/snmp.cgi/v1/getV1V2Config.yaml
+  # time-config.cgi
+  - cgi/time-config.cgi/v2/getTime.yaml
+  - cgi/time-config.cgi/v2/getTimezone.yaml
+  # log-config.cgi
+  - cgi/log-config.cgi/v1/getPersistentStatus.yaml
+  # mdnssd.cgi
+  - cgi/mdnssd.cgi/1.0/getMdnssdInfo.yaml
+  # customhttpheader.cgi
+  - cgi/customhttpheader.cgi/1.0/list.yaml
+  # recordedtour.cgi
+  - cgi/recordedtour.cgi/unversioned/list.yaml
+  # applications-config.cgi
+  - cgi/applications-config.cgi/unversioned/get.yaml
+  # power-settings.cgi
+  - cgi/power-settings.cgi/1.0/getCapabilities.yaml
+  - cgi/power-settings.cgi/1.0/getPowerStatus.yaml
+  - cgi/power-settings.cgi/1.0/getPowerProfiles.yaml
+  # siren_and_light.cgi
+  - cgi/siren_and_light.cgi/1.0/getCapabilities.yaml
+  - cgi/siren_and_light.cgi/1.0/getStatus.yaml
+  # clearviewcontrol.cgi
+  - cgi/clearviewcontrol.cgi/1.0/getServiceInfo.yaml
+  # temperaturecontrol.cgi
+  - cgi/temperaturecontrol.cgi/unversioned/statusall.yaml
+  # ledcontrol.cgi
+  - cgi/ledcontrol.cgi/unversioned/getStatus.yaml
+  # shockdetection.cgi
+  - cgi/shockdetection.cgi/unversioned/getEnabled.yaml
+  - cgi/shockdetection.cgi/unversioned/getSensitivityLevel.yaml
+  # zipstream.cgi
+  - cgi/zipstream.cgi/unversioned/getStatus.yaml
+  # audio-receive.cgi
+  - cgi/audio-receive.cgi/unversioned/receive.yaml
+  # com-serial.cgi
+  - cgi/com-serial.cgi/unversioned/read.yaml
+  # disks-raid.cgi
+  - cgi/disks-raid.cgi/1.0/getStatus.yaml
+  - cgi/disks-raid.cgi/1.0/getCapabilities.yaml
 
 normal:
   # param.cgi
@@ -101,6 +188,90 @@ normal:
   - cgi/network_settings.cgi/1.0/setResolverConfiguration.yaml
   # firmwaremanagement.cgi
   - cgi/firmwaremanagement.cgi/1.0/commit.yaml
+  # streamprofile.cgi
+  - cgi/streamprofile.cgi/1.0/create.yaml
+  - cgi/streamprofile.cgi/1.0/update.yaml
+  - cgi/streamprofile.cgi/1.0/remove.yaml
+  # daynight.cgi
+  - cgi/daynight.cgi/1.0/setConfiguration.yaml
+  # opticscontrol.cgi
+  - cgi/opticscontrol.cgi/1.0/setFocus.yaml
+  - cgi/opticscontrol.cgi/1.0/setMagnification.yaml
+  - cgi/opticscontrol.cgi/1.0/performAutofocus.yaml
+  - cgi/opticscontrol.cgi/1.0/reset.yaml
+  # viewarea-configure.cgi
+  - cgi/viewarea-configure.cgi/1.0/setGeometry.yaml
+  - cgi/viewarea-configure.cgi/1.0/resetGeometry.yaml
+  # pencil.cgi
+  - cgi/pencil.cgi/1.0/setSelectedFilter.yaml
+  # cert.cgi
+  - cgi/cert.cgi/v1/generateCSR.yaml
+  - cgi/cert.cgi/v1/installCertificate.yaml
+  # ssh.cgi
+  - cgi/ssh.cgi/v2/addUser.yaml
+  - cgi/ssh.cgi/v2/modifyUser.yaml
+  # firewall.cgi
+  - cgi/firewall.cgi/v1/deactivate.yaml
+  - cgi/firewall.cgi/v1/confirmRules.yaml
+  # snmp.cgi
+  - cgi/snmp.cgi/v1/setConfiguration.yaml
+  - cgi/snmp.cgi/v1/setV3Config.yaml
+  - cgi/snmp.cgi/v1/setTrapConfig.yaml
+  # time-config.cgi
+  - cgi/time-config.cgi/v2/setTime.yaml
+  - cgi/time-config.cgi/v2/setTimezone.yaml
+  # log-config.cgi
+  - cgi/log-config.cgi/v1/setPersistentEnabled.yaml
+  - cgi/log-config.cgi/v1/writeMessage.yaml
+  # network_settings.cgi extensions
+  - cgi/network_settings.cgi/1.0/setGlobalProxyConfiguration.yaml
+  # mdnssd.cgi
+  - cgi/mdnssd.cgi/1.0/setMdnssdConfiguration.yaml
+  # customhttpheader.cgi
+  - cgi/customhttpheader.cgi/1.0/set.yaml
+  - cgi/customhttpheader.cgi/1.0/remove.yaml
+  # recordedtour.cgi
+  - cgi/recordedtour.cgi/unversioned/play.yaml
+  - cgi/recordedtour.cgi/unversioned/stop.yaml
+  - cgi/recordedtour.cgi/unversioned/record.yaml
+  - cgi/recordedtour.cgi/unversioned/remove.yaml
+  # applications-config.cgi
+  - cgi/applications-config.cgi/unversioned/set.yaml
+  # applications-license.cgi
+  - cgi/applications-license.cgi/unversioned/upload.yaml
+  - cgi/applications-license.cgi/unversioned/remove.yaml
+  # power-settings.cgi
+  - cgi/power-settings.cgi/1.0/setPowerProfile.yaml
+  # networkshare
+  - cgi/networkshare-add.cgi/unversioned/add.yaml
+  - cgi/networkshare-bind.cgi/unversioned/bind.yaml
+  - cgi/networkshare-remove.cgi/unversioned/remove.yaml
+  # siren_and_light.cgi
+  - cgi/siren_and_light.cgi/1.0/start.yaml
+  - cgi/siren_and_light.cgi/1.0/stop.yaml
+  # clearviewcontrol.cgi
+  - cgi/clearviewcontrol.cgi/1.0/start.yaml
+  - cgi/clearviewcontrol.cgi/1.0/stop.yaml
+  # temperaturecontrol.cgi
+  - cgi/temperaturecontrol.cgi/unversioned/start.yaml
+  - cgi/temperaturecontrol.cgi/unversioned/stop.yaml
+  # ledcontrol.cgi
+  - cgi/ledcontrol.cgi/unversioned/setEnabled.yaml
+  - cgi/ledcontrol.cgi/unversioned/setColor.yaml
+  # shockdetection.cgi
+  - cgi/shockdetection.cgi/unversioned/setEnabled.yaml
+  # mediaclip.cgi
+  - cgi/mediaclip.cgi/unversioned/play.yaml
+  - cgi/mediaclip.cgi/unversioned/stop.yaml
+  - cgi/mediaclip.cgi/unversioned/remove.yaml
+  # zipstream.cgi
+  - cgi/zipstream.cgi/unversioned/setStrength.yaml
+  - cgi/zipstream.cgi/unversioned/setGop.yaml
+  - cgi/zipstream.cgi/unversioned/setFpsMode.yaml
+  # audio-transmit.cgi
+  - cgi/audio-transmit.cgi/unversioned/transmit.yaml
+  # com-serial.cgi
+  - cgi/com-serial.cgi/unversioned/write.yaml
 
 service-affecting:
   # pwdgrp.cgi
@@ -118,6 +289,24 @@ service-affecting:
   - cgi/applications-upload.cgi/unversioned/upload.yaml
   # network_settings (IP change can disconnect)
   - cgi/network_settings.cgi/1.0/setIPv4AddressConfiguration.yaml
+  # disks-checkdisk.cgi
+  - cgi/disks-checkdisk.cgi/unversioned/checkdisk.yaml
+  # disks-repair.cgi
+  - cgi/disks-repair.cgi/unversioned/repair.yaml
+  # disks-mount.cgi
+  - cgi/disks-mount.cgi/unversioned/mount.yaml
+  # cert.cgi
+  - cgi/cert.cgi/v1/removeCertificate.yaml
+  # ssh.cgi
+  - cgi/ssh.cgi/v2/removeUser.yaml
+  # firewall.cgi
+  - cgi/firewall.cgi/v1/activate.yaml
+  - cgi/firewall.cgi/v1/setRules.yaml
+  # network_settings.cgi extensions
+  - cgi/network_settings.cgi/1.0/addVlan.yaml
+  - cgi/network_settings.cgi/1.0/removeVlan.yaml
+  - cgi/network_settings.cgi/1.0/setIPv6AddressConfiguration.yaml
+  - cgi/network_settings.cgi/1.0/setWired8021XConfiguration.yaml
 
 dangerous:
   # factorydefault.cgi
@@ -126,3 +315,5 @@ dangerous:
   - cgi/hardfactorydefault.cgi/unversioned/hard-factory-reset.yaml
   # firmwaremanagement.cgi
   - cgi/firmwaremanagement.cgi/1.0/upgrade.yaml
+  # disks-raid.cgi
+  - cgi/disks-raid.cgi/1.0/recreateRaid.yaml

@@ -9,6 +9,7 @@ request:
 
 response:
   format: text
+  expect_timeout: true
   description: >
     Device resets all settings including network configuration.
     Device must be rediscovered after this operation.

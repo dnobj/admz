@@ -5,6 +5,7 @@ method: POST
 
 request:
   content_type: multipart/form-data
+  timeout: 60
   body:
     file: "{file}"
 

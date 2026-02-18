@@ -1,0 +1,7 @@
+endpoint: /axis-cgi/com/serial.cgi
+generation: legacy-cgi
+min_firmware: "5.20"
+description: >
+  Serial port I/O. Read and write data to the device serial
+  port (RS-232/RS-485/RS-422). Used for PTZ control, access
+  control integration, and other serial peripherals.

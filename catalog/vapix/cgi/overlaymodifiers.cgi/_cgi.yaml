@@ -1,0 +1,7 @@
+endpoint: /axis-cgi/overlaymodifiers.cgi
+generation: legacy-cgi
+min_firmware: "5.00"
+description: >
+  Overlay modifier variables. Query the list of supported dynamic
+  text overlay variables (date, time, camera name, etc.) that can
+  be used in text overlays on the video stream.

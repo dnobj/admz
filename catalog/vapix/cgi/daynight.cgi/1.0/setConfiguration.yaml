@@ -1,0 +1,32 @@
+id: daynight.cgi:setConfiguration
+cgi: daynight.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: setConfiguration
+    params:
+      channel: "{channel:int}"
+      DayNightDwellTime: "{DayNightDwellTime:float}"
+      DayNightShiftLevel: "{DayNightShiftLevel:int}"
+      NightDayDwellTime: "{NightDayDwellTime:float}"
+      NightDayShiftLevel: "{NightDayShiftLevel:int}"
+      Autotune: "{Autotune:bool}"
+      NightFilter: "{NightFilter}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: normal
+
+rollback:
+  strategy: revert-params
+  read_action: getConfiguration
+
+requires:
+  auth_level: operator

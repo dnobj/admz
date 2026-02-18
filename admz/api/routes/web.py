@@ -14,6 +14,7 @@ from admz.exceptions import (
     BackendError,
 )
 from admz.device_registry import DeviceRegistry
+from admz.fleet_settings import fleet_settings
 
 
 router = APIRouter()
@@ -360,3 +361,25 @@ async def search_devices(
             },
             status_code=500,
         )
+
+
+@router.get("/fleet-settings", response_class=HTMLResponse)
+async def fleet_settings_page(request: Request):
+    """Fleet settings page — view fleet-wide configuration."""
+    settings = fleet_settings.list_all()
+    # Mask password values for initial render (revealed client-side)
+    display = {}
+    for k, v in settings.items():
+        if "password" in k.lower():
+            display[k] = f"({'*' * min(len(v), 8)})"
+        else:
+            display[k] = v
+
+    return templates.TemplateResponse(
+        "fleet_settings.html",
+        {
+            "request": request,
+            "settings": display,
+            "title": "Fleet Settings",
+        },
+    )

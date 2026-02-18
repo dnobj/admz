@@ -1,0 +1,14 @@
+id: log-config.cgi:getPersistentStatus
+cgi: log-config.cgi
+
+method: GET
+base_path: /config/rest/log/v1alpha
+path: /persistent
+
+response:
+  format: json
+
+risk_level: read-only
+
+requires:
+  auth_level: admin

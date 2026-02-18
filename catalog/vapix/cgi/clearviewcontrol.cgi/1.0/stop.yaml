@@ -1,0 +1,22 @@
+id: clearviewcontrol.cgi:stop
+cgi: clearviewcontrol.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: stop
+    params:
+      id: "{id:int}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: normal
+
+requires:
+  auth_level: operator

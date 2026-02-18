@@ -1,0 +1,6 @@
+endpoint: /axis-cgi/disks/checkdisk.cgi
+generation: legacy-cgi
+min_firmware: "5.00"
+description: >
+  Disk filesystem check. Runs a filesystem consistency check
+  on the specified storage device.

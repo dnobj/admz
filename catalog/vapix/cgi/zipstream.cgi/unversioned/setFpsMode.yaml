@@ -1,0 +1,21 @@
+id: zipstream.cgi:setFpsMode
+cgi: zipstream.cgi
+
+method: GET
+request:
+  query:
+    schemaversion: "{schemaversion}"
+    camera: "{camera}"
+    fpsmode: "{fpsmode}"
+    minfps: "{minfps}"
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Sets FPS mode (fixed/dynamic) and minimum FPS.
+
+risk_level: normal
+
+requires:
+  auth_level: admin

@@ -48,7 +48,26 @@ from admz.discovery.credential_probe import probe_credentials, ProbeStatus
 from admz.fleet_settings import fleet_settings
 from admz.catalog.loader import CatalogLoader
 from admz.catalog.resolver import CatalogResolver
+from admz.knowledge.loader import KnowledgeLoader
+from admz.knowledge.resolver import KnowledgeResolver
 from admz.executor.vapix import VapixExecutor
+from admz.firmware.downloader import (
+    download_firmware as fetch_firmware,
+    get_latest_version,
+    list_cached_firmware,
+    scan_firmware_files,
+    import_firmware_files,
+    default_download_dirs,
+    _DEFAULT_FIRMWARE_DIR,
+    FirmwareNotAvailableError,
+    FirmwareDownloadError,
+    FirmwareLoginRequiredError,
+    normalize_model_for_ftp,
+)
+from admz.firmware.upgrade_path import (
+    compute_upgrade_path,
+    format_upgrade_path,
+)
 from admz.plans.engine import PlanEngine
 from admz.snapshot.engine import SnapshotEngine
 from admz.snapshot.git_repo import GitRepo
@@ -104,8 +123,14 @@ class ADMZMCPServer:
         self.catalog = CatalogLoader(catalog_path)
         self.resolver = CatalogResolver(self.catalog)
 
+        # Knowledge base
+        self.knowledge_loader = KnowledgeLoader(catalog_path)
+        self.knowledge_resolver = KnowledgeResolver(self.knowledge_loader)
+
         # Executors (one per API family)
-        vapix_executor = VapixExecutor()
+        vapix_executor = VapixExecutor(
+            retries=int(os.getenv("ADMZ_VAPIX_RETRIES", "1"))
+        )
         self.executors = {"vapix": vapix_executor}
 
         # Plan engine
@@ -469,6 +494,34 @@ class ADMZMCPServer:
                             },
                         },
                         "required": ["device_id", "intent"],
+                    },
+                ),
+                Tool(
+                    name="query_knowledge",
+                    description=(
+                        "Look up product-specific knowledge and hints for a device. "
+                        "Returns hints from the product hierarchy (product → series → "
+                        "product line) about API support, limitations, and device-specific "
+                        "workflows. Use this to understand device capabilities before "
+                        "attempting operations."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID to query for",
+                            },
+                            "topic": {
+                                "type": "string",
+                                "description": (
+                                    "Optional topic to filter by. "
+                                    "e.g. 'vapix-support', 'poe', 'audio'"
+                                ),
+                                "default": "",
+                            },
+                        },
+                        "required": ["device_id"],
                     },
                 ),
                 Tool(
@@ -1135,6 +1188,107 @@ class ADMZMCPServer:
                         "required": [],
                     },
                 ),
+                # --- Firmware tool ---
+                Tool(
+                    name="download_firmware",
+                    description=(
+                        "Download firmware for an Axis device from the public FTP, "
+                        "or check the latest available version. Also computes the "
+                        "required upgrade path (LTS milestones) if the device's "
+                        "current firmware version is known. The downloaded file can "
+                        "be used with execute_operation(firmwaremanagement.cgi:upgrade). "
+                        "Not all models are available on the public FTP — when a model "
+                        "is missing, suggests manual download from axis.com/support."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "model": {
+                                "type": "string",
+                                "description": (
+                                    "Device model name (e.g. 'P3245-V', 'C1710'). "
+                                    "If not provided, resolved from device_id."
+                                ),
+                            },
+                            "device_id": {
+                                "type": "string",
+                                "description": (
+                                    "Device ID in registry. Used to resolve model "
+                                    "and current firmware version for upgrade path."
+                                ),
+                            },
+                            "version": {
+                                "type": "string",
+                                "description": (
+                                    "Specific firmware version to download. "
+                                    "If omitted, downloads the latest."
+                                ),
+                            },
+                            "check_only": {
+                                "type": "boolean",
+                                "description": (
+                                    "If true, only check the latest version and "
+                                    "upgrade path without downloading."
+                                ),
+                                "default": False,
+                            },
+                        },
+                        "required": [],
+                    },
+                ),
+                Tool(
+                    name="import_firmware",
+                    description=(
+                        "Scan a local directory (default: ~/Downloads) for Axis "
+                        "firmware .bin files and import them into the firmware cache. "
+                        "Identifies firmware by filename pattern and cross-references "
+                        "against the manifest of known Axis models. Use scan_only=true "
+                        "to preview what would be imported without copying. Imported "
+                        "files can then be used with "
+                        "execute_operation(firmwaremanagement.cgi:upgrade)."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "directory": {
+                                "type": "string",
+                                "description": (
+                                    "Directory to scan for .bin files. "
+                                    "Defaults to ~/Downloads if omitted."
+                                ),
+                            },
+                            "scan_only": {
+                                "type": "boolean",
+                                "description": (
+                                    "If true, just show what firmware files were "
+                                    "found without importing them."
+                                ),
+                                "default": False,
+                            },
+                            "device_id": {
+                                "type": "string",
+                                "description": (
+                                    "If provided, only import firmware matching "
+                                    "this device's model."
+                                ),
+                            },
+                        },
+                        "required": [],
+                    },
+                ),
+                Tool(
+                    name="list_cached_firmware",
+                    description=(
+                        "List all firmware .bin files in the local firmware cache "
+                        "(~/.admz/firmware/). Shows filename, size, and path for "
+                        "each cached file."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                    },
+                ),
             ]
 
         @self.server.call_tool()
@@ -1192,6 +1346,11 @@ class ADMZMCPServer:
                         arguments["device_id"],
                         arguments["intent"],
                         arguments.get("family", "vapix"),
+                    )
+                elif name == "query_knowledge":
+                    result = await self._query_knowledge(
+                        arguments["device_id"],
+                        arguments.get("topic", ""),
                     )
                 elif name == "execute_operation":
                     result = await self._execute_operation(
@@ -1289,6 +1448,13 @@ class ADMZMCPServer:
                 # --- Provisioning ---
                 elif name == "provision_device":
                     result = await self._provision_device(arguments)
+                # --- Firmware ---
+                elif name == "download_firmware":
+                    result = await self._download_firmware(arguments)
+                elif name == "import_firmware":
+                    result = await self._import_firmware(arguments)
+                elif name == "list_cached_firmware":
+                    result = await self._list_cached_firmware()
                 else:
                     raise ValueError(f"Unknown tool: {name}")
 
@@ -1616,12 +1782,70 @@ class ADMZMCPServer:
             device_info=device_info,
         )
 
+        # Also check knowledge base for relevant hints.
+        # Always check "vapix-support" when querying a VAPIX catalog, since
+        # some devices (e.g. switches) don't support VAPIX at all.
+        # Also check the specific intent in case it matches a knowledge topic.
+        seen_hint_ids = set()
+        knowledge_notes = []
+        topics_to_check = [intent]
+        if family == "vapix":
+            topics_to_check.append("vapix-support")
+        for topic in topics_to_check:
+            knowledge = self.knowledge_resolver.resolve(
+                device_id=device_id,
+                topic=topic,
+                device_info=device_info,
+            )
+            for hint in knowledge.hints:
+                if hint.id not in seen_hint_ids:
+                    seen_hint_ids.add(hint.id)
+                    knowledge_notes.append(
+                        f"[{hint.source_level}] {hint.summary}: {hint.text.strip()}"
+                    )
+
         return {
             "success": True,
             "operations": result.operations,
             "parameter_groups": result.parameter_groups,
             "device": result.device,
             "risk_summary": result.risk_summary,
+            "notes": result.notes + knowledge_notes,
+        }
+
+    async def _query_knowledge(
+        self, device_id: str, topic: str
+    ) -> Dict[str, Any]:
+        """Look up product-specific knowledge and hints for a device."""
+        device_info = None
+        if self.registry.device_exists(device_id):
+            device_info = self.registry.get_device_info(device_id)
+
+        result = self.knowledge_resolver.resolve(
+            device_id=device_id,
+            topic=topic,
+            device_info=device_info,
+        )
+
+        hints = [
+            {
+                "id": h.id,
+                "topic": h.topic,
+                "summary": h.summary,
+                "text": h.text,
+                "tags": h.tags,
+                "source_level": h.source_level,
+                "source_file": h.source_file,
+            }
+            for h in result.hints
+        ]
+
+        return {
+            "success": True,
+            "device_id": result.device_id,
+            "model": result.model,
+            "hints": hints,
+            "levels_loaded": result.levels_loaded,
             "notes": result.notes,
         }
 
@@ -2011,10 +2235,16 @@ class ADMZMCPServer:
                 except Exception as e:
                     response["store_error"] = str(e)
 
+                # Store detected auth info in device profile
+                auth_updates: Dict[str, Any] = {}
                 if result.auth_method:
+                    auth_updates["auth_method"] = result.auth_method
+                if result.auth:
+                    auth_updates["auth"] = result.auth
+                if auth_updates:
                     try:
                         self.registry.update_device_info(
-                            device_id, {"auth_method": result.auth_method}
+                            device_id, auth_updates
                         )
                     except Exception:
                         pass
@@ -2267,6 +2497,7 @@ class ADMZMCPServer:
         *,
         credentials: Optional[Dict[str, str]] = None,
         auth_method: str = "digest",
+        auth: Optional[Dict[str, str]] = None,
         family: str = "vapix",
     ) -> tuple:
         operation = self.catalog.get_operation(family, operation_id)
@@ -2277,13 +2508,17 @@ class ADMZMCPServer:
         if not executor:
             return False, f"No executor for family '{family}'"
 
-        device = {
+        device: Dict[str, Any] = {
             "host": host,
             "device_id": f"_host_{host}",
             "auth_method": auth_method,
-            "https": False,
             "port": 80,
         }
+        # Use structured auth dict if provided, otherwise build from auth_method
+        if auth:
+            device["auth"] = auth
+        else:
+            device["auth"] = {"http": auth_method, "https": auth_method, "scheme": "http"}
 
         creds = credentials or {"username": "", "password": ""}
 
@@ -2299,6 +2534,8 @@ class ADMZMCPServer:
             "_generation": operation.generation,
             "_auth": operation.auth,
             "service_impact": operation.service_impact,
+            "base_path": operation.base_path,
+            "path": operation.path,
         }
 
         result = await executor.execute(op_dict, device, creds, params)
@@ -2423,9 +2660,11 @@ class ADMZMCPServer:
                 }
 
             self._store_provisioned_creds(device_id, username, new_password)
-            self.registry.update_device_info(
-                device_id, {"auth_method": "digest"}
-            )
+            # Device now requires auth — store per-protocol info from probe
+            auth_updates: Dict[str, Any] = {"auth_method": "digest"}
+            if probe.auth:
+                auth_updates["auth"] = probe.auth
+            self.registry.update_device_info(device_id, auth_updates)
 
             return {
                 "success": True,
@@ -2444,9 +2683,15 @@ class ADMZMCPServer:
             }
 
         if probe.status == ProbeStatus.AUTHENTICATED:
+            # Store detected auth info from probe
+            auth_updates_auth: Dict[str, Any] = {}
             if probe.auth_method:
+                auth_updates_auth["auth_method"] = probe.auth_method
+            if probe.auth:
+                auth_updates_auth["auth"] = probe.auth
+            if auth_updates_auth:
                 self.registry.update_device_info(
-                    device_id, {"auth_method": probe.auth_method}
+                    device_id, auth_updates_auth
                 )
 
             if not force_change:
@@ -2479,6 +2724,7 @@ class ADMZMCPServer:
                     "password": probe.password,
                 },
                 auth_method=probe.auth_method or "digest",
+                auth=probe.auth,
             )
             if not ok:
                 self._store_provisioned_creds(
@@ -2537,6 +2783,249 @@ class ADMZMCPServer:
             "status": probe.status.value,
             "device_id": device_id,
             "detail": probe.detail,
+        }
+
+    # ------------------------------------------------------------------
+    # Firmware handler
+    # ------------------------------------------------------------------
+
+    async def _download_firmware(
+        self, arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Download firmware or check latest version with upgrade path info."""
+        model = arguments.get("model")
+        device_id = arguments.get("device_id")
+        version = arguments.get("version")
+        check_only = arguments.get("check_only", False)
+
+        current_version = None
+
+        # Resolve model and current version from device registry
+        if device_id and not model:
+            if not self.registry.device_exists(device_id):
+                raise DeviceNotFoundError(f"Device not found: {device_id}")
+            device_info = self.registry.get_device_info(device_id)
+            model = device_info.get("model")
+            current_version = device_info.get("firmware_version")
+            if not model:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Device '{device_id}' has no model info. "
+                        "Provide 'model' parameter directly."
+                    ),
+                }
+        elif device_id:
+            # model provided explicitly, but still get current version
+            if self.registry.device_exists(device_id):
+                device_info = self.registry.get_device_info(device_id)
+                current_version = device_info.get("firmware_version")
+
+        if not model:
+            return {
+                "success": False,
+                "error": "Either 'model' or 'device_id' must be provided.",
+            }
+
+        # Check latest version on FTP
+        latest = await get_latest_version(model)
+        target_version = version or latest
+
+        # Build upgrade path info
+        upgrade_info: Dict[str, Any] = {}
+        if current_version and target_version:
+            intermediates = compute_upgrade_path(current_version, target_version)
+            path_display = format_upgrade_path(
+                current_version, target_version, intermediates
+            )
+            full_path = intermediates + [target_version]
+            upgrade_info = {
+                "current_version": current_version,
+                "target_version": target_version,
+                "upgrade_path": full_path,
+                "direct_upgrade": len(intermediates) == 0,
+                "upgrade_path_display": path_display,
+            }
+            if intermediates:
+                upgrade_info["message"] = (
+                    f"This upgrade requires {len(intermediates)} intermediate "
+                    f"LTS step(s): {path_display}"
+                )
+            else:
+                upgrade_info["message"] = (
+                    f"Direct upgrade: {path_display}"
+                )
+
+        if check_only:
+            result: Dict[str, Any] = {
+                "success": True,
+                "check_only": True,
+                "model": normalize_model_for_ftp(model),
+                "latest_version": latest,
+            }
+            if not latest:
+                result["warning"] = (
+                    f"Model '{model}' not found on public FTP. "
+                    "Download manually from https://www.axis.com/support/device-software"
+                )
+            if upgrade_info:
+                result["upgrade"] = upgrade_info
+            return result
+
+        # Download firmware
+        try:
+            fw = await fetch_firmware(model=model, version=version)
+        except FirmwareLoginRequiredError:
+            result = {
+                "success": False,
+                "error": "login_required",
+                "model": normalize_model_for_ftp(model),
+                "version": target_version,
+                "message": (
+                    f"Firmware download for {normalize_model_for_ftp(model)} "
+                    f"requires an Axis account. Download the firmware "
+                    f"manually from https://www.axis.com/support/device-software "
+                    f"and provide the local file path for the upgrade."
+                ),
+            }
+            if upgrade_info:
+                result["upgrade"] = upgrade_info
+            return result
+        except FirmwareNotAvailableError as e:
+            result = {
+                "success": False,
+                "error": str(e),
+                "model": normalize_model_for_ftp(model),
+                "suggestion": (
+                    "Download manually from "
+                    "https://www.axis.com/support/device-software"
+                ),
+            }
+            if upgrade_info:
+                result["upgrade"] = upgrade_info
+            return result
+        except FirmwareDownloadError as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "model": normalize_model_for_ftp(model),
+            }
+
+        result = {
+            "success": True,
+            "model": fw.model,
+            "version": fw.version,
+            "file_path": fw.file_path,
+            "file_size": fw.file_size,
+            "file_size_mb": round(fw.file_size / (1024 * 1024), 1)
+            if fw.file_size
+            else None,
+            "url": fw.url,
+            "already_cached": fw.already_cached,
+        }
+        if upgrade_info:
+            result["upgrade"] = upgrade_info
+        return result
+
+    async def _import_firmware(
+        self, arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Scan a directory for firmware files and optionally import them."""
+        directory = arguments.get("directory")
+        scan_only = arguments.get("scan_only", False)
+        device_id = arguments.get("device_id")
+
+        # Resolve directory — default to ~/Downloads
+        if not directory:
+            download_dirs = default_download_dirs()
+            if not download_dirs:
+                return {
+                    "success": False,
+                    "error": "No Downloads directory found. Provide 'directory' parameter.",
+                }
+            directory = download_dirs[0]
+
+        # If device_id provided, resolve model for filtering
+        filter_model = None
+        if device_id:
+            if not self.registry.device_exists(device_id):
+                raise DeviceNotFoundError(f"Device not found: {device_id}")
+            device_info = self.registry.get_device_info(device_id)
+            model = device_info.get("model")
+            if model:
+                filter_model = normalize_model_for_ftp(model)
+
+        if scan_only:
+            scanned = scan_firmware_files(directory)
+            if filter_model:
+                scanned = [s for s in scanned if s.model == filter_model]
+            return {
+                "success": True,
+                "scan_only": True,
+                "directory": directory,
+                "files_found": len(scanned),
+                "files": [
+                    {
+                        "filename": s.filename,
+                        "file_path": s.file_path,
+                        "file_size": s.file_size,
+                        "file_size_mb": round(s.file_size / (1024 * 1024), 1),
+                        "model": s.model,
+                        "version": s.version,
+                        "already_cached": s.already_cached,
+                    }
+                    for s in scanned
+                ],
+            }
+
+        # Import mode
+        result = await import_firmware_files(directory)
+
+        # Filter results if device_id was provided
+        if filter_model:
+            result.imported = [
+                (src, dst) for src, dst in result.imported
+                if filter_model in src
+            ]
+            result.skipped = [
+                (src, reason) for src, reason in result.skipped
+                if filter_model in src
+            ]
+            result.errors = [
+                (src, err) for src, err in result.errors
+                if filter_model in src
+            ]
+
+        return {
+            "success": True,
+            "directory": directory,
+            "imported": [
+                {"source": src, "cached_at": dst}
+                for src, dst in result.imported
+            ],
+            "skipped": [
+                {"source": src, "reason": reason}
+                for src, reason in result.skipped
+            ],
+            "errors": [
+                {"source": src, "error": err}
+                for src, err in result.errors
+            ],
+            "summary": (
+                f"Imported {len(result.imported)}, "
+                f"skipped {len(result.skipped)}, "
+                f"errors {len(result.errors)}"
+            ),
+        }
+
+    async def _list_cached_firmware(self) -> Dict[str, Any]:
+        """List all firmware files in the local cache."""
+        cached = list_cached_firmware()
+        return {
+            "success": True,
+            "firmware_dir": _DEFAULT_FIRMWARE_DIR,
+            "total_files": len(cached),
+            "files": cached,
         }
 
     async def run(self):

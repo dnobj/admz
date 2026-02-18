@@ -16,6 +16,7 @@ class CgiMetadata:
     min_firmware: Optional[str] = None
     api_id: Optional[str] = None
     description: str = ""
+    notes: Optional[str] = None
 
 
 @dataclass
@@ -74,6 +75,12 @@ class Operation:
     min_api_version: Optional[str] = None
     danger_description: Optional[str] = None
     service_impact: Optional[str] = None
+    notes: Optional[str] = None
+    param_rules: Optional[List[Dict[str, Any]]] = None
+
+    # Config-rest: base URL path and sub-path
+    base_path: Optional[str] = None
+    path: Optional[str] = None
 
     # Populated by loader from _cgi.yaml
     endpoint: Optional[str] = None
@@ -91,6 +98,10 @@ class Operation:
             "response": self.response,
             "requires": self.requires,
             "service_impact": self.service_impact,
+            "notes": self.notes,
+            "param_rules": self.param_rules,
+            "base_path": self.base_path,
+            "path": self.path,
             "_endpoint": self.endpoint,
             "_generation": self.generation,
             "_auth": self.auth,

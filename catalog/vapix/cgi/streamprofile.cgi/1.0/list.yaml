@@ -1,0 +1,25 @@
+id: streamprofile.cgi:list
+cgi: streamprofile.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: list
+    params:
+      streamProfileName: "{streamProfileName:array}"
+
+response:
+  format: json
+  data_path: data
+  fields:
+    - streamProfile
+    - maxProfiles
+
+risk_level: read-only
+
+requires:
+  auth_level: viewer

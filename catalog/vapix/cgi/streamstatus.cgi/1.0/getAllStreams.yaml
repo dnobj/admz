@@ -1,0 +1,35 @@
+id: streamstatus.cgi:getAllStreams
+cgi: streamstatus.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: getAllStreams
+
+response:
+  format: json
+  data_path: data
+  fields:
+    - id
+    - state
+    - direction
+    - stream_protocol
+    - transport_protocol
+    - source_address
+    - destination_address
+    - destination_port
+    - media
+    - mime
+    - encrypted
+    - multicast
+    - user_agent
+    - path
+
+risk_level: read-only
+
+requires:
+  auth_level: admin

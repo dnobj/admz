@@ -1,0 +1,8 @@
+endpoint: /axis-cgi/shockdetection/getenabled.cgi
+generation: legacy-cgi
+min_firmware: "5.50"
+description: >
+  Shock/vibration detection. Enable or disable shock detection
+  and configure sensitivity levels. Triggers events when the
+  device is physically disturbed. Requires
+  Properties.Tampering.ShockDetection=yes.

@@ -11,7 +11,7 @@ request:
     method: setStateSequence
     params:
       port: "{port}"
-      sequence: "{sequence}"
+      sequence: "{sequence:array}"
 
 response:
   format: json
@@ -21,6 +21,10 @@ risk_level: normal
 notes: >
   Output ports only. Sequence is array of {state, time} objects
   where time is in milliseconds.
+
+param_rules:
+  - rule: requires
+    params: [port, sequence]
 
 requires:
   auth_level: operator

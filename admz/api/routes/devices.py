@@ -2,10 +2,11 @@
 REST API routes for device management.
 """
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, Depends
 from fastapi.responses import JSONResponse
 
+from admz.fleet_settings import fleet_settings
 from admz.api.models import (
     DeviceCreate,
     DeviceUpdate,
@@ -342,3 +343,21 @@ async def delete_device_account(
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+# ---- Fleet settings endpoints ----
+
+
+@router.get("/fleet/settings")
+async def get_fleet_settings() -> Dict[str, str]:
+    """Get all fleet-wide settings. Password values are returned in full."""
+    return fleet_settings.list_all()
+
+
+@router.get("/fleet/settings/{key}")
+async def get_fleet_setting(key: str):
+    """Get a single fleet setting value."""
+    value = fleet_settings.get(key)
+    if value is None:
+        raise HTTPException(status_code=404, detail=f"Setting '{key}' not found")
+    return {"key": key, "value": value}

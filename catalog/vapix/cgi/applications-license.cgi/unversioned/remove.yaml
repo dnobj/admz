@@ -1,0 +1,18 @@
+id: applications-license.cgi:remove
+cgi: applications-license.cgi
+
+method: POST
+request:
+  query:
+    action: removelicensekey
+    package: "{package}"
+  content_type: null
+
+response:
+  format: text
+  success: "OK"
+
+risk_level: normal
+
+requires:
+  auth_level: admin

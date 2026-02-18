@@ -13,14 +13,14 @@ request:
       server:
         protocol: "{protocol}"
         host: "{host}"
-        port: "{port}"
+        port: "{port:int}"
       username: "{username}"
       password: "{password}"
       clientId: "{clientId}"
-      keepAliveInterval: "{keepAliveInterval}"
-      connectTimeout: "{connectTimeout}"
-      cleanSession: "{cleanSession}"
-      autoReconnect: "{autoReconnect}"
+      keepAliveInterval: "{keepAliveInterval:int}"
+      connectTimeout: "{connectTimeout:int}"
+      cleanSession: "{cleanSession:bool}"
+      autoReconnect: "{autoReconnect:bool}"
 
 response:
   format: json

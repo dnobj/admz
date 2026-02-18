@@ -1,0 +1,14 @@
+id: snmp.cgi:getConfiguration
+cgi: snmp.cgi
+
+method: GET
+base_path: /config/rest/snmp/v1
+path: /
+
+response:
+  format: json
+
+risk_level: read-only
+
+requires:
+  auth_level: viewer

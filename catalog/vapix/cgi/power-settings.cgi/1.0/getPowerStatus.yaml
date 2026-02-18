@@ -1,0 +1,25 @@
+id: power-settings.cgi:getPowerStatus
+cgi: power-settings.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: getPowerStatus
+
+response:
+  format: json
+  data_path: data
+  fields:
+    - usage
+    - psePoeClass
+    - lldpPoeClass
+    - powerRequested
+
+risk_level: read-only
+
+requires:
+  auth_level: viewer

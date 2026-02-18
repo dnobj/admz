@@ -1,0 +1,9 @@
+endpoint: /axis-cgi/disks/job.cgi
+generation: legacy-cgi
+min_firmware: null
+description: >
+  Polls the status of asynchronous disk operations (e.g., format).
+  Returns XML with job state and progress percentage.
+notes: >
+  Used after disks-format.cgi returns a job ID. Poll periodically
+  until the job state is "completed" or "failed".
