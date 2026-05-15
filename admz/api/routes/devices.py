@@ -211,42 +211,13 @@ async def update_device(
     registry: DeviceRegistry = Depends(get_registry),
 ):
     """
-    Update a device in the registry.
-
-    Note: This is implemented as remove + add, so it may not be supported by all backends.
-    Only provided fields will be updated.
+    Update a device in the registry. Only provided fields are merged
+    into the existing device info; accounts are preserved.
     """
     try:
-        # Get existing device info
-        existing_device = registry.get_device_info(device_id)
-
-        # Get existing accounts
-        existing_accounts = {}
-        try:
-            accounts = registry.list_accounts(device_id)
-            for account in accounts:
-                account_id = account.get("account_id")
-                if account_id:
-                    # Get full credentials for each account
-                    creds = registry.get_credentials(device_id, account_id)
-                    existing_accounts[account_id] = creds
-        except Exception:
-            # If we can't get accounts, continue anyway
-            pass
-
-        # Merge updates with existing device info
-        updated_info = {**existing_device}
-        update_dict = device_update.model_dump(exclude_none=True)
-        updated_info.update(update_dict)
-
-        # Remove device_id from the info dict (it's the key)
-        updated_info.pop("device_id", None)
-
-        # Remove and re-add device
-        registry.remove_device(device_id)
-        registry.add_device(device_id, updated_info, existing_accounts)
-
-        # Return the updated device
+        updates = device_update.model_dump(exclude_none=True)
+        updates.pop("device_id", None)
+        registry.update_device(device_id, updates)
         return registry.get_device_info(device_id)
 
     except DeviceNotFoundError as e:

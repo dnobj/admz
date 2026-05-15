@@ -54,12 +54,19 @@ admz/
 ├── mcp/                   — MCP server (the primary entry point)
 │   └── server.py          — 33 tools wiring everything together
 │
-└── api/                   — FastAPI web server
-    ├── main.py            — app entry point
+└── api/                   — FastAPI web server (mirrors the MCP surface)
+    ├── main.py            — app entry point + lifespan
+    ├── context.py         — shared AppContext (catalog, executors,
+    │                         plan engine, snapshot engine, scheduler)
     ├── capture.py         — out-of-band capture session store
     ├── models.py          — pydantic request/response models
     ├── routes/
     │   ├── devices.py     — JSON REST CRUD for devices/accounts
+    │   ├── catalog.py     — catalog query/execute/confirm
+    │   ├── plans.py       — create/execute/status plans
+    │   ├── snapshot.py    — snapshot/restore/diff/drift
+    │   ├── discovery.py   — network discovery
+    │   ├── schedules.py   — recurring snapshot schedules
     │   ├── capture.py     — credential capture endpoints
     │   └── web.py         — browser-facing HTML routes
     └── templates/         — Jinja templates for the UI

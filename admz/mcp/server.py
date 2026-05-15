@@ -1190,32 +1190,30 @@ class ADMZMCPServer:
         raise DeviceNotFoundError(f"Device not found: {device_id}")
 
     async def _search_devices(self, filters: Dict[str, Any]) -> Dict[str, Any]:
-        """Search devices by criteria."""
+        """Search devices by criteria. String fields use case-insensitive
+        substring matching to be friendly to LLM-built queries."""
         all_devices = self.registry.list_devices()
 
-        # Apply filters
+        location_q = (filters.get("location") or "").lower()
+        model_q = (filters.get("model") or "").lower()
+        wanted_tags = filters.get("tags") or []
+
         matched = []
         for device in all_devices:
-            match = True
+            if wanted_tags:
+                device_tags = device.get("tags") or []
+                if not any(tag in device_tags for tag in wanted_tags):
+                    continue
 
-            # Filter by tags
-            if "tags" in filters:
-                device_tags = device.get("tags", [])
-                if not any(tag in device_tags for tag in filters["tags"]):
-                    match = False
+            if location_q:
+                if location_q not in (device.get("location") or "").lower():
+                    continue
 
-            # Filter by location
-            if "location" in filters:
-                if device.get("location") != filters["location"]:
-                    match = False
+            if model_q:
+                if model_q not in (device.get("model") or "").lower():
+                    continue
 
-            # Filter by model
-            if "model" in filters:
-                if device.get("model") != filters["model"]:
-                    match = False
-
-            if match:
-                matched.append(device)
+            matched.append(device)
 
         return {
             "success": True,

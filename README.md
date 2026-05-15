@@ -91,12 +91,23 @@ uvicorn admz.api.main:app --host 0.0.0.0 --port 8000
 
 Provides:
 
-- JSON REST API for the device registry (CRUD)
+- JSON REST API mirroring the MCP surface — devices, accounts, catalog,
+  plans, snapshots, drift, discovery, schedules (see `/api/docs` for the
+  full OpenAPI reference)
 - Browser UI for browsing devices and accounts
 - Out-of-band credential capture URLs (`/capture/<token>`)
 
-Note: snapshot, plan, and catalog functionality is currently **MCP-only**;
-the web surface is the registry + capture flow.
+REST endpoint groups:
+
+| Group | Path prefix |
+|---|---|
+| Devices & accounts | `/api/devices`, `/api/devices/{id}/accounts/...` |
+| Catalog & execution | `/api/catalog/query`, `/api/catalog/execute`, `/api/catalog/confirm` |
+| Plans | `/api/plans`, `/api/plans/{id}/execute` |
+| Snapshots | `/api/snapshot/device`, `/snapshot/fleet`, `/snapshot/restore`, `/snapshot/diff/{id}`, `/snapshot/drift` |
+| Discovery | `/api/discovery/scan`, `/api/discovery/register` |
+| Schedules | `/api/schedules`, `/api/schedules/{id}/run` |
+| Capture | `/api/capture`, `/capture/{token}` |
 
 ## Configuration
 
