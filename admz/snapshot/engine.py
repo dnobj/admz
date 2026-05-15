@@ -3,6 +3,9 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from admz.catalog.loader import CatalogLoader
+from admz.device_registry import DeviceRegistry
+from admz.executor.base import BaseExecutor
 from admz.snapshot.facets import get_facets_for_device
 from admz.snapshot.facets.base import FacetAdapter
 from admz.snapshot.git_repo import GitRepo
@@ -50,9 +53,9 @@ class SnapshotEngine:
 
     def __init__(
         self,
-        catalog,
-        registry,
-        executors: Dict[str, Any],
+        catalog: CatalogLoader,
+        registry: DeviceRegistry,
+        executors: Dict[str, BaseExecutor],
         git_repo: GitRepo,
     ):
         self.catalog = catalog

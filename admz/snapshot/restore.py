@@ -1,6 +1,10 @@
 import logging
 from typing import Any, Dict, List, Optional
 
+import yaml
+
+from admz.catalog.loader import CatalogLoader
+from admz.device_registry import DeviceRegistry
 from admz.snapshot.facets import get_facets_for_device
 from admz.snapshot.facets.base import FacetAdapter
 from admz.snapshot.git_repo import GitRepo
@@ -11,7 +15,12 @@ logger = logging.getLogger(__name__)
 class RestoreBuilder:
     """Reads config from git and builds an execution plan for the plan engine."""
 
-    def __init__(self, catalog, registry, git_repo: GitRepo):
+    def __init__(
+        self,
+        catalog: CatalogLoader,
+        registry: DeviceRegistry,
+        git_repo: GitRepo,
+    ):
         self.catalog = catalog
         self.registry = registry
         self.git = git_repo
@@ -108,8 +117,6 @@ class RestoreBuilder:
             content = self.git.get_file(rel_path)
             if content is None:
                 continue
-
-            import yaml
 
             yaml_doc = yaml.safe_load(content)
             if not yaml_doc:
