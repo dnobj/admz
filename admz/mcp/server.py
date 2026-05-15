@@ -41,6 +41,7 @@ from admz.snapshot.engine import SnapshotEngine
 from admz.snapshot.git_repo import GitRepo
 from admz.snapshot.restore import RestoreBuilder
 from admz.snapshot.drift import DriftDetector
+from admz.snapshot.scheduler import SnapshotScheduler, SnapshotSchedule, parse_interval
 from admz.exceptions import (
     DeviceNotFoundError,
     AccountNotFoundError,
@@ -121,6 +122,15 @@ class ADMZMCPServer:
         self.drift_detector = DriftDetector(
             snapshot_engine=self.snapshot_engine,
             git_repo=self.git_repo,
+        )
+
+        # Scheduler
+        schedule_path = os.path.join(
+            os.path.expanduser("~"), ".admz", "schedules.json"
+        )
+        self.scheduler = SnapshotScheduler(
+            snapshot_engine=self.snapshot_engine,
+            schedule_path=schedule_path,
         )
 
         # Dangerous operation confirm tokens (token → operation details)
@@ -743,6 +753,132 @@ class ADMZMCPServer:
                         "required": [],
                     },
                 ),
+                # --- Schedule tools ---
+                Tool(
+                    name="create_snapshot_schedule",
+                    description=(
+                        "Create a recurring snapshot schedule. Snapshots run "
+                        "automatically at the specified interval. Use "
+                        "interval like '30m', '2h', '1d', or '12h'."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "schedule_id": {
+                                "type": "string",
+                                "description": (
+                                    "Unique ID for this schedule "
+                                    "(e.g. 'nightly-all', 'hourly-lobby')"
+                                ),
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": (
+                                    "Human-readable description"
+                                ),
+                            },
+                            "interval": {
+                                "type": "string",
+                                "description": (
+                                    "How often to run. Examples: "
+                                    "'30m', '2h', '1d', '12h'"
+                                ),
+                            },
+                            "tag_filter": {
+                                "type": "string",
+                                "description": (
+                                    "Only snapshot devices with this tag. "
+                                    "Omit to snapshot all devices."
+                                ),
+                            },
+                            "device_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Specific device IDs to snapshot. "
+                                    "Omit to use tag_filter or all devices."
+                                ),
+                            },
+                        },
+                        "required": ["schedule_id", "description", "interval"],
+                    },
+                ),
+                Tool(
+                    name="list_snapshot_schedules",
+                    description=(
+                        "List all configured snapshot schedules with their "
+                        "status, last run time, and next run time."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                    },
+                ),
+                Tool(
+                    name="update_snapshot_schedule",
+                    description=(
+                        "Update an existing schedule. Can change interval, "
+                        "enable/disable, change tag filter, etc."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "schedule_id": {
+                                "type": "string",
+                                "description": "Schedule ID to update",
+                            },
+                            "interval": {
+                                "type": "string",
+                                "description": "New interval (e.g. '1h')",
+                            },
+                            "enabled": {
+                                "type": "boolean",
+                                "description": "Enable or disable",
+                            },
+                            "tag_filter": {
+                                "type": "string",
+                                "description": "New tag filter",
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "New description",
+                            },
+                        },
+                        "required": ["schedule_id"],
+                    },
+                ),
+                Tool(
+                    name="delete_snapshot_schedule",
+                    description="Delete a snapshot schedule.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "schedule_id": {
+                                "type": "string",
+                                "description": "Schedule ID to delete",
+                            },
+                        },
+                        "required": ["schedule_id"],
+                    },
+                ),
+                Tool(
+                    name="run_snapshot_schedule",
+                    description=(
+                        "Manually trigger a scheduled snapshot right now, "
+                        "without waiting for the next interval."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "schedule_id": {
+                                "type": "string",
+                                "description": "Schedule ID to run",
+                            },
+                        },
+                        "required": ["schedule_id"],
+                    },
+                ),
             ]
 
         @self.server.call_tool()
@@ -860,6 +996,30 @@ class ADMZMCPServer:
                     result = await self._check_drift(
                         arguments.get("device_id"),
                         arguments.get("tag_filter"),
+                    )
+                # --- Schedule tools ---
+                elif name == "create_snapshot_schedule":
+                    result = await self._create_snapshot_schedule(
+                        arguments["schedule_id"],
+                        arguments["description"],
+                        arguments["interval"],
+                        arguments.get("tag_filter"),
+                        arguments.get("device_ids"),
+                    )
+                elif name == "list_snapshot_schedules":
+                    result = await self._list_snapshot_schedules()
+                elif name == "update_snapshot_schedule":
+                    result = await self._update_snapshot_schedule(
+                        arguments["schedule_id"],
+                        arguments,
+                    )
+                elif name == "delete_snapshot_schedule":
+                    result = await self._delete_snapshot_schedule(
+                        arguments["schedule_id"],
+                    )
+                elif name == "run_snapshot_schedule":
+                    result = await self._run_snapshot_schedule(
+                        arguments["schedule_id"],
                     )
                 else:
                     raise ValueError(f"Unknown tool: {name}")
@@ -1480,15 +1640,111 @@ class ADMZMCPServer:
                 "reports": [r.to_summary() for r in reports],
             }
 
+    # ------------------------------------------------------------------
+    # Schedule handlers
+    # ------------------------------------------------------------------
+
+    async def _create_snapshot_schedule(
+        self,
+        schedule_id: str,
+        description: str,
+        interval: str,
+        tag_filter: Optional[str],
+        device_ids: Optional[List[str]],
+    ) -> Dict[str, Any]:
+        try:
+            interval_seconds = parse_interval(interval)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        schedule = SnapshotSchedule(
+            id=schedule_id,
+            description=description,
+            interval_seconds=interval_seconds,
+            tag_filter=tag_filter,
+            device_ids=device_ids,
+        )
+        self.scheduler.add_schedule(schedule)
+
+        return {
+            "success": True,
+            "message": (
+                f"Schedule '{schedule_id}' created — snapshots every "
+                f"{schedule.interval_human}"
+            ),
+            "schedule": schedule.to_dict(),
+        }
+
+    async def _list_snapshot_schedules(self) -> Dict[str, Any]:
+        schedules = self.scheduler.list_schedules()
+        return {
+            "success": True,
+            "count": len(schedules),
+            "schedules": [s.to_dict() for s in schedules],
+        }
+
+    async def _update_snapshot_schedule(
+        self, schedule_id: str, updates: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        kwargs = {}
+        if "interval" in updates:
+            try:
+                kwargs["interval_seconds"] = parse_interval(updates["interval"])
+            except ValueError as e:
+                return {"success": False, "error": str(e)}
+        if "enabled" in updates:
+            kwargs["enabled"] = updates["enabled"]
+        if "tag_filter" in updates:
+            kwargs["tag_filter"] = updates["tag_filter"]
+        if "description" in updates:
+            kwargs["description"] = updates["description"]
+
+        schedule = self.scheduler.update_schedule(schedule_id, **kwargs)
+        if not schedule:
+            return {
+                "success": False,
+                "error": f"Schedule not found: {schedule_id}",
+            }
+
+        return {
+            "success": True,
+            "message": f"Schedule '{schedule_id}' updated",
+            "schedule": schedule.to_dict(),
+        }
+
+    async def _delete_snapshot_schedule(
+        self, schedule_id: str
+    ) -> Dict[str, Any]:
+        removed = self.scheduler.remove_schedule(schedule_id)
+        if not removed:
+            return {
+                "success": False,
+                "error": f"Schedule not found: {schedule_id}",
+            }
+        return {
+            "success": True,
+            "message": f"Schedule '{schedule_id}' deleted",
+        }
+
+    async def _run_snapshot_schedule(
+        self, schedule_id: str
+    ) -> Dict[str, Any]:
+        result = await self.scheduler.run_now(schedule_id)
+        return result
+
     async def run(self):
         """Run the MCP server with stdio transport."""
-        async with stdio_server() as (read_stream, write_stream):
-            logger.info("ADMZ MCP server starting...")
-            await self.server.run(
-                read_stream,
-                write_stream,
-                self.server.create_initialization_options(),
-            )
+        await self.scheduler.start()
+        try:
+            async with stdio_server() as (read_stream, write_stream):
+                logger.info("ADMZ MCP server starting...")
+                await self.server.run(
+                    read_stream,
+                    write_stream,
+                    self.server.create_initialization_options(),
+                )
+        finally:
+            await self.scheduler.stop()
 
 
 async def main():
