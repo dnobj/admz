@@ -80,6 +80,22 @@ class Operation:
     generation: Optional[str] = None
     auth: Optional[str] = None
 
+    def to_executor_dict(self) -> Dict[str, Any]:
+        """Build the dict shape that executors expect."""
+        return {
+            "id": self.id,
+            "cgi": self.cgi,
+            "method": self.method,
+            "risk_level": self.risk_level,
+            "request": self.request,
+            "response": self.response,
+            "requires": self.requires,
+            "service_impact": self.service_impact,
+            "_endpoint": self.endpoint,
+            "_generation": self.generation,
+            "_auth": self.auth,
+        }
+
 
 @dataclass
 class ResolverResult:

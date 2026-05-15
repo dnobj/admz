@@ -19,7 +19,7 @@ from admz.executor.models import ExecutionRequest, StepResult
 logger = logging.getLogger(__name__)
 
 
-class VAPXExecutor(BaseExecutor):
+class VapixExecutor(BaseExecutor):
     """Executor for VAPIX operations on Axis cameras/devices."""
 
     def __init__(self, timeout: float = 15.0, verify_ssl: bool = False):

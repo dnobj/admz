@@ -99,6 +99,52 @@ class FacetAdapter(ABC):
         ...
 
 
+class SimpleParamFacet(FacetAdapter):
+    """Base class for facets that filter a single param.cgi prefix and round-trip
+    cleanly via param.cgi:update. Subclasses just declare name, prefix,
+    restore_order, and optionally applies_to."""
+
+    PREFIX: str = ""
+    NAME: str = ""
+    RESTORE_ORDER: int = 50
+    APPLIES_TO: List[DeviceCriteria] = [DeviceCriteria(families=["vapix"])]
+
+    @property
+    def name(self) -> str:
+        return self.NAME
+
+    @property
+    def applies_to(self) -> List[DeviceCriteria]:
+        return self.APPLIES_TO
+
+    @property
+    def param_prefixes(self) -> List[str]:
+        return [self.PREFIX]
+
+    @property
+    def write_ops(self) -> List[str]:
+        return ["param.cgi:update"]
+
+    @property
+    def restore_order(self) -> int:
+        return self.RESTORE_ORDER
+
+    def serialize(self, raw_responses: Dict[str, Any]) -> Dict[str, Any]:
+        params = raw_responses.get("params", {})
+        result = {}
+        for key, value in sorted(params.items()):
+            if key.startswith(self.PREFIX):
+                short_key = key[len(self.PREFIX):]
+                result[short_key] = value
+        return result
+
+    def deserialize(self, yaml_doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+        params = {}
+        for key, value in yaml_doc.items():
+            params[f"{self.PREFIX}{key}"] = str(value)
+        return [{"operation_id": "param.cgi:update", "params": params}]
+
+
 _registry: List[Type[FacetAdapter]] = []
 
 

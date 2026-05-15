@@ -190,8 +190,14 @@ class TestFacetSerialization:
     def test_events_serialize(self, sample_params):
         facet = EventsFacet()
         result = facet.serialize({"params": sample_params})
-        assert "root.Event.E0.Enabled" in result
-        assert "root.Event.E0.Type" in result
+        assert "event" in result
+        assert "E0.Enabled" in result["event"]
+        assert "E0.Type" in result["event"]
+
+    def test_events_deserialize(self):
+        facet = EventsFacet()
+        ops = facet.deserialize({"event": {"E0.Enabled": "yes"}})
+        assert ops[0]["params"]["root.Event.E0.Enabled"] == "yes"
 
     def test_users_serialize(self, sample_params):
         facet = UsersFacet()

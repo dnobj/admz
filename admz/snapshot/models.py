@@ -12,16 +12,6 @@ class SnapshotStatus(Enum):
 
 
 @dataclass
-class ReadSpec:
-    operation_id: str
-    params: Dict[str, str] = field(default_factory=dict)
-    result_key: str = ""
-
-    def cache_key(self) -> tuple:
-        return (self.operation_id, tuple(sorted(self.params.items())))
-
-
-@dataclass
 class FacetResult:
     name: str
     success: bool

@@ -284,6 +284,19 @@ class SQLiteDeviceRegistry(DeviceRegistry):
             for account_id, account_data in accounts.items():
                 self.add_account(device_id, account_id, account_data)
 
+    def update_device(
+        self,
+        device_id: str,
+        updates: Dict[str, Any],
+    ) -> None:
+        info = self.get_device_info(device_id)
+        info.update(updates)
+        self._conn.execute(
+            "UPDATE devices SET info_json = ? WHERE device_id = ?",
+            (json.dumps(info), device_id),
+        )
+        self._conn.commit()
+
     def remove_device(self, device_id: str) -> None:
         if not self.device_exists(device_id):
             raise DeviceNotFoundError(f"Device '{device_id}' not found")

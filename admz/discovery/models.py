@@ -4,8 +4,12 @@ Data models for network device discovery.
 
 import enum
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class DiscoveryProtocol(enum.Enum):
@@ -94,8 +98,8 @@ class DiscoveredDevice:
 
     # Tracking
     discovered_by: List[DiscoveryProtocol] = field(default_factory=list)
-    first_seen: datetime = field(default_factory=datetime.utcnow)
-    last_seen: datetime = field(default_factory=datetime.utcnow)
+    first_seen: datetime = field(default_factory=_utc_now)
+    last_seen: datetime = field(default_factory=_utc_now)
     is_axis: bool = False
 
     # Raw per-protocol payloads (for debugging / extension)

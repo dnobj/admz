@@ -196,6 +196,24 @@ class DeviceRegistry(ABC):
         """
         raise NotImplementedError("This registry does not support adding devices")
 
+    def update_device(
+        self,
+        device_id: str,
+        updates: Dict[str, Any],
+    ) -> None:
+        """
+        Merge updates into an existing device's information.
+
+        Args:
+            device_id: Device to update
+            updates: Fields to merge into device info
+
+        Raises:
+            DeviceNotFoundError: Device does not exist
+            BackendError: Backend storage system error
+        """
+        raise NotImplementedError("This registry does not support updating devices")
+
     def remove_device(self, device_id: str) -> None:
         """
         Remove a device from the registry.

@@ -200,7 +200,7 @@ class SnapshotEngine:
             return {}
 
         credentials = self.registry.get_credentials(device_id)
-        op_dict = self._op_to_dict(operation)
+        op_dict = operation.to_executor_dict()
         result = await executor.execute(
             op_dict, device_info, credentials, {"group": "root"}
         )
@@ -255,7 +255,7 @@ class SnapshotEngine:
             operation = self.catalog.get_operation(family, spec.operation_id)
             if not operation:
                 continue
-            op_dict = self._op_to_dict(operation)
+            op_dict = operation.to_executor_dict()
             result = await executor.execute(
                 op_dict, device_info, credentials, spec.params
             )
@@ -316,17 +316,3 @@ class SnapshotEngine:
                     raw=facet_result.raw,
                 )
 
-    def _op_to_dict(self, operation) -> Dict[str, Any]:
-        return {
-            "id": operation.id,
-            "cgi": operation.cgi,
-            "method": operation.method,
-            "risk_level": operation.risk_level,
-            "request": operation.request,
-            "response": operation.response,
-            "requires": getattr(operation, "requires", None),
-            "_endpoint": operation.endpoint,
-            "_generation": operation.generation,
-            "_auth": getattr(operation, "auth", None),
-            "service_impact": getattr(operation, "service_impact", None),
-        }

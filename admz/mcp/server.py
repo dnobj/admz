@@ -17,6 +17,13 @@ Snapshot/restore tools:
   - restore_device: propose a plan to restore from a git ref
   - diff_device: show config changes between refs
   - check_drift: compare live device state to git HEAD
+
+Discovery tools:
+  - discover_network_devices: scan the local network for Axis devices
+  - register_discovered_device: add a discovered device to the registry
+
+Schedule tools:
+  - create/update/delete/list/run_snapshot_schedule: manage recurring snapshots
 """
 
 import asyncio
@@ -24,7 +31,10 @@ import json
 import logging
 import os
 import secrets
+import time
 from typing import Any, Dict, List, Optional
+
+CONFIRM_TOKEN_TTL_SECONDS = 300  # 5 minutes
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -35,19 +45,20 @@ from admz.device_registry import DeviceRegistry
 from admz.api.capture import capture_store, CaptureStatus
 from admz.catalog.loader import CatalogLoader
 from admz.catalog.resolver import CatalogResolver
-from admz.executor.vapix import VAPXExecutor
+from admz.executor.vapix import VapixExecutor
 from admz.plans.engine import PlanEngine
 from admz.snapshot.engine import SnapshotEngine
 from admz.snapshot.git_repo import GitRepo
 from admz.snapshot.restore import RestoreBuilder
 from admz.snapshot.drift import DriftDetector
 from admz.snapshot.scheduler import SnapshotScheduler, SnapshotSchedule, parse_interval
+from admz.discovery import discover_devices as run_network_discovery
 from admz.exceptions import (
+    ADMZError,
     DeviceNotFoundError,
     AccountNotFoundError,
     PermissionDeniedError,
     BackendError,
-    AxisSecretsError,
 )
 
 # Configure logging
@@ -91,7 +102,7 @@ class ADMZMCPServer:
         self.resolver = CatalogResolver(self.catalog)
 
         # Executors (one per API family)
-        vapix_executor = VAPXExecutor()
+        vapix_executor = VapixExecutor()
         self.executors = {"vapix": vapix_executor}
 
         # Plan engine
@@ -753,6 +764,100 @@ class ADMZMCPServer:
                         "required": [],
                     },
                 ),
+                # --- Discovery tools ---
+                Tool(
+                    name="discover_network_devices",
+                    description=(
+                        "Scan the local network for Axis devices using "
+                        "multiple discovery protocols concurrently (mDNS, "
+                        "SSDP, ONVIF, ARP, HTTP probe, SNMP). Returns the "
+                        "list of discovered devices. Devices are NOT "
+                        "automatically registered — use register_discovered_device "
+                        "to add a specific one."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "timeout": {
+                                "type": "number",
+                                "description": (
+                                    "Per-protocol timeout in seconds "
+                                    "(default: 5.0)"
+                                ),
+                                "default": 5.0,
+                            },
+                            "axis_only": {
+                                "type": "boolean",
+                                "description": (
+                                    "Filter to Axis-manufactured devices only"
+                                ),
+                                "default": False,
+                            },
+                            "subnet": {
+                                "type": "string",
+                                "description": (
+                                    "Subnet for ARP scan (e.g. '192.168.1.0/24'). "
+                                    "Default: auto-detect."
+                                ),
+                            },
+                            "enable_ping": {
+                                "type": "boolean",
+                                "description": (
+                                    "Enable ICMP ping sweep (slow). Default: false"
+                                ),
+                                "default": False,
+                            },
+                        },
+                        "required": [],
+                    },
+                ),
+                Tool(
+                    name="register_discovered_device",
+                    description=(
+                        "Add a previously-discovered device to the registry. "
+                        "Provide the discovery result fields. The device will "
+                        "be created without credentials — use capture_credentials "
+                        "to set them via the out-of-band URL flow."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Unique device ID to assign",
+                            },
+                            "ip_address": {
+                                "type": "string",
+                                "description": "Device IP address",
+                            },
+                            "mac_address": {
+                                "type": "string",
+                                "description": "MAC address (optional)",
+                            },
+                            "model": {
+                                "type": "string",
+                                "description": "Device model (optional)",
+                            },
+                            "hostname": {
+                                "type": "string",
+                                "description": "Hostname / friendly name",
+                            },
+                            "device_type": {
+                                "type": "string",
+                                "description": (
+                                    "Device type from discovery "
+                                    "(e.g. 'camera', 'speaker')"
+                                ),
+                            },
+                            "tags": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Tags to apply",
+                            },
+                        },
+                        "required": ["device_id", "ip_address"],
+                    },
+                ),
                 # --- Schedule tools ---
                 Tool(
                     name="create_snapshot_schedule",
@@ -997,6 +1102,11 @@ class ADMZMCPServer:
                         arguments.get("device_id"),
                         arguments.get("tag_filter"),
                     )
+                # --- Discovery tools ---
+                elif name == "discover_network_devices":
+                    result = await self._discover_network_devices(arguments)
+                elif name == "register_discovered_device":
+                    result = await self._register_discovered_device(arguments)
                 # --- Schedule tools ---
                 elif name == "create_snapshot_schedule":
                     result = await self._create_snapshot_schedule(
@@ -1041,7 +1151,7 @@ class ADMZMCPServer:
             except BackendError as e:
                 error = {"error": "BackendError", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
-            except AxisSecretsError as e:
+            except ADMZError as e:
                 error = {"error": "ADMZError", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
             except Exception as e:
@@ -1178,18 +1288,7 @@ class ADMZMCPServer:
         updates: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Update device information."""
-        # Get current device info
-        device_info = self.registry.get_device_info(device_id)
-
-        # Merge updates
-        device_info.update(updates)
-
-        # Re-register device with updated info
-        # Note: This assumes the backend supports updating
-        # In practice, you might need to implement update_device method
-        # For now, we'll use add_device which should update if exists
-        self.registry.add_device(device_id, device_info)
-
+        self.registry.update_device(device_id, updates)
         return {
             "success": True,
             "message": f"Device '{device_id}' updated successfully",
@@ -1328,11 +1427,13 @@ class ADMZMCPServer:
         if risk == "dangerous":
             op = self.catalog.get_operation(family, operation_id)
             token = secrets.token_urlsafe(32)
+            self._purge_expired_confirm_tokens()
             self._confirm_tokens[token] = {
                 "device_id": device_id,
                 "operation_id": operation_id,
                 "params": params,
                 "family": family,
+                "issued_at": time.time(),
             }
             return {
                 "blocked": True,
@@ -1371,20 +1472,7 @@ class ADMZMCPServer:
         device["device_id"] = device_id
         credentials = self.registry.get_credentials(device_id)
 
-        # Build operation dict
-        op_dict = {
-            "id": operation.id,
-            "cgi": operation.cgi,
-            "method": operation.method,
-            "risk_level": operation.risk_level,
-            "request": operation.request,
-            "response": operation.response,
-            "requires": operation.requires,
-            "_endpoint": operation.endpoint,
-            "_generation": operation.generation,
-            "_auth": operation.auth,
-            "service_impact": operation.service_impact,
-        }
+        op_dict = operation.to_executor_dict()
 
         result = await executor.execute(op_dict, device, credentials, params)
 
@@ -1406,8 +1494,19 @@ class ADMZMCPServer:
 
         return response
 
+    def _purge_expired_confirm_tokens(self) -> None:
+        now = time.time()
+        expired = [
+            tok
+            for tok, details in self._confirm_tokens.items()
+            if now - details.get("issued_at", 0) > CONFIRM_TOKEN_TTL_SECONDS
+        ]
+        for tok in expired:
+            self._confirm_tokens.pop(tok, None)
+
     async def _confirm_dangerous(self, confirm_token: str) -> Dict[str, Any]:
         """Confirm and execute a blocked dangerous operation."""
+        self._purge_expired_confirm_tokens()
         details = self._confirm_tokens.pop(confirm_token, None)
         if not details:
             return {
@@ -1436,19 +1535,7 @@ class ADMZMCPServer:
         device["device_id"] = details["device_id"]
         credentials = self.registry.get_credentials(details["device_id"])
 
-        op_dict = {
-            "id": operation.id,
-            "cgi": operation.cgi,
-            "method": operation.method,
-            "risk_level": operation.risk_level,
-            "request": operation.request,
-            "response": operation.response,
-            "requires": operation.requires,
-            "_endpoint": operation.endpoint,
-            "_generation": operation.generation,
-            "_auth": operation.auth,
-            "service_impact": operation.service_impact,
-        }
+        op_dict = operation.to_executor_dict()
 
         result = await executor.execute(
             op_dict, device, credentials, details["params"]
@@ -1639,6 +1726,49 @@ class ADMZMCPServer:
                 "drifted": sum(1 for r in reports if r.has_drift),
                 "reports": [r.to_summary() for r in reports],
             }
+
+    # ------------------------------------------------------------------
+    # Discovery handlers
+    # ------------------------------------------------------------------
+
+    async def _discover_network_devices(
+        self, arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        devices = await run_network_discovery(
+            timeout=arguments.get("timeout", 5.0),
+            axis_only=arguments.get("axis_only", False),
+            subnet=arguments.get("subnet"),
+            enable_ping=arguments.get("enable_ping", False),
+        )
+        return {
+            "success": True,
+            "count": len(devices),
+            "devices": [d.to_registry_dict() for d in devices],
+        }
+
+    async def _register_discovered_device(
+        self, arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        device_id = arguments["device_id"]
+        device_info = {
+            "host": arguments["ip_address"],
+            "ip_address": arguments["ip_address"],
+            "mac_address": arguments.get("mac_address", ""),
+            "model": arguments.get("model", ""),
+            "hostname": arguments.get("hostname", ""),
+            "nickname": arguments.get("hostname", ""),
+            "device_type": arguments.get("device_type", "unknown"),
+            "tags": arguments.get("tags", []),
+        }
+        self.registry.add_device(device_id, device_info)
+        return {
+            "success": True,
+            "message": (
+                f"Device '{device_id}' registered. Use capture_credentials "
+                "to set credentials via the out-of-band URL flow."
+            ),
+            "device_id": device_id,
+        }
 
     # ------------------------------------------------------------------
     # Schedule handlers
