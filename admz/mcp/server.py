@@ -10,6 +10,13 @@ Catalog-in-the-loop tools:
   - create_plan: submits a multi-step plan for review
   - execute_plan: runs an approved plan autonomously
   - get_plan_status: checks progress of a running plan
+
+Snapshot/restore tools:
+  - snapshot_device: capture device config to git
+  - snapshot_fleet: bulk snapshot filtered by tag
+  - restore_device: propose a plan to restore from a git ref
+  - diff_device: show config changes between refs
+  - check_drift: compare live device state to git HEAD
 """
 
 import asyncio
@@ -30,6 +37,10 @@ from admz.catalog.loader import CatalogLoader
 from admz.catalog.resolver import CatalogResolver
 from admz.executor.vapix import VAPXExecutor
 from admz.plans.engine import PlanEngine
+from admz.snapshot.engine import SnapshotEngine
+from admz.snapshot.git_repo import GitRepo
+from admz.snapshot.restore import RestoreBuilder
+from admz.snapshot.drift import DriftDetector
 from admz.exceptions import (
     DeviceNotFoundError,
     AccountNotFoundError,
@@ -87,6 +98,29 @@ class ADMZMCPServer:
             catalog=self.catalog,
             registry=self.registry,
             executors=self.executors,
+        )
+
+        # Snapshot / restore
+        config_repo_path = os.getenv(
+            "ADMZ_CONFIG_REPO_PATH",
+            os.path.join(os.path.expanduser("~"), ".admz", "config-repo"),
+        )
+        config_repo_remote = os.getenv("ADMZ_CONFIG_REPO_REMOTE")
+        self.git_repo = GitRepo(config_repo_path, remote_url=config_repo_remote)
+        self.snapshot_engine = SnapshotEngine(
+            catalog=self.catalog,
+            registry=self.registry,
+            executors=self.executors,
+            git_repo=self.git_repo,
+        )
+        self.restore_builder = RestoreBuilder(
+            catalog=self.catalog,
+            registry=self.registry,
+            git_repo=self.git_repo,
+        )
+        self.drift_detector = DriftDetector(
+            snapshot_engine=self.snapshot_engine,
+            git_repo=self.git_repo,
         )
 
         # Dangerous operation confirm tokens (token → operation details)
@@ -564,6 +598,151 @@ class ADMZMCPServer:
                         "required": ["plan_id"],
                     },
                 ),
+                # --- Snapshot / Restore tools ---
+                Tool(
+                    name="snapshot_device",
+                    description=(
+                        "Capture a device's full configuration and commit it "
+                        "to the config git repository. Reads all applicable "
+                        "facets (image, network, time, events, etc.) and writes "
+                        "normalized YAML + raw responses. Returns a summary "
+                        "of what was captured."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID to snapshot",
+                            },
+                            "message": {
+                                "type": "string",
+                                "description": (
+                                    "Optional commit message "
+                                    "(default: 'Snapshot <device_id>')"
+                                ),
+                            },
+                        },
+                        "required": ["device_id"],
+                    },
+                ),
+                Tool(
+                    name="snapshot_fleet",
+                    description=(
+                        "Snapshot all devices (or a filtered subset) in a "
+                        "single commit. Devices are read in parallel."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "tag_filter": {
+                                "type": "string",
+                                "description": (
+                                    "Only snapshot devices with this tag. "
+                                    "Omit to snapshot all devices."
+                                ),
+                            },
+                            "message": {
+                                "type": "string",
+                                "description": "Optional commit message",
+                            },
+                        },
+                        "required": [],
+                    },
+                ),
+                Tool(
+                    name="restore_device",
+                    description=(
+                        "Build a plan that restores a device to a previous "
+                        "configuration from git. Returns the plan for review — "
+                        "call execute_plan to apply it. Accepts a git ref "
+                        "(commit SHA, tag, or branch)."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID to restore",
+                            },
+                            "ref": {
+                                "type": "string",
+                                "description": (
+                                    "Git ref to restore from "
+                                    "(SHA, tag, or branch). Default: HEAD"
+                                ),
+                                "default": "HEAD",
+                            },
+                            "facets": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Specific facets to restore "
+                                    "(e.g. ['image', 'time']). "
+                                    "Omit to restore all."
+                                ),
+                            },
+                        },
+                        "required": ["device_id"],
+                    },
+                ),
+                Tool(
+                    name="diff_device",
+                    description=(
+                        "Show configuration changes for a device between two "
+                        "git refs, or between a ref and the current live state."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID",
+                            },
+                            "ref_a": {
+                                "type": "string",
+                                "description": "First git ref (default: HEAD~1)",
+                                "default": "HEAD~1",
+                            },
+                            "ref_b": {
+                                "type": "string",
+                                "description": (
+                                    "Second git ref (default: HEAD)"
+                                ),
+                                "default": "HEAD",
+                            },
+                        },
+                        "required": ["device_id"],
+                    },
+                ),
+                Tool(
+                    name="check_drift",
+                    description=(
+                        "Compare a device's live configuration against what's "
+                        "stored in git. Reports any fields that differ. "
+                        "Useful for detecting manual changes made outside ADMZ."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": (
+                                    "Device ID to check. Omit to check "
+                                    "all devices."
+                                ),
+                            },
+                            "tag_filter": {
+                                "type": "string",
+                                "description": (
+                                    "Only check devices with this tag "
+                                    "(when device_id is omitted)"
+                                ),
+                            },
+                        },
+                        "required": [],
+                    },
+                ),
             ]
 
         @self.server.call_tool()
@@ -653,6 +832,34 @@ class ADMZMCPServer:
                 elif name == "get_plan_status":
                     result = await self._get_plan_status(
                         arguments["plan_id"],
+                    )
+                # --- Snapshot / Restore tools ---
+                elif name == "snapshot_device":
+                    result = await self._snapshot_device(
+                        arguments["device_id"],
+                        arguments.get("message"),
+                    )
+                elif name == "snapshot_fleet":
+                    result = await self._snapshot_fleet(
+                        arguments.get("tag_filter"),
+                        arguments.get("message"),
+                    )
+                elif name == "restore_device":
+                    result = await self._restore_device(
+                        arguments["device_id"],
+                        arguments.get("ref", "HEAD"),
+                        arguments.get("facets"),
+                    )
+                elif name == "diff_device":
+                    result = await self._diff_device(
+                        arguments["device_id"],
+                        arguments.get("ref_a", "HEAD~1"),
+                        arguments.get("ref_b", "HEAD"),
+                    )
+                elif name == "check_drift":
+                    result = await self._check_drift(
+                        arguments.get("device_id"),
+                        arguments.get("tag_filter"),
                     )
                 else:
                     raise ValueError(f"Unknown tool: {name}")
@@ -1163,6 +1370,115 @@ class ADMZMCPServer:
             "success": True,
             **status,
         }
+
+    # ------------------------------------------------------------------
+    # Snapshot / Restore handlers
+    # ------------------------------------------------------------------
+
+    async def _snapshot_device(
+        self, device_id: str, message: Optional[str] = None
+    ) -> Dict[str, Any]:
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+        snapshot = await self.snapshot_engine.snapshot_device(
+            device_id, message=message
+        )
+        return {
+            "success": True,
+            **snapshot.to_summary(),
+        }
+
+    async def _snapshot_fleet(
+        self, tag_filter: Optional[str], message: Optional[str]
+    ) -> Dict[str, Any]:
+        snapshots = await self.snapshot_engine.snapshot_fleet(
+            tag_filter=tag_filter, message=message
+        )
+        return {
+            "success": True,
+            "count": len(snapshots),
+            "results": [s.to_summary() for s in snapshots],
+        }
+
+    async def _restore_device(
+        self,
+        device_id: str,
+        ref: str,
+        facet_names: Optional[List[str]],
+    ) -> Dict[str, Any]:
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+
+        plan_spec = self.restore_builder.build_restore_plan(
+            device_id, ref=ref, facet_names=facet_names
+        )
+
+        if not plan_spec["steps"]:
+            return {
+                "success": True,
+                "message": f"No config found for {device_id} at {ref}",
+                "warnings": plan_spec.get("warnings", []),
+            }
+
+        try:
+            plan = self.plan_engine.create_plan(
+                description=plan_spec["description"],
+                steps=plan_spec["steps"],
+                on_failure=plan_spec["on_failure"],
+            )
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        return {
+            "success": True,
+            "message": (
+                "Restore plan created. Review and call execute_plan "
+                "with the plan_id to apply."
+            ),
+            "warnings": plan_spec.get("warnings", []),
+            "source_ref": plan_spec.get("source_ref", ref),
+            **plan.to_summary(),
+        }
+
+    async def _diff_device(
+        self, device_id: str, ref_a: str, ref_b: str
+    ) -> Dict[str, Any]:
+        device_path = f"fleet/{device_id}/"
+        diff_text = self.git_repo.diff(ref_a, ref_b, path=device_path)
+        history = self.git_repo.log(path=device_path, max_count=10)
+
+        return {
+            "success": True,
+            "device_id": device_id,
+            "ref_a": ref_a,
+            "ref_b": ref_b,
+            "diff": diff_text if diff_text else "(no changes)",
+            "recent_history": history,
+        }
+
+    async def _check_drift(
+        self,
+        device_id: Optional[str],
+        tag_filter: Optional[str],
+    ) -> Dict[str, Any]:
+        if device_id:
+            if not self.registry.device_exists(device_id):
+                raise DeviceNotFoundError(f"Device not found: {device_id}")
+            report = await self.drift_detector.check_drift(device_id)
+            return {
+                "success": True,
+                **report.to_summary(),
+            }
+        else:
+            reports = await self.drift_detector.check_fleet_drift(
+                tag_filter=tag_filter
+            )
+            return {
+                "success": True,
+                "count": len(reports),
+                "drifted": sum(1 for r in reports if r.has_drift),
+                "reports": [r.to_summary() for r in reports],
+            }
 
     async def run(self):
         """Run the MCP server with stdio transport."""
