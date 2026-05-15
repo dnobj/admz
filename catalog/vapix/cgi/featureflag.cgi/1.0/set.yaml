@@ -1,0 +1,26 @@
+id: featureflag.cgi:set
+cgi: featureflag.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: set
+    params:
+      flagValues: "{flagValues}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: normal
+
+rollback:
+  strategy: revert-flags
+  read_action: get
+
+requires:
+  auth_level: admin

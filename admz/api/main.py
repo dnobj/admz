@@ -46,7 +46,6 @@ async def lifespan(app: FastAPI):
     finally:
         await ctx.scheduler.stop()
 
-
 app = FastAPI(
     title="ADMZ - Axis Device Management Zone",
     description=(

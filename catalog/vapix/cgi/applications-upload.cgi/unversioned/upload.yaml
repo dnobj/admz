@@ -1,0 +1,21 @@
+id: applications-upload.cgi:upload
+cgi: applications-upload.cgi
+
+method: POST
+
+request:
+  content_type: multipart/form-data
+  body:
+    file: "{file}"
+
+response:
+  format: text
+  success: "OK"
+
+risk_level: service-affecting
+notes: >
+  Uploads and installs an ACAP application package.
+  Overwrites existing version if already installed.
+
+requires:
+  auth_level: admin

@@ -33,6 +33,11 @@ from admz.discovery.orchestrator import (
     DiscoveryOrchestrator,
     discover_devices,
 )
+from admz.discovery.credential_probe import (
+    probe_credentials,
+    ProbeResult,
+    ProbeStatus,
+)
 
 __all__ = [
     "discover_devices",
@@ -42,4 +47,7 @@ __all__ = [
     "DeviceType",
     "AXIS_OUI_PREFIXES",
     "is_axis_mac",
+    "probe_credentials",
+    "ProbeResult",
+    "ProbeStatus",
 ]

@@ -56,7 +56,7 @@ class CatalogLoader:
         meta = CgiMetadata(
             endpoint=data["endpoint"],
             generation=data["generation"],
-            auth=data.get("auth", "digest"),
+            auth=data.get("auth"),
             min_firmware=data.get("min_firmware"),
             api_id=data.get("api_id"),
             description=data.get("description", ""),
@@ -161,13 +161,20 @@ class CatalogLoader:
         Load a param.cgi parameter group file.
 
         group_name is e.g., "root.Image" — maps to
-        cgi/param.cgi/groups/root.Image.yaml
+        cgi/param.cgi/<version>/groups/root.Image.yaml
         """
-        path = (
-            self.catalog_path / family / "cgi" / "param.cgi" / "groups"
-            / f"{group_name}.yaml"
-        )
-        if not path.exists():
+        param_dir = self.catalog_path / family / "cgi" / "param.cgi"
+        filename = f"{group_name}.yaml"
+
+        # Search version subfolders for groups/ directory
+        path = None
+        for groups_dir in param_dir.glob("*/groups"):
+            candidate = groups_dir / filename
+            if candidate.exists():
+                path = candidate
+                break
+
+        if path is None:
             return None
 
         data = self._load_yaml(path)

@@ -1,0 +1,28 @@
+id: ntp.cgi:getNTPInfo
+cgi: ntp.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: getNTPInfo
+
+response:
+  format: json
+  data_path: data
+  fields:
+    - enabled
+    - serversSource
+    - staticServers
+    - dhcpServers
+    - NTSEnabled
+    - minpoll
+    - maxpoll
+
+risk_level: read-only
+
+requires:
+  auth_level: admin

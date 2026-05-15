@@ -1,0 +1,24 @@
+id: com-ptz.cgi:relative-move
+cgi: com-ptz.cgi
+
+method: GET
+
+request:
+  query:
+    rpan: "{rpan}"
+    rtilt: "{rtilt}"
+    rzoom: "{rzoom}"
+    camera: "{camera}"
+    speed: "{speed}"
+  content_type: null
+
+response:
+  format: text
+  success: ""
+
+risk_level: normal
+notes: >
+  Relative movement. rpan/rtilt are float offsets, rzoom is integer offset.
+
+requires:
+  auth_level: operator

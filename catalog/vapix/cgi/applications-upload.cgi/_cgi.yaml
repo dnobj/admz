@@ -1,0 +1,6 @@
+endpoint: /axis-cgi/applications/upload.cgi
+generation: legacy-cgi
+min_firmware: "5.00"
+description: >
+  ACAP application upload. Install or upgrade applications via
+  multipart file upload.

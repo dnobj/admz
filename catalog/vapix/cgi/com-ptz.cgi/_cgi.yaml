@@ -1,0 +1,7 @@
+endpoint: /axis-cgi/com/ptz.cgi
+generation: legacy-cgi
+min_firmware: null
+description: >
+  Pan/Tilt/Zoom control. Move camera position absolutely or relatively,
+  go to presets, control focus, iris, brightness, and continuous
+  movement. Supports digital and mechanical PTZ.

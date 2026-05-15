@@ -107,132 +107,76 @@ vapix-catalog/
 │
 ├── cgi/                              # One directory per CGI endpoint
 │   │
-│   ├── param.cgi/
-│   │   ├── _cgi.yaml                 # CGI-level metadata
-│   │   ├── list.yaml                 # action=list
-│   │   ├── update.yaml               # action=update
-│   │   ├── add.yaml                  # action=add
-│   │   ├── remove.yaml               # action=remove
-│   │   ├── listdefinitions.yaml      # action=listdefinitions
-│   │   └── groups/                   # one file per param group
-│   │       ├── root.Brand.yaml
-│   │       ├── root.Image.yaml
-│   │       ├── root.ImageSource.yaml
-│   │       ├── root.Network.yaml
-│   │       ├── root.PTZ.yaml
-│   │       ├── root.StreamProfile.yaml
-│   │       ├── root.AudioSource.yaml
-│   │       ├── root.IOPort.yaml
-│   │       ├── root.HTTPS.yaml
-│   │       ├── root.System.yaml
-│   │       ├── root.Time.yaml
-│   │       ├── root.Properties.yaml  # read-only capability flags
-│   │       └── ...                   # dozens more
+│   │   # Directory naming convention:
+│   │   #   dir name = path segments after /axis-cgi/ joined with hyphens
+│   │   #   e.g. /axis-cgi/mqtt/client.cgi → mqtt-client.cgi/
+│   │   #
+│   │   # Version folder convention:
+│   │   #   json-rpc APIs  → numbered version folders (1.0/, 1.1/, etc.)
+│   │   #   legacy-cgi APIs → unversioned/
+│   │   #   Each version folder is self-contained with all operations.
 │   │
-│   ├── com-ptz.cgi/
+│   ├── param.cgi/                    # legacy-cgi
 │   │   ├── _cgi.yaml
-│   │   ├── continuouspantiltmove.yaml
-│   │   ├── absolutepantiltmove.yaml
-│   │   ├── gotoserverpresetname.yaml
-│   │   ├── query-position.yaml
-│   │   ├── query-presets.yaml
-│   │   └── query-limits.yaml
+│   │   └── unversioned/
+│   │       ├── list.yaml
+│   │       ├── update.yaml
+│   │       └── groups/               # one file per param group
+│   │           ├── root.Brand.yaml
+│   │           ├── root.Image.yaml
+│   │           ├── root.ImageSource.yaml
+│   │           ├── root.Network.yaml
+│   │           ├── root.PTZ.yaml
+│   │           ├── root.StreamProfile.yaml
+│   │           ├── root.AudioSource.yaml
+│   │           ├── root.IOPort.yaml
+│   │           ├── root.Time.yaml
+│   │           ├── root.Properties.yaml
+│   │           └── ...
 │   │
-│   ├── basicdeviceinfo.cgi/
+│   ├── com-ptz.cgi/                  # legacy-cgi
 │   │   ├── _cgi.yaml
-│   │   ├── getAllProperties.yaml
-│   │   ├── getAllUnrestrictedProperties.yaml
-│   │   └── getSupportedVersions.yaml
+│   │   └── unversioned/
+│   │       ├── move.yaml
+│   │       ├── relative-move.yaml
+│   │       ├── continuous-move.yaml
+│   │       ├── stop.yaml
+│   │       ├── goto-preset.yaml
+│   │       ├── query-presets.yaml
+│   │       ├── home.yaml
+│   │       └── info.yaml
 │   │
-│   ├── apidiscovery.cgi/
+│   ├── basicdeviceinfo.cgi/          # json-rpc
 │   │   ├── _cgi.yaml
-│   │   ├── getApiList.yaml
-│   │   └── getSupportedVersions.yaml
+│   │   └── 1.0/
+│   │       ├── getAllProperties.yaml
+│   │       └── getAllUnrestrictedProperties.yaml
 │   │
-│   ├── pwdgrp.cgi/
+│   ├── lightcontrol.cgi/             # json-rpc (version example)
 │   │   ├── _cgi.yaml
-│   │   ├── add-user.yaml
-│   │   ├── update-user.yaml
-│   │   └── remove-user.yaml
+│   │   ├── 1.0/                      # complete for v1.0
+│   │   │   ├── getLightInformation.yaml
+│   │   │   ├── activateLight.yaml
+│   │   │   ├── deactivateLight.yaml
+│   │   │   └── setManualIntensity.yaml
+│   │   └── 1.1/                      # complete for v1.1 (future)
+│   │       ├── getLightInformation.yaml
+│   │       ├── activateLight.yaml
+│   │       ├── deactivateLight.yaml
+│   │       ├── setManualIntensity.yaml
+│   │       └── setIndividualIntensity.yaml
 │   │
-│   ├── firmwaremanagement.cgi/
+│   ├── restart.cgi/                  # legacy-cgi
 │   │   ├── _cgi.yaml
-│   │   ├── status.yaml
-│   │   ├── upgrade.yaml
-│   │   ├── commit.yaml
-│   │   └── rollback.yaml
+│   │   └── unversioned/
+│   │       └── restart.yaml
 │   │
-│   ├── restart.cgi/
+│   ├── factorydefault.cgi/           # legacy-cgi
 │   │   ├── _cgi.yaml
-│   │   └── execute.yaml
+│   │   └── unversioned/
+│   │       └── factory-reset.yaml
 │   │
-│   ├── factorydefault.cgi/
-│   │   ├── _cgi.yaml
-│   │   └── execute.yaml
-│   │
-│   ├── hardfactorydefault.cgi/
-│   │   ├── _cgi.yaml
-│   │   └── execute.yaml
-│   │
-│   ├── dynamicoverlay.cgi/
-│   │   ├── _cgi.yaml
-│   │   ├── addimage.yaml
-│   │   ├── addtext.yaml
-│   │   ├── setimage.yaml
-│   │   ├── remove.yaml
-│   │   └── list.yaml
-│   │
-│   ├── io-port.cgi/
-│   │   ├── _cgi.yaml
-│   │   ├── set-state.yaml
-│   │   └── get-state.yaml
-│   │
-│   ├── network_settings.cgi/
-│   │   ├── _cgi.yaml
-│   │   ├── getNetworkInfo.yaml
-│   │   └── setNetworkInfo.yaml
-│   │
-│   ├── time.cgi/
-│   │   ├── _cgi.yaml
-│   │   ├── getDateTimeInfo.yaml
-│   │   └── setDateTimeInfo.yaml
-│   │
-│   ├── ntp.cgi/
-│   │   ├── _cgi.yaml
-│   │   ├── getNTPInfo.yaml
-│   │   └── setNTPInfo.yaml
-│   │
-│   ├── systemlog.cgi/
-│   │   ├── _cgi.yaml
-│   │   └── read.yaml
-│   │
-│   ├── serverreport.cgi/
-│   │   ├── _cgi.yaml
-│   │   └── read.yaml
-│   │
-│   ├── accesslog.cgi/
-│   │   ├── _cgi.yaml
-│   │   └── read.yaml
-│   │
-│   ├── applications-control.cgi/
-│   │   ├── _cgi.yaml
-│   │   ├── start.yaml
-│   │   ├── stop.yaml
-│   │   └── restart.yaml
-│   │
-│   ├── applications-upload.cgi/
-│   │   ├── _cgi.yaml
-│   │   └── upload.yaml
-│   │
-│   ├── applications-list.cgi/
-│   │   ├── _cgi.yaml
-│   │   └── list.yaml
-│   │
-│   └── lightcontrol.cgi/
-│       ├── _cgi.yaml
-│       ├── getServiceCapabilities.yaml
-│       ├── getLightInformation.yaml
-│       └── setLightControl.yaml
+│   └── ...                           # 34 CGI endpoints total
 │
 ├── config-rest/                      # Generation 3 REST APIs
 │   ├── ssh/
@@ -661,8 +605,8 @@ manage-applications:
   - cgi/applications-list.cgi/list.yaml
 
 configure-io:
-  - cgi/io-port.cgi/set-state.yaml
-  - cgi/io-port.cgi/get-state.yaml
+  - cgi/io-portmanagement.cgi/setPorts.yaml
+  - cgi/io-portmanagement.cgi/getPorts.yaml
   - cgi/param.cgi/groups/root.IOPort.yaml
 
 configure-image:
@@ -747,8 +691,8 @@ Properties.Audio.Audio:
   - cgi/param.cgi/groups/root.AudioSource.yaml
 
 Properties.IO.NbrOfInputs:
-  - cgi/io-port.cgi/set-state.yaml
-  - cgi/io-port.cgi/get-state.yaml
+  - cgi/io-portmanagement.cgi/setPorts.yaml
+  - cgi/io-portmanagement.cgi/getPorts.yaml
   - cgi/param.cgi/groups/root.IOPort.yaml
 
 Properties.LightControl.LightControl2:
@@ -2743,7 +2687,7 @@ configure-analytics:
   - aoa/operations/configure-scenario.yaml
 
 manage-recordings:
-  - vapix/cgi/record.cgi/start.yaml
+  - vapix/cgi/record-list.cgi/list-recordings.yaml
   - acs/rest/recordings/list.yaml
   - acs/rest/recordings/export.yaml
 

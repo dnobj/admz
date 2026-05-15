@@ -313,6 +313,24 @@ class SQLiteDeviceRegistry(DeviceRegistry):
         )
         self._conn.commit()
 
+    def update_device_info(
+        self, device_id: str, updates: Dict[str, Any]
+    ) -> None:
+        if not self.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device '{device_id}' not found")
+
+        row = self._conn.execute(
+            "SELECT info_json FROM devices WHERE device_id=?", (device_id,)
+        ).fetchone()
+        info = json.loads(row[0])
+        info.update(updates)
+
+        self._conn.execute(
+            "UPDATE devices SET info_json=? WHERE device_id=?",
+            (json.dumps(info), device_id),
+        )
+        self._conn.commit()
+
     def remove_account(self, device_id: str, account_id: str) -> None:
         if not self.device_exists(device_id):
             raise DeviceNotFoundError(f"Device '{device_id}' not found")

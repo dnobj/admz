@@ -1,0 +1,22 @@
+id: com-ptz.cgi:continuous-move
+cgi: com-ptz.cgi
+
+method: GET
+
+request:
+  query:
+    continuouspantiltmove: "{panSpeed},{tiltSpeed}"
+    camera: "{camera}"
+  content_type: null
+
+response:
+  format: text
+  success: ""
+
+risk_level: normal
+notes: >
+  Continuous pan/tilt movement. Speeds are floats (-100..100).
+  Use move=stop to halt.
+
+requires:
+  auth_level: operator

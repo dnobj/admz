@@ -1,0 +1,26 @@
+id: io-portmanagement.cgi:setStateSequence
+cgi: io-portmanagement.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: setStateSequence
+    params:
+      port: "{port}"
+      sequence: "{sequence}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: normal
+notes: >
+  Output ports only. Sequence is array of {state, time} objects
+  where time is in milliseconds.
+
+requires:
+  auth_level: operator

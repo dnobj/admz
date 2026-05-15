@@ -1,0 +1,6 @@
+endpoint: /axis-cgi/applications/control.cgi
+generation: legacy-cgi
+min_firmware: "5.00"
+description: >
+  ACAP application lifecycle control. Start, stop, restart, and
+  remove installed applications.

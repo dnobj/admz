@@ -1,0 +1,23 @@
+id: pwdgrp.cgi:update-user
+cgi: pwdgrp.cgi
+
+method: GET
+request:
+  query:
+    action: update
+    user: "{username}"
+    pwd: "{password}"
+  content_type: null
+
+response:
+  format: text
+  success: "OK"
+  error_prefix: "# Error:"
+
+risk_level: service-affecting
+service_impact: >
+  Changing a user's password invalidates active sessions
+  using the old password. Connected clients must re-authenticate.
+
+requires:
+  auth_level: admin

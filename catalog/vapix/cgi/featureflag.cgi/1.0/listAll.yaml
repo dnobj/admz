@@ -1,0 +1,25 @@
+id: featureflag.cgi:listAll
+cgi: featureflag.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: listAll
+
+response:
+  format: json
+  data_path: data.flags
+  fields:
+    - name
+    - value
+    - description
+    - defaultValue
+
+risk_level: read-only
+
+requires:
+  auth_level: admin

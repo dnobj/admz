@@ -1,0 +1,7 @@
+endpoint: /axis-cgi/featureflag.cgi
+generation: json-rpc
+min_firmware: "10.0"
+api_id: feature-flag
+description: >
+  Runtime feature flag management. Get, set, and list boolean feature
+  toggles that control device behavior and experimental features.

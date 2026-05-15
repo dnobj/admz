@@ -4,14 +4,19 @@ SSDP / UPnP device discovery.
 Sends M-SEARCH multicast to 239.255.255.250:1900 and parses responses.
 Optionally fetches the UPnP XML device description for richer metadata.
 
-Requires: pip install async-upnp-client   (or falls back to raw sockets)
+The socket receive loop uses a blocking socket with a short timeout
+(``settimeout(0.5)``) running inside ``loop.run_in_executor``.  This
+is critical on Windows where the previous approach of ``settimeout(0)``
+(non-blocking) caused the executor thread to immediately raise
+``BlockingIOError`` on every ``recvfrom``, creating a busy-loop that
+almost never caught real responses.
 """
 
 import asyncio
 import logging
-import re
 import socket
 import struct
+import time
 from typing import Dict, List, Optional
 from xml.etree import ElementTree
 
@@ -31,7 +36,7 @@ SSDP_PORT = 1900
 M_SEARCH_TEMPLATE = (
     "M-SEARCH * HTTP/1.1\r\n"
     "HOST: 239.255.255.250:1900\r\n"
-    "MAN: \"ssdp:discover\"\r\n"
+    'MAN: "ssdp:discover"\r\n'
     "MX: {mx}\r\n"
     "ST: {st}\r\n"
     "\r\n"
@@ -44,6 +49,23 @@ SEARCH_TARGETS = [
 ]
 
 
+def _get_local_ip() -> str:
+    """Return the local IP used for the default route.
+
+    We connect to a public unicast address (not a multicast address)
+    because on Windows with Hyper-V/WSL virtual NICs, connecting to a
+    multicast address may route through the wrong interface.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 53))
+        return s.getsockname()[0]
+    except OSError:
+        return ""
+    finally:
+        s.close()
+
+
 class SSDPDiscovery(DiscoveryProtocolBase):
     """Discover devices via SSDP M-SEARCH multicast."""
 
@@ -53,18 +75,31 @@ class SSDPDiscovery(DiscoveryProtocolBase):
 
     async def discover(self, timeout: float = 5.0) -> List[DiscoveredDevice]:
         devices: Dict[str, DiscoveredDevice] = {}
-
         loop = asyncio.get_event_loop()
+
+        local_ip = _get_local_ip()
+
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.settimeout(0)
 
-        # Join multicast group on all interfaces
-        mreq = struct.pack("4sL", socket.inet_aton(SSDP_MULTICAST), socket.INADDR_ANY)
-        try:
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-        except OSError:
-            logger.debug("Could not join SSDP multicast group")
+        # Bind to the specific local interface so responses return here.
+        # Using port 0 lets the OS pick an ephemeral port (we do not need
+        # to listen on port 1900; M-SEARCH responses are unicast back to
+        # the sender's source port).
+        if local_ip:
+            sock.bind((local_ip, 0))
+        else:
+            sock.bind(("", 0))
+
+        # Use a SHORT BLOCKING timeout -- NOT 0 (non-blocking).
+        #
+        # The old code used ``sock.settimeout(0)`` which made recvfrom()
+        # immediately raise ``BlockingIOError`` every time it was called
+        # in the executor thread, producing a busy-loop that almost never
+        # caught actual UDP responses.  A 0.5-second blocking timeout lets
+        # the kernel wake the thread when data arrives while still allowing
+        # periodic checks for the overall deadline.
+        sock.settimeout(0.5)
 
         # Send M-SEARCH for each target
         mx = max(1, int(timeout) - 1)
@@ -75,22 +110,31 @@ class SSDPDiscovery(DiscoveryProtocolBase):
             except OSError as exc:
                 logger.debug("SSDP sendto failed: %s", exc)
 
-        # Collect responses
-        end = asyncio.get_event_loop().time() + timeout
-        while asyncio.get_event_loop().time() < end:
-            try:
-                data, addr = await asyncio.wait_for(
-                    loop.run_in_executor(None, lambda: sock.recvfrom(4096)),
-                    timeout=max(0.1, end - asyncio.get_event_loop().time()),
-                )
-            except (asyncio.TimeoutError, OSError):
-                continue
+        # Collect responses in a blocking thread with short recv timeout
+        stop_time = time.monotonic() + timeout
 
-            ip = addr[0]
-            headers = _parse_ssdp_response(data.decode(errors="replace"))
-            if not headers:
-                continue
+        def _recv_loop():
+            results = []
+            while time.monotonic() < stop_time:
+                try:
+                    data, addr = sock.recvfrom(4096)
+                    text = data.decode(errors="replace")
+                    headers = _parse_ssdp_response(text)
+                    if headers:
+                        results.append((addr[0], headers))
+                except socket.timeout:
+                    # No data within the 0.5s window -- loop back and
+                    # check the deadline.
+                    continue
+                except OSError:
+                    continue
+            return results
 
+        responses = await loop.run_in_executor(None, _recv_loop)
+        sock.close()
+
+        # Build DiscoveredDevice objects from responses
+        for ip, headers in responses:
             key = ip
             dev = devices.get(key)
             if dev is None:
@@ -110,8 +154,6 @@ class SSDPDiscovery(DiscoveryProtocolBase):
                 dev.is_axis = True
                 dev.manufacturer = "Axis Communications"
 
-        sock.close()
-
         # Optionally fetch UPnP XML descriptions for richer metadata
         await self._enrich_from_descriptions(devices, timeout=min(timeout, 3.0))
 
@@ -124,7 +166,7 @@ class SSDPDiscovery(DiscoveryProtocolBase):
         try:
             import httpx
         except ImportError:
-            logger.debug("httpx not installed — skipping UPnP XML enrichment")
+            logger.debug("httpx not installed -- skipping UPnP XML enrichment")
             return
 
         async with httpx.AsyncClient(timeout=timeout, verify=False) as client:

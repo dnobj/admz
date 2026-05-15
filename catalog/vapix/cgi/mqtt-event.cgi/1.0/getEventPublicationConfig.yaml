@@ -1,0 +1,27 @@
+id: mqtt-event.cgi:getEventPublicationConfig
+cgi: mqtt-event.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: getEventPublicationConfig
+
+response:
+  format: json
+  data_path: data.eventPublicationConfig
+  fields:
+    - topicPrefix
+    - customTopicPrefix
+    - appendEventTopic
+    - includeTopicNamespaces
+    - includeSerialNumberInPayload
+    - eventFilterList
+
+risk_level: read-only
+
+requires:
+  auth_level: admin

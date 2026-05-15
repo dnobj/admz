@@ -1,6 +1,5 @@
 endpoint: /axis-cgi/apidiscovery.cgi
 generation: json-rpc
-auth: digest
 min_firmware: "8.50"
 api_id: api-discovery
 description: >

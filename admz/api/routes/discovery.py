@@ -15,7 +15,14 @@ class DiscoverRequest(BaseModel):
     timeout: float = 5.0
     axis_only: bool = False
     subnet: Optional[str] = None
+    enable_mdns: bool = True
+    enable_ssdp: bool = True
+    enable_onvif: bool = True
+    enable_arp: bool = True
     enable_ping: bool = False
+    enable_http_probe: bool = True
+    enable_snmp: bool = True
+    snmp_community: str = "public"
 
 
 class RegisterDiscoveredRequest(BaseModel):
@@ -36,7 +43,14 @@ async def scan_network(
         timeout=req.timeout,
         axis_only=req.axis_only,
         subnet=req.subnet,
+        enable_mdns=req.enable_mdns,
+        enable_ssdp=req.enable_ssdp,
+        enable_onvif=req.enable_onvif,
+        enable_arp=req.enable_arp,
         enable_ping=req.enable_ping,
+        enable_http_probe=req.enable_http_probe,
+        enable_snmp=req.enable_snmp,
+        snmp_community=req.snmp_community,
     )
     return {
         "count": len(devices),

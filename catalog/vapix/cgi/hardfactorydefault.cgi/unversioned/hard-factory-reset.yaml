@@ -1,0 +1,19 @@
+id: hardfactorydefault.cgi:hard-factory-reset
+cgi: hardfactorydefault.cgi
+
+method: GET
+
+request:
+  query: {}
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Device resets all settings including network configuration.
+    Device must be rediscovered after this operation.
+
+risk_level: dangerous
+
+requires:
+  auth_level: admin

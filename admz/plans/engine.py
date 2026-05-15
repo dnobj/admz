@@ -12,6 +12,7 @@ from admz.catalog.loader import CatalogLoader
 from admz.executor.base import BaseExecutor
 from admz.executor.models import StepResult
 from admz.device_registry import DeviceRegistry
+from admz.exceptions import AccountNotFoundError
 from admz.plans.models import (
     ExecutionPlan,
     FailurePolicy,
@@ -311,13 +312,25 @@ class PlanEngine:
         try:
             device = self.registry.get_device_info(step.device_id)
             device["device_id"] = step.device_id
-            credentials = self.registry.get_credentials(step.device_id)
         except Exception as e:
             return StepResult(
                 operation_id=step.operation_id,
                 device_id=step.device_id,
                 success=False,
-                error=f"Failed to get device info/credentials: {e}",
+                error=f"Failed to get device info: {e}",
+            )
+
+        try:
+            credentials = self.registry.get_credentials(step.device_id)
+        except AccountNotFoundError:
+            # No-auth devices (factory default) have no stored credentials
+            credentials = {"username": "", "password": ""}
+        except Exception as e:
+            return StepResult(
+                operation_id=step.operation_id,
+                device_id=step.device_id,
+                success=False,
+                error=f"Failed to get credentials: {e}",
             )
 
         op_dict = operation.to_executor_dict()

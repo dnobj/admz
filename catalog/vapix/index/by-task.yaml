@@ -2,87 +2,240 @@
 #
 # Keys are task slugs. Values are lists of file paths (relative to
 # the catalog vapix/ root) that are relevant for that task.
+#
+# Paths include version folder: 1.0/ for json-rpc, unversioned/ for legacy-cgi.
+
+# --- Image & Video ---
 
 change-resolution:
-  - cgi/param.cgi/groups/root.Image.yaml
-  - cgi/param.cgi/update.yaml
-  - cgi/param.cgi/list.yaml
+  - cgi/param.cgi/unversioned/groups/root.Image.yaml
+  - cgi/param.cgi/unversioned/update.yaml
+  - cgi/param.cgi/unversioned/list.yaml
 
 change-compression:
-  - cgi/param.cgi/groups/root.Image.yaml
-  - cgi/param.cgi/update.yaml
-  - cgi/param.cgi/list.yaml
+  - cgi/param.cgi/unversioned/groups/root.Image.yaml
+  - cgi/param.cgi/unversioned/update.yaml
+  - cgi/param.cgi/unversioned/list.yaml
 
 change-framerate:
-  - cgi/param.cgi/groups/root.Image.yaml
-  - cgi/param.cgi/update.yaml
-  - cgi/param.cgi/list.yaml
+  - cgi/param.cgi/unversioned/groups/root.Image.yaml
+  - cgi/param.cgi/unversioned/update.yaml
+  - cgi/param.cgi/unversioned/list.yaml
 
 rotate-image:
-  - cgi/param.cgi/groups/root.Image.yaml
-  - cgi/param.cgi/update.yaml
+  - cgi/param.cgi/unversioned/groups/root.Image.yaml
+  - cgi/param.cgi/unversioned/groups/root.ImageSource.yaml
+  - cgi/param.cgi/unversioned/update.yaml
+
+adjust-image:
+  - cgi/param.cgi/unversioned/groups/root.ImageSource.yaml
+  - cgi/param.cgi/unversioned/update.yaml
+  - cgi/param.cgi/unversioned/list.yaml
 
 configure-stream-profile:
-  - cgi/param.cgi/groups/root.StreamProfile.yaml
-  - cgi/param.cgi/update.yaml
-  - cgi/param.cgi/list.yaml
+  - cgi/param.cgi/unversioned/groups/root.StreamProfile.yaml
+  - cgi/param.cgi/unversioned/update.yaml
+  - cgi/param.cgi/unversioned/list.yaml
+
+set-capture-mode:
+  - cgi/capturemode.cgi/1.0/getCaptureModes.yaml
+  - cgi/capturemode.cgi/1.0/setCaptureMode.yaml
+
+manage-overlays:
+  - cgi/dynamicoverlay.cgi/1.0/list.yaml
+  - cgi/dynamicoverlay.cgi/1.0/addText.yaml
+  - cgi/dynamicoverlay.cgi/1.0/addImage.yaml
+  - cgi/dynamicoverlay.cgi/1.0/remove.yaml
+
+# --- PTZ ---
+
+ptz-move:
+  - cgi/com-ptz.cgi/unversioned/move.yaml
+  - cgi/com-ptz.cgi/unversioned/relative-move.yaml
+  - cgi/com-ptz.cgi/unversioned/continuous-move.yaml
+  - cgi/com-ptz.cgi/unversioned/stop.yaml
+
+ptz-preset:
+  - cgi/com-ptz.cgi/unversioned/goto-preset.yaml
+  - cgi/com-ptz.cgi/unversioned/query-presets.yaml
+  - cgi/com-ptz.cgi/unversioned/home.yaml
+
+ptz-info:
+  - cgi/com-ptz.cgi/unversioned/info.yaml
+  - cgi/param.cgi/unversioned/groups/root.PTZ.yaml
+  - cgi/param.cgi/unversioned/list.yaml
+
+configure-guard-tour:
+  - cgi/param.cgi/unversioned/groups/root.GuardTour.yaml
+  - cgi/param.cgi/unversioned/update.yaml
+  - cgi/param.cgi/unversioned/list.yaml
+
+# --- Network ---
 
 set-hostname:
-  - cgi/param.cgi/groups/root.Network.yaml
-  - cgi/param.cgi/update.yaml
+  - cgi/param.cgi/unversioned/groups/root.Network.yaml
+  - cgi/param.cgi/unversioned/update.yaml
+  - cgi/network_settings.cgi/1.0/setHostnameConfiguration.yaml
 
 configure-network:
-  - cgi/param.cgi/groups/root.Network.yaml
-  - cgi/param.cgi/update.yaml
-  - cgi/param.cgi/list.yaml
-  - cgi/network.cgi/getNetworkInfo.yaml
+  - cgi/param.cgi/unversioned/groups/root.Network.yaml
+  - cgi/param.cgi/unversioned/update.yaml
+  - cgi/param.cgi/unversioned/list.yaml
+  - cgi/network_settings.cgi/1.0/getNetworkInfo.yaml
 
 configure-dns:
-  - cgi/param.cgi/groups/root.Network.yaml
-  - cgi/param.cgi/update.yaml
+  - cgi/param.cgi/unversioned/groups/root.Network.yaml
+  - cgi/param.cgi/unversioned/update.yaml
+  - cgi/network_settings.cgi/1.0/setResolverConfiguration.yaml
 
 configure-ip:
-  - cgi/param.cgi/groups/root.Network.yaml
-  - cgi/param.cgi/update.yaml
-  - cgi/network.cgi/getNetworkInfo.yaml
+  - cgi/param.cgi/unversioned/groups/root.Network.yaml
+  - cgi/param.cgi/unversioned/update.yaml
+  - cgi/network_settings.cgi/1.0/getNetworkInfo.yaml
+  - cgi/network_settings.cgi/1.0/setIPv4AddressConfiguration.yaml
+
+# --- Time ---
 
 configure-ntp:
-  - cgi/param.cgi/groups/root.Time.yaml
-  - cgi/param.cgi/update.yaml
-  - cgi/param.cgi/list.yaml
+  - cgi/param.cgi/unversioned/groups/root.Time.yaml
+  - cgi/param.cgi/unversioned/update.yaml
+  - cgi/param.cgi/unversioned/list.yaml
+  - cgi/ntp.cgi/1.0/getNTPInfo.yaml
+  - cgi/ntp.cgi/1.0/setNTPClientConfiguration.yaml
 
 set-timezone:
-  - cgi/param.cgi/groups/root.Time.yaml
-  - cgi/param.cgi/update.yaml
+  - cgi/param.cgi/unversioned/groups/root.Time.yaml
+  - cgi/param.cgi/unversioned/update.yaml
 
 check-time:
-  - cgi/time.cgi/get-date.yaml
-  - cgi/param.cgi/groups/root.Time.yaml
-  - cgi/param.cgi/list.yaml
+  - cgi/date.cgi/unversioned/get-date.yaml
+  - cgi/param.cgi/unversioned/groups/root.Time.yaml
+  - cgi/param.cgi/unversioned/list.yaml
+
+# --- Device Info ---
 
 get-device-info:
-  - cgi/basicdeviceinfo.cgi/getAllProperties.yaml
+  - cgi/basicdeviceinfo.cgi/1.0/getAllProperties.yaml
+  - cgi/param.cgi/unversioned/groups/root.Brand.yaml
+  - cgi/param.cgi/unversioned/groups/root.Properties.yaml
 
 identify-device:
-  - cgi/basicdeviceinfo.cgi/getAllUnrestrictedProperties.yaml
-  - cgi/basicdeviceinfo.cgi/getAllProperties.yaml
+  - cgi/basicdeviceinfo.cgi/1.0/getAllUnrestrictedProperties.yaml
+  - cgi/basicdeviceinfo.cgi/1.0/getAllProperties.yaml
 
 discover-apis:
-  - cgi/apidiscovery.cgi/getApiList.yaml
+  - cgi/apidiscovery.cgi/1.0/getApiList.yaml
+
+find-device:
+  - cgi/findmydevice.cgi/1.0/find.yaml
+  - cgi/findmydevice.cgi/1.0/stop.yaml
+
+get-geolocation:
+  - cgi/geolocation-get.cgi/unversioned/get-position.yaml
+  - cgi/geolocation-set.cgi/unversioned/set-position.yaml
+
+# --- Firmware ---
 
 check-firmware:
-  - cgi/firmwaremanagement.cgi/status.yaml
-  - cgi/basicdeviceinfo.cgi/getAllProperties.yaml
+  - cgi/firmwaremanagement.cgi/1.0/status.yaml
+  - cgi/basicdeviceinfo.cgi/1.0/getAllProperties.yaml
+
+upgrade-firmware:
+  - cgi/firmwaremanagement.cgi/1.0/upgrade.yaml
+  - cgi/firmwaremanagement.cgi/1.0/status.yaml
+  - cgi/firmwaremanagement.cgi/1.0/commit.yaml
+
+rollback-firmware:
+  - cgi/firmwaremanagement.cgi/1.0/rollback.yaml
+  - cgi/firmwaremanagement.cgi/1.0/status.yaml
+
+# --- Users ---
 
 manage-users:
-  - cgi/pwdgrp.cgi/add-user.yaml
-  - cgi/pwdgrp.cgi/remove-user.yaml
+  - cgi/pwdgrp.cgi/unversioned/add-user.yaml
+  - cgi/pwdgrp.cgi/unversioned/remove-user.yaml
+  - cgi/pwdgrp.cgi/unversioned/update-user.yaml
 
 add-user:
-  - cgi/pwdgrp.cgi/add-user.yaml
+  - cgi/pwdgrp.cgi/unversioned/add-user.yaml
 
 remove-user:
-  - cgi/pwdgrp.cgi/remove-user.yaml
+  - cgi/pwdgrp.cgi/unversioned/remove-user.yaml
+
+change-password:
+  - cgi/pwdgrp.cgi/unversioned/update-user.yaml
+
+# --- System ---
 
 factory-reset:
-  - cgi/factorydefault.cgi/factory-reset.yaml
+  - cgi/factorydefault.cgi/unversioned/factory-reset.yaml
+
+hard-factory-reset:
+  - cgi/hardfactorydefault.cgi/unversioned/hard-factory-reset.yaml
+
+restart-device:
+  - cgi/restart.cgi/unversioned/restart.yaml
+  - cgi/firmwaremanagement.cgi/1.0/reboot.yaml
+
+get-system-logs:
+  - cgi/systemlog.cgi/unversioned/get-systemlog.yaml
+  - cgi/accesslog.cgi/unversioned/get-accesslog.yaml
+  - cgi/serverreport.cgi/unversioned/get-report.yaml
+  - cgi/auditlog.cgi/unversioned/get-auditlog.yaml
+
+get-server-report:
+  - cgi/serverreport.cgi/unversioned/get-report.yaml
+  - cgi/serverreport.cgi/unversioned/get-report-tar.yaml
+
+# --- I/O Ports ---
+
+manage-io-ports:
+  - cgi/io-portmanagement.cgi/1.0/getPorts.yaml
+  - cgi/io-portmanagement.cgi/1.0/setPorts.yaml
+  - cgi/io-portmanagement.cgi/1.0/setStateSequence.yaml
+  - cgi/param.cgi/unversioned/groups/root.IOPort.yaml
+
+# --- Light Control ---
+
+control-lights:
+  - cgi/lightcontrol.cgi/1.0/getLightInformation.yaml
+  - cgi/lightcontrol.cgi/1.0/activateLight.yaml
+  - cgi/lightcontrol.cgi/1.0/deactivateLight.yaml
+  - cgi/lightcontrol.cgi/1.0/setManualIntensity.yaml
+
+# --- MQTT ---
+
+configure-mqtt:
+  - cgi/mqtt-client.cgi/1.0/getClientStatus.yaml
+  - cgi/mqtt-client.cgi/1.0/configureClient.yaml
+  - cgi/mqtt-client.cgi/1.0/activateClient.yaml
+  - cgi/mqtt-client.cgi/1.0/deactivateClient.yaml
+
+configure-mqtt-events:
+  - cgi/mqtt-event.cgi/1.0/getEventPublicationConfig.yaml
+  - cgi/mqtt-event.cgi/1.0/configureEventPublication.yaml
+
+# --- Storage ---
+
+manage-storage:
+  - cgi/disks-list.cgi/unversioned/list-disks.yaml
+  - cgi/disks-format.cgi/unversioned/format-disk.yaml
+  - cgi/param.cgi/unversioned/groups/root.Storage.yaml
+
+manage-recordings:
+  - cgi/record-list.cgi/unversioned/list-recordings.yaml
+  - cgi/record-continuous-addconfiguration.cgi/unversioned/add-continuous.yaml
+
+# --- Applications ---
+
+manage-applications:
+  - cgi/applications-list.cgi/unversioned/list.yaml
+  - cgi/applications-control.cgi/unversioned/control.yaml
+  - cgi/applications-upload.cgi/unversioned/upload.yaml
+
+# --- Feature Flags ---
+
+manage-feature-flags:
+  - cgi/featureflag.cgi/1.0/listAll.yaml
+  - cgi/featureflag.cgi/1.0/get.yaml
+  - cgi/featureflag.cgi/1.0/set.yaml

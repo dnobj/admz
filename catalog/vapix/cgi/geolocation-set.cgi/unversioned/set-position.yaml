@@ -1,0 +1,27 @@
+id: geolocation-set.cgi:set-position
+cgi: geolocation-set.cgi
+
+method: GET
+
+request:
+  query:
+    lat: "{lat}"
+    lng: "{lng}"
+    heading: "{heading}"
+    text: "{text}"
+  content_type: null
+
+response:
+  format: xml
+  description: >
+    Returns PositionResponse XML with GeneralSuccess on success.
+
+risk_level: normal
+
+rollback:
+  strategy: revert-position
+  read_action: get-position
+  read_cgi: geolocation-get.cgi
+
+requires:
+  auth_level: admin

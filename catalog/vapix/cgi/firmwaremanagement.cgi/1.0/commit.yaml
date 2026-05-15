@@ -1,0 +1,23 @@
+id: firmwaremanagement.cgi:commit
+cgi: firmwaremanagement.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: commit
+
+response:
+  format: json
+  data_path: data
+
+risk_level: normal
+notes: >
+  Commits the active firmware. Required before a new upgrade
+  can proceed.
+
+requires:
+  auth_level: admin

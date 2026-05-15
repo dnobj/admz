@@ -1,0 +1,7 @@
+endpoint: /axis-cgi/mqtt/event.cgi
+generation: json-rpc
+min_firmware: "9.80"
+api_id: mqtt-event
+description: >
+  MQTT event bridge. Configure which device events are published to
+  the MQTT broker and subscribe to MQTT topics for incoming messages.

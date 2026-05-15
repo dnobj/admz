@@ -1,0 +1,17 @@
+id: date.cgi:get-date
+cgi: date.cgi
+
+method: GET
+request:
+  query: {}
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Returns date/time string, e.g. "Jan 15 2024 14:30:00 EST"
+
+risk_level: read-only
+
+requires:
+  auth_level: viewer

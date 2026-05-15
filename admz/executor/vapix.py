@@ -60,11 +60,8 @@ class VapixExecutor(BaseExecutor):
             port = device.get("port", 443 if scheme == "https" else 80)
             url = f"{scheme}://{host}:{port}{request.path}"
 
-            # Build httpx auth
-            auth = httpx.DigestAuth(
-                credentials.get("username", ""),
-                credentials.get("password", ""),
-            )
+            # Resolve auth from device profile (device-wide setting)
+            auth = self._resolve_auth(device, credentials)
 
             async with httpx.AsyncClient(
                 verify=self._verify_ssl, timeout=self._timeout
@@ -115,6 +112,27 @@ class VapixExecutor(BaseExecutor):
                 error=str(e),
                 duration_ms=elapsed,
             )
+
+    @staticmethod
+    def _resolve_auth(
+        device: Dict[str, Any], credentials: Dict[str, Any]
+    ) -> Optional[httpx.Auth]:
+        """Resolve HTTP auth from device profile, default to digest.
+
+        Authentication is device-wide on Axis devices, controlled by
+        ``Network.HTTP.AuthenticationPolicy``.  The auth method is
+        detected during credential probing and stored in the device
+        profile as ``auth_method``.
+        """
+        method = device.get("auth_method", "digest")
+        username = credentials.get("username", "")
+        password = credentials.get("password", "")
+        if method == "none":
+            return None
+        elif method == "basic":
+            return httpx.BasicAuth(username, password)
+        else:  # "digest" or unknown
+            return httpx.DigestAuth(username, password)
 
     def build_request(
         self, operation: Dict[str, Any], params: Dict[str, str]

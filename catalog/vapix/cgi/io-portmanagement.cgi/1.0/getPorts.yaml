@@ -1,0 +1,31 @@
+id: io-portmanagement.cgi:getPorts
+cgi: io-portmanagement.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: getPorts
+
+response:
+  format: json
+  data_path: data
+  fields:
+    - numberOfPorts
+    - items
+    - port
+    - state
+    - configurable
+    - readonly
+    - usage
+    - direction
+    - name
+    - normalState
+
+risk_level: read-only
+
+requires:
+  auth_level: viewer

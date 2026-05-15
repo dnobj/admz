@@ -43,6 +43,9 @@ from mcp.types import Tool, TextContent
 from admz import create_device_registry
 from admz.device_registry import DeviceRegistry
 from admz.api.capture import capture_store, CaptureStatus
+from admz.discovery import discover_devices as run_discovery
+from admz.discovery.credential_probe import probe_credentials, ProbeStatus
+from admz.fleet_settings import fleet_settings
 from admz.catalog.loader import CatalogLoader
 from admz.catalog.resolver import CatalogResolver
 from admz.executor.vapix import VapixExecutor
@@ -372,7 +375,9 @@ class ADMZMCPServer:
                         "credentials in their browser, OUTSIDE the chat context. "
                         "Credentials entered via this URL never appear in the LLM context. "
                         "Present the returned URL to the user as a clickable link. "
-                        "The ADMZ web server must be running (default: http://localhost:8000)."
+                        "The ADMZ web server must be running (default: http://localhost:8000). "
+                        "Supports batch mode: pass device_ids to save the same credentials "
+                        "to multiple devices with a single form submission."
                     ),
                     inputSchema={
                         "type": "object",
@@ -380,6 +385,14 @@ class ADMZMCPServer:
                             "device_id": {
                                 "type": "string",
                                 "description": "Device ID to store credentials for",
+                            },
+                            "device_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "List of device IDs for batch credential capture. "
+                                    "One form submission saves the same credentials to all devices."
+                                ),
                             },
                             "account_id": {
                                 "type": "string",
@@ -402,7 +415,7 @@ class ADMZMCPServer:
                                 "default": "http://localhost:8000",
                             },
                         },
-                        "required": ["device_id"],
+                        "required": [],
                     },
                 ),
                 Tool(
@@ -764,40 +777,83 @@ class ADMZMCPServer:
                         "required": [],
                     },
                 ),
+                # --- Credential probe tool ---
+                Tool(
+                    name="test_device_credentials",
+                    description=(
+                        "Test credentials against a device by probing its VAPIX "
+                        "basicdeviceinfo endpoint. Tries no-auth (factory default), "
+                        "legacy defaults (root/pass), and optionally user-supplied "
+                        "credentials. Returns status without exposing passwords. "
+                        "If store=true and credentials work, saves them to the registry."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "host": {
+                                "type": "string",
+                                "description": "IP/hostname to probe",
+                            },
+                            "device_id": {
+                                "type": "string",
+                                "description": (
+                                    "Resolve host from registry if host not provided"
+                                ),
+                            },
+                            "username": {
+                                "type": "string",
+                                "description": "Single username to try",
+                            },
+                            "password": {
+                                "type": "string",
+                                "description": "Single password to try",
+                            },
+                            "passwords": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "List of passwords to try with 'root' username (max 5)"
+                                ),
+                            },
+                            "store": {
+                                "type": "boolean",
+                                "description": (
+                                    "If true and credentials work, save to registry"
+                                ),
+                                "default": False,
+                            },
+                        },
+                        "required": [],
+                    },
+                ),
                 # --- Discovery tools ---
                 Tool(
                     name="discover_network_devices",
                     description=(
-                        "Scan the local network for Axis devices using "
-                        "multiple discovery protocols concurrently (mDNS, "
-                        "SSDP, ONVIF, ARP, HTTP probe, SNMP). Returns the "
-                        "list of discovered devices. Devices are NOT "
-                        "automatically registered — use register_discovered_device "
-                        "to add a specific one."
+                        "Scan the local network for Axis cameras and other devices "
+                        "using mDNS, SSDP, ONVIF, ARP, HTTP/VAPIX, and SNMP. "
+                        "Returns discovered devices with metadata. "
+                        "Devices are NOT automatically registered — use "
+                        "register_discovered_device to add a specific one."
                     ),
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "timeout": {
                                 "type": "number",
-                                "description": (
-                                    "Per-protocol timeout in seconds "
-                                    "(default: 5.0)"
-                                ),
+                                "description": "Per-protocol timeout in seconds (default: 5.0)",
                                 "default": 5.0,
                             },
                             "axis_only": {
                                 "type": "boolean",
-                                "description": (
-                                    "Filter to Axis-manufactured devices only"
-                                ),
+                                "description": "Only return Axis devices (default: false)",
                                 "default": False,
                             },
                             "subnet": {
                                 "type": "string",
                                 "description": (
-                                    "Subnet for ARP scan (e.g. '192.168.1.0/24'). "
-                                    "Default: auto-detect."
+                                    "Subnet for ARP scan in CIDR "
+                                    "(e.g. '192.168.1.0/24'). Auto-detected if omitted."
                                 ),
                             },
                             "enable_ping": {
@@ -984,6 +1040,101 @@ class ADMZMCPServer:
                         "required": ["schedule_id"],
                     },
                 ),
+                # --- Fleet settings tools ---
+                Tool(
+                    name="get_fleet_settings",
+                    description=(
+                        "List all fleet-wide settings. Returns key-value pairs "
+                        "for configuration that applies across all managed devices."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                    },
+                ),
+                Tool(
+                    name="set_fleet_setting",
+                    description=(
+                        "Set a fleet-wide setting. Known keys: "
+                        "'default_password' — password used by provision_device "
+                        "instead of generating a random one. "
+                        "Set value to empty string to delete the setting. "
+                        "For password settings, omit 'value' to generate a "
+                        "secure capture URL where the user can enter the "
+                        "password outside the chat (never touches LLM context)."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "description": "Setting key (e.g. 'default_password')",
+                            },
+                            "value": {
+                                "type": "string",
+                                "description": (
+                                    "Setting value. Empty string deletes the key. "
+                                    "Omit for password keys to get a capture URL instead."
+                                ),
+                            },
+                        },
+                        "required": ["key"],
+                    },
+                ),
+                # --- Provisioning tool ---
+                Tool(
+                    name="provision_device",
+                    description=(
+                        "Provision credentials on an Axis device. Probes the device first, "
+                        "then takes the appropriate action based on its state: "
+                        "(1) Factory-default: creates an admin user with a password. "
+                        "(2) Legacy default password (root/pass): stores creds, suggests rotation. "
+                        "(3) Unknown password: returns error — use capture_credentials instead. "
+                        "Password priority: explicit param > fleet default_password setting > auto-generated. "
+                        "Generated passwords are stored in the registry and NEVER returned in the response. "
+                        "Use get_credentials to retrieve them afterward. "
+                        "If only host is provided (no device_id), auto-registers the device using "
+                        "its MAC address (= serial number) as the device_id."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Existing device ID in registry",
+                            },
+                            "host": {
+                                "type": "string",
+                                "description": (
+                                    "IP/hostname to probe. If device doesn't exist, "
+                                    "auto-registers using MAC as device_id."
+                                ),
+                            },
+                            "username": {
+                                "type": "string",
+                                "description": "Username for the account (default: 'root')",
+                                "default": "root",
+                            },
+                            "password": {
+                                "type": "string",
+                                "description": (
+                                    "Specific password to set. If omitted, uses fleet "
+                                    "default_password setting, or generates a secure one."
+                                ),
+                            },
+                            "force_change": {
+                                "type": "boolean",
+                                "description": (
+                                    "If true, change the password even if stored creds "
+                                    "already work. Useful for rotating passwords."
+                                ),
+                                "default": False,
+                            },
+                        },
+                        "required": [],
+                    },
+                ),
             ]
 
         @self.server.call_tool()
@@ -1030,13 +1181,7 @@ class ADMZMCPServer:
                         arguments["account_id"],
                     )
                 elif name == "capture_credentials":
-                    result = await self._capture_credentials(
-                        arguments["device_id"],
-                        arguments.get("account_id", "default"),
-                        arguments.get("account_type", "service"),
-                        arguments.get("purpose", ""),
-                        arguments.get("base_url", "http://localhost:8000"),
-                    )
+                    result = await self._capture_credentials(arguments)
                 elif name == "check_capture_status":
                     result = await self._check_capture_status(
                         arguments["token"],
@@ -1102,6 +1247,9 @@ class ADMZMCPServer:
                         arguments.get("device_id"),
                         arguments.get("tag_filter"),
                     )
+                # --- Credential probe ---
+                elif name == "test_device_credentials":
+                    result = await self._test_credentials(arguments)
                 # --- Discovery tools ---
                 elif name == "discover_network_devices":
                     result = await self._discover_network_devices(arguments)
@@ -1131,6 +1279,16 @@ class ADMZMCPServer:
                     result = await self._run_snapshot_schedule(
                         arguments["schedule_id"],
                     )
+                # --- Fleet settings ---
+                elif name == "get_fleet_settings":
+                    result = await self._get_fleet_settings()
+                elif name == "set_fleet_setting":
+                    result = await self._set_fleet_setting(
+                        arguments["key"], arguments.get("value"),
+                    )
+                # --- Provisioning ---
+                elif name == "provision_device":
+                    result = await self._provision_device(arguments)
                 else:
                     raise ValueError(f"Unknown tool: {name}")
 
@@ -1319,27 +1477,51 @@ class ADMZMCPServer:
 
     async def _capture_credentials(
         self,
-        device_id: str,
-        account_id: str,
-        account_type: str,
-        purpose: str,
-        base_url: str,
+        arguments: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Create a credential capture session and return the URL."""
-        if not self.registry.device_exists(device_id):
-            raise DeviceNotFoundError(f"Device '{device_id}' not found")
+        """Create a credential capture session and return the URL.
+
+        Supports single device (device_id) or batch (device_ids).
+        """
+        device_ids = arguments.get("device_ids") or []
+        device_id = arguments.get("device_id", "")
+        account_id = arguments.get("account_id", "default")
+        account_type = arguments.get("account_type", "service")
+        purpose = arguments.get("purpose", "")
+        base_url = arguments.get("base_url", "http://localhost:8000")
+
+        # Build the full list of target devices
+        if device_ids:
+            all_ids = device_ids
+        elif device_id:
+            all_ids = [device_id]
+        else:
+            return {
+                "success": False,
+                "error": "Either 'device_id' or 'device_ids' must be provided",
+            }
+
+        # Validate all devices exist
+        missing = [did for did in all_ids if not self.registry.device_exists(did)]
+        if missing:
+            raise DeviceNotFoundError(
+                f"Device(s) not found: {', '.join(missing)}"
+            )
+
+        primary_device_id = all_ids[0]
 
         session = capture_store.create_session(
-            device_id=device_id,
+            device_id=primary_device_id,
             account_id=account_id,
             account_type=account_type,
             purpose=purpose,
+            device_ids=all_ids if len(all_ids) > 1 else None,
         )
 
         base_url = base_url.rstrip("/")
         url = f"{base_url}/capture/{session.token}"
 
-        return {
+        result: Dict[str, Any] = {
             "success": True,
             "message": (
                 "Credential capture URL generated. "
@@ -1348,40 +1530,71 @@ class ADMZMCPServer:
             ),
             "url": url,
             "token": session.token,
-            "device_id": device_id,
+            "device_id": primary_device_id,
             "account_id": account_id,
             "expires_in_seconds": int(session.ttl),
         }
 
-    async def _check_capture_status(self, token: str) -> Dict[str, Any]:
-        """Check whether a capture session has been completed."""
-        session = capture_store.get_session(token)
-        if session is None:
-            return {
-                "success": True,
-                "status": "expired_or_not_found",
-                "message": "This capture session has expired or does not exist.",
-            }
-
-        status = session.effective_status.value
-        result: Dict[str, Any] = {
-            "success": True,
-            "status": status,
-            "device_id": session.device_id,
-            "account_id": session.account_id,
-        }
-
-        if status == "completed":
+        if len(all_ids) > 1:
+            result["device_ids"] = all_ids
+            result["device_count"] = len(all_ids)
             result["message"] = (
-                f"Credentials for {session.device_id}/{session.account_id} "
-                "have been saved successfully."
+                f"Batch credential capture URL generated for {len(all_ids)} devices. "
+                "Present this link to the user — one form submission saves "
+                "credentials to all listed devices."
             )
-        elif status == "pending":
-            result["message"] = "Waiting for the user to enter credentials."
-        else:
-            result["message"] = "This capture session has expired."
 
         return result
+
+    async def _check_capture_status(self, token: str) -> Dict[str, Any]:
+        """Check whether a capture session has been completed."""
+        # Try device credential session first
+        session = capture_store.get_session(token)
+        if session is not None:
+            status = session.effective_status.value
+            result: Dict[str, Any] = {
+                "success": True,
+                "status": status,
+                "device_id": session.device_id,
+                "account_id": session.account_id,
+            }
+            if status == "completed":
+                result["message"] = (
+                    f"Credentials for {session.device_id}/{session.account_id} "
+                    "have been saved successfully."
+                )
+            elif status == "pending":
+                result["message"] = "Waiting for the user to enter credentials."
+            else:
+                result["message"] = "This capture session has expired."
+            return result
+
+        # Try fleet setting session
+        fleet_session = capture_store.get_fleet_session(token)
+        if fleet_session is not None:
+            status = fleet_session.effective_status.value
+            result = {
+                "success": True,
+                "status": status,
+                "setting_key": fleet_session.setting_key,
+                "type": "fleet_setting",
+            }
+            if status == "completed":
+                result["message"] = (
+                    f"Fleet setting '{fleet_session.setting_key}' "
+                    "has been saved successfully."
+                )
+            elif status == "pending":
+                result["message"] = "Waiting for the user to enter the value."
+            else:
+                result["message"] = "This capture session has expired."
+            return result
+
+        return {
+            "success": True,
+            "status": "expired_or_not_found",
+            "message": "This capture session has expired or does not exist.",
+        }
 
     # ------------------------------------------------------------------
     # Catalog + Execution handlers
@@ -1468,7 +1681,10 @@ class ADMZMCPServer:
 
         device = self.registry.get_device_info(device_id)
         device["device_id"] = device_id
-        credentials = self.registry.get_credentials(device_id)
+        try:
+            credentials = self.registry.get_credentials(device_id)
+        except AccountNotFoundError:
+            credentials = {"username": "", "password": ""}
 
         op_dict = operation.to_executor_dict()
 
@@ -1531,7 +1747,10 @@ class ADMZMCPServer:
 
         device = self.registry.get_device_info(details["device_id"])
         device["device_id"] = details["device_id"]
-        credentials = self.registry.get_credentials(details["device_id"])
+        try:
+            credentials = self.registry.get_credentials(details["device_id"])
+        except AccountNotFoundError:
+            credentials = {"username": "", "password": ""}
 
         op_dict = operation.to_executor_dict()
 
@@ -1726,6 +1945,83 @@ class ADMZMCPServer:
             }
 
     # ------------------------------------------------------------------
+    # Credential probe handler
+    # ------------------------------------------------------------------
+
+    async def _test_credentials(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Probe a device with no-auth, legacy defaults, and/or user creds."""
+        host = arguments.get("host")
+        device_id = arguments.get("device_id")
+
+        if not host:
+            if not device_id:
+                return {
+                    "success": False,
+                    "error": "Either 'host' or 'device_id' must be provided",
+                }
+            if not self.registry.device_exists(device_id):
+                raise DeviceNotFoundError(f"Device not found: {device_id}")
+            device_info = self.registry.get_device_info(device_id)
+            host = device_info.get("host") or device_info.get("ip_address")
+            if not host:
+                return {
+                    "success": False,
+                    "error": f"Device '{device_id}' has no host/IP address",
+                }
+
+        credentials_list = []
+        username = arguments.get("username")
+        password = arguments.get("password")
+        if username and password:
+            credentials_list.append((username, password))
+
+        passwords = arguments.get("passwords") or []
+        for pw in passwords[:5]:
+            credentials_list.append(("root", pw))
+
+        result = await probe_credentials(
+            host,
+            credentials_list=credentials_list if credentials_list else None,
+        )
+
+        response = result.to_dict(include_credentials=False)
+        response["success"] = True
+
+        store = arguments.get("store", False)
+        if store and device_id and result.status in (
+            ProbeStatus.FACTORY_DEFAULT,
+            ProbeStatus.AUTHENTICATED,
+        ):
+            if not self.registry.device_exists(device_id):
+                response["store_error"] = f"Device '{device_id}' not found in registry"
+            else:
+                account_data = {
+                    "username": result.username or "root",
+                    "password": result.password or "",
+                    "account_type": "service",
+                    "purpose": "Auto-stored by credential probe",
+                }
+                try:
+                    if self.registry.account_exists(device_id, "default"):
+                        self.registry.remove_account(device_id, "default")
+                    self.registry.add_account(device_id, "default", account_data)
+                    response["stored"] = True
+                    response["stored_device_id"] = device_id
+                    response["stored_account_id"] = "default"
+                except Exception as e:
+                    response["store_error"] = str(e)
+
+                if result.auth_method:
+                    try:
+                        self.registry.update_device_info(
+                            device_id, {"auth_method": result.auth_method}
+                        )
+                    except Exception:
+                        pass
+
+        return response
+
+    # ------------------------------------------------------------------
     # Discovery handlers
     # ------------------------------------------------------------------
 
@@ -1741,7 +2037,24 @@ class ADMZMCPServer:
         return {
             "success": True,
             "count": len(devices),
-            "devices": [d.to_registry_dict() for d in devices],
+            "devices": [
+                {
+                    "ip_address": d.ip_address,
+                    "mac_address": d.mac_address,
+                    "hostname": d.hostname,
+                    "model": d.model,
+                    "serial_number": d.serial_number,
+                    "firmware_version": d.firmware_version,
+                    "manufacturer": d.manufacturer,
+                    "friendly_name": d.friendly_name,
+                    "device_type": d.device_type.value,
+                    "is_axis": d.is_axis,
+                    "vapix_available": d.vapix_available,
+                    "factory_default": d.factory_default,
+                    "discovered_by": [p.value for p in d.discovered_by],
+                }
+                for d in devices
+            ],
         }
 
     async def _register_discovered_device(
@@ -1859,6 +2172,372 @@ class ADMZMCPServer:
     ) -> Dict[str, Any]:
         result = await self.scheduler.run_now(schedule_id)
         return result
+
+    # ------------------------------------------------------------------
+    # Fleet settings handlers
+    # ------------------------------------------------------------------
+
+    async def _get_fleet_settings(self) -> Dict[str, Any]:
+        settings = fleet_settings.list_all()
+        display = {}
+        for k, v in settings.items():
+            if "password" in k.lower():
+                display[k] = f"{'*' * min(len(v), 8)} ({len(v)} chars)"
+            else:
+                display[k] = v
+        return {
+            "success": True,
+            "count": len(settings),
+            "settings": display,
+        }
+
+    async def _set_fleet_setting(
+        self, key: str, value: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if value is None and "password" in key.lower():
+            base_url = os.getenv("ADMZ_BASE_URL", "http://localhost:8000")
+            session = capture_store.create_fleet_session(
+                setting_key=key,
+                label="Fleet default password for device provisioning",
+            )
+            url = f"{base_url}/capture/fleet/{session.token}"
+            return {
+                "success": True,
+                "action": "capture",
+                "key": key,
+                "capture_url": url,
+                "token": session.token,
+                "expires_in_seconds": int(session.ttl),
+                "message": (
+                    "Open the URL to enter the password securely. "
+                    "The password never appears in the chat."
+                ),
+            }
+
+        if value is None:
+            return {
+                "success": False,
+                "error": "Value is required for non-password settings.",
+            }
+
+        if not value:
+            deleted = fleet_settings.delete(key)
+            return {
+                "success": True,
+                "action": "deleted" if deleted else "not_found",
+                "key": key,
+            }
+
+        fleet_settings.set(key, value)
+        display_value = value
+        if "password" in key.lower():
+            display_value = f"{'*' * min(len(value), 8)} ({len(value)} chars)"
+        return {
+            "success": True,
+            "action": "set",
+            "key": key,
+            "value": display_value,
+        }
+
+    # ------------------------------------------------------------------
+    # Provisioning handler
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _generate_device_password(length: int = 24) -> str:
+        while True:
+            pw = secrets.token_urlsafe(length)[:length]
+            if (any(c.isupper() for c in pw) and
+                    any(c.islower() for c in pw) and
+                    any(c.isdigit() for c in pw)):
+                return pw
+
+    @staticmethod
+    def _serial_to_mac(serial: str) -> str:
+        s = serial.upper().replace(":", "").replace("-", "")
+        if len(s) != 12:
+            return serial
+        return ":".join(s[i:i + 2] for i in range(0, 12, 2))
+
+    async def _execute_on_host(
+        self,
+        host: str,
+        operation_id: str,
+        params: Dict[str, str],
+        *,
+        credentials: Optional[Dict[str, str]] = None,
+        auth_method: str = "digest",
+        family: str = "vapix",
+    ) -> tuple:
+        operation = self.catalog.get_operation(family, operation_id)
+        if not operation:
+            return False, f"Operation '{operation_id}' not found in {family} catalog"
+
+        executor = self.executors.get(family)
+        if not executor:
+            return False, f"No executor for family '{family}'"
+
+        device = {
+            "host": host,
+            "device_id": f"_host_{host}",
+            "auth_method": auth_method,
+            "https": False,
+            "port": 80,
+        }
+
+        creds = credentials or {"username": "", "password": ""}
+
+        op_dict = {
+            "id": operation.id,
+            "cgi": operation.cgi,
+            "method": operation.method,
+            "risk_level": operation.risk_level,
+            "request": operation.request,
+            "response": operation.response,
+            "requires": operation.requires,
+            "_endpoint": operation.endpoint,
+            "_generation": operation.generation,
+            "_auth": operation.auth,
+            "service_impact": operation.service_impact,
+        }
+
+        result = await executor.execute(op_dict, device, creds, params)
+        if result.success:
+            return True, None
+        return False, result.error or f"HTTP {result.status_code}"
+
+    def _store_provisioned_creds(
+        self, device_id: str, username: str, password: str,
+    ) -> None:
+        account_data = {
+            "username": username,
+            "password": password,
+            "account_type": "admin",
+            "purpose": "Provisioned by provision_device",
+        }
+        if self.registry.account_exists(device_id, "default"):
+            self.registry.remove_account(device_id, "default")
+        self.registry.add_account(device_id, "default", account_data)
+
+    async def _provision_device(
+        self, arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        device_id = arguments.get("device_id")
+        host = arguments.get("host")
+        username = arguments.get("username", "root")
+        user_password = arguments.get("password")
+        force_change = arguments.get("force_change", False)
+
+        if not host and not device_id:
+            return {
+                "success": False,
+                "error": "Either 'host' or 'device_id' must be provided",
+            }
+
+        if device_id and not host:
+            if not self.registry.device_exists(device_id):
+                raise DeviceNotFoundError(f"Device not found: {device_id}")
+            device_info = self.registry.get_device_info(device_id)
+            host = device_info.get("host") or device_info.get("ip_address")
+            if not host:
+                return {
+                    "success": False,
+                    "error": f"Device '{device_id}' has no host/IP address",
+                }
+
+        probe = await probe_credentials(host)
+
+        if probe.status == ProbeStatus.UNREACHABLE:
+            return {
+                "success": False,
+                "status": "unreachable",
+                "host": host,
+                "detail": probe.detail,
+            }
+
+        auto_registered = False
+        if not device_id:
+            serial = (probe.device_info or {}).get("serial_number")
+            if serial and len(serial.replace(":", "").replace("-", "")) == 12:
+                device_id = self._serial_to_mac(serial)
+            else:
+                return {
+                    "success": False,
+                    "error": (
+                        "Could not determine device serial/MAC from probe. "
+                        "Register the device manually and use device_id instead."
+                    ),
+                    "host": host,
+                    "device_info": probe.device_info,
+                }
+
+            if not self.registry.device_exists(device_id):
+                reg_info = {
+                    "host": host,
+                    "ip_address": host,
+                    "mac_address": device_id,
+                    "serial_number": serial,
+                    "model": (probe.device_info or {}).get("model", ""),
+                    "firmware_version": (probe.device_info or {}).get(
+                        "firmware_version", ""
+                    ),
+                    "nickname": (probe.device_info or {}).get(
+                        "friendly_name", ""
+                    ),
+                    "manufacturer": "Axis Communications",
+                    "tags": ["axis", "auto-registered"],
+                }
+                self.registry.add_device(device_id, reg_info)
+                auto_registered = True
+
+        password_source = "provided"
+        if user_password:
+            new_password = user_password
+        else:
+            fleet_default = fleet_settings.get("default_password")
+            if fleet_default:
+                new_password = fleet_default
+                password_source = "fleet_default"
+            else:
+                new_password = self._generate_device_password()
+                password_source = "generated"
+
+        if probe.status == ProbeStatus.FACTORY_DEFAULT:
+            ok, error = await self._execute_on_host(
+                host, "pwdgrp.cgi:add-user",
+                params={
+                    "username": username,
+                    "password": new_password,
+                    "group": "root",
+                    "secondary_groups": "admin:operator:viewer:ptz",
+                },
+                auth_method="none",
+            )
+            if not ok:
+                return {
+                    "success": False,
+                    "status": "vapix_error",
+                    "device_id": device_id,
+                    "action_taken": "create_user_failed",
+                    "error": error,
+                }
+
+            self._store_provisioned_creds(device_id, username, new_password)
+            self.registry.update_device_info(
+                device_id, {"auth_method": "digest"}
+            )
+
+            return {
+                "success": True,
+                "status": "provisioned",
+                "action_taken": "created_user",
+                "device_id": device_id,
+                "host": host,
+                "username": username,
+                "password_source": password_source,
+                "auto_registered": auto_registered,
+                "detail": (
+                    f"Created admin user '{username}' on factory-default "
+                    f"device. Credentials stored. Use get_credentials to "
+                    f"retrieve the password."
+                ),
+            }
+
+        if probe.status == ProbeStatus.AUTHENTICATED:
+            if probe.auth_method:
+                self.registry.update_device_info(
+                    device_id, {"auth_method": probe.auth_method}
+                )
+
+            if not force_change:
+                self._store_provisioned_creds(
+                    device_id, probe.username, probe.password
+                )
+                return {
+                    "success": True,
+                    "status": "already_configured",
+                    "action_taken": "stored_existing_credentials",
+                    "device_id": device_id,
+                    "host": host,
+                    "username": probe.username,
+                    "auto_registered": auto_registered,
+                    "detail": (
+                        f"Device authenticated with legacy defaults as "
+                        f"'{probe.username}'. Credentials stored. Consider "
+                        f"using force_change=true to rotate the password."
+                    ),
+                }
+
+            ok, error = await self._execute_on_host(
+                host, "pwdgrp.cgi:update-user",
+                params={
+                    "username": username,
+                    "password": new_password,
+                },
+                credentials={
+                    "username": probe.username,
+                    "password": probe.password,
+                },
+                auth_method=probe.auth_method or "digest",
+            )
+            if not ok:
+                self._store_provisioned_creds(
+                    device_id, probe.username, probe.password
+                )
+                return {
+                    "success": False,
+                    "status": "vapix_error",
+                    "device_id": device_id,
+                    "action_taken": "password_change_failed",
+                    "error": error,
+                    "detail": (
+                        "Password change failed, but old credentials "
+                        "were stored successfully."
+                    ),
+                }
+
+            self._store_provisioned_creds(device_id, username, new_password)
+
+            return {
+                "success": True,
+                "status": "provisioned",
+                "action_taken": "changed_password",
+                "device_id": device_id,
+                "host": host,
+                "username": username,
+                "password_source": password_source,
+                "auto_registered": auto_registered,
+                "detail": (
+                    f"Changed password for '{username}'. New credentials "
+                    f"stored. Use get_credentials to retrieve the password."
+                ),
+            }
+
+        if probe.status == ProbeStatus.AUTH_FAILED:
+            if probe.auth_method:
+                self.registry.update_device_info(
+                    device_id, {"auth_method": probe.auth_method}
+                )
+            return {
+                "success": False,
+                "status": "auth_failed",
+                "device_id": device_id,
+                "host": host,
+                "auto_registered": auto_registered,
+                "detail": (
+                    "Cannot authenticate with any known credentials. "
+                    "Use capture_credentials to provide the password "
+                    "manually, or use test_device_credentials with "
+                    "specific passwords to probe further."
+                ),
+            }
+
+        return {
+            "success": False,
+            "status": probe.status.value,
+            "device_id": device_id,
+            "detail": probe.detail,
+        }
 
     async def run(self):
         """Run the MCP server with stdio transport."""
