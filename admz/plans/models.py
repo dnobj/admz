@@ -5,10 +5,14 @@ Data models for execution plans.
 import enum
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from admz.executor.models import StepResult
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class PlanStatus(enum.Enum):
@@ -65,7 +69,7 @@ class ExecutionPlan:
     risk_summary: Dict[str, int] = field(default_factory=dict)
     results: List[StepResult] = field(default_factory=list)
     rollback_steps: List[PlanStep] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=_utc_now)
     completed_at: Optional[datetime] = None
     created_by: str = ""
 

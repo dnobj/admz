@@ -10,6 +10,20 @@ Catalog-in-the-loop tools:
   - create_plan: submits a multi-step plan for review
   - execute_plan: runs an approved plan autonomously
   - get_plan_status: checks progress of a running plan
+
+Snapshot/restore tools:
+  - snapshot_device: capture device config to git
+  - snapshot_fleet: bulk snapshot filtered by tag
+  - restore_device: propose a plan to restore from a git ref
+  - diff_device: show config changes between refs
+  - check_drift: compare live device state to git HEAD
+
+Discovery tools:
+  - discover_network_devices: scan the local network for Axis devices
+  - register_discovered_device: add a discovered device to the registry
+
+Schedule tools:
+  - create/update/delete/list/run_snapshot_schedule: manage recurring snapshots
 """
 
 import asyncio
@@ -17,7 +31,10 @@ import json
 import logging
 import os
 import secrets
+import time
 from typing import Any, Dict, List, Optional
+
+CONFIRM_TOKEN_TTL_SECONDS = 300  # 5 minutes
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -31,14 +48,20 @@ from admz.discovery.credential_probe import probe_credentials, ProbeStatus
 from admz.fleet_settings import fleet_settings
 from admz.catalog.loader import CatalogLoader
 from admz.catalog.resolver import CatalogResolver
-from admz.executor.vapix import VAPXExecutor
+from admz.executor.vapix import VapixExecutor
 from admz.plans.engine import PlanEngine
+from admz.snapshot.engine import SnapshotEngine
+from admz.snapshot.git_repo import GitRepo
+from admz.snapshot.restore import RestoreBuilder
+from admz.snapshot.drift import DriftDetector
+from admz.snapshot.scheduler import SnapshotScheduler, SnapshotSchedule, parse_interval
+from admz.discovery import discover_devices as run_network_discovery
 from admz.exceptions import (
+    ADMZError,
     DeviceNotFoundError,
     AccountNotFoundError,
     PermissionDeniedError,
     BackendError,
-    AxisSecretsError,
 )
 
 # Configure logging
@@ -82,7 +105,7 @@ class ADMZMCPServer:
         self.resolver = CatalogResolver(self.catalog)
 
         # Executors (one per API family)
-        vapix_executor = VAPXExecutor()
+        vapix_executor = VapixExecutor()
         self.executors = {"vapix": vapix_executor}
 
         # Plan engine
@@ -90,6 +113,38 @@ class ADMZMCPServer:
             catalog=self.catalog,
             registry=self.registry,
             executors=self.executors,
+        )
+
+        # Snapshot / restore
+        config_repo_path = os.getenv(
+            "ADMZ_CONFIG_REPO_PATH",
+            os.path.join(os.path.expanduser("~"), ".admz", "config-repo"),
+        )
+        config_repo_remote = os.getenv("ADMZ_CONFIG_REPO_REMOTE")
+        self.git_repo = GitRepo(config_repo_path, remote_url=config_repo_remote)
+        self.snapshot_engine = SnapshotEngine(
+            catalog=self.catalog,
+            registry=self.registry,
+            executors=self.executors,
+            git_repo=self.git_repo,
+        )
+        self.restore_builder = RestoreBuilder(
+            catalog=self.catalog,
+            registry=self.registry,
+            git_repo=self.git_repo,
+        )
+        self.drift_detector = DriftDetector(
+            snapshot_engine=self.snapshot_engine,
+            git_repo=self.git_repo,
+        )
+
+        # Scheduler
+        schedule_path = os.path.join(
+            os.path.expanduser("~"), ".admz", "schedules.json"
+        )
+        self.scheduler = SnapshotScheduler(
+            snapshot_engine=self.snapshot_engine,
+            schedule_path=schedule_path,
         )
 
         # Dangerous operation confirm tokens (token → operation details)
@@ -577,6 +632,151 @@ class ADMZMCPServer:
                         "required": ["plan_id"],
                     },
                 ),
+                # --- Snapshot / Restore tools ---
+                Tool(
+                    name="snapshot_device",
+                    description=(
+                        "Capture a device's full configuration and commit it "
+                        "to the config git repository. Reads all applicable "
+                        "facets (image, network, time, events, etc.) and writes "
+                        "normalized YAML + raw responses. Returns a summary "
+                        "of what was captured."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID to snapshot",
+                            },
+                            "message": {
+                                "type": "string",
+                                "description": (
+                                    "Optional commit message "
+                                    "(default: 'Snapshot <device_id>')"
+                                ),
+                            },
+                        },
+                        "required": ["device_id"],
+                    },
+                ),
+                Tool(
+                    name="snapshot_fleet",
+                    description=(
+                        "Snapshot all devices (or a filtered subset) in a "
+                        "single commit. Devices are read in parallel."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "tag_filter": {
+                                "type": "string",
+                                "description": (
+                                    "Only snapshot devices with this tag. "
+                                    "Omit to snapshot all devices."
+                                ),
+                            },
+                            "message": {
+                                "type": "string",
+                                "description": "Optional commit message",
+                            },
+                        },
+                        "required": [],
+                    },
+                ),
+                Tool(
+                    name="restore_device",
+                    description=(
+                        "Build a plan that restores a device to a previous "
+                        "configuration from git. Returns the plan for review — "
+                        "call execute_plan to apply it. Accepts a git ref "
+                        "(commit SHA, tag, or branch)."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID to restore",
+                            },
+                            "ref": {
+                                "type": "string",
+                                "description": (
+                                    "Git ref to restore from "
+                                    "(SHA, tag, or branch). Default: HEAD"
+                                ),
+                                "default": "HEAD",
+                            },
+                            "facets": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Specific facets to restore "
+                                    "(e.g. ['image', 'time']). "
+                                    "Omit to restore all."
+                                ),
+                            },
+                        },
+                        "required": ["device_id"],
+                    },
+                ),
+                Tool(
+                    name="diff_device",
+                    description=(
+                        "Show configuration changes for a device between two "
+                        "git refs, or between a ref and the current live state."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID",
+                            },
+                            "ref_a": {
+                                "type": "string",
+                                "description": "First git ref (default: HEAD~1)",
+                                "default": "HEAD~1",
+                            },
+                            "ref_b": {
+                                "type": "string",
+                                "description": (
+                                    "Second git ref (default: HEAD)"
+                                ),
+                                "default": "HEAD",
+                            },
+                        },
+                        "required": ["device_id"],
+                    },
+                ),
+                Tool(
+                    name="check_drift",
+                    description=(
+                        "Compare a device's live configuration against what's "
+                        "stored in git. Reports any fields that differ. "
+                        "Useful for detecting manual changes made outside ADMZ."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": (
+                                    "Device ID to check. Omit to check "
+                                    "all devices."
+                                ),
+                            },
+                            "tag_filter": {
+                                "type": "string",
+                                "description": (
+                                    "Only check devices with this tag "
+                                    "(when device_id is omitted)"
+                                ),
+                            },
+                        },
+                        "required": [],
+                    },
+                ),
                 # --- Credential probe tool ---
                 Tool(
                     name="test_device_credentials",
@@ -626,14 +826,15 @@ class ADMZMCPServer:
                         "required": [],
                     },
                 ),
-                # --- Discovery tool ---
+                # --- Discovery tools ---
                 Tool(
-                    name="discover_devices_on_network",
+                    name="discover_network_devices",
                     description=(
                         "Scan the local network for Axis cameras and other devices "
                         "using mDNS, SSDP, ONVIF, ARP, HTTP/VAPIX, and SNMP. "
                         "Returns discovered devices with metadata. "
-                        "Use this to find devices before registering them."
+                        "Devices are NOT automatically registered — use "
+                        "register_discovered_device to add a specific one."
                     ),
                     inputSchema={
                         "type": "object",
@@ -655,8 +856,188 @@ class ADMZMCPServer:
                                     "(e.g. '192.168.1.0/24'). Auto-detected if omitted."
                                 ),
                             },
+                            "enable_ping": {
+                                "type": "boolean",
+                                "description": (
+                                    "Enable ICMP ping sweep (slow). Default: false"
+                                ),
+                                "default": False,
+                            },
                         },
                         "required": [],
+                    },
+                ),
+                Tool(
+                    name="register_discovered_device",
+                    description=(
+                        "Add a previously-discovered device to the registry. "
+                        "Provide the discovery result fields. The device will "
+                        "be created without credentials — use capture_credentials "
+                        "to set them via the out-of-band URL flow."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Unique device ID to assign",
+                            },
+                            "ip_address": {
+                                "type": "string",
+                                "description": "Device IP address",
+                            },
+                            "mac_address": {
+                                "type": "string",
+                                "description": "MAC address (optional)",
+                            },
+                            "model": {
+                                "type": "string",
+                                "description": "Device model (optional)",
+                            },
+                            "hostname": {
+                                "type": "string",
+                                "description": "Hostname / friendly name",
+                            },
+                            "device_type": {
+                                "type": "string",
+                                "description": (
+                                    "Device type from discovery "
+                                    "(e.g. 'camera', 'speaker')"
+                                ),
+                            },
+                            "tags": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Tags to apply",
+                            },
+                        },
+                        "required": ["device_id", "ip_address"],
+                    },
+                ),
+                # --- Schedule tools ---
+                Tool(
+                    name="create_snapshot_schedule",
+                    description=(
+                        "Create a recurring snapshot schedule. Snapshots run "
+                        "automatically at the specified interval. Use "
+                        "interval like '30m', '2h', '1d', or '12h'."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "schedule_id": {
+                                "type": "string",
+                                "description": (
+                                    "Unique ID for this schedule "
+                                    "(e.g. 'nightly-all', 'hourly-lobby')"
+                                ),
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": (
+                                    "Human-readable description"
+                                ),
+                            },
+                            "interval": {
+                                "type": "string",
+                                "description": (
+                                    "How often to run. Examples: "
+                                    "'30m', '2h', '1d', '12h'"
+                                ),
+                            },
+                            "tag_filter": {
+                                "type": "string",
+                                "description": (
+                                    "Only snapshot devices with this tag. "
+                                    "Omit to snapshot all devices."
+                                ),
+                            },
+                            "device_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Specific device IDs to snapshot. "
+                                    "Omit to use tag_filter or all devices."
+                                ),
+                            },
+                        },
+                        "required": ["schedule_id", "description", "interval"],
+                    },
+                ),
+                Tool(
+                    name="list_snapshot_schedules",
+                    description=(
+                        "List all configured snapshot schedules with their "
+                        "status, last run time, and next run time."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                    },
+                ),
+                Tool(
+                    name="update_snapshot_schedule",
+                    description=(
+                        "Update an existing schedule. Can change interval, "
+                        "enable/disable, change tag filter, etc."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "schedule_id": {
+                                "type": "string",
+                                "description": "Schedule ID to update",
+                            },
+                            "interval": {
+                                "type": "string",
+                                "description": "New interval (e.g. '1h')",
+                            },
+                            "enabled": {
+                                "type": "boolean",
+                                "description": "Enable or disable",
+                            },
+                            "tag_filter": {
+                                "type": "string",
+                                "description": "New tag filter",
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "New description",
+                            },
+                        },
+                        "required": ["schedule_id"],
+                    },
+                ),
+                Tool(
+                    name="delete_snapshot_schedule",
+                    description="Delete a snapshot schedule.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "schedule_id": {
+                                "type": "string",
+                                "description": "Schedule ID to delete",
+                            },
+                        },
+                        "required": ["schedule_id"],
+                    },
+                ),
+                Tool(
+                    name="run_snapshot_schedule",
+                    description=(
+                        "Manually trigger a scheduled snapshot right now, "
+                        "without waiting for the next interval."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "schedule_id": {
+                                "type": "string",
+                                "description": "Schedule ID to run",
+                            },
+                        },
+                        "required": ["schedule_id"],
                     },
                 ),
                 # --- Fleet settings tools ---
@@ -838,12 +1219,66 @@ class ADMZMCPServer:
                     result = await self._get_plan_status(
                         arguments["plan_id"],
                     )
+                # --- Snapshot / Restore tools ---
+                elif name == "snapshot_device":
+                    result = await self._snapshot_device(
+                        arguments["device_id"],
+                        arguments.get("message"),
+                    )
+                elif name == "snapshot_fleet":
+                    result = await self._snapshot_fleet(
+                        arguments.get("tag_filter"),
+                        arguments.get("message"),
+                    )
+                elif name == "restore_device":
+                    result = await self._restore_device(
+                        arguments["device_id"],
+                        arguments.get("ref", "HEAD"),
+                        arguments.get("facets"),
+                    )
+                elif name == "diff_device":
+                    result = await self._diff_device(
+                        arguments["device_id"],
+                        arguments.get("ref_a", "HEAD~1"),
+                        arguments.get("ref_b", "HEAD"),
+                    )
+                elif name == "check_drift":
+                    result = await self._check_drift(
+                        arguments.get("device_id"),
+                        arguments.get("tag_filter"),
+                    )
                 # --- Credential probe ---
                 elif name == "test_device_credentials":
                     result = await self._test_credentials(arguments)
-                # --- Discovery ---
-                elif name == "discover_devices_on_network":
-                    result = await self._discover_devices(arguments)
+                # --- Discovery tools ---
+                elif name == "discover_network_devices":
+                    result = await self._discover_network_devices(arguments)
+                elif name == "register_discovered_device":
+                    result = await self._register_discovered_device(arguments)
+                # --- Schedule tools ---
+                elif name == "create_snapshot_schedule":
+                    result = await self._create_snapshot_schedule(
+                        arguments["schedule_id"],
+                        arguments["description"],
+                        arguments["interval"],
+                        arguments.get("tag_filter"),
+                        arguments.get("device_ids"),
+                    )
+                elif name == "list_snapshot_schedules":
+                    result = await self._list_snapshot_schedules()
+                elif name == "update_snapshot_schedule":
+                    result = await self._update_snapshot_schedule(
+                        arguments["schedule_id"],
+                        arguments,
+                    )
+                elif name == "delete_snapshot_schedule":
+                    result = await self._delete_snapshot_schedule(
+                        arguments["schedule_id"],
+                    )
+                elif name == "run_snapshot_schedule":
+                    result = await self._run_snapshot_schedule(
+                        arguments["schedule_id"],
+                    )
                 # --- Fleet settings ---
                 elif name == "get_fleet_settings":
                     result = await self._get_fleet_settings()
@@ -874,7 +1309,7 @@ class ADMZMCPServer:
             except BackendError as e:
                 error = {"error": "BackendError", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
-            except AxisSecretsError as e:
+            except ADMZError as e:
                 error = {"error": "ADMZError", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
             except Exception as e:
@@ -913,32 +1348,30 @@ class ADMZMCPServer:
         raise DeviceNotFoundError(f"Device not found: {device_id}")
 
     async def _search_devices(self, filters: Dict[str, Any]) -> Dict[str, Any]:
-        """Search devices by criteria."""
+        """Search devices by criteria. String fields use case-insensitive
+        substring matching to be friendly to LLM-built queries."""
         all_devices = self.registry.list_devices()
 
-        # Apply filters
+        location_q = (filters.get("location") or "").lower()
+        model_q = (filters.get("model") or "").lower()
+        wanted_tags = filters.get("tags") or []
+
         matched = []
         for device in all_devices:
-            match = True
+            if wanted_tags:
+                device_tags = device.get("tags") or []
+                if not any(tag in device_tags for tag in wanted_tags):
+                    continue
 
-            # Filter by tags
-            if "tags" in filters:
-                device_tags = device.get("tags", [])
-                if not any(tag in device_tags for tag in filters["tags"]):
-                    match = False
+            if location_q:
+                if location_q not in (device.get("location") or "").lower():
+                    continue
 
-            # Filter by location
-            if "location" in filters:
-                if device.get("location") != filters["location"]:
-                    match = False
+            if model_q:
+                if model_q not in (device.get("model") or "").lower():
+                    continue
 
-            # Filter by model
-            if "model" in filters:
-                if device.get("model") != filters["model"]:
-                    match = False
-
-            if match:
-                matched.append(device)
+            matched.append(device)
 
         return {
             "success": True,
@@ -1011,7 +1444,7 @@ class ADMZMCPServer:
         updates: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Update device information."""
-        self.registry.update_device_info(device_id, updates)
+        self.registry.update_device(device_id, updates)
         return {
             "success": True,
             "message": f"Device '{device_id}' updated successfully",
@@ -1205,11 +1638,13 @@ class ADMZMCPServer:
         if risk == "dangerous":
             op = self.catalog.get_operation(family, operation_id)
             token = secrets.token_urlsafe(32)
+            self._purge_expired_confirm_tokens()
             self._confirm_tokens[token] = {
                 "device_id": device_id,
                 "operation_id": operation_id,
                 "params": params,
                 "family": family,
+                "issued_at": time.time(),
             }
             return {
                 "blocked": True,
@@ -1251,20 +1686,7 @@ class ADMZMCPServer:
         except AccountNotFoundError:
             credentials = {"username": "", "password": ""}
 
-        # Build operation dict
-        op_dict = {
-            "id": operation.id,
-            "cgi": operation.cgi,
-            "method": operation.method,
-            "risk_level": operation.risk_level,
-            "request": operation.request,
-            "response": operation.response,
-            "requires": operation.requires,
-            "_endpoint": operation.endpoint,
-            "_generation": operation.generation,
-            "_auth": operation.auth,
-            "service_impact": operation.service_impact,
-        }
+        op_dict = operation.to_executor_dict()
 
         result = await executor.execute(op_dict, device, credentials, params)
 
@@ -1286,8 +1708,19 @@ class ADMZMCPServer:
 
         return response
 
+    def _purge_expired_confirm_tokens(self) -> None:
+        now = time.time()
+        expired = [
+            tok
+            for tok, details in self._confirm_tokens.items()
+            if now - details.get("issued_at", 0) > CONFIRM_TOKEN_TTL_SECONDS
+        ]
+        for tok in expired:
+            self._confirm_tokens.pop(tok, None)
+
     async def _confirm_dangerous(self, confirm_token: str) -> Dict[str, Any]:
         """Confirm and execute a blocked dangerous operation."""
+        self._purge_expired_confirm_tokens()
         details = self._confirm_tokens.pop(confirm_token, None)
         if not details:
             return {
@@ -1319,19 +1752,7 @@ class ADMZMCPServer:
         except AccountNotFoundError:
             credentials = {"username": "", "password": ""}
 
-        op_dict = {
-            "id": operation.id,
-            "cgi": operation.cgi,
-            "method": operation.method,
-            "risk_level": operation.risk_level,
-            "request": operation.request,
-            "response": operation.response,
-            "requires": operation.requires,
-            "_endpoint": operation.endpoint,
-            "_generation": operation.generation,
-            "_auth": operation.auth,
-            "service_impact": operation.service_impact,
-        }
+        op_dict = operation.to_executor_dict()
 
         result = await executor.execute(
             op_dict, device, credentials, details["params"]
@@ -1415,6 +1836,115 @@ class ADMZMCPServer:
         }
 
     # ------------------------------------------------------------------
+    # Snapshot / Restore handlers
+    # ------------------------------------------------------------------
+
+    async def _snapshot_device(
+        self, device_id: str, message: Optional[str] = None
+    ) -> Dict[str, Any]:
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+        snapshot = await self.snapshot_engine.snapshot_device(
+            device_id, message=message
+        )
+        return {
+            "success": True,
+            **snapshot.to_summary(),
+        }
+
+    async def _snapshot_fleet(
+        self, tag_filter: Optional[str], message: Optional[str]
+    ) -> Dict[str, Any]:
+        snapshots = await self.snapshot_engine.snapshot_fleet(
+            tag_filter=tag_filter, message=message
+        )
+        return {
+            "success": True,
+            "count": len(snapshots),
+            "results": [s.to_summary() for s in snapshots],
+        }
+
+    async def _restore_device(
+        self,
+        device_id: str,
+        ref: str,
+        facet_names: Optional[List[str]],
+    ) -> Dict[str, Any]:
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+
+        plan_spec = self.restore_builder.build_restore_plan(
+            device_id, ref=ref, facet_names=facet_names
+        )
+
+        if not plan_spec["steps"]:
+            return {
+                "success": True,
+                "message": f"No config found for {device_id} at {ref}",
+                "warnings": plan_spec.get("warnings", []),
+            }
+
+        try:
+            plan = self.plan_engine.create_plan(
+                description=plan_spec["description"],
+                steps=plan_spec["steps"],
+                on_failure=plan_spec["on_failure"],
+            )
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        return {
+            "success": True,
+            "message": (
+                "Restore plan created. Review and call execute_plan "
+                "with the plan_id to apply."
+            ),
+            "warnings": plan_spec.get("warnings", []),
+            "source_ref": plan_spec.get("source_ref", ref),
+            **plan.to_summary(),
+        }
+
+    async def _diff_device(
+        self, device_id: str, ref_a: str, ref_b: str
+    ) -> Dict[str, Any]:
+        device_path = f"fleet/{device_id}/"
+        diff_text = self.git_repo.diff(ref_a, ref_b, path=device_path)
+        history = self.git_repo.log(path=device_path, max_count=10)
+
+        return {
+            "success": True,
+            "device_id": device_id,
+            "ref_a": ref_a,
+            "ref_b": ref_b,
+            "diff": diff_text if diff_text else "(no changes)",
+            "recent_history": history,
+        }
+
+    async def _check_drift(
+        self,
+        device_id: Optional[str],
+        tag_filter: Optional[str],
+    ) -> Dict[str, Any]:
+        if device_id:
+            if not self.registry.device_exists(device_id):
+                raise DeviceNotFoundError(f"Device not found: {device_id}")
+            report = await self.drift_detector.check_drift(device_id)
+            return {
+                "success": True,
+                **report.to_summary(),
+            }
+        else:
+            reports = await self.drift_detector.check_fleet_drift(
+                tag_filter=tag_filter
+            )
+            return {
+                "success": True,
+                "count": len(reports),
+                "drifted": sum(1 for r in reports if r.has_drift),
+                "reports": [r.to_summary() for r in reports],
+            }
+
+    # ------------------------------------------------------------------
     # Credential probe handler
     # ------------------------------------------------------------------
 
@@ -1423,7 +1953,6 @@ class ADMZMCPServer:
         host = arguments.get("host")
         device_id = arguments.get("device_id")
 
-        # Resolve host from registry if not provided directly
         if not host:
             if not device_id:
                 return {
@@ -1440,7 +1969,6 @@ class ADMZMCPServer:
                     "error": f"Device '{device_id}' has no host/IP address",
                 }
 
-        # Build credentials_list from arguments
         credentials_list = []
         username = arguments.get("username")
         password = arguments.get("password")
@@ -1459,7 +1987,6 @@ class ADMZMCPServer:
         response = result.to_dict(include_credentials=False)
         response["success"] = True
 
-        # If store=True and probe succeeded, save to registry
         store = arguments.get("store", False)
         if store and device_id and result.status in (
             ProbeStatus.FACTORY_DEFAULT,
@@ -1484,27 +2011,28 @@ class ADMZMCPServer:
                 except Exception as e:
                     response["store_error"] = str(e)
 
-                # Store detected auth_method in device profile
                 if result.auth_method:
                     try:
                         self.registry.update_device_info(
                             device_id, {"auth_method": result.auth_method}
                         )
                     except Exception:
-                        pass  # non-critical
+                        pass
 
         return response
 
     # ------------------------------------------------------------------
-    # Discovery handler
+    # Discovery handlers
     # ------------------------------------------------------------------
 
-    async def _discover_devices(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Discover devices on the local network."""
-        devices = await run_discovery(
+    async def _discover_network_devices(
+        self, arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        devices = await run_network_discovery(
             timeout=arguments.get("timeout", 5.0),
             axis_only=arguments.get("axis_only", False),
             subnet=arguments.get("subnet"),
+            enable_ping=arguments.get("enable_ping", False),
         )
         return {
             "success": True,
@@ -1529,14 +2057,128 @@ class ADMZMCPServer:
             ],
         }
 
+    async def _register_discovered_device(
+        self, arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        device_id = arguments["device_id"]
+        device_info = {
+            "host": arguments["ip_address"],
+            "ip_address": arguments["ip_address"],
+            "mac_address": arguments.get("mac_address", ""),
+            "model": arguments.get("model", ""),
+            "hostname": arguments.get("hostname", ""),
+            "nickname": arguments.get("hostname", ""),
+            "device_type": arguments.get("device_type", "unknown"),
+            "tags": arguments.get("tags", []),
+        }
+        self.registry.add_device(device_id, device_info)
+        return {
+            "success": True,
+            "message": (
+                f"Device '{device_id}' registered. Use capture_credentials "
+                "to set credentials via the out-of-band URL flow."
+            ),
+            "device_id": device_id,
+        }
+
+    # ------------------------------------------------------------------
+    # Schedule handlers
+    # ------------------------------------------------------------------
+
+    async def _create_snapshot_schedule(
+        self,
+        schedule_id: str,
+        description: str,
+        interval: str,
+        tag_filter: Optional[str],
+        device_ids: Optional[List[str]],
+    ) -> Dict[str, Any]:
+        try:
+            interval_seconds = parse_interval(interval)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        schedule = SnapshotSchedule(
+            id=schedule_id,
+            description=description,
+            interval_seconds=interval_seconds,
+            tag_filter=tag_filter,
+            device_ids=device_ids,
+        )
+        self.scheduler.add_schedule(schedule)
+
+        return {
+            "success": True,
+            "message": (
+                f"Schedule '{schedule_id}' created — snapshots every "
+                f"{schedule.interval_human}"
+            ),
+            "schedule": schedule.to_dict(),
+        }
+
+    async def _list_snapshot_schedules(self) -> Dict[str, Any]:
+        schedules = self.scheduler.list_schedules()
+        return {
+            "success": True,
+            "count": len(schedules),
+            "schedules": [s.to_dict() for s in schedules],
+        }
+
+    async def _update_snapshot_schedule(
+        self, schedule_id: str, updates: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        kwargs = {}
+        if "interval" in updates:
+            try:
+                kwargs["interval_seconds"] = parse_interval(updates["interval"])
+            except ValueError as e:
+                return {"success": False, "error": str(e)}
+        if "enabled" in updates:
+            kwargs["enabled"] = updates["enabled"]
+        if "tag_filter" in updates:
+            kwargs["tag_filter"] = updates["tag_filter"]
+        if "description" in updates:
+            kwargs["description"] = updates["description"]
+
+        schedule = self.scheduler.update_schedule(schedule_id, **kwargs)
+        if not schedule:
+            return {
+                "success": False,
+                "error": f"Schedule not found: {schedule_id}",
+            }
+
+        return {
+            "success": True,
+            "message": f"Schedule '{schedule_id}' updated",
+            "schedule": schedule.to_dict(),
+        }
+
+    async def _delete_snapshot_schedule(
+        self, schedule_id: str
+    ) -> Dict[str, Any]:
+        removed = self.scheduler.remove_schedule(schedule_id)
+        if not removed:
+            return {
+                "success": False,
+                "error": f"Schedule not found: {schedule_id}",
+            }
+        return {
+            "success": True,
+            "message": f"Schedule '{schedule_id}' deleted",
+        }
+
+    async def _run_snapshot_schedule(
+        self, schedule_id: str
+    ) -> Dict[str, Any]:
+        result = await self.scheduler.run_now(schedule_id)
+        return result
+
     # ------------------------------------------------------------------
     # Fleet settings handlers
     # ------------------------------------------------------------------
 
     async def _get_fleet_settings(self) -> Dict[str, Any]:
-        """List all fleet-wide settings."""
         settings = fleet_settings.list_all()
-        # Mask the default_password value for safety
         display = {}
         for k, v in settings.items():
             if "password" in k.lower():
@@ -1552,8 +2194,6 @@ class ADMZMCPServer:
     async def _set_fleet_setting(
         self, key: str, value: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Set, delete, or capture a fleet-wide setting."""
-        # No value provided for a password key → generate capture URL
         if value is None and "password" in key.lower():
             base_url = os.getenv("ADMZ_BASE_URL", "http://localhost:8000")
             session = capture_store.create_fleet_session(
@@ -1574,14 +2214,12 @@ class ADMZMCPServer:
                 ),
             }
 
-        # No value provided for non-password key → error
         if value is None:
             return {
                 "success": False,
                 "error": "Value is required for non-password settings.",
             }
 
-        # Empty string → delete
         if not value:
             deleted = fleet_settings.delete(key)
             return {
@@ -1591,7 +2229,6 @@ class ADMZMCPServer:
             }
 
         fleet_settings.set(key, value)
-        # Mask password values in response
         display_value = value
         if "password" in key.lower():
             display_value = f"{'*' * min(len(value), 8)} ({len(value)} chars)"
@@ -1608,7 +2245,6 @@ class ADMZMCPServer:
 
     @staticmethod
     def _generate_device_password(length: int = 24) -> str:
-        """Generate a secure password with mixed case + digits."""
         while True:
             pw = secrets.token_urlsafe(length)[:length]
             if (any(c.isupper() for c in pw) and
@@ -1618,10 +2254,9 @@ class ADMZMCPServer:
 
     @staticmethod
     def _serial_to_mac(serial: str) -> str:
-        """Convert Axis serial 'ACCC8ED78C7B' to MAC 'AC:CC:8E:D7:8C:7B'."""
         s = serial.upper().replace(":", "").replace("-", "")
         if len(s) != 12:
-            return serial  # not a standard MAC-length serial
+            return serial
         return ":".join(s[i:i + 2] for i in range(0, 12, 2))
 
     async def _execute_on_host(
@@ -1634,15 +2269,6 @@ class ADMZMCPServer:
         auth_method: str = "digest",
         family: str = "vapix",
     ) -> tuple:
-        """Execute a catalog operation against a host without requiring a registry entry.
-
-        Builds a synthetic device dict and routes through the normal
-        executor+catalog path so parameter formatting, response parsing,
-        etc. all come from the YAML catalog.
-
-        Returns:
-            (success: bool, error_or_none: Optional[str])
-        """
         operation = self.catalog.get_operation(family, operation_id)
         if not operation:
             return False, f"Operation '{operation_id}' not found in {family} catalog"
@@ -1683,7 +2309,6 @@ class ADMZMCPServer:
     def _store_provisioned_creds(
         self, device_id: str, username: str, password: str,
     ) -> None:
-        """Store or replace the 'default' account for a device."""
         account_data = {
             "username": username,
             "password": password,
@@ -1697,14 +2322,12 @@ class ADMZMCPServer:
     async def _provision_device(
         self, arguments: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Provision credentials on a device."""
         device_id = arguments.get("device_id")
         host = arguments.get("host")
         username = arguments.get("username", "root")
         user_password = arguments.get("password")
         force_change = arguments.get("force_change", False)
 
-        # 1. Resolve host
         if not host and not device_id:
             return {
                 "success": False,
@@ -1722,7 +2345,6 @@ class ADMZMCPServer:
                     "error": f"Device '{device_id}' has no host/IP address",
                 }
 
-        # 2. Probe the device
         probe = await probe_credentials(host)
 
         if probe.status == ProbeStatus.UNREACHABLE:
@@ -1733,7 +2355,6 @@ class ADMZMCPServer:
                 "detail": probe.detail,
             }
 
-        # 3. Auto-register if needed (host provided, no device_id)
         auto_registered = False
         if not device_id:
             serial = (probe.device_info or {}).get("serial_number")
@@ -1769,7 +2390,6 @@ class ADMZMCPServer:
                 self.registry.add_device(device_id, reg_info)
                 auto_registered = True
 
-        # 4. Resolve password
         password_source = "provided"
         if user_password:
             new_password = user_password
@@ -1782,9 +2402,7 @@ class ADMZMCPServer:
                 new_password = self._generate_device_password()
                 password_source = "generated"
 
-        # 5. Branch on probe status
         if probe.status == ProbeStatus.FACTORY_DEFAULT:
-            # Create admin user via catalog (no auth needed)
             ok, error = await self._execute_on_host(
                 host, "pwdgrp.cgi:add-user",
                 params={
@@ -1805,7 +2423,6 @@ class ADMZMCPServer:
                 }
 
             self._store_provisioned_creds(device_id, username, new_password)
-            # Device now requires digest auth
             self.registry.update_device_info(
                 device_id, {"auth_method": "digest"}
             )
@@ -1827,14 +2444,12 @@ class ADMZMCPServer:
             }
 
         if probe.status == ProbeStatus.AUTHENTICATED:
-            # Store detected auth_method from probe
             if probe.auth_method:
                 self.registry.update_device_info(
                     device_id, {"auth_method": probe.auth_method}
                 )
 
             if not force_change:
-                # Store existing creds, suggest rotation
                 self._store_provisioned_creds(
                     device_id, probe.username, probe.password
                 )
@@ -1853,7 +2468,6 @@ class ADMZMCPServer:
                     ),
                 }
 
-            # force_change=True — change the password via catalog
             ok, error = await self._execute_on_host(
                 host, "pwdgrp.cgi:update-user",
                 params={
@@ -1867,7 +2481,6 @@ class ADMZMCPServer:
                 auth_method=probe.auth_method or "digest",
             )
             if not ok:
-                # Still store the old working creds so device is usable
                 self._store_provisioned_creds(
                     device_id, probe.username, probe.password
                 )
@@ -1901,7 +2514,6 @@ class ADMZMCPServer:
             }
 
         if probe.status == ProbeStatus.AUTH_FAILED:
-            # Still store detected auth_method for future reference
             if probe.auth_method:
                 self.registry.update_device_info(
                     device_id, {"auth_method": probe.auth_method}
@@ -1920,7 +2532,6 @@ class ADMZMCPServer:
                 ),
             }
 
-        # Shouldn't reach here
         return {
             "success": False,
             "status": probe.status.value,
@@ -1930,13 +2541,17 @@ class ADMZMCPServer:
 
     async def run(self):
         """Run the MCP server with stdio transport."""
-        async with stdio_server() as (read_stream, write_stream):
-            logger.info("ADMZ MCP server starting...")
-            await self.server.run(
-                read_stream,
-                write_stream,
-                self.server.create_initialization_options(),
-            )
+        await self.scheduler.start()
+        try:
+            async with stdio_server() as (read_stream, write_stream):
+                logger.info("ADMZ MCP server starting...")
+                await self.server.run(
+                    read_stream,
+                    write_stream,
+                    self.server.create_initialization_options(),
+                )
+        finally:
+            await self.scheduler.stop()
 
 
 async def main():

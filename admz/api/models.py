@@ -3,7 +3,7 @@ Pydantic models for ADMZ API requests and responses.
 """
 
 from typing import Optional, Dict, List, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DeviceCreate(BaseModel):
@@ -29,8 +29,8 @@ class DeviceCreate(BaseModel):
         None, description="Additional device metadata"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "device_id": "front-door",
                 "host": "192.168.1.100",
@@ -41,6 +41,7 @@ class DeviceCreate(BaseModel):
                 "tags": ["entrance", "outdoor"],
             }
         }
+    )
 
 
 class DeviceUpdate(BaseModel):
@@ -65,14 +66,15 @@ class DeviceUpdate(BaseModel):
         None, description="Additional device metadata"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "nickname": "Front Door Camera",
                 "location": "Main Entrance - North Side",
                 "firmware_version": "11.8.65",
             }
         }
+    )
 
 
 class DeviceResponse(BaseModel):
@@ -98,8 +100,8 @@ class DeviceResponse(BaseModel):
         None, description="Additional device metadata"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "device_id": "front-door",
                 "host": "192.168.1.100",
@@ -111,6 +113,7 @@ class DeviceResponse(BaseModel):
                 "tags": ["entrance", "outdoor"],
             }
         }
+    )
 
 
 class AccountCreate(BaseModel):
@@ -130,8 +133,8 @@ class AccountCreate(BaseModel):
         None, description="Additional account metadata"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "account_id": "aoa-agent",
                 "username": "aoa-service",
@@ -141,6 +144,7 @@ class AccountCreate(BaseModel):
                 "permissions": ["read", "configure"],
             }
         }
+    )
 
 
 class AccountResponse(BaseModel):
@@ -159,8 +163,8 @@ class AccountResponse(BaseModel):
         None, description="Additional account metadata"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "account_id": "aoa-agent",
                 "username": "aoa-service",
@@ -169,6 +173,7 @@ class AccountResponse(BaseModel):
                 "permissions": ["read", "configure"],
             }
         }
+    )
 
 
 class CredentialsResponse(BaseModel):
@@ -185,8 +190,8 @@ class CredentialsResponse(BaseModel):
         default_factory=list, description="Account permissions"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "username": "aoa-service",
                 "password": "secure-password-here",
@@ -196,6 +201,7 @@ class CredentialsResponse(BaseModel):
                 "permissions": ["read", "configure"],
             }
         }
+    )
 
 
 class ErrorResponse(BaseModel):
@@ -205,10 +211,11 @@ class ErrorResponse(BaseModel):
     message: str = Field(..., description="Error message")
     details: Optional[Dict[str, Any]] = Field(None, description="Additional details")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "error": "DeviceNotFoundError",
                 "message": "Device 'unknown-device' not found",
             }
         }
+    )

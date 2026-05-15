@@ -40,15 +40,9 @@ from admz.exceptions import (
 # Encryption helpers — thin wrapper around cryptography.fernet.Fernet
 # ---------------------------------------------------------------------------
 
-_FERNET = None  # lazily initialised
 
-
-def _get_fernet(key_path: Path):
-    """Return a Fernet instance, loading or creating the key file."""
-    global _FERNET
-    if _FERNET is not None:
-        return _FERNET
-
+def _build_fernet(key_path: Path):
+    """Build a Fernet instance from a key file, creating the file if needed."""
     try:
         from cryptography.fernet import Fernet
     except ImportError:
@@ -63,14 +57,12 @@ def _get_fernet(key_path: Path):
         key = Fernet.generate_key()
         key_path.parent.mkdir(parents=True, exist_ok=True)
         key_path.write_bytes(key)
-        # Restrict permissions to owner-only
         try:
             os.chmod(key_path, 0o600)
         except OSError:
             pass
 
-    _FERNET = Fernet(key)
-    return _FERNET
+    return Fernet(key)
 
 
 def _encrypt(plain: str, fernet) -> str:
@@ -144,7 +136,7 @@ class SQLiteDeviceRegistry(DeviceRegistry):
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Initialise encryption
-        self._fernet = _get_fernet(self._key_path)
+        self._fernet = _build_fernet(self._key_path)
 
         # Initialise database
         self._conn = sqlite3.connect(str(self._db_path))
@@ -283,6 +275,19 @@ class SQLiteDeviceRegistry(DeviceRegistry):
         if accounts:
             for account_id, account_data in accounts.items():
                 self.add_account(device_id, account_id, account_data)
+
+    def update_device(
+        self,
+        device_id: str,
+        updates: Dict[str, Any],
+    ) -> None:
+        info = self.get_device_info(device_id)
+        info.update(updates)
+        self._conn.execute(
+            "UPDATE devices SET info_json = ? WHERE device_id = ?",
+            (json.dumps(info), device_id),
+        )
+        self._conn.commit()
 
     def remove_device(self, device_id: str) -> None:
         if not self.device_exists(device_id):

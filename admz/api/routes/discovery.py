@@ -1,45 +1,85 @@
-"""
-REST API routes for network device discovery.
-"""
+"""REST routes for network discovery."""
 
-from typing import Optional
+from typing import List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 
-from admz.discovery import discover_devices
+from admz.api.context import AppContext, get_context
+from admz.discovery import discover_devices as run_network_discovery
 
 router = APIRouter()
 
 
-@router.post("/discover")
-async def api_discover_devices(
-    timeout: float = Query(5.0, description="Per-protocol timeout in seconds"),
-    axis_only: bool = Query(False, description="Only return Axis devices"),
-    subnet: Optional[str] = Query(None, description="Subnet for ARP scan (CIDR)"),
-    enable_mdns: bool = Query(True, description="Enable mDNS discovery"),
-    enable_ssdp: bool = Query(True, description="Enable SSDP discovery"),
-    enable_onvif: bool = Query(True, description="Enable ONVIF discovery"),
-    enable_arp: bool = Query(True, description="Enable ARP scanning"),
-    enable_ping: bool = Query(False, description="Enable ping sweep"),
-    enable_http_probe: bool = Query(True, description="Enable HTTP/VAPIX probing"),
-    enable_snmp: bool = Query(True, description="Enable SNMP enrichment"),
-    snmp_community: str = Query("public", description="SNMP community string"),
+class DiscoverRequest(BaseModel):
+    timeout: float = 5.0
+    axis_only: bool = False
+    subnet: Optional[str] = None
+    enable_mdns: bool = True
+    enable_ssdp: bool = True
+    enable_onvif: bool = True
+    enable_arp: bool = True
+    enable_ping: bool = False
+    enable_http_probe: bool = True
+    enable_snmp: bool = True
+    snmp_community: str = "public"
+
+
+class RegisterDiscoveredRequest(BaseModel):
+    device_id: str
+    ip_address: str
+    mac_address: Optional[str] = None
+    model: Optional[str] = None
+    hostname: Optional[str] = None
+    device_type: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+
+
+@router.post("/discovery/scan")
+async def scan_network(
+    req: DiscoverRequest, ctx: AppContext = Depends(get_context)
 ):
-    """Discover devices on the local network."""
-    devices = await discover_devices(
-        timeout=timeout,
-        axis_only=axis_only,
-        subnet=subnet,
-        enable_mdns=enable_mdns,
-        enable_ssdp=enable_ssdp,
-        enable_onvif=enable_onvif,
-        enable_arp=enable_arp,
-        enable_ping=enable_ping,
-        enable_http_probe=enable_http_probe,
-        enable_snmp=enable_snmp,
-        snmp_community=snmp_community,
+    devices = await run_network_discovery(
+        timeout=req.timeout,
+        axis_only=req.axis_only,
+        subnet=req.subnet,
+        enable_mdns=req.enable_mdns,
+        enable_ssdp=req.enable_ssdp,
+        enable_onvif=req.enable_onvif,
+        enable_arp=req.enable_arp,
+        enable_ping=req.enable_ping,
+        enable_http_probe=req.enable_http_probe,
+        enable_snmp=req.enable_snmp,
+        snmp_community=req.snmp_community,
     )
     return {
         "count": len(devices),
         "devices": [d.to_registry_dict() for d in devices],
+    }
+
+
+@router.post("/discovery/register")
+async def register_discovered(
+    req: RegisterDiscoveredRequest, ctx: AppContext = Depends(get_context)
+):
+    device_info = {
+        "host": req.ip_address,
+        "ip_address": req.ip_address,
+        "mac_address": req.mac_address or "",
+        "model": req.model or "",
+        "hostname": req.hostname or "",
+        "nickname": req.hostname or "",
+        "device_type": req.device_type or "unknown",
+        "tags": req.tags,
+    }
+    try:
+        ctx.registry.add_device(req.device_id, device_info)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "message": (
+            f"Device '{req.device_id}' registered. Use the capture flow "
+            "to set credentials."
+        ),
+        "device_id": req.device_id,
     }

@@ -216,9 +216,9 @@ class TestCatalogResolver:
 class TestVapixExecutorBuildRequest:
 
     def test_build_legacy_cgi_request(self):
-        from admz.executor.vapix import VAPXExecutor
+        from admz.executor.vapix import VapixExecutor
 
-        executor = VAPXExecutor()
+        executor = VapixExecutor()
         operation = {
             "id": "param.cgi:update",
             "method": "GET",
@@ -238,9 +238,9 @@ class TestVapixExecutorBuildRequest:
         assert req.json_body is None
 
     def test_build_json_rpc_request(self):
-        from admz.executor.vapix import VAPXExecutor
+        from admz.executor.vapix import VapixExecutor
 
-        executor = VAPXExecutor()
+        executor = VapixExecutor()
         operation = {
             "id": "basicdeviceinfo.cgi:getAllProperties",
             "method": "POST",
@@ -262,9 +262,9 @@ class TestVapixExecutorBuildRequest:
         assert req.content_type == "application/json"
 
     def test_build_json_rpc_with_params(self):
-        from admz.executor.vapix import VAPXExecutor
+        from admz.executor.vapix import VapixExecutor
 
-        executor = VAPXExecutor()
+        executor = VapixExecutor()
         operation = {
             "id": "some.cgi:doThing",
             "method": "POST",
@@ -282,9 +282,9 @@ class TestVapixExecutorBuildRequest:
         assert req.json_body["params"] == {"key": "value"}
 
     def test_build_config_rest_request(self):
-        from admz.executor.vapix import VAPXExecutor
+        from admz.executor.vapix import VapixExecutor
 
-        executor = VAPXExecutor()
+        executor = VapixExecutor()
         operation = {
             "id": "config-rest:ssh:v2:create-user",
             "method": "POST",
@@ -301,9 +301,9 @@ class TestVapixExecutorBuildRequest:
         assert req.json_body["username"] == "test"
 
     def test_build_legacy_cgi_list(self):
-        from admz.executor.vapix import VAPXExecutor
+        from admz.executor.vapix import VapixExecutor
 
-        executor = VAPXExecutor()
+        executor = VapixExecutor()
         operation = {
             "id": "param.cgi:list",
             "method": "GET",
@@ -356,10 +356,10 @@ class TestPlanEngine:
     @pytest.fixture
     def engine(self, mock_registry):
         from admz.plans.engine import PlanEngine
-        from admz.executor.vapix import VAPXExecutor
+        from admz.executor.vapix import VapixExecutor
 
         loader = CatalogLoader(CATALOG_PATH)
-        executor = VAPXExecutor()
+        executor = VapixExecutor()
         return PlanEngine(
             catalog=loader,
             registry=mock_registry,

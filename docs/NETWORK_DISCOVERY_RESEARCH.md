@@ -1,25 +1,38 @@
 # Network Discovery Research — ADMZ
 
-## Current State Assessment
+> **Status:** Research notes from before the discovery module was built.
+> The protocols described here are now implemented in `admz/discovery/`
+> and wired into the MCP server as `discover_network_devices` and
+> `register_discovered_device`. See [`MCP_TOOLS_REFERENCE.md`](MCP_TOOLS_REFERENCE.md)
+> for the runtime API and [`ARCHITECTURE.md`](ARCHITECTURE.md) for how
+> discovery fits into the larger system.
+>
+> This document is kept for the protocol research; treat the
+> "Current State Assessment" section as historical context — it
+> describes the state of the project *before* discovery, VAPIX
+> execution, the catalog, plans, and snapshots existed.
 
-ADMZ v2.0.0 is a credential management system for Axis devices backed by
-HashiCorp Vault. **It has no network discovery capabilities today.** Devices
-must be manually registered via the REST API, MCP tools, or the web UI.
+## Historical: state of the project before this work
 
-### What We Already Have
+ADMZ originally was a credential management system for Axis devices backed by
+HashiCorp Vault, with no network discovery, no VAPIX execution, and no
+configuration management. Devices had to be manually registered via the
+REST API, MCP tools, or the web UI.
 
-| Capability | Status | Implementation |
-|---|---|---|
-| Secrets management | **Working** | HashiCorp Vault KV v2 via `hvac` (`admz/backends/vault_backend.py`) |
-| Device registry (IP, MAC, serial, model, tags, location) | **Working** | `DeviceRegistry` ABC + `VaultDeviceRegistry` |
-| MCP server interface | **Working** | 10 tools in `admz/mcp/server.py` (list, get, search, CRUD) |
-| REST API | **Working** | FastAPI in `admz/api/` with OpenAPI docs |
-| Web UI | **Working** | Jinja2 templates for browsing devices |
-| Network discovery | **Missing** | No protocol implementations |
-| Device configuration cache | **Missing** | No local cache of VAPIX config |
-| VAPIX execution | **Missing** | No VAPIX client |
+### What was here when this research was written
 
-### Architecture Reminder
+| Capability | Status at time of research |
+|---|---|
+| Secrets management | Working (HashiCorp Vault KV v2) |
+| Device registry (IP, MAC, serial, model, tags, location) | Working |
+| MCP server interface | 10 tools (list, get, search, CRUD) |
+| REST API | Working (FastAPI) |
+| Web UI | Working (Jinja2) |
+| Network discovery | Missing — researched below |
+| Device configuration cache | Missing — later implemented as `admz/snapshot/` |
+| VAPIX execution | Missing — later implemented as `admz/executor/vapix.py` |
+
+### Architecture at time of research
 
 ```
 ┌─────────────────────────────────────────────────────┐

@@ -333,20 +333,7 @@ class PlanEngine:
                 error=f"Failed to get credentials: {e}",
             )
 
-        # Convert Operation dataclass to dict for executor
-        op_dict = {
-            "id": operation.id,
-            "cgi": operation.cgi,
-            "method": operation.method,
-            "risk_level": operation.risk_level,
-            "request": operation.request,
-            "response": operation.response,
-            "requires": operation.requires,
-            "_endpoint": operation.endpoint,
-            "_generation": operation.generation,
-            "_auth": operation.auth,
-            "service_impact": operation.service_impact,
-        }
+        op_dict = operation.to_executor_dict()
 
         result = await executor.execute(op_dict, device, credentials, step.params)
 
