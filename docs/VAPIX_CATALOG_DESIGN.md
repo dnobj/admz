@@ -1,5 +1,17 @@
 # VAPIX Operation Catalog — Design
 
+> **Status:** Design document covering the catalog system, the
+> catalog-in-the-loop MCP pattern, two-gate plan approval, multi-step
+> execution plans, multi-API-family architecture, and device interrogation.
+>
+> The core design is **implemented and shipping** — see
+> `admz/catalog/`, `admz/executor/`, `admz/plans/`, and the MCP tools
+> `query_catalog`, `execute_operation`, `create_plan`, `execute_plan`.
+> The actual catalog content (under `catalog/vapix/`) is intentionally
+> a small seed set; this doc enumerates many CGIs that the design
+> *supports* but that have not yet been written. Adding a new CGI is
+> a YAML-only change — see the "Catalog file format" section.
+
 ## Problem
 
 ADMZ needs a central knowledge base of VAPIX operations so that:
