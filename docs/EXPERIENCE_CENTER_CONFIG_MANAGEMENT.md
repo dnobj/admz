@@ -2,6 +2,7 @@
 
 **Status:** Design sketch — capturing an idea, not a finalized spec
 **Origin:** Conversation at the Axis Experience Center, 2026-05-15
+**Last updated:** 2026-05-15 (decisions from review folded in)
 
 ---
 
@@ -57,10 +58,25 @@ ADMZ already has a database (SQLite by default). That database holds:
 
 The new question is: where do *configurations* live?
 
+### Scope: all device types, not just cameras
+
+Cameras are the most common devices, but ADMZ supports the full Axis range
+— access controllers, intercoms, network speakers, radar, AXIS Camera
+Station servers, body-worn cameras, and whatever comes next. The
+snapshot/restore system must handle all of them from the start, not
+camera-first with others added later.
+
+Each device type has a different shape of configuration, but the
+architecture (facets + serializers + raw fallback + plan-based restore)
+works the same way for all of them. The facets just differ.
+
 ### What "configuration" means here
 
-A configuration is not credentials. It's the device's operational state:
+A configuration is not credentials. It's the device's operational state.
+The list below is illustrative, not exhaustive — new device types and new
+firmware will keep adding to it.
 
+**For cameras / video devices:**
 - The full `param.cgi` parameter tree (image, network, time, events, ...)
 - Stream profiles
 - User accounts (the *list* — usernames, roles — not the passwords)
@@ -72,12 +88,52 @@ A configuration is not credentials. It's the device's operational state:
 - Public certificates and trust anchors
 - Firmware version (for restore compatibility)
 
-For access devices, additionally:
-
+**For access control devices (A1601, A1610, etc.):**
 - Schedules
 - Cardholder *schema* (not the actual cards — those are operational data)
 - Door configurations
 - Access rules / time zones
+- Wiegand / OSDP reader configurations
+- I/O port configurations
+
+**For intercoms / network speakers:**
+- SIP configuration
+- Audio profiles (volume, equalizer)
+- Pre-recorded audio clips (as artifacts)
+- Scheduled audio playback
+
+**For AXIS Camera Station servers:**
+- Recording schedules
+- Connected camera roster
+- Storage allocation
+- User permissions
+- Smart search / analytics configurations
+
+**For any device type:**
+- Firmware version + model + hardware revision (for restore compatibility)
+- Time/NTP configuration
+
+The architecture must be open to new facets: a new device family, a new
+firmware revision, or a new product line should be addable without
+rewriting anything. See §6 "Facets are pluggable" below.
+
+### Beyond the device itself
+
+The git repo is also the right place for things *about* the device that
+the device doesn't know about itself:
+
+- Operator notes (per device or per setup)
+- Physical installation photos
+- Floor plans / network topology diagrams
+- Demo scripts ("for the conference room demo, show stream A then play
+  audio clip B")
+- Customer-visit logs (who saw which configuration when)
+- Calibration data (camera angle, focus distance, mount type)
+- Integration notes ("this camera feeds into this VMS analytic")
+- NDA / customer-tracking metadata where relevant
+
+Some of these are free-form Markdown, some are structured YAML. The repo
+has room for both. See the revised structure in §5.
 
 ### Three options
 
@@ -190,7 +246,6 @@ axis-experience-center-configs/
 ├── manifest.yaml                        # fleet roster, top-level metadata
 ├── fleet/
 │   ├── camera-lobby-01/
-│   │   ├── device.yaml                  # model, firmware, location, tags
 │   │   ├── config/                      # normalized, human-friendly
 │   │   │   ├── image.yaml
 │   │   │   ├── network.yaml
@@ -209,15 +264,26 @@ axis-experience-center-configs/
 │   │   │   └── ...
 │   │   ├── artifacts/                   # binary or near-binary
 │   │   │   ├── certificates/            # public certs only
-│   │   │   └── installed-acaps.yaml
-│   │   └── notes.md                     # free-form per-device notes
+│   │   │   ├── installed-acaps.yaml
+│   │   │   ├── audio-clips/             # for speakers/intercoms
+│   │   │   └── photos/                  # physical installation
+│   │   ├── docs/                        # per-device extras
+│   │   │   ├── notes.md                 # free-form
+│   │   │   ├── calibration.yaml         # mount, angle, focus
+│   │   │   ├── integration.yaml         # which systems use this device
+│   │   │   └── demo-scripts.md          # how to demo this device
+│   │   └── device.yaml                  # model, firmware, location, tags
 │   ├── camera-lobby-02/
 │   ├── a1601-front-entrance/            # access controller
 │   └── ...
 ├── profiles/                            # shared, reusable baselines
-│   ├── lobby-camera-baseline/
+│   ├── lobby-camera-baseline/           # literal copy on fork
 │   ├── conference-room-baseline/
 │   └── demo-presentation-mode/
+├── topology/                            # fleet-wide artifacts
+│   ├── network-diagram.md
+│   ├── floor-plan.png
+│   └── integrations.yaml                # which devices feed which systems
 ├── schemas/                             # JSON schemas for CI validation
 │   └── ...
 └── .github/
@@ -253,12 +319,60 @@ admz/snapshot/
 ├── __init__.py
 ├── models.py            # Snapshot, Facet, DriftReport dataclasses
 ├── engine.py            # orchestrates snapshot per device
-├── serializer.py        # raw response → normalized YAML
+├── facets/              # one adapter per facet (pluggable, see below)
+│   ├── __init__.py      # facet registry
+│   ├── base.py          # FacetAdapter ABC
+│   ├── image.py
+│   ├── network.py
+│   ├── stream_profiles.py
+│   ├── users.py
+│   ├── access_schedules.py
+│   ├── sip.py
+│   └── ...              # add new facets here
 ├── restore.py           # YAML → execution plan
 ├── drift.py             # detects device vs git divergence
 ├── git_repo.py          # thin git wrapper (clone, commit, push, diff)
 └── scheduler.py         # cron-like scheduled snapshots
 ```
+
+### Facets are pluggable
+
+A facet adapter is the bridge between a device's API and the git-stored
+YAML. Each adapter is independent and registered at startup. The adapter
+declares:
+
+- **Applies to**: which device types / API families / firmware ranges
+- **Read operation**: which catalog operation(s) populate it
+- **Write operations**: how to apply the facet during restore
+- **Order hints**: "apply network last", "apply firmware first"
+- **Serialize**: raw API response → canonical YAML
+- **Deserialize**: YAML → parameters for the write operation
+
+```python
+class FacetAdapter(ABC):
+    name: str                       # e.g. "stream_profiles"
+    applies_to: list[DeviceCriteria]  # model patterns, families
+    read_ops: list[str]             # catalog operation IDs
+    write_ops: list[str]
+    restore_order: int              # smaller = apply earlier
+
+    def serialize(self, raw_responses: dict) -> dict: ...
+    def deserialize(self, yaml_doc: dict) -> list[dict]: ...
+```
+
+This means:
+
+- **New device type** → add new adapters, nothing else changes
+- **New firmware adds a parameter** → extend the existing adapter, or add
+  a new adapter that targets the firmware range
+- **Unknown fields** → adapters fall back to passing raw data through
+  in a generic `extra.yaml` so nothing is lost
+- **Facets are discoverable** → at snapshot time, the engine asks every
+  registered adapter "do you apply to this device?" and runs the ones
+  that say yes. No global facet list to maintain.
+
+This is the same pluggable pattern as the catalog's executor families
+(VAPIX, ACS, AOA), just one layer down.
 
 ### What each piece does
 
@@ -274,12 +388,11 @@ For one device:
 5. Detect changes vs current HEAD
 6. Commit + push (if anything changed)
 
-**`serializer.py` — normalization**
+**`facets/` — normalization (pluggable, see above)**
 
-Per-facet adapters that take a raw VAPIX response and produce normalized
-YAML. One adapter per facet (image, network, stream-profiles, users, ...).
-Adapters live alongside the catalog and are versioned with it. If a new
-firmware adds a new parameter group, you add a new adapter.
+Per-facet adapters that take a raw API response and produce normalized
+YAML. The set of adapters is open-ended; the engine discovers which ones
+apply at runtime. See "Facets are pluggable" above.
 
 **`restore.py` — generates an execution plan**
 
@@ -476,11 +589,15 @@ shipping something.
 ### Phase 1: Manual snapshot of one device → committed to local git
 
 - `admz/snapshot/engine.py` skeleton
-- Serializer for the 4-5 most important facets (image, network, time,
-  stream-profiles, users)
+- Pluggable facet adapter framework
+- Initial adapters: a few high-value facets across **at least two device
+  types** (e.g. camera image + network, access controller schedules) to
+  prove the architecture is genuinely device-type-agnostic
 - `git_repo.py` with local-only mode (no remote yet)
+- "Pass-through unknown fields to `extra.yaml`" so devices with no
+  adapter still get a useful snapshot
 - MCP tool: `snapshot_device(device_id)`
-- Output: a working repo with one device's config
+- Output: a working repo with one device's config (any device type)
 
 ### Phase 2: Restore + diff
 
@@ -538,18 +655,43 @@ reuse.
 
 ---
 
-## 12. Open questions for the next discussion
+## 12. Resolved decisions
 
-- Should the config repo be per-Experience-Center or per-customer?
-- Do we want signed commits? GPG or SSH signing?
-- How aggressive is the "redact secrets" filter — allowlist or denylist?
-- What's the minimum facet set for Phase 1? (current proposal: image,
-  network, time, stream-profiles, users)
-- Branch-based demo workflows: are they used heavily enough to prioritize,
-  or is "tag + restore" sufficient?
-- Should profiles be Jinja-templated or literal copies?
-- Access devices (A1601, AXIS Camera Station, etc.) have a very different
-  configuration shape from cameras. Phase 1 = cameras only?
+The following questions were resolved in review on 2026-05-15:
+
+- **DB vs git as source of truth**: git wins. DB becomes a query cache.
+- **Device scope**: all device types from the start (cameras, access
+  controllers, intercoms, speakers, AXIS Camera Station, etc.). The
+  architecture is device-type-agnostic via pluggable facets.
+- **Repo scope**: one repo per Experience Center.
+- **Secret redaction**: allowlist (only known-safe fields make it into
+  serialized YAML; everything else stays in `raw/` with restricted
+  access or is filtered entirely).
+- **Commit signing**: not needed.
+- **Branch-based demo workflows**: deferred. Tag + restore is enough
+  for now; revisit later if the workflow proves valuable.
+- **Profiles**: literal file copies. Templating may be needed for
+  specific fields later but isn't built in from day one.
+- **Facets must be open-ended**: settings vary widely, new products
+  arrive constantly. The architecture should let new facets be added
+  as adapters without changing the engine.
+- **Beyond device config**: the repo also holds operator notes,
+  installation photos, demo scripts, network diagrams, calibration
+  data — anything per-device or per-fleet that's useful to version.
+
+## 13. Still open
+
+- What goes in the allowlist for each facet? (Done per-facet, as adapters
+  are written; document the rules.)
+- How to handle facets the device exposes but no adapter exists for —
+  pass-through via `extra.yaml` is the default; what's the UX for
+  surfacing "here's a facet we don't normalize yet"?
+- Schema for `device.yaml` — needs to cover any Axis device, not just
+  cameras.
+- Restore-order rules: which facets must be applied first vs last for
+  each device type? (Network last for everything, but the rest varies.)
+- Whether to put `topology/` (floor plans, integration diagrams) in the
+  same repo or a sibling repo.
 
 ---
 
