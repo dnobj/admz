@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import asyncio
+import os
 import sys
 
 
@@ -112,12 +113,57 @@ def main():
         help="SNMP community string (default: public)",
     )
 
+    # API-key management command
+    apikey_parser = subparsers.add_parser(
+        "api-key",
+        help="Manage API keys for programmatic clients",
+    )
+    apikey_sub = apikey_parser.add_subparsers(
+        dest="apikey_command", help="API-key subcommand"
+    )
+
+    apikey_create = apikey_sub.add_parser(
+        "create",
+        help="Mint a new API key (the plaintext is shown ONCE)",
+    )
+    apikey_create.add_argument(
+        "--name", required=True,
+        help="Human-readable display name (e.g. 'nightly-bot')",
+    )
+    apikey_create.add_argument(
+        "--created-by", default=None,
+        help="Audit label for the creator (defaults to OS username + ':cli')",
+    )
+    apikey_create.add_argument(
+        "--expires-in-days", type=int, default=None,
+        help="Optional expiry in days from now",
+    )
+
+    apikey_list = apikey_sub.add_parser(
+        "list", help="List API keys"
+    )
+    apikey_list.add_argument(
+        "--include-revoked", action="store_true",
+        help="Include revoked keys in the output",
+    )
+    apikey_list.add_argument(
+        "--json", action="store_true",
+        help="Emit JSON instead of a human-readable table",
+    )
+
+    apikey_revoke = apikey_sub.add_parser(
+        "revoke", help="Revoke an API key by id"
+    )
+    apikey_revoke.add_argument("id", type=int, help="The key's numeric id")
+
     args = parser.parse_args()
 
     if args.command == "api":
         run_api_server(args)
     elif args.command == "mcp":
         run_mcp_server()
+    elif args.command == "api-key":
+        run_api_key(args)
     elif args.command == "discover":
         run_discover(args)
     else:
@@ -125,10 +171,167 @@ def main():
         sys.exit(1)
 
 
+def _check_bind_safety(host: str) -> None:
+    """Refuse to start with a permissive bind address when the auth
+    backend trusts a forwarded REMOTE_USER header.
+
+    ADMZ trusts ``REMOTE_USER`` only when the request reaches uvicorn
+    from a configured trusted-proxy IP. If uvicorn binds to anything
+    other than localhost, an attacker on the network could connect
+    directly and spoof the header, bypassing auth entirely. The
+    reverse-proxy backend mitigates this with a trusted_proxies check,
+    but a misconfiguration there is silent. This check makes it loud.
+
+    The override is intentional and rare — set
+    ``ADMZ_AUTH_INSECURE_BIND_OK=true`` only if you have an unusual
+    network setup (e.g. listening on a private internal NIC reachable
+    only by the reverse proxy).
+    """
+    backend = (os.getenv("ADMZ_AUTH_BACKEND", "none") or "none").lower()
+    if backend not in ("windows", "composite"):
+        return  # API-key or NoAuth modes don't trust forwarded headers
+    if host in ("127.0.0.1", "::1", "localhost"):
+        return
+    if os.getenv("ADMZ_AUTH_INSECURE_BIND_OK", "").lower() in ("1", "true", "yes"):
+        print(
+            f"WARNING: ADMZ_AUTH_BACKEND={backend} with --host {host} — "
+            "header-spoofing risk acknowledged via ADMZ_AUTH_INSECURE_BIND_OK.",
+            file=sys.stderr,
+        )
+        return
+    print(
+        f"\nRefusing to start with ADMZ_AUTH_BACKEND={backend} and "
+        f"--host {host}.\n\n"
+        "The reverse-proxy auth backend trusts a forwarded REMOTE_USER "
+        "header. If uvicorn is reachable from anywhere besides localhost, "
+        "an attacker can spoof the header and bypass authentication.\n\n"
+        "Fix one of:\n"
+        "  1. Bind uvicorn to 127.0.0.1 (the secure default) and put a "
+        "reverse proxy in front of it.\n"
+        "  2. If you have an unusual network setup that's genuinely "
+        "safe, set ADMZ_AUTH_INSECURE_BIND_OK=true to override.\n"
+        "  3. Switch to a different auth backend (e.g. ADMZ_AUTH_BACKEND=api-key) "
+        "that doesn't rely on forwarded headers.\n",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
+def run_api_key(args):
+    """Manage API keys from the CLI.
+
+    The CLI is intended for operators with shell access to the ADMZ
+    host — typically the same person who runs ``python -m admz api``.
+    For routine key management by an authenticated web user, the
+    REST endpoints under ``/api/api-keys`` are the right surface.
+    """
+    import getpass
+    import json as json_mod
+    import time
+    from datetime import datetime
+
+    sub = getattr(args, "apikey_command", None)
+    if not sub:
+        print(
+            "Usage: python -m admz api-key {create,list,revoke} ...",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        from admz.api_keys import ApiKeyStore
+    except ImportError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    store = ApiKeyStore()
+
+    if sub == "create":
+        created_by = args.created_by or f"{getpass.getuser()}:cli"
+        expires_at = None
+        if args.expires_in_days is not None:
+            expires_at = time.time() + (args.expires_in_days * 86400)
+        try:
+            created = store.create(
+                display_name=args.name,
+                created_by=created_by,
+                expires_at=expires_at,
+            )
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"\nAPI key created (id={created.record.id}, name={args.name!r})")
+        print(f"Created by: {created_by}")
+        if expires_at:
+            print(f"Expires:    {datetime.fromtimestamp(expires_at).isoformat()}")
+        print("\n  ┌─────────────────────────────────────────────────────────")
+        print(f"  │ {created.plaintext}")
+        print("  └─────────────────────────────────────────────────────────\n")
+        print("This is the ONLY time the plaintext will be shown.")
+        print("Copy it now and store it where your agent can read it.")
+        return
+
+    if sub == "list":
+        keys = store.list(include_revoked=args.include_revoked)
+        if args.json:
+            print(json_mod.dumps([
+                {
+                    "id": k.id,
+                    "display_name": k.display_name,
+                    "created_by": k.created_by,
+                    "created_at": k.created_at,
+                    "expires_at": k.expires_at,
+                    "last_used_at": k.last_used_at,
+                    "revoked": k.revoked,
+                }
+                for k in keys
+            ], indent=2))
+            return
+
+        if not keys:
+            print("(no API keys)")
+            return
+
+        header = f"{'ID':<5} {'NAME':<30} {'CREATED BY':<30} {'LAST USED':<20} {'STATE'}"
+        print(header)
+        print("-" * len(header))
+        for k in keys:
+            last_used = (
+                datetime.fromtimestamp(k.last_used_at).isoformat(timespec="seconds")
+                if k.last_used_at else "never"
+            )
+            state = "revoked" if k.revoked else (
+                "expired" if k.is_expired else "active"
+            )
+            name = (k.display_name[:27] + "...") if len(k.display_name) > 30 else k.display_name
+            cb = (k.created_by[:27] + "...") if len(k.created_by) > 30 else k.created_by
+            print(f"{k.id:<5} {name:<30} {cb:<30} {last_used:<20} {state}")
+        return
+
+    if sub == "revoke":
+        if store.revoke(args.id):
+            print(f"Revoked API key {args.id}.")
+        else:
+            print(
+                f"API key {args.id} not found or already revoked.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return
+
+    print(f"Unknown api-key subcommand: {sub}", file=sys.stderr)
+    sys.exit(1)
+
+
 def run_api_server(args):
     """Run FastAPI REST API server."""
+    import os  # noqa: F811 — re-import in case caller didn't
     from admz.logging_config import configure_logging
     configure_logging()
+
+    _check_bind_safety(args.host)
+
     try:
         import uvicorn
         from admz.api.main import app
