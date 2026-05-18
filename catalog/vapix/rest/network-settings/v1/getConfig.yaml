@@ -1,0 +1,14 @@
+id: network-settings:getConfig
+cgi: network-settings
+
+method: GET
+base_path: /config/rest/network-settings/v1
+path: /config
+
+response:
+  format: json
+
+risk_level: read-only
+
+requires:
+  auth_level: viewer

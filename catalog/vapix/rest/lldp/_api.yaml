@@ -1,0 +1,11 @@
+endpoint: /config/rest/lldp/v1
+generation: config-rest
+api_id: lldp
+description: >
+  LLDP (Link Layer Discovery Protocol) status and neighbor information.
+  Query the device's LLDP status and discover connected network
+  neighbors.
+notes: >
+  LLDP API documentation not yet fully scraped from axis.com.
+  Operations are stubbed based on the standard config-rest pattern.
+  Verify exact paths against device API discovery output.

@@ -1,0 +1,14 @@
+id: network-settings:setDNS
+cgi: network-settings
+
+method: PUT
+base_path: /config/rest/network-settings/v1
+path: /dns
+
+response:
+  format: json
+
+risk_level: normal
+
+requires:
+  auth_level: admin

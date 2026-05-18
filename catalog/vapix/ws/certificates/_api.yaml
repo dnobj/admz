@@ -1,0 +1,13 @@
+endpoint: /vapix/services
+generation: soap
+api_id: certificates
+description: >
+  SOAP-based certificate management. Create self-signed certificates,
+  get/delete client and CA certificates. Namespace uses
+  axis.com/vapix/ws/certificates for Axis-specific operations
+  and onvif.org device/wsdl for ONVIF-compatible operations.
+notes: >
+  All SOAP requests POST XML to /vapix/services. The service is
+  differentiated by the XML namespace in the SOAP body.
+  Some methods use Axis-proprietary namespaces (acertificates:),
+  others use ONVIF namespaces (tds:). Both work on the same endpoint.

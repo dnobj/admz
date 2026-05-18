@@ -1,0 +1,31 @@
+id: certificates:DeleteCertificates
+cgi: certificates
+method: POST
+risk_level: dangerous
+
+soap_namespace: "http://www.onvif.org/ver10/device/wsdl"
+
+request:
+  content_type: application/xml
+  body_xml: |
+    <SOAP-ENV:Envelope
+        xmlns:tds="http://www.onvif.org/ver10/device/wsdl"
+        xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope">
+      <SOAP-ENV:Body>
+        <tds:DeleteCertificates>
+          <CertificateID>{certificate_id}</CertificateID>
+        </tds:DeleteCertificates>
+      </SOAP-ENV:Body>
+    </SOAP-ENV:Envelope>
+  params:
+    certificate_id: { required: true, description: "ID of the certificate to delete" }
+
+response:
+  format: xml
+
+danger_description: >
+  Permanently deletes a certificate from the device. If the certificate
+  is in use for HTTPS, this will break TLS connectivity.
+
+requires:
+  auth_level: admin

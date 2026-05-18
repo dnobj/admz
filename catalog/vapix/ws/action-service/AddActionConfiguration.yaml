@@ -1,0 +1,37 @@
+id: action-service:AddActionConfiguration
+cgi: action-service
+method: POST
+risk_level: normal
+
+soap_namespace: "http://www.axis.com/vapix/ws/action1"
+
+request:
+  content_type: application/xml
+  body_xml: |
+    <SOAP-ENV:Envelope
+        xmlns:aa="http://www.axis.com/vapix/ws/action1"
+        xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope">
+      <SOAP-ENV:Body>
+        <aa:AddActionConfiguration>
+          <aa:NewActionConfiguration>
+            <aa:Name>{name}</aa:Name>
+            <aa:TemplateToken>{template_token}</aa:TemplateToken>
+          </aa:NewActionConfiguration>
+        </aa:AddActionConfiguration>
+      </SOAP-ENV:Body>
+    </SOAP-ENV:Envelope>
+  params:
+    name: { required: true, description: "Name for the action configuration" }
+    template_token: { required: true, description: "Action template token (e.g. com.axis.action.unlimited.io.toggle)" }
+
+response:
+  format: xml
+
+notes: >
+  Creates a new action configuration from a template. Use
+  GetActionTemplates first to discover available templates
+  and their required parameters. Additional template-specific
+  parameters may need to be added to the XML body.
+
+requires:
+  auth_level: admin

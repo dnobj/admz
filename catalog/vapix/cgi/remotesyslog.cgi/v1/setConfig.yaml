@@ -1,0 +1,25 @@
+id: remotesyslog.cgi:setConfig
+cgi: remotesyslog.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: setConfig
+    params:
+      enabled: "{enabled:bool}"
+      server: "{server}"
+      port: "{port:int}"
+      protocol: "{protocol}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: normal
+
+requires:
+  auth_level: admin

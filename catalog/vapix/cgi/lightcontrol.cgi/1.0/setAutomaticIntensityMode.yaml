@@ -1,0 +1,23 @@
+id: lightcontrol.cgi:setAutomaticIntensityMode
+cgi: lightcontrol.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: setAutomaticIntensityMode
+    params:
+      lightID: "{lightID}"
+      enabled: "{enabled:bool}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: normal
+
+requires:
+  auth_level: operator

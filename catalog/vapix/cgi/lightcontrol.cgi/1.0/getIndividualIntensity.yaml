@@ -1,0 +1,23 @@
+id: lightcontrol.cgi:getIndividualIntensity
+cgi: lightcontrol.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: getIndividualIntensity
+    params:
+      lightID: "{lightID}"
+      LEDID: "{LEDID}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: read-only
+
+requires:
+  auth_level: operator

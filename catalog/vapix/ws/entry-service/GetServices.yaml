@@ -1,0 +1,33 @@
+id: entry-service:GetServices
+cgi: entry-service
+method: POST
+risk_level: read-only
+
+soap_namespace: "http://www.onvif.org/ver10/device/wsdl"
+
+request:
+  content_type: application/xml
+  body_xml: |
+    <SOAP-ENV:Envelope
+        xmlns:tds="http://www.onvif.org/ver10/device/wsdl"
+        xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope">
+      <SOAP-ENV:Body>
+        <tds:GetServices>
+          <IncludeCapability>{include_capability}</IncludeCapability>
+        </tds:GetServices>
+      </SOAP-ENV:Body>
+    </SOAP-ENV:Envelope>
+  params:
+    include_capability: { required: false, default: "false", description: "Include service capabilities in response (true/false)" }
+
+response:
+  format: xml
+
+notes: >
+  Returns a list of all web services supported by the device.
+  Each service entry includes namespace, XAddr (URL), and version.
+  Set include_capability to true for detailed capability info.
+
+requires:
+  auth_level: admin
+  property: Properties.API.WebService.EntryService=yes

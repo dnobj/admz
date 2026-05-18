@@ -1,0 +1,28 @@
+id: action-service:GetActionTemplates
+cgi: action-service
+method: POST
+risk_level: read-only
+
+soap_namespace: "http://www.axis.com/vapix/ws/action1"
+
+request:
+  content_type: application/xml
+  body_xml: |
+    <SOAP-ENV:Envelope
+        xmlns:aa="http://www.axis.com/vapix/ws/action1"
+        xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope">
+      <SOAP-ENV:Body>
+        <aa:GetActionTemplates />
+      </SOAP-ENV:Body>
+    </SOAP-ENV:Envelope>
+
+response:
+  format: xml
+
+notes: >
+  Returns all available action templates. Each template describes
+  a type of action the device can perform (e.g., toggle I/O port,
+  play audio clip, send HTTP notification, MQTT publish).
+
+requires:
+  auth_level: admin

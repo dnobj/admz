@@ -1,0 +1,27 @@
+id: basicdeviceinfo.cgi:getProperties
+cgi: basicdeviceinfo.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: getProperties
+    params:
+      propertyList: "{propertyList:array}"
+
+response:
+  format: json
+  data_path: data.propertyList
+
+risk_level: read-only
+
+notes: >
+  Returns specific system properties by name. Unlike getAllProperties
+  which returns identity info, this retrieves arbitrary properties
+  like API support flags (Properties.API.*).
+
+requires:
+  auth_level: viewer

@@ -1,0 +1,11 @@
+endpoint: /vapix/services
+generation: soap
+api_id: entry-service
+description: >
+  SOAP entry service for discovering available VAPIX web services.
+  Returns a list of services with their namespaces, versions, and
+  optional capabilities.
+notes: >
+  The entry service is the starting point for SOAP-based service
+  discovery. Use GetServices to enumerate all web services supported
+  by the device. WSDL at http://www.axis.com/vapix/ws/EntryService.wsdl.

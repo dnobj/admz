@@ -1,0 +1,18 @@
+id: lldp:getNeighbors
+cgi: lldp
+
+method: GET
+base_path: /config/rest/lldp/v1
+path: /neighbors
+
+response:
+  format: json
+
+risk_level: read-only
+
+notes: >
+  Stubbed — verify exact path against device API discovery.
+  Returns LLDP neighbor information discovered on the network.
+
+requires:
+  auth_level: viewer

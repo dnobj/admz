@@ -1,0 +1,12 @@
+endpoint: /vapix/services
+generation: soap
+api_id: event-service
+description: >
+  SOAP event service for querying available events and managing
+  scheduled events. Returns the event topic tree with all declared
+  events and their properties (stateful/stateless).
+notes: >
+  Uses the http://www.axis.com/vapix/ws/event1 namespace.
+  GetEventInstances returns the full topic tree describing all
+  available events. Scheduled events use iCalendar format for
+  recurring schedules.

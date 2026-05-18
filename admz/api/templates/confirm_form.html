@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+
+{% block title %}{% if is_plan %}Confirm Plan{% else %}Confirm Operation — {{ session.operation_id }}{% endif %}{% endblock %}
+
+{% block content %}
+<div style="max-width:600px;margin:40px auto;">
+
+  {% if is_plan and plan_summary %}
+  {# ── Plan confirmation layout ─────────────────────────────────────── #}
+  <h1>Confirm Plan</h1>
+
+  <p style="font-size:16px;color:#333;margin-bottom:24px;">
+    {{ plan_summary.get("description", session.danger_description) }}
+  </p>
+
+  {# Risk summary bar #}
+  {% set risk = plan_summary.get("risk_summary", {}) %}
+  {% set dangerous_count = risk.get("dangerous", 0) %}
+  {% set sa_count = risk.get("service-affecting", 0) %}
+  <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px;">
+    <div style="padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600;
+      background:#f5f5f5;color:#333;">
+      {{ plan_summary.get("step_count", 0) }} step{{ "s" if plan_summary.get("step_count", 0) != 1 }}
+    </div>
+    {% if dangerous_count > 0 %}
+    <div style="padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600;
+      background:#fecaca;color:#991b1b;">
+      {{ dangerous_count }} dangerous
+    </div>
+    {% endif %}
+    {% if sa_count > 0 %}
+    <div style="padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600;
+      background:#fde68a;color:#92400e;">
+      {{ sa_count }} service-affecting
+    </div>
+    {% endif %}
+  </div>
+
+  {# Collapsible step details #}
+  <details open style="margin-bottom:24px;">
+    <summary style="cursor:pointer;font-weight:600;font-size:15px;padding:8px 0;">
+      Plan Steps
+    </summary>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:8px;">
+      <thead>
+        <tr style="border-bottom:2px solid #ddd;text-align:left;">
+          <th style="padding:8px 8px 8px 0;">#</th>
+          <th style="padding:8px;">Device</th>
+          <th style="padding:8px;">Operation</th>
+          <th style="padding:8px;">Risk</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for step in plan_summary.get("steps", []) %}
+        <tr style="border-bottom:1px solid #eee;">
+          <td style="padding:6px 8px 6px 0;color:#666;">{{ step.get("step", loop.index) }}</td>
+          <td style="padding:6px 8px;"><code>{{ step.get("device", "") }}</code></td>
+          <td style="padding:6px 8px;">
+            <code>{{ step.get("operation", "") }}</code>
+            {% if step.get("description") %}
+            <br><span style="color:#666;font-size:12px;">{{ step.get("description") }}</span>
+            {% endif %}
+          </td>
+          <td style="padding:6px 8px;">
+            <span style="
+              display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;
+              {% if step.get('risk') == 'dangerous' %}background:#fecaca;color:#991b1b;
+              {% elif step.get('risk') == 'service-affecting' %}background:#fde68a;color:#92400e;
+              {% elif step.get('risk') == 'normal' %}background:#dbeafe;color:#1e40af;
+              {% else %}background:#e5e7eb;color:#6b7280;{% endif %}
+            ">{{ step.get("risk", "unknown") }}</span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+
+  {# On-failure policy #}
+  {% set policy = plan_summary.get("on_failure", "stop") %}
+  <div style="background:#f5f5f5;padding:12px 16px;border-radius:8px;margin-bottom:24px;font-size:13px;">
+    <strong>On failure:</strong>
+    {% if policy == "stop" %}
+      Stop — abort remaining steps
+    {% elif policy == "skip_dependents" %}
+      Skip dependents — skip steps that depend on the failed one, continue others
+    {% elif policy == "continue" %}
+      Continue — keep going regardless of failures
+    {% else %}
+      {{ policy }}
+    {% endif %}
+  </div>
+
+  {% else %}
+  {# ── Single-operation confirmation layout (unchanged) ─────────────── #}
+  <h1>Confirm Operation</h1>
+
+  {% if session.risk_level == "dangerous" %}
+  <div style="background:#fef2f2;border:1px solid #fca5a5;padding:16px;border-radius:8px;margin-bottom:24px;">
+    <p style="margin:0 0 4px;font-weight:700;color:#b91c1c;">Dangerous Operation</p>
+    <p style="margin:0;color:#991b1b;">{{ session.danger_description }}</p>
+  </div>
+  {% elif session.risk_level == "service-affecting" %}
+  <div style="background:#fffbeb;border:1px solid #fcd34d;padding:16px;border-radius:8px;margin-bottom:24px;">
+    <p style="margin:0 0 4px;font-weight:700;color:#92400e;">Service-Affecting Operation</p>
+    <p style="margin:0;color:#78350f;">{{ session.danger_description }}</p>
+  </div>
+  {% else %}
+  <div style="background:#f0f9ff;border:1px solid #93c5fd;padding:16px;border-radius:8px;margin-bottom:24px;">
+    <p style="margin:0 0 4px;font-weight:700;color:#1e40af;">Operation Confirmation Required</p>
+    {% if session.danger_description %}
+    <p style="margin:0;color:#1e3a5f;">{{ session.danger_description }}</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <div style="background:#f5f5f5;padding:16px;border-radius:8px;margin-bottom:24px;">
+    <p style="margin:0 0 8px;"><strong>Device:</strong> {{ session.device_id }}</p>
+    <p style="margin:0 0 8px;"><strong>Operation:</strong> <code>{{ session.operation_id }}</code></p>
+    <p style="margin:0 0 8px;"><strong>Risk Level:</strong>
+      <span style="
+        display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;
+        {% if session.risk_level == 'dangerous' %}background:#fecaca;color:#991b1b;
+        {% elif session.risk_level == 'service-affecting' %}background:#fde68a;color:#92400e;
+        {% else %}background:#dbeafe;color:#1e40af;{% endif %}
+      ">{{ session.risk_level }}</span>
+    </p>
+    {% if session.params %}
+    <div style="border-top:1px solid #ddd;padding-top:12px;margin-top:12px;">
+      <p style="margin:0 0 8px;font-weight:600;font-size:14px;">Parameters:</p>
+      <table style="width:100%;font-size:13px;border-collapse:collapse;">
+        {% for key, value in session.params.items() %}
+        <tr>
+          <td style="padding:2px 8px 2px 0;color:#666;vertical-align:top;white-space:nowrap;"><code>{{ key }}</code></td>
+          <td style="padding:2px 0;word-break:break-all;"><code>{{ value }}</code></td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if error is defined and error %}
+  <div style="background:#fef2f2;border:1px solid #fca5a5;padding:12px;border-radius:6px;margin-bottom:16px;color:#991b1b;">
+    {{ error }}
+  </div>
+  {% endif %}
+
+  <form method="POST" action="/confirm/{{ token }}" autocomplete="off">
+    {% if needs_password %}
+    <div style="margin-bottom:24px;">
+      <label for="confirm_password" style="display:block;margin-bottom:4px;font-weight:600;">
+        Confirmation Password
+      </label>
+      <p style="margin:0 0 8px;font-size:13px;color:#666;">
+        Enter the confirmation password to authorize this {% if is_plan %}plan{% else %}operation{% endif %}.
+      </p>
+      <input type="password" id="confirm_password" name="confirm_password" required
+             autocomplete="off"
+             style="width:100%;padding:8px 12px;border:1px solid #ccc;border-radius:4px;font-size:16px;box-sizing:border-box;">
+    </div>
+    {% endif %}
+
+    <button type="submit"
+            style="width:100%;padding:12px;
+              {% if session.risk_level == 'dangerous' %}background:#dc2626;{% else %}background:#2563eb;{% endif %}
+              color:#fff;border:none;border-radius:6px;font-size:16px;cursor:pointer;font-weight:600;">
+      {% if is_plan %}Confirm Plan Execution{% else %}Confirm Execution{% endif %}
+    </button>
+  </form>
+
+  <p style="margin-top:16px;font-size:13px;color:#999;text-align:center;">
+    This link expires in {{ (session.ttl / 60)|int }} minutes and can only be used once.
+  </p>
+</div>
+{% endblock %}

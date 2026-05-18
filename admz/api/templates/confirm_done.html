@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}{% if is_plan %}Plan Confirmed{% else %}Operation Confirmed{% endif %}{% endblock %}
+
+{% block content %}
+<div style="max-width:480px;margin:40px auto;text-align:center;">
+  <div style="font-size:48px;margin-bottom:16px;">&#10003;</div>
+  <h1>{% if is_plan %}Plan Confirmed{% else %}Operation Confirmed{% endif %}</h1>
+
+  <div style="background:#f0fdf4;border:1px solid #86efac;padding:16px;border-radius:8px;margin-bottom:24px;">
+    {% if is_plan and plan_summary %}
+    <p style="margin:0 0 8px;"><strong>Plan:</strong> {{ plan_summary.get("description", "") }}</p>
+    <p style="margin:0 0 8px;">{{ plan_summary.get("step_count", 0) }} step{{ "s" if plan_summary.get("step_count", 0) != 1 }} will now execute.</p>
+    {% else %}
+    <p style="margin:0 0 8px;"><strong>Device:</strong> {{ session.device_id }}</p>
+    <p style="margin:0 0 8px;"><strong>Operation:</strong> <code>{{ session.operation_id }}</code></p>
+    <p style="margin:0;">The operation will now execute.</p>
+    {% endif %}
+  </div>
+
+  <p style="color:#666;font-size:14px;">
+    You can return to your chat session. This link has been used and
+    cannot be reused.
+  </p>
+</div>
+{% endblock %}

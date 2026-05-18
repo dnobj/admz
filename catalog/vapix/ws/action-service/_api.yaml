@@ -1,0 +1,12 @@
+endpoint: /vapix/services
+generation: soap
+api_id: action-service
+description: >
+  SOAP action service for managing action rules, action configurations,
+  and recipient configurations. Used to set up event-driven automation
+  (e.g., trigger recording on motion, send notification on alarm).
+notes: >
+  Uses the http://www.axis.com/vapix/ws/action1 namespace.
+  Action rules link events (triggers) to actions (responses).
+  Each rule needs: an action configuration, optionally a recipient
+  configuration, and a start event or condition.

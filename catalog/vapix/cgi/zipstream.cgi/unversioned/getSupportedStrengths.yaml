@@ -1,0 +1,20 @@
+id: zipstream.cgi:getSupportedStrengths
+cgi: zipstream.cgi
+
+method: GET
+request:
+  query:
+    schemaversion: "{schemaversion}"
+    camera: "{camera}"
+  content_type: null
+
+response:
+  format: text
+  description: >
+    Returns the valid ZipStream compression strength levels
+    supported by this device.
+
+risk_level: read-only
+
+requires:
+  auth_level: viewer

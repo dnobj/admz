@@ -1,0 +1,22 @@
+id: lightcontrol.cgi:getCurrentIntensity
+cgi: lightcontrol.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: getCurrentIntensity
+    params:
+      lightID: "{lightID}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: read-only
+
+requires:
+  auth_level: operator

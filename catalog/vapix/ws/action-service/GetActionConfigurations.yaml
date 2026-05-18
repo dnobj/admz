@@ -1,0 +1,27 @@
+id: action-service:GetActionConfigurations
+cgi: action-service
+method: POST
+risk_level: read-only
+
+soap_namespace: "http://www.axis.com/vapix/ws/action1"
+
+request:
+  content_type: application/xml
+  body_xml: |
+    <SOAP-ENV:Envelope
+        xmlns:aa="http://www.axis.com/vapix/ws/action1"
+        xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope">
+      <SOAP-ENV:Body>
+        <aa:GetActionConfigurations />
+      </SOAP-ENV:Body>
+    </SOAP-ENV:Envelope>
+
+response:
+  format: xml
+
+notes: >
+  Returns all configured action instances. Each configuration
+  references an action template with specific parameter values.
+
+requires:
+  auth_level: admin

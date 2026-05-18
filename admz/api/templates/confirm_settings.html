@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+
+{% block title %}Confirmation Settings{% endblock %}
+
+{% block content %}
+<div style="max-width:600px;margin:40px auto;">
+  <h1>Confirmation Settings</h1>
+  <p style="color:#666;margin-bottom:24px;">
+    Configure which operations require human confirmation via the browser
+    before execution.  These settings cannot be changed via the MCP tool
+    (LLM) &mdash; only through this web UI.
+  </p>
+
+  {% if success is defined and success %}
+  <div style="background:#f0fdf4;border:1px solid #86efac;padding:12px;border-radius:6px;margin-bottom:16px;color:#166534;">
+    {{ success }}
+  </div>
+  {% endif %}
+
+  {% if error is defined and error %}
+  <div style="background:#fef2f2;border:1px solid #fca5a5;padding:12px;border-radius:6px;margin-bottom:16px;color:#991b1b;">
+    {{ error }}
+  </div>
+  {% endif %}
+
+  <!-- Confirmation Levels -->
+  <form method="POST" action="/confirm-settings">
+    <input type="hidden" name="action" value="levels">
+
+    <h2 style="font-size:18px;margin-bottom:12px;">Confirmation Levels by Risk</h2>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
+      <thead>
+        <tr style="border-bottom:2px solid #e5e7eb;">
+          <th style="text-align:left;padding:8px 12px;">Risk Level</th>
+          <th style="text-align:left;padding:8px 12px;">Confirmation Required</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for risk, level in levels.items() %}
+        <tr style="border-bottom:1px solid #f3f4f6;">
+          <td style="padding:8px 12px;">
+            <span style="
+              display:inline-block;padding:2px 10px;border-radius:4px;font-size:13px;font-weight:600;
+              {% if risk == 'dangerous' %}background:#fecaca;color:#991b1b;
+              {% elif risk == 'service-affecting' %}background:#fde68a;color:#92400e;
+              {% elif risk == 'normal' %}background:#dbeafe;color:#1e40af;
+              {% else %}background:#e5e7eb;color:#374151;{% endif %}
+            ">{{ risk }}</span>
+          </td>
+          <td style="padding:8px 12px;">
+            <select name="level_{{ risk }}" style="padding:6px 10px;border:1px solid #d1d5db;border-radius:4px;font-size:14px;">
+              <option value="url_and_password" {% if level == "url_and_password" %}selected{% endif %}>URL + Password (strictest)</option>
+              <option value="url_only" {% if level == "url_only" %}selected{% endif %}>URL only</option>
+              <option value="llm_confirm" {% if level == "llm_confirm" %}selected{% endif %}>LLM confirm (token)</option>
+              <option value="none" {% if level == "none" %}selected{% endif %}>None (immediate)</option>
+            </select>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <button type="submit"
+            style="padding:10px 24px;background:#2563eb;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer;font-weight:600;">
+      Save Levels
+    </button>
+  </form>
+
+  <hr style="margin:32px 0;border:none;border-top:1px solid #e5e7eb;">
+
+  <!-- Confirmation Password -->
+  <form method="POST" action="/confirm-settings">
+    <input type="hidden" name="action" value="password">
+
+    <h2 style="font-size:18px;margin-bottom:8px;">Confirmation Password</h2>
+    <p style="color:#666;font-size:14px;margin-bottom:16px;">
+      {% if has_password %}
+        A confirmation password is currently configured.
+        Enter a new password below to change it, or leave blank and submit to remove it.
+      {% else %}
+        No confirmation password is set. Operations using the
+        <strong>URL + Password</strong> level will fall back to <strong>URL only</strong>
+        until a password is configured.
+      {% endif %}
+    </p>
+
+    <div style="margin-bottom:16px;">
+      <label for="new_password" style="display:block;margin-bottom:4px;font-weight:600;">
+        New Password
+      </label>
+      <input type="password" id="new_password" name="new_password"
+             autocomplete="new-password"
+             style="width:100%;padding:8px 12px;border:1px solid #ccc;border-radius:4px;font-size:16px;box-sizing:border-box;">
+    </div>
+
+    <div style="margin-bottom:24px;">
+      <label for="confirm_new_password" style="display:block;margin-bottom:4px;font-weight:600;">
+        Confirm Password
+      </label>
+      <input type="password" id="confirm_new_password" name="confirm_new_password"
+             autocomplete="new-password"
+             style="width:100%;padding:8px 12px;border:1px solid #ccc;border-radius:4px;font-size:16px;box-sizing:border-box;">
+    </div>
+
+    <button type="submit"
+            style="padding:10px 24px;background:#2563eb;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer;font-weight:600;">
+      {% if has_password %}Update Password{% else %}Set Password{% endif %}
+    </button>
+  </form>
+
+  <hr style="margin:32px 0;border:none;border-top:1px solid #e5e7eb;">
+
+  <!-- MCP Tool Access -->
+  <form method="POST" action="/confirm-settings">
+    <input type="hidden" name="action" value="tool_toggle">
+
+    <h2 style="font-size:18px;margin-bottom:8px;">MCP Tool Access</h2>
+    <p style="color:#666;font-size:14px;margin-bottom:16px;">
+      Control which MCP tools are available to LLMs.
+      These settings cannot be changed by the LLM &mdash; only through this web UI.
+    </p>
+
+    <div style="margin-bottom:24px;">
+      <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+        <input type="checkbox" name="get_credentials_enabled" value="1"
+               {% if get_creds_enabled %}checked{% endif %}
+               style="margin-top:3px;">
+        <span>
+          <strong style="display:block;margin-bottom:2px;">Allow LLMs to retrieve device passwords in plaintext</strong>
+          <span style="color:#666;font-size:13px;">
+            When disabled, the <code>get_credentials</code> tool is hidden from LLMs.
+            Use <code>create_temp_credentials</code> instead &mdash; it creates short-lived
+            accounts without exposing the real admin password.
+          </span>
+        </span>
+      </label>
+    </div>
+
+    <button type="submit"
+            style="padding:10px 24px;background:#2563eb;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer;font-weight:600;">
+      Save Tool Access
+    </button>
+  </form>
+</div>
+{% endblock %}
