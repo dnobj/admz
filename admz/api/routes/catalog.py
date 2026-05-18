@@ -1,31 +1,22 @@
 """REST routes for the operation catalog + per-operation execution."""
 
-import secrets
-import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from admz.api.context import AppContext, get_context
+from admz.api.confirm_store import confirm_store, ConfirmStatus
 from admz.exceptions import DeviceNotFoundError
 
 router = APIRouter()
 
 
+# Phase 2E: confirm tokens live in the shared SQLite ConfirmStore so that
+# tokens issued via MCP and via REST are interchangeable. The previous
+# in-memory _confirm_tokens dict + _purge_expired() helper here have been
+# removed — see docs/specification/review-followup.md.
 CONFIRM_TOKEN_TTL_SECONDS = 300
-_confirm_tokens: Dict[str, Dict[str, Any]] = {}
-
-
-def _purge_expired():
-    now = time.time()
-    expired = [
-        t
-        for t, d in _confirm_tokens.items()
-        if now - d.get("issued_at", 0) > CONFIRM_TOKEN_TTL_SECONDS
-    ]
-    for t in expired:
-        _confirm_tokens.pop(t, None)
 
 
 class QueryRequest(BaseModel):
@@ -75,20 +66,21 @@ async def execute_operation(
     risk = ctx.catalog.get_risk_level(req.family, req.operation_id)
     if risk == "dangerous":
         op = ctx.catalog.get_operation(req.family, req.operation_id)
-        _purge_expired()
-        token = secrets.token_urlsafe(32)
-        _confirm_tokens[token] = {
-            "device_id": req.device_id,
-            "operation_id": req.operation_id,
-            "params": req.params,
-            "family": req.family,
-            "issued_at": time.time(),
-        }
+        session = confirm_store.create_session(
+            device_id=req.device_id,
+            operation_id=req.operation_id,
+            family=req.family,
+            params=dict(req.params),
+            risk_level="dangerous",
+            confirmation_level="llm_confirm",
+            danger_description=(op.danger_description if op else ""),
+            ttl=CONFIRM_TOKEN_TTL_SECONDS,
+        )
         return {
             "blocked": True,
             "risk_level": "dangerous",
             "reason": op.danger_description if op else "Operation classified as dangerous.",
-            "confirm_token": token,
+            "confirm_token": session.token,
             "confirm_endpoint": "/api/catalog/confirm",
         }
 
@@ -140,29 +132,33 @@ async def execute_operation(
 async def confirm_dangerous(
     req: ConfirmRequest, ctx: AppContext = Depends(get_context)
 ):
-    _purge_expired()
-    details = _confirm_tokens.pop(req.confirm_token, None)
-    if not details:
+    session = confirm_store.get_session(req.confirm_token)
+    if session is None or session.effective_status != ConfirmStatus.PENDING:
         raise HTTPException(
             status_code=400, detail="Invalid or expired confirmation token"
         )
 
-    operation = ctx.catalog.get_operation(
-        details["family"], details["operation_id"]
-    )
+    if not confirm_store.complete_session(req.confirm_token, confirmed_by="rest"):
+        # Lost the race with another consumer (MCP or web UI).
+        raise HTTPException(
+            status_code=409,
+            detail="Confirmation token already used or expired before this request completed.",
+        )
+
+    operation = ctx.catalog.get_operation(session.family, session.operation_id)
     if not operation:
         raise HTTPException(
             status_code=404,
-            detail=f"Operation '{details['operation_id']}' no longer in catalog",
+            detail=f"Operation '{session.operation_id}' no longer in catalog",
         )
 
-    executor = ctx.executors.get(details["family"])
-    device = ctx.registry.get_device_info(details["device_id"])
-    device["device_id"] = details["device_id"]
-    credentials = ctx.registry.get_credentials(details["device_id"])
+    executor = ctx.executors.get(session.family)
+    device = ctx.registry.get_device_info(session.device_id)
+    device["device_id"] = session.device_id
+    credentials = ctx.registry.get_credentials(session.device_id)
 
     result = await executor.execute(
-        operation.to_executor_dict(), device, credentials, details["params"]
+        operation.to_executor_dict(), device, credentials, session.params
     )
 
     response = {

@@ -43,7 +43,11 @@ from mcp.types import Tool, TextContent
 from admz import create_device_registry
 from admz.device_registry import DeviceRegistry
 from admz.api.capture import capture_store
-from admz.api.confirm_store import PROTECTED_SETTING_KEYS
+from admz.api.confirm_store import (
+    PROTECTED_SETTING_KEYS,
+    confirm_store,
+    ConfirmStatus,
+)
 from admz.discovery.credential_probe import probe_credentials, ProbeStatus
 from admz.fleet_settings import fleet_settings
 from admz.catalog.loader import CatalogLoader
@@ -180,8 +184,11 @@ class ADMZMCPServer:
             schedule_path=schedule_path,
         )
 
-        # Dangerous operation confirm tokens (token → operation details)
-        self._confirm_tokens: Dict[str, Dict[str, Any]] = {}
+        # Note: confirmation tokens live in the shared SQLite ConfirmStore
+        # (admz/api/confirm_store.py) so they're cross-process and shared
+        # with the REST surface. There used to be a separate in-memory
+        # _confirm_tokens dict here — see Phase 2E in
+        # docs/specification/review-followup.md.
 
         # Temporary credential manager
         self.temp_creds = TempCredentialManager()
@@ -2054,20 +2061,32 @@ class ADMZMCPServer:
         risk = self.catalog.get_risk_level(family, operation_id)
         if risk == "dangerous":
             op = self.catalog.get_operation(family, operation_id)
-            token = secrets.token_urlsafe(32)
-            self._purge_expired_confirm_tokens()
-            self._confirm_tokens[token] = {
-                "device_id": device_id,
-                "operation_id": operation_id,
-                "params": params,
-                "family": family,
-                "issued_at": time.time(),
-            }
+            # Phase 2E: confirmation tokens now live in the SQLite ConfirmStore
+            # so they're shared between the MCP and REST surfaces. A token
+            # issued here can be consumed via confirm_dangerous_operation OR
+            # via the web /confirm/{token} flow.
+            session = confirm_store.create_session(
+                device_id=device_id,
+                operation_id=operation_id,
+                family=family,
+                params=dict(params or {}),
+                risk_level="dangerous",
+                # llm_confirm = single-use token, no URL+password needed
+                confirmation_level="llm_confirm",
+                danger_description=(
+                    op.danger_description if op else ""
+                ),
+                ttl=CONFIRM_TOKEN_TTL_SECONDS,
+            )
             return {
                 "blocked": True,
                 "risk_level": "dangerous",
-                "reason": op.danger_description if op else "This operation is classified as dangerous.",
-                "confirm_token": token,
+                "reason": (
+                    op.danger_description
+                    if op
+                    else "This operation is classified as dangerous."
+                ),
+                "confirm_token": session.token,
                 "confirm_tool": "confirm_dangerous_operation",
                 "message": (
                     "This operation is blocked because it is classified as dangerous. "
@@ -2125,54 +2144,55 @@ class ADMZMCPServer:
 
         return response
 
-    def _purge_expired_confirm_tokens(self) -> None:
-        now = time.time()
-        expired = [
-            tok
-            for tok, details in self._confirm_tokens.items()
-            if now - details.get("issued_at", 0) > CONFIRM_TOKEN_TTL_SECONDS
-        ]
-        for tok in expired:
-            self._confirm_tokens.pop(tok, None)
-
     async def _confirm_dangerous(self, confirm_token: str) -> Dict[str, Any]:
-        """Confirm and execute a blocked dangerous operation."""
-        self._purge_expired_confirm_tokens()
-        details = self._confirm_tokens.pop(confirm_token, None)
-        if not details:
+        """Confirm and execute a blocked dangerous operation.
+
+        The token is looked up in the shared SQLite ConfirmStore — a token
+        issued by either MCP or the REST surface can be confirmed by either.
+        """
+        session = confirm_store.get_session(confirm_token)
+        if session is None or session.effective_status != ConfirmStatus.PENDING:
             return {
                 "success": False,
                 "error": "Invalid or expired confirmation token.",
             }
 
+        # Single-use: atomically mark completed (loses races to other consumers).
+        if not confirm_store.complete_session(confirm_token, confirmed_by="mcp"):
+            return {
+                "success": False,
+                "error": (
+                    "Confirmation token already used or expired before this "
+                    "request completed."
+                ),
+            }
+
         # Re-run execution, bypassing the risk check
-        operation = self.catalog.get_operation(
-            details["family"], details["operation_id"]
-        )
+        operation = self.catalog.get_operation(session.family, session.operation_id)
         if not operation:
             return {
                 "success": False,
-                "error": f"Operation '{details['operation_id']}' no longer found in catalog",
+                "error": f"Operation '{session.operation_id}' no longer found in catalog",
             }
 
-        executor = self.executors.get(details["family"])
+        executor = self.executors.get(session.family)
         if not executor:
             return {
                 "success": False,
-                "error": f"No executor for family '{details['family']}'",
+                "error": f"No executor for family '{session.family}'",
             }
 
-        device = self.registry.get_device_info(details["device_id"])
-        device["device_id"] = details["device_id"]
+        device = self.registry.get_device_info(session.device_id)
+        device["device_id"] = session.device_id
         try:
-            credentials = self.registry.get_credentials(details["device_id"])
+            credentials = self.registry.get_credentials(session.device_id)
         except AccountNotFoundError:
             credentials = {"username": "", "password": ""}
 
         op_dict = operation.to_executor_dict()
 
         result = await executor.execute(
-            op_dict, device, credentials, details["params"]
+            op_dict, device, credentials, session.params
         )
 
         response: Dict[str, Any] = {

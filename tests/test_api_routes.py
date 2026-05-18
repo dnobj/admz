@@ -442,3 +442,72 @@ class TestCredentialsEndpointGated:
             assert r.status_code == 403
         finally:
             fs.delete("tool_get_credentials_enabled")
+
+
+class TestConfirmTokenUnification:
+    """Phase 2E: tokens issued by either MCP or REST should live in the
+    same SQLite ConfirmStore. This test verifies the REST surface uses
+    the store and that ConfirmStore.complete_session is the single-use
+    gate."""
+
+    def test_rest_dangerous_op_creates_confirm_store_session(self, client):
+        # Build a tiny ad-hoc dangerous operation by injecting a YAML
+        # would be complex; instead we just verify the REST flow uses
+        # the store by issuing a token via the store directly and then
+        # consuming it via the REST /api/catalog/confirm endpoint.
+        from admz.api.confirm_store import confirm_store
+        # Create a fake device and seed the store with a session that
+        # references an operation that doesn't exist — we just want to
+        # prove the token is recognized and the *store* is the source
+        # of truth.
+        session = confirm_store.create_session(
+            device_id="nonexistent",
+            operation_id="not_a_real_op",
+            family="vapix",
+            params={},
+            risk_level="dangerous",
+            confirmation_level="llm_confirm",
+        )
+        # Consume via REST — even though the underlying op won't be
+        # found, the token must be recognized (not 'invalid/expired'),
+        # i.e. status should be 404 (op not in catalog) or 500, never
+        # 400 (token lookup failure).
+        r = client.post(
+            "/api/catalog/confirm",
+            json={"confirm_token": session.token},
+        )
+        assert r.status_code != 400, (
+            "Token should have been recognized via the shared store"
+        )
+
+    def test_invalid_token_returns_400(self, client):
+        r = client.post(
+            "/api/catalog/confirm",
+            json={"confirm_token": "not-a-real-token"},
+        )
+        assert r.status_code == 400
+        assert "Invalid" in r.json()["detail"]
+
+    def test_token_is_single_use(self, client):
+        from admz.api.confirm_store import confirm_store
+        session = confirm_store.create_session(
+            device_id="nonexistent",
+            operation_id="not_a_real_op",
+            family="vapix",
+            params={},
+            risk_level="dangerous",
+            confirmation_level="llm_confirm",
+        )
+        # First consumption marks completed (404 because op doesn't exist,
+        # but the token was successfully consumed)
+        r1 = client.post(
+            "/api/catalog/confirm",
+            json={"confirm_token": session.token},
+        )
+        # Second consumption finds the session COMPLETED, not PENDING
+        r2 = client.post(
+            "/api/catalog/confirm",
+            json={"confirm_token": session.token},
+        )
+        assert r2.status_code == 400
+        assert "Invalid" in r2.json()["detail"]
