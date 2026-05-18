@@ -20,6 +20,7 @@ from fastapi.templating import Jinja2Templates
 from admz.api.context import init_context
 from admz.api.routes import (
     api_keys as api_keys_route,
+    audit as audit_route,
     capture,
     catalog,
     confirm,
@@ -118,6 +119,7 @@ app.include_router(snapshot.router, prefix="/api", tags=["snapshot"])
 app.include_router(discovery.router, prefix="/api", tags=["discovery"])
 app.include_router(schedules.router, prefix="/api", tags=["schedules"])
 app.include_router(api_keys_route.router, prefix="/api", tags=["api-keys"])
+app.include_router(audit_route.router, prefix="/api", tags=["audit"])
 
 # Capture, confirm, and web UI — no /api prefix because they are user-facing
 app.include_router(capture.router, tags=["capture"])

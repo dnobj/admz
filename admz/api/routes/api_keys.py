@@ -100,6 +100,8 @@ async def create_api_key(
     principal: Principal = Depends(get_current_principal),
 ) -> CreatedApiKeyResponse:
     """Mint a new API key. The plaintext is returned exactly once."""
+    from admz.audit import record_event
+
     try:
         # Inherit the creator's groups so the key has equivalent
         # group-derived permissions in the future (RBAC).
@@ -110,7 +112,18 @@ async def create_api_key(
             groups=list(principal.groups),
         )
     except ValueError as e:
+        record_event(
+            principal, "api_key.create",
+            resource=f"api-key:{req.display_name}",
+            success=False, error_message=str(e),
+        )
         raise HTTPException(status_code=400, detail=str(e))
+
+    record_event(
+        principal, "api_key.create",
+        resource=f"api-key:{created.record.id}",
+        details={"display_name": req.display_name, "expires_at": req.expires_at},
+    )
 
     response = _to_response(created.record)
     return CreatedApiKeyResponse(**response.model_dump(), plaintext=created.plaintext)
@@ -123,9 +136,19 @@ async def revoke_api_key(
 ):
     """Revoke an API key. The row is preserved (marked ``revoked=1``)
     so the audit trail of who minted it remains intact."""
+    from admz.audit import record_event
+
     if not _store().revoke(id):
+        record_event(
+            principal, "api_key.revoke",
+            resource=f"api-key:{id}",
+            success=False, error_message="not found or already revoked",
+        )
         raise HTTPException(
             status_code=404,
             detail=f"API key {id} not found or already revoked.",
         )
+    record_event(
+        principal, "api_key.revoke", resource=f"api-key:{id}",
+    )
     return None

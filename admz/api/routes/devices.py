@@ -3,7 +3,7 @@ REST API routes for device management.
 """
 
 from typing import Dict, List, Optional
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, HTTPException, Query, Depends, Request
 from fastapi.responses import JSONResponse
 
 from admz.fleet_settings import (
@@ -144,6 +144,7 @@ async def list_device_accounts(
     "/devices/{device_id}/credentials", response_model=CredentialsResponse
 )
 async def get_device_credentials(
+    request: Request,
     device_id: str,
     registry: DeviceRegistry = Depends(get_registry),
     account_id: str = Query("default", description="Account identifier"),
@@ -160,9 +161,26 @@ async def get_device_credentials(
     web UI. Mirrors the gating of the MCP ``get_credentials`` tool —
     the LLM and REST surfaces must agree on whether credential retrieval
     is allowed.
+
+    Every call is audit-logged with the authenticated principal as
+    requester (Phase 4D).
     """
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+
+    principal = await get_current_principal(request)
+    audit_requester = requester or principal.name
+    resource = f"device:{device_id}/account:{account_id}"
+
     # Gate on the same fleet flag the MCP server uses
     if fleet_settings.get("tool_get_credentials_enabled") != "true":
+        record_event(
+            principal, "get_credentials",
+            resource=resource,
+            success=False,
+            error_message="disabled by fleet flag",
+            details={"requester_override": requester},
+        )
         raise HTTPException(
             status_code=403,
             detail=(
@@ -173,18 +191,33 @@ async def get_device_credentials(
         )
 
     try:
-        credentials = registry.get_credentials(device_id, account_id, requester)
+        credentials = registry.get_credentials(device_id, account_id, audit_requester)
+        record_event(
+            principal, "get_credentials",
+            resource=resource,
+            details={"requester_override": requester},
+        )
         return credentials
 
     except DeviceNotFoundError as e:
+        record_event(principal, "get_credentials", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=404, detail=str(e))
     except AccountNotFoundError as e:
+        record_event(principal, "get_credentials", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionDeniedError as e:
+        record_event(principal, "get_credentials", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=403, detail=str(e))
     except BackendError as e:
+        record_event(principal, "get_credentials", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
+        record_event(principal, "get_credentials", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
