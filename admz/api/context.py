@@ -1,82 +1,68 @@
 """
 Shared dependencies and singletons for the FastAPI application.
 
-The web app uses the same orchestration objects as the MCP server
-(catalog, executors, plan engine, snapshot engine, scheduler) so the
-two surfaces stay consistent.
+``AppContext`` wraps a :class:`~admz.components.Components` bundle. The
+MCP server uses the same builder, so running both surfaces in one
+process now shares state — including a single ``SnapshotScheduler``
+instance (no more racing schedule files).
 """
 
-import os
-from typing import Dict, Optional
+from typing import Optional
 
 from fastapi import HTTPException
 
-from admz.catalog.loader import CatalogLoader
-from admz.catalog.resolver import CatalogResolver
+from admz.components import Components, build_components
 from admz.device_registry import DeviceRegistry
-from admz.executor.base import BaseExecutor
-from admz.executor.vapix import VapixExecutor
-from admz.plans.engine import PlanEngine
-from admz.snapshot.drift import DriftDetector
-from admz.snapshot.engine import SnapshotEngine
-from admz.snapshot.git_repo import GitRepo
-from admz.snapshot.restore import RestoreBuilder
-from admz.snapshot.scheduler import SnapshotScheduler
 
 
 class AppContext:
     """Holds the long-lived ADMZ orchestration objects."""
 
     def __init__(self, registry: DeviceRegistry):
-        self.registry = registry
+        self._components: Components = build_components(registry)
 
-        catalog_path = os.getenv(
-            "ADMZ_CATALOG_PATH",
-            os.path.join(
-                os.path.dirname(__file__), "..", "..", "catalog"
-            ),
-        )
-        self.catalog = CatalogLoader(catalog_path)
-        self.resolver = CatalogResolver(self.catalog)
+    # Convenience attribute forwarding so existing route code that does
+    # ``ctx.registry``, ``ctx.catalog``, etc. continues to work without
+    # any changes.
+    @property
+    def registry(self) -> DeviceRegistry:
+        return self._components.registry
 
-        self.executors: Dict[str, BaseExecutor] = {"vapix": VapixExecutor()}
+    @property
+    def catalog(self):
+        return self._components.catalog
 
-        self.plan_engine = PlanEngine(
-            catalog=self.catalog,
-            registry=self.registry,
-            executors=self.executors,
-        )
+    @property
+    def resolver(self):
+        return self._components.resolver
 
-        config_repo_path = os.getenv(
-            "ADMZ_CONFIG_REPO_PATH",
-            os.path.join(os.path.expanduser("~"), ".admz", "config-repo"),
-        )
-        config_repo_remote = os.getenv("ADMZ_CONFIG_REPO_REMOTE")
-        self.git_repo = GitRepo(config_repo_path, remote_url=config_repo_remote)
+    @property
+    def executors(self):
+        return self._components.executors
 
-        self.snapshot_engine = SnapshotEngine(
-            catalog=self.catalog,
-            registry=self.registry,
-            executors=self.executors,
-            git_repo=self.git_repo,
-        )
-        self.restore_builder = RestoreBuilder(
-            catalog=self.catalog,
-            registry=self.registry,
-            git_repo=self.git_repo,
-        )
-        self.drift_detector = DriftDetector(
-            snapshot_engine=self.snapshot_engine,
-            git_repo=self.git_repo,
-        )
+    @property
+    def plan_engine(self):
+        return self._components.plan_engine
 
-        schedule_path = os.path.join(
-            os.path.expanduser("~"), ".admz", "schedules.json"
-        )
-        self.scheduler = SnapshotScheduler(
-            snapshot_engine=self.snapshot_engine,
-            schedule_path=schedule_path,
-        )
+    @property
+    def git_repo(self):
+        return self._components.git_repo
+
+    @property
+    def snapshot_engine(self):
+        return self._components.snapshot_engine
+
+    @property
+    def restore_builder(self):
+        return self._components.restore_builder
+
+    @property
+    def drift_detector(self):
+        return self._components.drift_detector
+
+    @property
+    def scheduler(self):
+        return self._components.scheduler
 
 
 _ctx: Optional[AppContext] = None

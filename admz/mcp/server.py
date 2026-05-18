@@ -123,66 +123,34 @@ class ADMZMCPServer:
         self.server = Server("admz")
         self.registry = registry or create_device_registry()
 
-        # Catalog and resolver
-        catalog_path = catalog_path or os.getenv(
-            "ADMZ_CATALOG_PATH",
-            os.path.join(os.path.dirname(__file__), "..", "..", "catalog"),
-        )
-        self.catalog = CatalogLoader(catalog_path)
-        self.resolver = CatalogResolver(self.catalog)
+        # Shared component stack — same builder the FastAPI AppContext uses.
+        # Running MCP + the FastAPI app in one process previously created
+        # two SnapshotScheduler instances writing to the same schedules.json;
+        # going through build_components is the single source of truth.
+        from admz.components import build_components
 
-        # Knowledge base
-        self.knowledge_loader = KnowledgeLoader(catalog_path)
+        components = build_components(
+            self.registry,
+            catalog_path=catalog_path,
+        )
+        self.catalog = components.catalog
+        self.resolver = components.resolver
+        self.executors = components.executors
+        self.plan_engine = components.plan_engine
+        self.git_repo = components.git_repo
+        self.snapshot_engine = components.snapshot_engine
+        self.restore_builder = components.restore_builder
+        self.drift_detector = components.drift_detector
+        self.scheduler = components.scheduler
+
+        # MCP-only: knowledge base (product hints) and capabilities
+        # (per-model API support). These are not currently exposed via
+        # the REST API, so they're not part of the shared Components.
+        catalog_path_resolved = str(components.catalog.catalog_path)
+        self.knowledge_loader = KnowledgeLoader(catalog_path_resolved)
         self.knowledge_resolver = KnowledgeResolver(self.knowledge_loader)
-
-        # Capabilities (per-model API support registry)
-        self.capabilities_loader = CapabilitiesLoader(catalog_path)
+        self.capabilities_loader = CapabilitiesLoader(catalog_path_resolved)
         self.capabilities_resolver = CapabilitiesResolver(self.capabilities_loader)
-
-        # Executors (one per API family)
-        vapix_executor = VapixExecutor(
-            retries=int(os.getenv("ADMZ_VAPIX_RETRIES", "1"))
-        )
-        self.executors = {"vapix": vapix_executor}
-
-        # Plan engine
-        self.plan_engine = PlanEngine(
-            catalog=self.catalog,
-            registry=self.registry,
-            executors=self.executors,
-        )
-
-        # Snapshot / restore
-        config_repo_path = os.getenv(
-            "ADMZ_CONFIG_REPO_PATH",
-            os.path.join(os.path.expanduser("~"), ".admz", "config-repo"),
-        )
-        config_repo_remote = os.getenv("ADMZ_CONFIG_REPO_REMOTE")
-        self.git_repo = GitRepo(config_repo_path, remote_url=config_repo_remote)
-        self.snapshot_engine = SnapshotEngine(
-            catalog=self.catalog,
-            registry=self.registry,
-            executors=self.executors,
-            git_repo=self.git_repo,
-        )
-        self.restore_builder = RestoreBuilder(
-            catalog=self.catalog,
-            registry=self.registry,
-            git_repo=self.git_repo,
-        )
-        self.drift_detector = DriftDetector(
-            snapshot_engine=self.snapshot_engine,
-            git_repo=self.git_repo,
-        )
-
-        # Scheduler
-        schedule_path = os.path.join(
-            os.path.expanduser("~"), ".admz", "schedules.json"
-        )
-        self.scheduler = SnapshotScheduler(
-            snapshot_engine=self.snapshot_engine,
-            schedule_path=schedule_path,
-        )
 
         # Note: confirmation tokens live in the shared SQLite ConfirmStore
         # (admz/api/confirm_store.py) so they're cross-process and shared

@@ -90,7 +90,7 @@ This document tracks the per-issue follow-up for the production-quality review o
 
 | # | Item | Status |
 |---|---|---|
-| 3.1 | Extract `build_components(registry, ...)` factory; share between `AppContext` and MCP server (currently duplicated, creates two scheduler instances) | 📝 |
+| 3.1 | Extracted `build_components(registry, ...)` factory into new `admz/components.py`. Returns a `Components` dataclass holding catalog, resolver, executors, plan_engine, git_repo, snapshot_engine, restore_builder, drift_detector, scheduler. Both `AppContext` and `ADMZMCPServer.__init__` now delegate to it — fixes the two-scheduler-instances-corrupt-schedules.json bug when MCP and FastAPI run in the same process. `AppContext` is now a thin wrapper with property forwarding so existing route code (`ctx.registry`, `ctx.catalog`, etc.) is unchanged. 7 new tests in `tests/test_components.py`. | ✅ |
 | 3.2 | Switched `SQLiteDeviceRegistry` to per-call short-lived connections via new `_connect()` helper. All 14 call sites updated to `with self._connect() as conn: ...`. Fixes cross-thread `ProgrammingError` risk under FastAPI's sync handler thread pool. Also tightened `~/.admz/` directory perms to 0o700 (Unix; no-op on Windows). | ✅ |
 | 3.3 | Added `close()` no-op method to `SQLiteDeviceRegistry`; FastAPI lifespan calls it on shutdown. Safe to call repeatedly. 3 new tests in `tests/test_sqlite_backend.py::TestShortLivedConnections` (idempotent close, post-close usage, concurrent threads). | ✅ |
 | 3.4 | Add database migration runner (Alembic) OR document blow-away-on-major-version policy | 📝 |
