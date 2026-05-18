@@ -11,7 +11,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,6 +19,7 @@ from fastapi.templating import Jinja2Templates
 
 from admz.api.context import init_context
 from admz.api.routes import (
+    api_keys as api_keys_route,
     capture,
     catalog,
     confirm,
@@ -30,6 +31,7 @@ from admz.api.routes import (
     web,
 )
 from admz import __version__
+from admz.auth import auth_middleware
 from admz.factory import create_device_registry
 
 
@@ -91,6 +93,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Auth middleware — runs after CORS (FastAPI middleware order is
+# reverse of add_middleware calls). Resolves a Principal for every
+# non-exempt request and stashes it on request.state.principal. With
+# ADMZ_AUTH_BACKEND=none (default), everything passes through as the
+# synthetic "anonymous" principal — preserving the pre-Phase-4 behavior
+# of zero-config local installs and the existing test suite.
+app.middleware("http")(auth_middleware)
+
 template_dir = Path(__file__).parent / "templates"
 static_dir = Path(__file__).parent / "static"
 template_dir.mkdir(exist_ok=True)
@@ -107,11 +117,32 @@ app.include_router(plans.router, prefix="/api", tags=["plans"])
 app.include_router(snapshot.router, prefix="/api", tags=["snapshot"])
 app.include_router(discovery.router, prefix="/api", tags=["discovery"])
 app.include_router(schedules.router, prefix="/api", tags=["schedules"])
+app.include_router(api_keys_route.router, prefix="/api", tags=["api-keys"])
 
 # Capture, confirm, and web UI — no /api prefix because they are user-facing
 app.include_router(capture.router, tags=["capture"])
 app.include_router(confirm.router, tags=["confirm"])
 app.include_router(web.router, tags=["web"])
+
+
+@app.get("/api/whoami", tags=["auth"])
+async def whoami(request: Request):
+    """Return the authenticated principal for the current request.
+
+    Useful for the web UI's "Signed in as" indicator and for agents
+    wanting to verify their API key is recognized.
+    """
+    from admz.auth import get_current_principal
+
+    principal = await get_current_principal(request)
+    return {
+        "name": principal.name,
+        "display_name": principal.display_name,
+        "domain": principal.domain,
+        "groups": list(principal.groups),
+        "source": principal.source,
+        "is_anonymous": principal.is_anonymous,
+    }
 
 
 @app.get("/health", tags=["health"])
