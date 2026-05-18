@@ -27,6 +27,7 @@ from admz.api.routes import (
     snapshot,
     web,
 )
+from admz import __version__
 from admz.factory import create_device_registry
 
 
@@ -53,7 +54,7 @@ app = FastAPI(
         "Device management, credential storage, and configuration-as-code "
         "for Axis network devices."
     ),
-    version="2.0.0",
+    version=__version__,
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     lifespan=lifespan,

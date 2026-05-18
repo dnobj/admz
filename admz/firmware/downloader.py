@@ -41,9 +41,6 @@ _FTP_PACS = "https://www.axis.com/ftp/pub_soft/PACS"
 # Model prefixes that live under PACS (intercoms, door controllers, etc.)
 _PACS_PREFIXES = ("A", "I", "C1", "S2", "TA", "XC")
 
-# Legacy alias for external consumers
-_FTP_BASE = _FTP_MPQT
-
 
 class FirmwareNotAvailableError(Exception):
     """Raised when firmware is not available on the public FTP for a model."""

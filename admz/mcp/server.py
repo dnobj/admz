@@ -42,15 +42,16 @@ from mcp.types import Tool, TextContent
 
 from admz import create_device_registry
 from admz.device_registry import DeviceRegistry
-from admz.api.capture import capture_store, CaptureStatus
+from admz.api.capture import capture_store
 from admz.api.confirm_store import PROTECTED_SETTING_KEYS
-from admz.discovery import discover_devices as run_discovery
 from admz.discovery.credential_probe import probe_credentials, ProbeStatus
 from admz.fleet_settings import fleet_settings
 from admz.catalog.loader import CatalogLoader
 from admz.catalog.resolver import CatalogResolver
 from admz.knowledge.loader import KnowledgeLoader
 from admz.knowledge.resolver import KnowledgeResolver
+from admz.capabilities.loader import CapabilitiesLoader
+from admz.capabilities.resolver import CapabilitiesResolver
 from admz.executor.vapix import VapixExecutor
 from admz.firmware.downloader import (
     download_firmware as fetch_firmware,
@@ -128,6 +129,10 @@ class ADMZMCPServer:
         # Knowledge base
         self.knowledge_loader = KnowledgeLoader(catalog_path)
         self.knowledge_resolver = KnowledgeResolver(self.knowledge_loader)
+
+        # Capabilities (per-model API support registry)
+        self.capabilities_loader = CapabilitiesLoader(catalog_path)
+        self.capabilities_resolver = CapabilitiesResolver(self.capabilities_loader)
 
         # Executors (one per API family)
         vapix_executor = VapixExecutor(
@@ -528,6 +533,36 @@ class ADMZMCPServer:
                                     "e.g. 'vapix-support', 'poe', 'audio'"
                                 ),
                                 "default": "",
+                            },
+                        },
+                        "required": ["device_id"],
+                    },
+                ),
+                Tool(
+                    name="check_api_support",
+                    description=(
+                        "Check whether a device supports a specific catalog API based on its "
+                        "model + firmware. Looks up the pre-populated capabilities snapshot for "
+                        "the device's model and reports whether the requested API is available "
+                        "(and at what version). Returns supported=false with notes when the "
+                        "model has no capabilities file, no snapshot for the firmware, or the "
+                        "API isn't in the snapshot. Useful for filtering plan steps before "
+                        "execution rather than discovering at execute time that a device doesn't "
+                        "speak the API. Omit api_id to retrieve the full snapshot."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID to check",
+                            },
+                            "api_id": {
+                                "type": "string",
+                                "description": (
+                                    "Catalog api_id (from an _api.yaml file) to check support "
+                                    "for. Omit to return the full snapshot of supported APIs."
+                                ),
                             },
                         },
                         "required": ["device_id"],
@@ -1432,6 +1467,11 @@ class ADMZMCPServer:
                         arguments["device_id"],
                         arguments.get("topic", ""),
                     )
+                elif name == "check_api_support":
+                    result = await self._check_api_support(
+                        arguments["device_id"],
+                        arguments.get("api_id"),
+                    )
                 elif name == "execute_operation":
                     result = await self._execute_operation(
                         arguments["device_id"],
@@ -1931,6 +1971,57 @@ class ADMZMCPServer:
             "model": result.model,
             "hints": hints,
             "levels_loaded": result.levels_loaded,
+            "notes": result.notes,
+        }
+
+    async def _check_api_support(
+        self,
+        device_id: str,
+        api_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """Check whether a device supports a specific catalog API based on its
+        model + firmware. When api_id is omitted, returns the full snapshot of
+        supported APIs for the device."""
+        device_info = None
+        if self.registry.device_exists(device_id):
+            device_info = self.registry.get_device_info(device_id)
+        else:
+            return {
+                "success": False,
+                "error": f"Device '{device_id}' not found in registry",
+            }
+
+        if api_id:
+            result = self.capabilities_resolver.check_api_support(
+                device_id=device_id,
+                catalog_api_id=api_id,
+                device_info=device_info,
+            )
+        else:
+            result = self.capabilities_resolver.get_all_apis(
+                device_id=device_id,
+                device_info=device_info,
+            )
+
+        snapshot_summary: Optional[Dict[str, Any]] = None
+        if result.snapshot is not None:
+            snapshot_summary = {
+                "firmware": result.snapshot.firmware,
+                "discovered": result.snapshot.discovered,
+                "api_count": result.snapshot.api_count,
+            }
+            if not api_id:
+                snapshot_summary["apis"] = result.snapshot.apis
+
+        return {
+            "success": True,
+            "device_id": result.device_id,
+            "model": result.model,
+            "firmware": result.firmware,
+            "api_id": api_id,
+            "supported": result.supported,
+            "api_version": result.api_version,
+            "snapshot": snapshot_summary,
             "notes": result.notes,
         }
 

@@ -8,10 +8,6 @@ class ADMZError(Exception):
     pass
 
 
-# Backward-compatible alias for the legacy name
-AxisSecretsError = ADMZError
-
-
 class DeviceNotFoundError(ADMZError):
     """Raised when a device ID is not found in the registry."""
     pass

@@ -27,23 +27,23 @@ This document tracks the per-issue follow-up for the production-quality review o
 
 | # | Item | File:line | Status |
 |---|---|---|---|
-| 1.1 | Delete `async-upnp-client` from `requirements.txt` (never imported) | `requirements.txt` | 📝 |
-| 1.2 | Delete `_FTP_BASE` alias (no external consumer) | `admz/firmware/downloader.py:45` | 📝 |
-| 1.3 | Delete `AxisSecretsError = ADMZError` v1 compat alias | `admz/exceptions.py:12`, `admz/__init__.py:9` | 📝 |
-| 1.4 | Delete unused `run_discovery` import (re-imported as `run_network_discovery` on line 79) | `admz/mcp/server.py:47` | 📝 |
-| 1.5 | Delete unused `CaptureStatus` import | `admz/mcp/server.py:45` | 📝 |
-| 1.6 | Decide on `admz/capabilities/` — wire in via MCP tool OR delete entire package + test file | `admz/capabilities/`, `tests/test_capabilities.py` | 📝 |
-| 1.7 | Fix or delete `tests/test_factory.py` — patches wrong import target | `tests/test_factory.py` | 📝 |
+| 1.1 | Delete `async-upnp-client` from `requirements.txt` (never imported) | `requirements.txt` | ✅ |
+| 1.2 | Delete `_FTP_BASE` alias (no external consumer) | `admz/firmware/downloader.py:45` | ✅ |
+| 1.3 | Delete `AxisSecretsError = ADMZError` v1 compat alias | `admz/exceptions.py:12`, `admz/__init__.py:9` | ✅ |
+| 1.4 | Delete unused `run_discovery` import (re-imported as `run_network_discovery` on line 79) | `admz/mcp/server.py:47` | ✅ |
+| 1.5 | Delete unused `CaptureStatus` import | `admz/mcp/server.py:45` | ✅ |
+| 1.6 | Wire `admz/capabilities/` in via new `check_api_support` MCP tool (decided: wire rather than delete; data has real value for pre-checking plan steps) | `admz/mcp/server.py`, `tests/test_capabilities.py` | ✅ |
+| 1.7 | Fix `tests/test_factory.py` — rewrote with correct patch targets at the actual import sites; also fixed an incorrect assertion (test claimed Vault was the default; SQLite is) | `tests/test_factory.py` | ✅ |
 
 ### Stale config files
 
 | # | Item | File:line | Status |
 |---|---|---|---|
-| 1.8 | Fix `pytest.ini` coverage target — `--cov=axis_secrets` → `--cov=admz` | `pytest.ini:10` | 📝 |
-| 1.9 | Rewrite `setup.py` `install_requires` from `requirements.txt` (currently lists Flask) | `setup.py:33` | 📝 |
-| 1.10 | Fix `setup.py` author/email/URL placeholders | `setup.py:9-14` | 📝 |
-| 1.11 | Update `setup.py` `Development Status :: 4 - Beta` (currently 3-Alpha) | `setup.py:17` | 📝 |
-| 1.12 | Single-source the version string (currently in `__init__.py:18` AND `api/main.py:56`) | both files | 📝 |
+| 1.8 | Fix `pytest.ini` coverage target — `--cov=axis_secrets` → `--cov=admz` | `pytest.ini:10` | ✅ |
+| 1.9 | Rewrite `setup.py` `install_requires` from `requirements.txt` (currently lists Flask) | `setup.py:33` | ✅ |
+| 1.10 | Fix `setup.py` author/email/URL placeholders | `setup.py:9-14` | ✅ |
+| 1.11 | Update `setup.py` `Development Status :: 4 - Beta` (currently 3-Alpha) | `setup.py:17` | ✅ |
+| 1.12 | Single-source the version string — `api/main.py` now imports `__version__` from `admz` | both files | ✅ |
 | 1.13 | Consider adding `pyproject.toml` (modern packaging) | new file | 📝 |
 
 ### Documentation drift

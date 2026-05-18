@@ -371,3 +371,63 @@ class TestCapabilityLookupResult:
         assert result.supported is None
         assert result.api_version is None
         assert result.notes == []
+
+
+# ------------------------------------------------------------------
+# MCP integration: _check_api_support handler
+# ------------------------------------------------------------------
+
+
+class TestMCPCheckApiSupport:
+    """Integration test for the check_api_support MCP tool handler."""
+
+    @pytest.fixture
+    def mcp_server(self, tmp_catalog, tmp_path, monkeypatch):
+        # Isolate ADMZ state to tmp_path
+        monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
+        monkeypatch.setenv("ADMZ_KEY_PATH", str(tmp_path / "admz.key"))
+        monkeypatch.setenv("ADMZ_CONFIG_REPO_PATH", str(tmp_path / "config-repo"))
+        monkeypatch.setenv("ADMZ_CATALOG_PATH", str(tmp_catalog))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+        from admz.mcp.server import ADMZMCPServer
+        server = ADMZMCPServer()
+        # Register a device that maps to the fixture's Q3538-SLVE model
+        server.registry.add_device(
+            "test-cam",
+            {"host": "10.0.0.1", "model": "Q3538-SLVE", "firmware": "12.8.54"},
+        )
+        return server
+
+    @pytest.mark.asyncio
+    async def test_check_known_api_returns_supported(self, mcp_server):
+        result = await mcp_server._check_api_support("test-cam", "api-discovery")
+        assert result["success"] is True
+        assert result["supported"] is True
+        assert result["api_version"] == "1.1"
+        assert result["model"] == "Q3538-SLVE"
+        assert result["firmware"] == "12.8.54"
+        assert result["snapshot"]["api_count"] == 3
+
+    @pytest.mark.asyncio
+    async def test_check_unknown_api_returns_unsupported(self, mcp_server):
+        result = await mcp_server._check_api_support("test-cam", "nonexistent-api")
+        assert result["success"] is True
+        assert result["supported"] is False
+        assert result["api_version"] is None
+        assert any("not found" in n for n in result["notes"])
+
+    @pytest.mark.asyncio
+    async def test_no_api_id_returns_full_snapshot(self, mcp_server):
+        result = await mcp_server._check_api_support("test-cam", None)
+        assert result["success"] is True
+        assert result["supported"] is True
+        assert "apis" in result["snapshot"]
+        assert result["snapshot"]["apis"]["api-discovery"] == "1.1"
+
+    @pytest.mark.asyncio
+    async def test_unknown_device_returns_error(self, mcp_server):
+        result = await mcp_server._check_api_support("ghost-device", "api-discovery")
+        assert result["success"] is False
+        assert "not found" in result["error"].lower()

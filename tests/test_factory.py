@@ -1,52 +1,106 @@
-"""
-Tests for factory function.
-"""
+"""Tests for the device-registry factory function."""
 
 import pytest
 from unittest.mock import patch
 
 from admz.factory import create_device_registry
-from admz.backends.vault_backend import VaultDeviceRegistry
 from admz.exceptions import ConfigurationError
 
 
+# Patch target must match the actual import site. The factory does
+# `from admz.backends.{sqlite,vault}_backend import ...` *inside* the function,
+# so we patch where the name is looked up at call time, not in admz.factory.
+
+
 class TestFactory:
-    """Test create_device_registry factory function."""
+    """create_device_registry: backend selection and kwargs forwarding."""
 
-    def test_create_vault_registry_explicit(self):
-        """Test creating Vault registry with explicit backend parameter."""
-        with patch("admz.factory.VaultDeviceRegistry") as mock_vault:
-            create_device_registry("vault", vault_addr="http://localhost:8200", vault_token="test")
+    # ----- SQLite (default) -----
 
+    def test_default_backend_is_sqlite(self):
+        """No backend arg and no env var → SQLite (the documented default)."""
+        with patch.dict("os.environ", {}, clear=True):
+            with patch(
+                "admz.backends.sqlite_backend.SQLiteDeviceRegistry"
+            ) as mock_sqlite:
+                create_device_registry()
+                mock_sqlite.assert_called_once_with()
+
+    def test_explicit_sqlite_backend(self):
+        """`create_device_registry("sqlite")` selects the SQLite backend."""
+        with patch(
+            "admz.backends.sqlite_backend.SQLiteDeviceRegistry"
+        ) as mock_sqlite:
+            create_device_registry("sqlite", db_path="/tmp/foo.db")
+            mock_sqlite.assert_called_once_with(db_path="/tmp/foo.db")
+
+    def test_sqlite_from_env(self):
+        """DEVICE_REGISTRY_BACKEND=sqlite selects the SQLite backend."""
+        with patch.dict(
+            "os.environ", {"DEVICE_REGISTRY_BACKEND": "sqlite"}, clear=True
+        ):
+            with patch(
+                "admz.backends.sqlite_backend.SQLiteDeviceRegistry"
+            ) as mock_sqlite:
+                create_device_registry()
+                mock_sqlite.assert_called_once()
+
+    # ----- Vault -----
+
+    def test_explicit_vault_backend(self):
+        """`create_device_registry("vault", ...)` selects the Vault backend
+        and forwards kwargs."""
+        with patch(
+            "admz.backends.vault_backend.VaultDeviceRegistry"
+        ) as mock_vault:
+            create_device_registry(
+                "vault",
+                vault_addr="http://localhost:8200",
+                vault_token="test",
+            )
             mock_vault.assert_called_once_with(
                 vault_addr="http://localhost:8200",
-                vault_token="test"
+                vault_token="test",
             )
 
-    def test_create_vault_registry_from_env(self):
-        """Test creating Vault registry from environment variable."""
-        with patch.dict("os.environ", {"DEVICE_REGISTRY_BACKEND": "vault"}):
-            with patch("admz.factory.VaultDeviceRegistry") as mock_vault:
+    def test_vault_from_env(self):
+        """DEVICE_REGISTRY_BACKEND=vault selects the Vault backend."""
+        with patch.dict(
+            "os.environ", {"DEVICE_REGISTRY_BACKEND": "vault"}, clear=True
+        ):
+            with patch(
+                "admz.backends.vault_backend.VaultDeviceRegistry"
+            ) as mock_vault:
                 create_device_registry()
-
                 mock_vault.assert_called_once()
 
-    def test_create_vault_registry_default(self):
-        """Test creating Vault registry as default."""
-        with patch.dict("os.environ", {}, clear=True):
-            with patch("admz.factory.VaultDeviceRegistry") as mock_vault:
-                create_device_registry()
+    # ----- Misc -----
 
-                mock_vault.assert_called_once()
-
-    def test_create_registry_unknown_backend(self):
-        """Test creating registry with unknown backend."""
-        with pytest.raises(ConfigurationError, match="Unknown backend"):
-            create_device_registry("unknown")
-
-    def test_create_registry_case_insensitive(self):
-        """Test backend parameter is case insensitive."""
-        with patch("admz.factory.VaultDeviceRegistry") as mock_vault:
+    def test_case_insensitive_backend_name(self):
+        """Backend names are normalized to lowercase."""
+        with patch(
+            "admz.backends.vault_backend.VaultDeviceRegistry"
+        ) as mock_vault:
             create_device_registry("VAULT")
-
             mock_vault.assert_called_once()
+        with patch(
+            "admz.backends.sqlite_backend.SQLiteDeviceRegistry"
+        ) as mock_sqlite:
+            create_device_registry("SQLite")
+            mock_sqlite.assert_called_once()
+
+    def test_unknown_backend_raises(self):
+        """Unknown backend name raises ConfigurationError with a helpful message."""
+        with pytest.raises(ConfigurationError, match="Unknown backend"):
+            create_device_registry("postgres")
+
+    def test_explicit_backend_overrides_env(self):
+        """Explicit backend argument wins over DEVICE_REGISTRY_BACKEND env."""
+        with patch.dict(
+            "os.environ", {"DEVICE_REGISTRY_BACKEND": "vault"}, clear=True
+        ):
+            with patch(
+                "admz.backends.sqlite_backend.SQLiteDeviceRegistry"
+            ) as mock_sqlite:
+                create_device_registry("sqlite")
+                mock_sqlite.assert_called_once()
