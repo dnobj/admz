@@ -353,3 +353,92 @@ class TestRoutesAreMounted:
         }
         missing = expected - paths
         assert not missing, f"Missing routes: {missing}"
+
+
+class TestFleetSettingsMasking:
+    """Phase 2A: passwords in fleet settings must be masked on the REST surface,
+    matching the MCP get_fleet_settings tool."""
+
+    def _set_setting(self, client, key, value):
+        # Use the underlying fleet_settings singleton directly, since
+        # /api/fleet/settings only exposes GET endpoints here.
+        from admz.fleet_settings import fleet_settings as fs
+        fs.set(key, value)
+
+    def test_password_value_is_masked_in_list(self, client):
+        self._set_setting(client, "default_password", "supersecret123")
+        self._set_setting(client, "default_username", "admin")
+        r = client.get("/api/fleet/settings")
+        assert r.status_code == 200
+        body = r.json()
+        assert "supersecret123" not in str(body)
+        assert body["default_password"].startswith("*")
+        assert "(14 chars)" in body["default_password"]
+        # Non-password key still readable
+        assert body["default_username"] == "admin"
+
+    def test_password_value_is_masked_in_single_get(self, client):
+        self._set_setting(client, "default_password", "rotated99")
+        r = client.get("/api/fleet/settings/default_password")
+        assert r.status_code == 200
+        assert "rotated99" not in r.json()["value"]
+        assert r.json()["value"].startswith("*")
+
+    def test_non_password_value_passes_through_in_single_get(self, client):
+        self._set_setting(client, "default_username", "operator")
+        r = client.get("/api/fleet/settings/default_username")
+        assert r.status_code == 200
+        assert r.json()["value"] == "operator"
+
+
+class TestCredentialsEndpointGated:
+    """Phase 2A: /api/devices/{id}/credentials must be gated behind the
+    same tool_get_credentials_enabled fleet flag as the MCP tool."""
+
+    def _register_device_with_creds(self, client):
+        client.post(
+            "/api/devices",
+            json={
+                "device_id": "cam-01",
+                "host": "192.168.1.10",
+                "model": "AXIS P3245-V",
+                "location": "Lobby",
+            },
+        )
+        client.post(
+            "/api/devices/cam-01/accounts",
+            json={
+                "account_id": "default",
+                "username": "root",
+                "password": "topsecret",
+            },
+        )
+
+    def test_credentials_endpoint_disabled_by_default(self, client):
+        self._register_device_with_creds(client)
+        r = client.get("/api/devices/cam-01/credentials")
+        assert r.status_code == 403
+        assert "tool_get_credentials_enabled" in r.json()["detail"]
+
+    def test_credentials_endpoint_works_when_enabled(self, client):
+        self._register_device_with_creds(client)
+        from admz.fleet_settings import fleet_settings as fs
+        fs.set("tool_get_credentials_enabled", "true")
+        try:
+            r = client.get("/api/devices/cam-01/credentials")
+            assert r.status_code == 200
+            creds = r.json()
+            assert creds["username"] == "root"
+            assert creds["password"] == "topsecret"
+        finally:
+            fs.delete("tool_get_credentials_enabled")
+
+    def test_credentials_endpoint_disabled_with_false_value(self, client):
+        self._register_device_with_creds(client)
+        from admz.fleet_settings import fleet_settings as fs
+        fs.set("tool_get_credentials_enabled", "false")
+        try:
+            r = client.get("/api/devices/cam-01/credentials")
+            assert r.status_code == 403
+        finally:
+            fs.delete("tool_get_credentials_enabled")

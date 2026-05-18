@@ -13,6 +13,8 @@ import asyncio
 import logging
 from typing import Dict, List, Optional
 
+from admz.ssl_config import verify_ssl_default
+
 from admz.discovery.base import DiscoveryProtocolBase
 from admz.discovery.models import (
     DiscoveredDevice,
@@ -77,7 +79,7 @@ class HTTPProbe(DiscoveryProtocolBase):
         dev.discovered_by.append(DiscoveryProtocol.HTTP_PROBE)
 
         async with httpx.AsyncClient(
-            timeout=timeout, verify=False, follow_redirects=True
+            timeout=timeout, verify=verify_ssl_default(), follow_redirects=True
         ) as client:
             # 1. Basic HTTP GET on port 80
             try:

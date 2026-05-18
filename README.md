@@ -136,7 +136,9 @@ ADMZ is configured via environment variables:
 | `ADMZ_CONFIG_REPO_PATH` | `~/.admz/config-repo` | Config git repo path |
 | `ADMZ_CONFIG_REPO_REMOTE` | _unset_ | Git remote URL for config repo |
 | `ADMZ_LOG_LEVEL` | `INFO` | Log level: `CRITICAL`/`ERROR`/`WARNING`/`INFO`/`DEBUG` |
+| `ADMZ_ALLOWED_ORIGINS` | `http://localhost:4242,http://127.0.0.1:4242,http://localhost:8000,http://127.0.0.1:8000` | Comma-separated CORS allowlist for the REST API. Pass `*` (NOT recommended) to allow any origin — credentialed requests will be browser-rejected per the CORS spec. |
 | `ADMZ_VAPIX_RETRIES` | `1` | Per-request retry count in the VAPIX executor |
+| `ADMZ_VERIFY_SSL` | _unset_ (treated as `false`) | Verify device TLS certificates. Off by default because Axis devices ship with self-signed certs. Set to `true` once you've installed trust anchors on the ADMZ host. Accepts `true`/`false`/`1`/`0`/`yes`/`no`. |
 | `ADMZ_BASE_URL` | `http://localhost:8000` | Base URL the MCP server uses when generating fleet-password capture links |
 | `VAULT_ADDR` | _unset_ | Vault server URL (vault backend only) |
 | `VAULT_TOKEN` | _unset_ | Vault auth token |

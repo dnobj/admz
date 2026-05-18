@@ -6,7 +6,12 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, Depends
 from fastapi.responses import JSONResponse
 
-from admz.fleet_settings import fleet_settings
+from admz.fleet_settings import (
+    fleet_settings,
+    is_sensitive_setting_key,
+    mask_setting_value,
+    mask_settings_for_display,
+)
 from admz.api.models import (
     DeviceCreate,
     DeviceUpdate,
@@ -150,13 +155,23 @@ async def get_device_credentials(
     Get credentials for a device account.
 
     WARNING: This endpoint returns sensitive credentials including passwords.
-    Ensure proper authentication and authorization before exposing this endpoint.
-
-    Parameters:
-    - device_id: Device identifier
-    - account_id: Account identifier (default: 'default')
-    - requester: Optional requester identifier for audit logging
+    Disabled by default; enable by setting the fleet setting
+    ``tool_get_credentials_enabled = "true"`` via the ``/confirm-settings``
+    web UI. Mirrors the gating of the MCP ``get_credentials`` tool —
+    the LLM and REST surfaces must agree on whether credential retrieval
+    is allowed.
     """
+    # Gate on the same fleet flag the MCP server uses
+    if fleet_settings.get("tool_get_credentials_enabled") != "true":
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Credential retrieval is disabled. Enable it by setting "
+                "'tool_get_credentials_enabled' to 'true' via the web UI at "
+                "/confirm-settings."
+            ),
+        )
+
     try:
         credentials = registry.get_credentials(device_id, account_id, requester)
         return credentials
@@ -350,14 +365,18 @@ async def delete_device_account(
 
 @router.get("/fleet/settings")
 async def get_fleet_settings() -> Dict[str, str]:
-    """Get all fleet-wide settings. Password values are returned in full."""
-    return fleet_settings.list_all()
+    """Get all fleet-wide settings. Password-shaped values are masked
+    to match the MCP ``get_fleet_settings`` tool — the REST surface must
+    not leak plaintext fleet passwords."""
+    return mask_settings_for_display(fleet_settings.list_all())
 
 
 @router.get("/fleet/settings/{key}")
 async def get_fleet_setting(key: str):
-    """Get a single fleet setting value."""
+    """Get a single fleet setting value. Password-shaped values are masked."""
     value = fleet_settings.get(key)
     if value is None:
         raise HTTPException(status_code=404, detail=f"Setting '{key}' not found")
+    if is_sensitive_setting_key(key):
+        value = mask_setting_value(value)
     return {"key": key, "value": value}

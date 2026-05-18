@@ -18,6 +18,36 @@ from pathlib import Path
 from typing import Dict, Optional
 
 
+def is_sensitive_setting_key(key: str) -> bool:
+    """Return True if the setting's value should be masked when displayed.
+
+    Used to keep passwords and other secrets out of any surface that returns
+    fleet-settings to a caller — both the MCP ``get_fleet_settings`` tool and
+    the REST ``GET /api/fleet/settings`` endpoint use this. Centralized here
+    so both surfaces apply the same rule.
+    """
+    return "password" in key.lower()
+
+
+def mask_setting_value(value: str) -> str:
+    """Return a display-safe placeholder for a sensitive setting value.
+
+    Shows up to 8 asterisks plus a length hint. Empty values are returned
+    as a fixed marker so the masking is unambiguous.
+    """
+    if not value:
+        return "(empty)"
+    return f"{'*' * min(len(value), 8)} ({len(value)} chars)"
+
+
+def mask_settings_for_display(settings: Dict[str, str]) -> Dict[str, str]:
+    """Return a copy of ``settings`` with sensitive values masked."""
+    return {
+        k: (mask_setting_value(v) if is_sensitive_setting_key(k) else v)
+        for k, v in settings.items()
+    }
+
+
 _SETTINGS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS fleet_settings (
     key    TEXT PRIMARY KEY,

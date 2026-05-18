@@ -2585,17 +2585,13 @@ class ADMZMCPServer:
     # ------------------------------------------------------------------
 
     async def _get_fleet_settings(self) -> Dict[str, Any]:
+        from admz.fleet_settings import mask_settings_for_display
+
         settings = fleet_settings.list_all()
-        display = {}
-        for k, v in settings.items():
-            if "password" in k.lower():
-                display[k] = f"{'*' * min(len(v), 8)} ({len(v)} chars)"
-            else:
-                display[k] = v
         return {
             "success": True,
             "count": len(settings),
-            "settings": display,
+            "settings": mask_settings_for_display(settings),
         }
 
     async def _set_fleet_setting(

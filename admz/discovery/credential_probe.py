@@ -25,6 +25,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+from admz.ssl_config import verify_ssl_default
+
 logger = logging.getLogger(__name__)
 
 # Built-in legacy Axis default credentials.
@@ -131,7 +133,7 @@ async def _detect_auth_schemes(host: str, timeout: float = 5.0) -> Dict[str, str
         url = f"{scheme}://{host}/axis-cgi/basicdeviceinfo.cgi"
         try:
             async with _httpx.AsyncClient(
-                verify=False, timeout=timeout
+                verify=verify_ssl_default(), timeout=timeout
             ) as client:
                 resp = await client.post(
                     url,
@@ -251,7 +253,7 @@ async def _probe_credentials_core(
     ctx: Dict = {}
 
     async with httpx.AsyncClient(
-        timeout=timeout, verify=False, follow_redirects=True
+        timeout=timeout, verify=verify_ssl_default(), follow_redirects=True
     ) as client:
         # Step 1: No auth
         if try_no_auth:

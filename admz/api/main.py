@@ -7,6 +7,7 @@ catalog query/execution, multi-step plans, configuration snapshot/
 restore/diff/drift, and scheduled snapshots.
 """
 
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -61,10 +62,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS — driven by the ADMZ_ALLOWED_ORIGINS env var (comma-separated list).
+# Defaults to localhost-only on both ports we typically use (4242 dev, 8000
+# legacy). Wildcard "*" is still supported but explicitly opt-in — never the
+# default. Setting allow_credentials=True with "*" is rejected by browsers
+# per the CORS spec anyway.
+_default_origins = (
+    "http://localhost:4242,http://127.0.0.1:4242,"
+    "http://localhost:8000,http://127.0.0.1:8000"
+)
+_origins_raw = os.getenv("ADMZ_ALLOWED_ORIGINS", _default_origins)
+_origins = [o.strip() for o in _origins_raw.split(",") if o.strip()]
+_allow_credentials = "*" not in _origins  # browser rejects wildcard + creds
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )

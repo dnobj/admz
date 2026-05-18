@@ -31,8 +31,14 @@ def main():
     )
     api_parser.add_argument(
         "--host",
-        default="0.0.0.0",
-        help="Host to bind to (default: 0.0.0.0)",
+        default="127.0.0.1",
+        help=(
+            "Host to bind to (default: 127.0.0.1 — localhost only). "
+            "Pass 0.0.0.0 explicitly to expose on all interfaces. "
+            "There is no authentication on the web/REST surface as of this "
+            "release; only bind to non-localhost behind a reverse proxy "
+            "with its own auth, or on a trusted private network."
+        ),
     )
     api_parser.add_argument(
         "--port",

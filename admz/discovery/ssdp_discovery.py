@@ -21,6 +21,7 @@ from typing import Dict, List, Optional
 from xml.etree import ElementTree
 
 from admz.discovery.base import DiscoveryProtocolBase
+from admz.ssl_config import verify_ssl_default
 from admz.discovery.models import (
     DiscoveredDevice,
     DiscoveryProtocol,
@@ -169,7 +170,7 @@ class SSDPDiscovery(DiscoveryProtocolBase):
             logger.debug("httpx not installed -- skipping UPnP XML enrichment")
             return
 
-        async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
+        async with httpx.AsyncClient(timeout=timeout, verify=verify_ssl_default()) as client:
             tasks = []
             for dev in devices.values():
                 if dev.ssdp_location:

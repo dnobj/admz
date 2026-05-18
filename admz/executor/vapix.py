@@ -20,6 +20,7 @@ import httpx
 
 from admz.executor.base import BaseExecutor
 from admz.executor.models import ExecutionRequest, StepResult
+from admz.ssl_config import verify_ssl_default
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +42,14 @@ class VapixExecutor(BaseExecutor):
     def __init__(
         self,
         timeout: float = 15.0,
-        verify_ssl: bool = False,
+        verify_ssl: Optional[bool] = None,
         retries: int = 1,
     ):
         self._timeout = timeout
-        self._verify_ssl = verify_ssl
+        # If caller didn't pin a value, honor ADMZ_VERIFY_SSL (default False).
+        self._verify_ssl = (
+            verify_ssl_default() if verify_ssl is None else bool(verify_ssl)
+        )
         self._retries = retries
 
     @property
