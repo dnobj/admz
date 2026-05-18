@@ -126,11 +126,11 @@ This document tracks the per-issue follow-up for the production-quality review o
 
 | # | Item | Severity | Status |
 |---|---|---|---|
-| 4.1 | Add authentication to FastAPI app (API token via env, header-based at minimum) | 🔴 | 📝 |
-| 4.2 | Add audit log of credential access and operation execution | 🟠 | 📝 |
+| 4.1 | Add authentication to FastAPI app. **Done as four backends** (none/windows/api-key/composite), Windows IWA via reverse proxy + API keys with optional LDAP group enrichment. Closes KG-SEC-001. See ADR-0021/0022/0023, `requirements/authentication.md`, `docs/DEPLOYMENT_WINDOWS.md`. | 🔴 | ✅ |
+| 4.2 | Add audit log of credential access and operation execution. New `audit_log` SQLite table, `admz/audit.py` store, `record_event` helper wired into get_credentials/api-key mint/revoke. `GET /api/audit` endpoint with filters. Closes KG-SEC-003. | 🟠 | ✅ |
 | 4.3 | Add structured logging (JSON formatter option) | 🟡 | 📝 |
-| 4.4 | Implement `requester` parameter (currently documented but ignored in `sqlite_backend.py:172-195`) | 🟡 | 📝 |
-| 4.5 | Enforce `0o700` permissions on `~/.admz/` directory | 🟡 | 📝 |
+| 4.4 | Implement `requester` parameter — now carries the authenticated principal's identity through to the registry's `get_credentials` call, recorded in the audit log. | 🟡 | ✅ |
+| 4.5 | Enforce `0o700` permissions on `~/.admz/` directory — landed in Phase 3A (`SQLiteDeviceRegistry.__init__` chmods the parent dir). | 🟡 | ✅ |
 | 4.6 | Add rate limiting on `/capture/{token}` and `/confirm/{token}` POSTs | 🟡 | 📝 |
 | 4.7 | Add password attempt lockout for `url_and_password` confirms | 🟡 | 📝 |
 | 4.8 | Document network egress (Axis FTP, Vault) for air-gapped deployments | 🟢 | 📝 |

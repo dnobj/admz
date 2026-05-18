@@ -90,19 +90,26 @@ All confirmation tokens use `secrets.token_urlsafe(32)` → 256 bits of entropy.
 
 ## Known gaps (Phase 4 work, tracked in [review-followup.md](../review-followup.md))
 
-### KG-SEC-001 — No authentication on ADMZ itself ⚠️
-The FastAPI app mounts every router without any `Depends(auth)` middleware. Endpoints that return passwords (when enabled), execute operations, capture credentials, or change settings are accessible to anyone who can reach the bind address. Mitigations in place:
-- Default `--host 127.0.0.1` (FR-SEC-010)
-- CORS allowlist not wildcard (FR-SEC-011)
-- `get_credentials` opt-in (FR-SEC-006)
-
-But for non-localhost deployment, network-level controls (private subnet, VPN, reverse proxy with its own auth) are mandatory. Adding API-token auth (header-based, env-configured) is the highest-priority Phase 4 item.
+### KG-SEC-001 — No authentication on ADMZ itself ✅ CLOSED (Phase 4)
+Two-method authentication added: Windows IWA via reverse proxy
+(ADR-0021) and API keys for programmatic clients (ADR-0022). The
+default production setup uses the `composite` backend that accepts
+either. Phase 4 ships with end-to-end tests for all four backends
+(`none`/`windows`/`api-key`/`composite`), CLI for bootstrap, and a
+deployment guide ([DEPLOYMENT_WINDOWS.md](../../DEPLOYMENT_WINDOWS.md)).
+See [requirements/authentication.md](authentication.md) for the full
+FR/NFR list.
 
 ### KG-SEC-002 — No CSRF protection on capture / confirm forms ⚠️
 Tokens are 256-bit single-use, but a CSRF defense (token in form, validated server-side) would still be appropriate.
 
-### KG-SEC-003 — No audit log ⚠️
-The registry ABC documents a `requester` parameter for audit purposes, but the SQLite backend ignores it. Git history of the snapshot repo is the closest equivalent for configuration changes — but credential access, dangerous-operation execution, and authentication events are not recorded.
+### KG-SEC-003 — No audit log ✅ CLOSED (Phase 4D)
+New `audit_log` SQLite table populated on every gated action (credential
+retrieval, API-key mint/revoke, dangerous-op confirms, etc.). The
+`requester` parameter on `DeviceRegistry.get_credentials` now carries
+the authenticated principal's identity instead of being ignored.
+Readable via `GET /api/audit` with filters by action/requester/since.
+See `admz/audit.py` and [authentication.md](authentication.md) FR-AUTH-011.
 
 ### KG-SEC-004 — Fernet key has no rotation path ⚠️
 Losing `~/.admz/admz.key` means losing all encrypted credentials. There is no master-key wrap or envelope encryption. Joint backup of `admz.db` + `admz.key` is documented in `README.md::Backup`.

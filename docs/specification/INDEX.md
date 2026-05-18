@@ -54,6 +54,7 @@ What the system must do, per capability area. Each file has Functional Requireme
 
 ### Cross-cutting requirements
 
+- [Authentication](requirements/authentication.md) — Windows IWA, API keys, LDAP groups (Phase 4)
 - [Security](requirements/security.md) — auth, encryption, gating, audit
 - [Observability](requirements/observability.md) — logging, metrics, audit log
 - [Reliability](requirements/reliability.md) — error handling, retries, concurrency
@@ -79,6 +80,12 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 - [0006 — Multi-level confirmation by risk class](decisions/0006-multi-level-confirmation.md)
 - [0018 — Risk-aware "expect-timeout" semantics for reboot ops](decisions/0018-expect-timeout-semantics.md)
 - [0020 — Protected fleet settings keys not writable from MCP](decisions/0020-protected-fleet-settings.md)
+
+### Authentication (Phase 4)
+
+- [0021 — Windows IWA via reverse proxy](decisions/0021-windows-iwa-via-reverse-proxy.md)
+- [0022 — API keys for agents](decisions/0022-api-keys-for-agents.md)
+- [0023 — LDAP group enrichment](decisions/0023-ldap-group-enrichment.md)
 
 ### Authentication & secrets
 
