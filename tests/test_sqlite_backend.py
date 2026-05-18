@@ -179,3 +179,58 @@ class TestEncryption:
         key1 = open(str(tmp_path / "a.key"), "rb").read()
         key2 = open(str(tmp_path / "b.key"), "rb").read()
         assert key1 != key2
+
+
+class TestShortLivedConnections:
+    """Phase 3A: SQLite registry now uses per-call connections.
+    Verifies the contract — close() is a no-op (safe to call repeatedly),
+    operations still work after close(), and concurrent calls don't
+    raise ProgrammingError."""
+
+    def test_close_is_idempotent(self, tmp_path):
+        reg = SQLiteDeviceRegistry(
+            db_path=str(tmp_path / "admz.db"),
+            key_path=str(tmp_path / "admz.key"),
+        )
+        # close() should be safe to call repeatedly
+        reg.close()
+        reg.close()
+
+    def test_operations_work_after_close(self, tmp_path):
+        """Because connections are per-call, close() is a no-op; the
+        registry remains fully usable afterwards."""
+        reg = SQLiteDeviceRegistry(
+            db_path=str(tmp_path / "admz.db"),
+            key_path=str(tmp_path / "admz.key"),
+        )
+        reg.add_device("cam-01", {"host": "192.168.1.10"})
+        reg.close()
+        # Still usable
+        assert reg.device_exists("cam-01")
+        assert reg.list_devices()[0]["device_id"] == "cam-01"
+
+    def test_concurrent_threads_do_not_crash(self, tmp_path):
+        """The previous long-lived self._conn would raise
+        ProgrammingError under cross-thread use. Per-call connections
+        eliminate that."""
+        import threading
+
+        reg = SQLiteDeviceRegistry(
+            db_path=str(tmp_path / "admz.db"),
+            key_path=str(tmp_path / "admz.key"),
+        )
+        errors = []
+
+        def reader(idx):
+            try:
+                for _ in range(20):
+                    reg.list_devices()
+            except Exception as e:
+                errors.append((idx, type(e).__name__, str(e)))
+
+        threads = [threading.Thread(target=reader, args=(i,)) for i in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert errors == [], f"Concurrent threads raised: {errors}"

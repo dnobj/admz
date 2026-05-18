@@ -134,16 +134,36 @@ class SQLiteDeviceRegistry(DeviceRegistry):
 
         # Ensure parent directories exist
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Tighten directory permissions on Unix; no-op on Windows.
+        try:
+            os.chmod(self._db_path.parent, 0o700)
+        except OSError:
+            pass
 
         # Initialise encryption
         self._fernet = _build_fernet(self._key_path)
 
-        # Initialise database
-        self._conn = sqlite3.connect(str(self._db_path))
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        self._conn.executescript(_SCHEMA)
-        self._conn.commit()
+        # Initialise the database with a short-lived connection. All
+        # subsequent operations also open short-lived connections via
+        # _connect(); this is multi-process-safe under WAL mode and
+        # avoids the "connection used across threads" risk that the
+        # previous long-lived self._conn pattern created.
+        with self._connect() as conn:
+            conn.executescript(_SCHEMA)
+            conn.commit()
+
+    def _connect(self) -> sqlite3.Connection:
+        """Open a fresh SQLite connection with WAL + foreign-keys enabled."""
+        conn = sqlite3.connect(str(self._db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+
+    def close(self) -> None:
+        """Compatibility no-op. Connections are short-lived per call now;
+        nothing to close. Kept so that callers (FastAPI lifespan shutdown,
+        tests) can call .close() without breaking."""
+        return None
 
     # -- helpers -----------------------------------------------------------
 
@@ -182,10 +202,11 @@ class SQLiteDeviceRegistry(DeviceRegistry):
                 f"Account '{account_id}' not found for device '{device_id}'"
             )
 
-        row = self._conn.execute(
-            "SELECT data_json FROM accounts WHERE device_id=? AND account_id=?",
-            (device_id, account_id),
-        ).fetchone()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT data_json FROM accounts WHERE device_id=? AND account_id=?",
+                (device_id, account_id),
+            ).fetchone()
 
         credentials = self._load_account_data(row[0], include_password=True)
 
@@ -198,16 +219,20 @@ class SQLiteDeviceRegistry(DeviceRegistry):
         if not self.device_exists(device_id):
             raise DeviceNotFoundError(f"Device '{device_id}' not found")
 
-        row = self._conn.execute(
-            "SELECT info_json FROM devices WHERE device_id=?", (device_id,)
-        ).fetchone()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT info_json FROM devices WHERE device_id=?", (device_id,)
+            ).fetchone()
 
         info = json.loads(row[0])
         info["device_id"] = device_id
         return info
 
     def get_device_by_nickname(self, nickname: str) -> Optional[Dict[str, Any]]:
-        rows = self._conn.execute("SELECT device_id, info_json FROM devices").fetchall()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT device_id, info_json FROM devices"
+            ).fetchall()
         for device_id, raw in rows:
             info = json.loads(raw)
             if info.get("nickname", "").lower() == nickname.lower():
@@ -216,7 +241,10 @@ class SQLiteDeviceRegistry(DeviceRegistry):
         return None
 
     def list_devices(self) -> List[Dict[str, Any]]:
-        rows = self._conn.execute("SELECT device_id, info_json FROM devices").fetchall()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT device_id, info_json FROM devices"
+            ).fetchall()
         devices = []
         for device_id, raw in rows:
             info = json.loads(raw)
@@ -228,10 +256,11 @@ class SQLiteDeviceRegistry(DeviceRegistry):
         if not self.device_exists(device_id):
             raise DeviceNotFoundError(f"Device '{device_id}' not found")
 
-        rows = self._conn.execute(
-            "SELECT account_id, data_json FROM accounts WHERE device_id=?",
-            (device_id,),
-        ).fetchall()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT account_id, data_json FROM accounts WHERE device_id=?",
+                (device_id,),
+            ).fetchall()
 
         accounts = []
         for account_id, raw in rows:
@@ -241,18 +270,20 @@ class SQLiteDeviceRegistry(DeviceRegistry):
         return accounts
 
     def device_exists(self, device_id: str) -> bool:
-        row = self._conn.execute(
-            "SELECT 1 FROM devices WHERE device_id=?", (device_id,)
-        ).fetchone()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM devices WHERE device_id=?", (device_id,)
+            ).fetchone()
         return row is not None
 
     def account_exists(self, device_id: str, account_id: str) -> bool:
         if not self.device_exists(device_id):
             return False
-        row = self._conn.execute(
-            "SELECT 1 FROM accounts WHERE device_id=? AND account_id=?",
-            (device_id, account_id),
-        ).fetchone()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM accounts WHERE device_id=? AND account_id=?",
+                (device_id, account_id),
+            ).fetchone()
         return row is not None
 
     # -- write operations --------------------------------------------------
@@ -266,11 +297,12 @@ class SQLiteDeviceRegistry(DeviceRegistry):
         if self.device_exists(device_id):
             raise BackendError(f"Device '{device_id}' already exists")
 
-        self._conn.execute(
-            "INSERT INTO devices (device_id, info_json) VALUES (?, ?)",
-            (device_id, json.dumps(device_info)),
-        )
-        self._conn.commit()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO devices (device_id, info_json) VALUES (?, ?)",
+                (device_id, json.dumps(device_info)),
+            )
+            conn.commit()
 
         if accounts:
             for account_id, account_data in accounts.items():
@@ -283,19 +315,23 @@ class SQLiteDeviceRegistry(DeviceRegistry):
     ) -> None:
         info = self.get_device_info(device_id)
         info.update(updates)
-        self._conn.execute(
-            "UPDATE devices SET info_json = ? WHERE device_id = ?",
-            (json.dumps(info), device_id),
-        )
-        self._conn.commit()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE devices SET info_json = ? WHERE device_id = ?",
+                (json.dumps(info), device_id),
+            )
+            conn.commit()
 
     def remove_device(self, device_id: str) -> None:
         if not self.device_exists(device_id):
             raise DeviceNotFoundError(f"Device '{device_id}' not found")
 
         # Foreign key cascade deletes accounts
-        self._conn.execute("DELETE FROM devices WHERE device_id=?", (device_id,))
-        self._conn.commit()
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM devices WHERE device_id=?", (device_id,)
+            )
+            conn.commit()
 
     def add_account(
         self, device_id: str, account_id: str, account_data: Dict[str, Any]
@@ -307,11 +343,12 @@ class SQLiteDeviceRegistry(DeviceRegistry):
                 f"Account '{account_id}' already exists for device '{device_id}'"
             )
 
-        self._conn.execute(
-            "INSERT INTO accounts (device_id, account_id, data_json) VALUES (?, ?, ?)",
-            (device_id, account_id, self._store_account_data(account_data)),
-        )
-        self._conn.commit()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO accounts (device_id, account_id, data_json) VALUES (?, ?, ?)",
+                (device_id, account_id, self._store_account_data(account_data)),
+            )
+            conn.commit()
 
     def update_device_info(
         self, device_id: str, updates: Dict[str, Any]
@@ -319,17 +356,17 @@ class SQLiteDeviceRegistry(DeviceRegistry):
         if not self.device_exists(device_id):
             raise DeviceNotFoundError(f"Device '{device_id}' not found")
 
-        row = self._conn.execute(
-            "SELECT info_json FROM devices WHERE device_id=?", (device_id,)
-        ).fetchone()
-        info = json.loads(row[0])
-        info.update(updates)
-
-        self._conn.execute(
-            "UPDATE devices SET info_json=? WHERE device_id=?",
-            (json.dumps(info), device_id),
-        )
-        self._conn.commit()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT info_json FROM devices WHERE device_id=?", (device_id,)
+            ).fetchone()
+            info = json.loads(row[0])
+            info.update(updates)
+            conn.execute(
+                "UPDATE devices SET info_json=? WHERE device_id=?",
+                (json.dumps(info), device_id),
+            )
+            conn.commit()
 
     def remove_account(self, device_id: str, account_id: str) -> None:
         if not self.device_exists(device_id):
@@ -339,8 +376,9 @@ class SQLiteDeviceRegistry(DeviceRegistry):
                 f"Account '{account_id}' not found for device '{device_id}'"
             )
 
-        self._conn.execute(
-            "DELETE FROM accounts WHERE device_id=? AND account_id=?",
-            (device_id, account_id),
-        )
-        self._conn.commit()
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM accounts WHERE device_id=? AND account_id=?",
+                (device_id, account_id),
+            )
+            conn.commit()

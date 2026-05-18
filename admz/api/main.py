@@ -49,6 +49,14 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await ctx.scheduler.stop()
+        # Best-effort cleanup; close() is a no-op for backends that
+        # don't hold persistent connections, but exists for the few that do.
+        close = getattr(registry, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:  # pragma: no cover — defensive
+                pass
 
 app = FastAPI(
     title="ADMZ - Axis Device Management Zone",
