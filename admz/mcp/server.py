@@ -700,7 +700,12 @@ class ADMZMCPServer:
                         "Execute an approved plan. Runs all steps autonomously — "
                         "does not pause for per-step approval. For plans with steps "
                         "on different devices, runs devices in parallel. "
-                        "Returns results for all steps including any errors."
+                        "Returns results for all steps including any errors. "
+                        "Plans containing dangerous-risk steps require "
+                        "confirm_dangerous=true; otherwise the call returns "
+                        "{blocked: true, reason: 'plan_contains_dangerous_steps', "
+                        "error: '...'} listing the offending steps so the user "
+                        "can explicitly approve them."
                     ),
                     inputSchema={
                         "type": "object",
@@ -708,6 +713,16 @@ class ADMZMCPServer:
                             "plan_id": {
                                 "type": "string",
                                 "description": "Plan ID from create_plan",
+                            },
+                            "confirm_dangerous": {
+                                "type": "boolean",
+                                "description": (
+                                    "Set to true to confirm execution of a plan "
+                                    "that contains any dangerous-risk step. The "
+                                    "user must explicitly approve this — do not "
+                                    "set without their consent."
+                                ),
+                                "default": False,
                             },
                         },
                         "required": ["plan_id"],
@@ -1494,6 +1509,7 @@ class ADMZMCPServer:
                 elif name == "execute_plan":
                     result = await self._execute_plan(
                         arguments["plan_id"],
+                        arguments.get("confirm_dangerous", False),
                     )
                 elif name == "get_plan_status":
                     result = await self._get_plan_status(
@@ -2207,10 +2223,26 @@ class ADMZMCPServer:
             **plan.to_summary(),
         }
 
-    async def _execute_plan(self, plan_id: str) -> Dict[str, Any]:
-        """Execute an approved plan."""
+    async def _execute_plan(
+        self, plan_id: str, confirm_dangerous: bool = False
+    ) -> Dict[str, Any]:
+        """Execute an approved plan. Plans with dangerous steps require
+        ``confirm_dangerous=True`` — see PlanEngine.execute_plan for the
+        rationale."""
         try:
-            plan = await self.plan_engine.execute_plan(plan_id)
+            plan = await self.plan_engine.execute_plan(
+                plan_id, confirm_dangerous=confirm_dangerous
+            )
+        except PermissionError as e:
+            # Plan-level dangerous-step gate refused; surface a structured
+            # envelope analogous to execute_operation's blocked response.
+            return {
+                "success": False,
+                "blocked": True,
+                "reason": "plan_contains_dangerous_steps",
+                "error": str(e),
+                "retry_with": {"confirm_dangerous": True},
+            }
         except ValueError as e:
             return {
                 "success": False,

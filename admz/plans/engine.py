@@ -148,12 +148,32 @@ class PlanEngine:
         self._plans[plan.plan_id] = plan
         return plan
 
-    async def execute_plan(self, plan_id: str) -> ExecutionPlan:
+    async def execute_plan(
+        self,
+        plan_id: str,
+        confirm_dangerous: bool = False,
+    ) -> ExecutionPlan:
         """
         Execute an approved plan.
 
         Runs all steps respecting dependencies and failure policy.
         Groups steps by device for parallel execution when possible.
+
+        Args:
+            plan_id: The plan to execute.
+            confirm_dangerous: Must be set to True for plans containing
+                any ``dangerous``-risk step. This is the plan-level
+                analog of the ``confirm_dangerous_operation`` flow for
+                single operations — the caller (LLM or REST client) must
+                explicitly opt in to executing a destructive plan, so the
+                two-gate safety model isn't silently bypassed by routing
+                a destructive operation through a plan.
+
+        Raises:
+            PermissionError: If the plan contains a dangerous step and
+                ``confirm_dangerous`` is False. The error message lists
+                the offending steps so the caller can present them for
+                explicit approval.
         """
         plan = self._plans.get(plan_id)
         if not plan:
@@ -163,6 +183,23 @@ class PlanEngine:
             raise ValueError(
                 f"Plan {plan_id} is in state {plan.status.value}, "
                 "cannot execute"
+            )
+
+        # Phase 2D gate: dangerous-risk steps inside a plan must be
+        # explicitly opted-in by the caller. Previously plans bypassed
+        # the risk gate that execute_operation enforces.
+        dangerous_steps = [
+            s for s in plan.steps if s.risk_level == "dangerous"
+        ]
+        if dangerous_steps and not confirm_dangerous:
+            descriptions = ", ".join(
+                f"step {s.step_number} ({s.operation_id} on {s.device_id})"
+                for s in dangerous_steps
+            )
+            raise PermissionError(
+                f"Plan {plan_id} contains {len(dangerous_steps)} dangerous "
+                f"step(s): {descriptions}. Re-call execute_plan with "
+                f"confirm_dangerous=True to proceed."
             )
 
         plan.status = PlanStatus.EXECUTING

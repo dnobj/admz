@@ -330,3 +330,130 @@ class TestRollback:
         op_ids = [c["operation_id"] for c in executor.calls]
         assert "param.cgi:list" in op_ids  # pre-read
         assert "param.cgi:update" in op_ids
+
+
+# ---------------------------------------------------------------------------
+# Phase 2D: dangerous-step plan-level gate
+# ---------------------------------------------------------------------------
+
+
+def make_dangerous_op(op_id: str) -> Operation:
+    return Operation(
+        id=op_id,
+        cgi="factorydefault.cgi",
+        method="GET",
+        risk_level="dangerous",
+        request={"query": {}},
+        response={"format": "text"},
+        endpoint="/axis-cgi/factorydefault.cgi",
+        generation="legacy-cgi",
+        auth="digest",
+    )
+
+
+class TestDangerousPlanGate:
+    """Plans containing dangerous-risk steps must require explicit
+    confirm_dangerous=True at execute_plan time, mirroring the
+    confirm_dangerous_operation flow for single ops."""
+
+    def _setup_with_dangerous_op(self):
+        catalog = FakeCatalog(
+            ops={
+                "param.cgi:list": make_op("param.cgi:list"),
+                "factorydefault.cgi:reset": make_dangerous_op(
+                    "factorydefault.cgi:reset"
+                ),
+            },
+            risks={
+                "param.cgi:list": "read-only",
+                "factorydefault.cgi:reset": "dangerous",
+            },
+        )
+        registry = FakeRegistry(
+            devices={"cam-01": {"host": "192.168.1.10", "model": "AXIS P3245-V"}}
+        )
+        executor = RecordingExecutor()
+        engine = PlanEngine(
+            catalog=catalog,
+            registry=registry,
+            executors={"vapix": executor},
+        )
+        return engine, executor
+
+    @pytest.mark.asyncio
+    async def test_dangerous_plan_refused_without_confirm(self):
+        engine, executor = self._setup_with_dangerous_op()
+        plan = engine.create_plan(
+            description="Factory reset",
+            steps=[{
+                "operation_id": "factorydefault.cgi:reset",
+                "device_id": "cam-01",
+                "params": {},
+            }],
+        )
+        with pytest.raises(PermissionError) as exc:
+            await engine.execute_plan(plan.plan_id)
+        msg = str(exc.value)
+        assert "dangerous" in msg
+        assert "factorydefault.cgi:reset" in msg
+        assert "confirm_dangerous=True" in msg
+        # Executor must not have been called.
+        assert executor.calls == []
+
+    @pytest.mark.asyncio
+    async def test_dangerous_plan_proceeds_with_confirm(self):
+        engine, executor = self._setup_with_dangerous_op()
+        plan = engine.create_plan(
+            description="Factory reset",
+            steps=[{
+                "operation_id": "factorydefault.cgi:reset",
+                "device_id": "cam-01",
+                "params": {},
+            }],
+        )
+        result = await engine.execute_plan(
+            plan.plan_id, confirm_dangerous=True
+        )
+        assert result.status == PlanStatus.COMPLETED
+        # Executor *was* called now.
+        assert len(executor.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_non_dangerous_plan_does_not_require_confirm(self):
+        engine, executor = self._setup_with_dangerous_op()
+        plan = engine.create_plan(
+            description="Read only",
+            steps=[{
+                "operation_id": "param.cgi:list",
+                "device_id": "cam-01",
+                "params": {},
+            }],
+        )
+        # Default confirm_dangerous=False should be fine for non-dangerous.
+        result = await engine.execute_plan(plan.plan_id)
+        assert result.status == PlanStatus.COMPLETED
+        assert len(executor.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_mixed_plan_with_one_dangerous_step_is_gated(self):
+        engine, executor = self._setup_with_dangerous_op()
+        plan = engine.create_plan(
+            description="Read then reset",
+            steps=[
+                {
+                    "operation_id": "param.cgi:list",
+                    "device_id": "cam-01",
+                    "params": {},
+                },
+                {
+                    "operation_id": "factorydefault.cgi:reset",
+                    "device_id": "cam-01",
+                    "params": {},
+                },
+            ],
+        )
+        # Even though one step is read-only, the dangerous step gates the plan.
+        with pytest.raises(PermissionError):
+            await engine.execute_plan(plan.plan_id)
+        # Neither step should have executed.
+        assert executor.calls == []

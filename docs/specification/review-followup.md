@@ -81,7 +81,7 @@ This document tracks the per-issue follow-up for the production-quality review o
 | 2.3 | Default `--host 127.0.0.1` in `__main__.py`; explicit `--host 0.0.0.0` required. Help text documents the no-auth caveat. | 🔴 | ✅ |
 | 2.4 | CORS now driven by `ADMZ_ALLOWED_ORIGINS` env var (comma-separated). Default is the 4 localhost variants; `*` is opt-in and downgrades `allow_credentials` to False. | 🔴 | ✅ |
 | 2.5 | `ADMZ_VERIFY_SSL` env var via new `admz/ssl_config.py::verify_ssl_default()`. Wired into `VapixExecutor`, `http_probe`, `ssdp_discovery`, `credential_probe` (all 4 hard-coded `verify=False` call sites). Backward-compatible default still False. 13 new tests in `tests/test_ssl_config.py`. | 🔴 | ✅ |
-| 2.6 | Wire `dangerous` risk gate into `PlanEngine._execute_step` | 🟠 | 📝 |
+| 2.6 | Wire dangerous-step gate into `PlanEngine.execute_plan`. Plans containing any `risk_level: dangerous` step now require explicit `confirm_dangerous=True`; otherwise raises `PermissionError` listing the offending steps. MCP `execute_plan` tool exposes the parameter and returns a `{blocked: true, reason: "plan_contains_dangerous_steps", retry_with: {confirm_dangerous: true}}` envelope mirroring the `execute_operation` flow. 4 new tests in `tests/test_plan_engine.py::TestDangerousPlanGate`. | 🟠 | ✅ |
 | 2.7 | Replace both in-memory `_confirm_tokens` dicts with the SQLite `ConfirmStore` | 🟠 | 📝 |
 
 ---
