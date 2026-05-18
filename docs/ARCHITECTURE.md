@@ -7,9 +7,12 @@ This document maps the major modules and how they connect.
 ```
 admz/
 ├── __init__.py            — public API: create_device_registry, exceptions
+├── __main__.py            — CLI entry: `python -m admz {api,mcp,discover}`
 ├── device_registry.py     — DeviceRegistry ABC
 ├── factory.py             — backend selection (env var → registry instance)
 ├── exceptions.py          — ADMZError hierarchy
+├── fleet_settings.py      — SQLite-backed K/V store for fleet-wide settings
+│                            (default password, confirmation levels, MCP tool toggles)
 │
 ├── backends/              — credential storage backends
 │   ├── sqlite_backend.py  — local SQLite + Fernet-encrypted passwords
@@ -23,17 +26,33 @@ admz/
 │   ├── arp_scanner.py     — subnet ARP scan with Axis OUI filter
 │   ├── ping_sweep.py      — concurrent ICMP ping
 │   ├── http_probe.py      — VAPIX header detection
-│   └── snmp_query.py      — sysDescr + sysName enrichment
+│   ├── snmp_query.py      — sysDescr + sysName enrichment
+│   └── credential_probe.py — active no-auth / legacy / supplied-creds probe
 │
 ├── catalog/               — operation catalog (YAML on disk)
 │   ├── models.py          — Operation, CgiMetadata, ParameterGroup, etc.
 │   ├── loader.py          — reads YAML from disk, caches
 │   └── resolver.py        — (device, intent) → filtered docs for the LLM
 │
+├── knowledge/             — product-specific hints registry
+│   ├── models.py          — Hint, ProductKnowledge
+│   ├── loader.py          — loads catalog/knowledge/{product-lines,series,products}/
+│   └── resolver.py        — accumulates hints from product → series → product-line
+│
+├── capabilities/          — per-model API support registry
+│   ├── models.py          — FirmwareSnapshot, ModelCapabilities
+│   ├── loader.py          — loads catalog/capabilities/models/
+│   └── resolver.py        — "does (model, firmware) support api_id?"
+│
+├── firmware/              — Axis public FTP firmware fetcher + upgrade-path
+│   ├── downloader.py      — fetch .bin from MPQT/PACS, cache locally
+│   └── upgrade_path.py    — LTS milestone-aware cross-major upgrade path
+│
 ├── executor/              — API call execution
 │   ├── base.py            — BaseExecutor ABC
 │   ├── models.py          — ExecutionRequest, StepResult
-│   └── vapix.py           — VAPIX executor (legacy-cgi, json-rpc, config-rest)
+│   └── vapix.py           — VAPIX executor (legacy-cgi, json-rpc,
+│                             config-rest, soap — 4 generations)
 │
 ├── plans/                 — multi-step plan engine
 │   ├── models.py          — ExecutionPlan, PlanStep, FailurePolicy
@@ -52,33 +71,46 @@ admz/
 │       ├── users.py, events.py
 │
 ├── mcp/                   — MCP server (the primary entry point)
-│   └── server.py          — 33 tools wiring everything together
+│   ├── server.py          — 41 tools wiring everything together
+│   └── temp_credentials.py — short-lived device user accounts manager
 │
 └── api/                   — FastAPI web server (mirrors the MCP surface)
     ├── main.py            — app entry point + lifespan
     ├── context.py         — shared AppContext (catalog, executors,
     │                         plan engine, snapshot engine, scheduler)
-    ├── capture.py         — out-of-band capture session store
+    ├── capture.py         — out-of-band capture session store (SQLite)
+    ├── confirm_store.py   — multi-level confirmation gate store (SQLite)
     ├── models.py          — pydantic request/response models
     ├── routes/
-    │   ├── devices.py     — JSON REST CRUD for devices/accounts
+    │   ├── devices.py     — JSON REST CRUD for devices/accounts + fleet settings
     │   ├── catalog.py     — catalog query/execute/confirm
     │   ├── plans.py       — create/execute/status plans
     │   ├── snapshot.py    — snapshot/restore/diff/drift
     │   ├── discovery.py   — network discovery
     │   ├── schedules.py   — recurring snapshot schedules
     │   ├── capture.py     — credential capture endpoints
+    │   ├── confirm.py     — out-of-band confirmation endpoints
     │   └── web.py         — browser-facing HTML routes
     └── templates/         — Jinja templates for the UI
+                            (includes confirm_form, confirm_settings,
+                             fleet_settings, capture_form, …)
 
 catalog/                   — the actual catalog data (YAML, not code)
-└── vapix/
-    ├── cgi/<cgi-name>/    — one folder per CGI endpoint
-    │   ├── _cgi.yaml      — endpoint metadata
-    │   └── <op>.yaml      — one file per operation
-    └── index/
-        ├── by-task.yaml   — task slug → file paths
-        └── by-risk.yaml   — risk level → file paths
+├── vapix/
+│   ├── cgi/<cgi-name>/    — one folder per legacy/json-rpc CGI endpoint
+│   │   ├── _api.yaml      — endpoint metadata (renamed from _cgi.yaml)
+│   │   └── <ver>/<op>.yaml — one file per operation, versioned
+│   ├── rest/<service>/    — config-rest services (cert, snmp, ssh, …)
+│   │   ├── _api.yaml
+│   │   └── v<N>/<op>.yaml
+│   ├── ws/<service>/      — SOAP services (action-service, certificates, …)
+│   │   ├── _api.yaml
+│   │   └── <Op>.yaml
+│   └── index/
+│       ├── by-task.yaml   — task slug → file paths
+│       └── by-risk.yaml   — risk level → file paths
+├── knowledge/             — product hints (product-lines/, series/, products/)
+└── capabilities/          — per-model API snapshots (models/<model>.yaml)
 ```
 
 ## Layering
@@ -183,10 +215,16 @@ two-gate safety for free.
 | Credentials (encrypted) | SQLite or Vault | DeviceRegistry backend |
 | Device configuration history | Git repo | GitRepo |
 | Operation catalog | YAML files on disk | CatalogLoader |
+| Product knowledge hints | YAML files on disk | KnowledgeLoader |
+| Per-model API capabilities | YAML files on disk | CapabilitiesLoader |
+| Fleet settings (default password, confirm levels, MCP toggles) | SQLite | FleetSettings |
 | In-flight plans | In-memory dict on PlanEngine | PlanEngine |
-| Capture sessions | In-memory dict | CaptureStore |
-| Confirm tokens (TTL 5min) | In-memory dict on MCP server | ADMZMCPServer |
+| Capture sessions | SQLite | CaptureStore |
+| Confirmation sessions (multi-level, password-protected) | SQLite | ConfirmStore |
+| Legacy in-memory confirm tokens (TTL 5min) — still used by `execute_operation`; migration to ConfirmStore is pending | In-memory dict on MCP server | ADMZMCPServer |
 | Snapshot schedules | JSON in `~/.admz/schedules.json` | SnapshotScheduler |
+| Temp credentials (live device users with TTL) | In-memory dict on MCP server | TempCredentialManager |
+| Cached firmware binaries | `~/.admz/firmware/*.bin` | firmware.downloader |
 
 ## Non-goals
 

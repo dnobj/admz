@@ -121,6 +121,8 @@ def main():
 
 def run_api_server(args):
     """Run FastAPI REST API server."""
+    from admz.logging_config import configure_logging
+    configure_logging()
     try:
         import uvicorn
         from admz.api.main import app

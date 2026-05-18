@@ -48,7 +48,7 @@ This allows for natural language interactions like:
 
 ```bash
 # Install ADMZ with MCP support
-pip install -e /path/to/AxisSecrets
+pip install -e /path/to/admz
 
 # Install MCP SDK
 pip install mcp
@@ -85,7 +85,7 @@ Press `Ctrl+C` to stop.
     "admz": {
       "command": "python",
       "args": ["-m", "admz", "mcp"],
-      "cwd": "/path/to/AxisSecrets",
+      "cwd": "/path/to/admz",
       "env": {
         "VAULT_ADDR": "https://vault.example.com",
         "VAULT_TOKEN": "your-vault-token-here",
@@ -98,7 +98,7 @@ Press `Ctrl+C` to stop.
 ```
 
 3. Update the configuration values:
-   - `cwd`: Full path to your AxisSecrets directory
+   - `cwd`: Full path to your admz directory
    - `VAULT_ADDR`: Your Vault server URL
    - `VAULT_TOKEN`: Your Vault authentication token
    - `VAULT_MOUNT_POINT`: KV mount point (default: "secret")
@@ -116,7 +116,7 @@ Press `Ctrl+C` to stop.
     "admz": {
       "command": "python",
       "args": ["-m", "admz", "mcp"],
-      "cwd": "/path/to/AxisSecrets",
+      "cwd": "/path/to/admz",
       "env": {
         "VAULT_ADDR": "https://vault.example.com",
         "VAULT_ROLE_ID": "your-role-id",
@@ -139,7 +139,7 @@ If you already have Vault environment variables set, you can omit them from the 
     "admz": {
       "command": "python",
       "args": ["-m", "admz", "mcp"],
-      "cwd": "/path/to/AxisSecrets"
+      "cwd": "/path/to/admz"
     }
   }
 }
@@ -156,6 +156,21 @@ export VAULT_TOKEN=your-token
 The ADMZ MCP server uses stdio transport and is compatible with any MCP client. Refer to your client's documentation for configuration instructions.
 
 ## Available Tools
+
+The ADMZ MCP server currently exposes **41 tools** across these areas:
+device & account CRUD, out-of-band credential capture, provisioning &
+temp credentials, network discovery, catalog/knowledge/capabilities,
+operation execution with two-gate safety, multi-step plans,
+snapshot/restore/diff/drift, scheduled snapshots, fleet settings, and
+firmware management.
+
+For the **authoritative per-tool reference** (inputs, outputs, gating,
+error envelopes), see
+[`MCP_TOOLS_REFERENCE.md`](MCP_TOOLS_REFERENCE.md).
+
+The sections below describe the 10 most commonly used tools (device &
+account CRUD) in detail and assume you've installed and configured the
+server per the previous sections.
 
 ### 1. list_devices
 
@@ -566,7 +581,7 @@ logging.basicConfig(
 2. Verify dependencies:
    ```bash
    pip install mcp
-   pip install -e /path/to/AxisSecrets
+   pip install -e /path/to/admz
    ```
 
 3. Check Vault configuration:
@@ -679,7 +694,7 @@ If using a custom backend implementation:
     "admz": {
       "command": "python",
       "args": ["-m", "admz", "mcp"],
-      "cwd": "/path/to/AxisSecrets",
+      "cwd": "/path/to/admz",
       "env": {
         "DEVICE_REGISTRY_BACKEND": "custom",
         "CUSTOM_BACKEND_CONFIG": "value"
@@ -699,7 +714,7 @@ For development with auto-reload:
     "admz-dev": {
       "command": "python",
       "args": ["-m", "admz", "mcp"],
-      "cwd": "/path/to/AxisSecrets",
+      "cwd": "/path/to/admz",
       "env": {
         "PYTHONUNBUFFERED": "1",
         "LOG_LEVEL": "DEBUG"
@@ -719,7 +734,7 @@ Configure different servers for different environments:
     "admz-prod": {
       "command": "python",
       "args": ["-m", "admz", "mcp"],
-      "cwd": "/path/to/AxisSecrets",
+      "cwd": "/path/to/admz",
       "env": {
         "VAULT_ADDR": "https://vault.prod.example.com",
         "VAULT_PATH_PREFIX": "prod-devices"
@@ -728,7 +743,7 @@ Configure different servers for different environments:
     "admz-staging": {
       "command": "python",
       "args": ["-m", "admz", "mcp"],
-      "cwd": "/path/to/AxisSecrets",
+      "cwd": "/path/to/admz",
       "env": {
         "VAULT_ADDR": "https://vault.staging.example.com",
         "VAULT_PATH_PREFIX": "staging-devices"
@@ -740,7 +755,7 @@ Configure different servers for different environments:
 
 ## Getting Help
 
-- **Documentation**: `/path/to/AxisSecrets/docs/`
+- **Documentation**: `/path/to/admz/docs/`
 - **Issues**: Report issues on your project repository
 - **MCP Protocol**: https://modelcontextprotocol.io/
 
@@ -748,7 +763,7 @@ Configure different servers for different environments:
 
 To extend the MCP server with new tools:
 
-1. Add tool definition to `list_tools()` in `/mnt/c/AxisSecrets/admz/mcp/server.py`
+1. Add tool definition to `list_tools()` in `/path/to/admz/admz/mcp/server.py`
 2. Implement handler method (e.g., `_my_new_tool()`)
 3. Add routing in `call_tool()`
 4. Update this documentation

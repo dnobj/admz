@@ -8,7 +8,7 @@ ADMZ v2 introduces several important changes:
 - **Path Structure**: Vault paths changed from `cameras/*` to `devices/*`
 - **Terminology**: "Cameras" renamed to "Devices" throughout the codebase
 - **New Features**: Nicknames, FastAPI REST API, MCP server integration
-- **Import Changes**: Package renamed from `axis_secrets` to `admz`
+- **Import Changes**: Package renamed from `admz` to `admz`
 
 ## Breaking Changes
 
@@ -16,8 +16,8 @@ ADMZ v2 introduces several important changes:
 
 **v1 Structure:**
 ```
-secret/cameras/{device_id}/device_info
-secret/cameras/{device_id}/accounts/{account_id}
+secret/devices/{device_id}/device_info
+secret/devices/{device_id}/accounts/{account_id}
 ```
 
 **v2 Structure:**
@@ -30,9 +30,9 @@ secret/devices/{device_id}/accounts/{account_id}
 
 **v1:**
 ```python
-from axis_secrets import create_camera_registry
+from admz import create_device_registry
 
-registry = create_camera_registry()
+registry = create_device_registry()
 ```
 
 **v2:**
@@ -46,7 +46,7 @@ registry = create_device_registry()
 
 | v1 Method | v2 Method | Notes |
 |-----------|-----------|-------|
-| `create_camera_registry()` | `create_device_registry()` | Factory function renamed |
+| `create_device_registry()` | `create_device_registry()` | Factory function renamed |
 | `list_cameras()` | `list_devices()` | Consistency with device terminology |
 | `get_camera_info()` | `get_device_info()` | Method renamed |
 | `camera_exists()` | `device_exists()` | Method renamed |
@@ -138,9 +138,9 @@ Update your Python code to use new imports:
 
 **Before (v1):**
 ```python
-from axis_secrets import create_camera_registry
-from axis_secrets.backends.vault_backend import VaultCameraRegistry
-from axis_secrets.exceptions import CameraNotFoundError
+from admz import create_device_registry
+from admz.backends.vault_backend import VaultCameraRegistry
+from admz.exceptions import CameraNotFoundError
 ```
 
 **After (v2):**
@@ -153,8 +153,8 @@ from admz.exceptions import DeviceNotFoundError
 **Find and Replace Guide:**
 ```bash
 # In your codebase, replace:
-axis_secrets → admz
-create_camera_registry → create_device_registry
+admz → admz
+create_device_registry → create_device_registry
 VaultCameraRegistry → VaultDeviceRegistry
 CameraNotFoundError → DeviceNotFoundError
 camera_id → device_id
@@ -169,9 +169,9 @@ remove_camera → remove_device
 
 **Before (v1):**
 ```python
-from axis_secrets import create_camera_registry
+from admz import create_device_registry
 
-registry = create_camera_registry()
+registry = create_device_registry()
 
 # List all cameras
 cameras = registry.list_cameras()
@@ -260,9 +260,9 @@ If you have configuration files referencing the old structure:
 ```json
 {
   "mcpServers": {
-    "axis-secrets": {
+    "admz": {
       "command": "python",
-      "args": ["-m", "axis_secrets.mcp_server"]
+      "args": ["-m", "admz.mcp_server"]
     }
   }
 }
@@ -290,11 +290,11 @@ Update your test code:
 
 **Before (v1):**
 ```python
-from axis_secrets import create_camera_registry
-from axis_secrets.exceptions import CameraNotFoundError
+from admz import create_device_registry
+from admz.exceptions import CameraNotFoundError
 
 def test_get_camera():
-    registry = create_camera_registry()
+    registry = create_device_registry()
     camera = registry.get_camera_info('test-camera')
     assert camera['host'] == '192.168.1.10'
 ```
@@ -434,12 +434,12 @@ vault kv list secret/devices
 
 # For each device, copy back to old path
 vault kv get -format=json secret/devices/front-door/device_info | \
-  vault kv put secret/cameras/front-door/device_info -
+  vault kv put secret/devices/front-door/device_info -
 
 # Copy accounts
 vault kv list secret/devices/front-door/accounts
 vault kv get -format=json secret/devices/front-door/accounts/aoa-agent | \
-  vault kv put secret/cameras/front-door/accounts/aoa-agent -
+  vault kv put secret/devices/front-door/accounts/aoa-agent -
 ```
 
 ## Verification Checklist
@@ -497,7 +497,7 @@ If you encounter issues during migration:
 2. **Verify Vault permissions**: Ensure your token has read/write access to both paths
 3. **Run in dry-run mode**: Use `--dry-run` to see what would happen
 4. **Backup first**: Always backup Vault before migration
-5. **Contact support**: Open an issue at https://github.com/yourusername/admz/issues
+5. **Contact support**: Open an issue at https://github.com/dnobj/admz/issues
 
 ## Common Migration Issues
 
@@ -508,7 +508,7 @@ If you encounter issues during migration:
 **Solution:** Ensure your Vault token has permissions for both old and new paths:
 
 ```hcl
-path "secret/data/cameras/*" {
+path "secret/data/devices/*" {
   capabilities = ["read", "list"]
 }
 
@@ -529,9 +529,9 @@ vault kv patch secret/devices/front-door/device_info nickname="Main Entrance"
 
 ### Issue 3: Import Errors
 
-**Error:** `ModuleNotFoundError: No module named 'axis_secrets'`
+**Error:** `ModuleNotFoundError: No module named 'admz'`
 
-**Solution:** Update all imports from `axis_secrets` to `admz`
+**Solution:** Update all imports from `admz` to `admz`
 
 ### Issue 4: Old Paths Not Deleted
 
@@ -541,18 +541,18 @@ vault kv patch secret/devices/front-door/device_info nickname="Main Entrance"
 
 ```bash
 # List old paths
-vault kv list secret/cameras
+vault kv list secret/devices
 
 # Delete old device
-vault kv metadata delete secret/cameras/front-door/device_info
-vault kv metadata delete secret/cameras/front-door/accounts/aoa-agent
+vault kv metadata delete secret/devices/front-door/device_info
+vault kv metadata delete secret/devices/front-door/accounts/aoa-agent
 ```
 
 ## Summary
 
 Key changes in v2:
 1. ✅ Vault paths: `cameras/*` → `devices/*`
-2. ✅ Package: `axis_secrets` → `admz`
+2. ✅ Package: `admz` → `admz`
 3. ✅ Methods: `*_camera*` → `*_device*`
 4. ✅ New: FastAPI REST API
 5. ✅ New: MCP server integration

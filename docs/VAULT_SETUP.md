@@ -1,6 +1,6 @@
 # HashiCorp Vault Setup Guide
 
-This guide walks through setting up HashiCorp Vault for Axis Secrets.
+This guide walks through setting up HashiCorp Vault for ADMZ.
 
 ## Prerequisites
 
@@ -44,17 +44,17 @@ vault secrets list
 # Create policy file: aoa-agent-policy.hcl
 cat > aoa-agent-policy.hcl <<EOF
 # Allow reading aoa-agent account credentials
-path "secret/data/cameras/*/accounts/aoa-agent" {
+path "secret/data/devices/*/accounts/aoa-agent" {
   capabilities = ["read"]
 }
 
 # Allow listing cameras
-path "secret/metadata/cameras/*" {
+path "secret/metadata/devices/*" {
   capabilities = ["list"]
 }
 
 # Allow reading device info
-path "secret/data/cameras/*/device_info" {
+path "secret/data/devices/*/device_info" {
   capabilities = ["read"]
 }
 EOF
@@ -69,11 +69,11 @@ vault policy write aoa-agent aoa-agent-policy.hcl
 # Create policy file: admin-policy.hcl
 cat > admin-policy.hcl <<EOF
 # Full access to all camera paths
-path "secret/data/cameras/*" {
+path "secret/data/devices/*" {
   capabilities = ["create", "read", "update", "delete", "list"]
 }
 
-path "secret/metadata/cameras/*" {
+path "secret/metadata/devices/*" {
   capabilities = ["list", "read", "delete"]
 }
 EOF
@@ -88,12 +88,12 @@ vault policy write camera-admin admin-policy.hcl
 # Create policy file: backup-service-policy.hcl
 cat > backup-service-policy.hcl <<EOF
 # Allow reading backup-service account credentials
-path "secret/data/cameras/*/accounts/backup-service" {
+path "secret/data/devices/*/accounts/backup-service" {
   capabilities = ["read"]
 }
 
 # Allow reading device info
-path "secret/data/cameras/*/device_info" {
+path "secret/data/devices/*/device_info" {
   capabilities = ["read"]
 }
 EOF
@@ -147,7 +147,7 @@ Use the provided setup script or add manually:
 
 ```bash
 # Add device info
-vault kv put secret/cameras/front-door/device_info \
+vault kv put secret/devices/front-door/device_info \
     host=192.168.1.10 \
     ip_address=192.168.1.10 \
     serial_number=ACCC12345678 \
@@ -159,7 +159,7 @@ vault kv put secret/cameras/front-door/device_info \
     tags="entrance,public"
 
 # Add AOA agent account
-vault kv put secret/cameras/front-door/accounts/aoa-agent \
+vault kv put secret/devices/front-door/accounts/aoa-agent \
     username=aoa_agent \
     password=secure_password_123 \
     account_type=service \
@@ -167,7 +167,7 @@ vault kv put secret/cameras/front-door/accounts/aoa-agent \
     permissions="operator,admin"
 
 # Add admin account
-vault kv put secret/cameras/front-door/accounts/admin \
+vault kv put secret/devices/front-door/accounts/admin \
     username=root \
     password=admin_password_456 \
     account_type=admin \
@@ -175,8 +175,8 @@ vault kv put secret/cameras/front-door/accounts/admin \
     permissions="administrator"
 
 # Verify
-vault kv get secret/cameras/front-door/device_info
-vault kv get secret/cameras/front-door/accounts/aoa-agent
+vault kv get secret/devices/front-door/device_info
+vault kv get secret/devices/front-door/accounts/aoa-agent
 ```
 
 ### Step 5: Test Access
@@ -191,12 +191,12 @@ vault write auth/approle/login \
 export VAULT_TOKEN=<client-token>
 
 # Test reading credentials
-vault kv get secret/cameras/front-door/accounts/aoa-agent
+vault kv get secret/devices/front-door/accounts/aoa-agent
 
 # Should succeed!
 
 # Test reading admin account (should fail - not in policy)
-vault kv get secret/cameras/front-door/accounts/admin
+vault kv get secret/devices/front-door/accounts/admin
 # Error: permission denied
 ```
 
@@ -205,7 +205,7 @@ vault kv get secret/cameras/front-door/accounts/admin
 ### Using Token Authentication (Development)
 
 ```python
-from axis_secrets import create_camera_registry
+from admz import create_device_registry
 import os
 
 # Set environment variables
@@ -213,7 +213,7 @@ os.environ['VAULT_ADDR'] = 'http://127.0.0.1:8200'
 os.environ['VAULT_TOKEN'] = 'hvs.xxxxx'
 
 # Create registry
-registry = create_camera_registry()
+registry = create_device_registry()
 
 # Get credentials
 creds = registry.get_credentials('front-door', 'aoa-agent')
@@ -223,7 +223,7 @@ print(creds)
 ### Using AppRole Authentication (Production)
 
 ```python
-from axis_secrets import create_camera_registry
+from admz import create_device_registry
 import os
 
 # Set environment variables
@@ -232,7 +232,7 @@ os.environ['VAULT_ROLE_ID'] = 'your-role-id'
 os.environ['VAULT_SECRET_ID'] = 'your-secret-id'
 
 # Create registry (will auto-authenticate with AppRole)
-registry = create_camera_registry()
+registry = create_device_registry()
 
 # Get credentials
 creds = registry.get_credentials('front-door', 'aoa-agent')
@@ -319,7 +319,7 @@ vault policy read aoa-agent
 vault token lookup
 
 # Test if you can read a specific path
-vault kv get secret/cameras/front-door/device_info
+vault kv get secret/devices/front-door/device_info
 
 # Check audit logs
 tail -f /var/log/vault-audit.log
@@ -372,14 +372,14 @@ vault read database/creds/readonly
 NEW_PASSWORD=$(openssl rand -base64 32)
 
 # Update in Vault
-vault kv patch secret/cameras/front-door/accounts/aoa-agent \
+vault kv patch secret/devices/front-door/accounts/aoa-agent \
     password="$NEW_PASSWORD"
 
 # Update on camera (use Axis API)
 # ... camera update logic ...
 
 # Verify
-vault kv get secret/cameras/front-door/accounts/aoa-agent
+vault kv get secret/devices/front-door/accounts/aoa-agent
 ```
 
 ## Support
@@ -387,4 +387,4 @@ vault kv get secret/cameras/front-door/accounts/aoa-agent
 For issues with Vault setup, consult:
 - [Vault Documentation](https://www.vaultproject.io/docs)
 - [Vault GitHub Issues](https://github.com/hashicorp/vault/issues)
-- Project issues: https://github.com/yourusername/axis-secrets/issues
+- Project issues: https://github.com/dnobj/admz/issues

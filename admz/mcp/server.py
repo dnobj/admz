@@ -86,8 +86,9 @@ from admz.exceptions import (
     BackendError,
 )
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging — respects ADMZ_LOG_LEVEL env var
+from admz.logging_config import configure_logging
+configure_logging()
 logger = logging.getLogger(__name__)
 
 

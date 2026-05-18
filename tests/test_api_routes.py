@@ -43,13 +43,37 @@ def client(isolate_admz_dirs, tmp_path):
 class TestHealth:
 
     def test_health(self, client):
+        """Liveness probe: 200 if the process is up."""
         r = client.get("/health")
         assert r.status_code == 200
-        assert r.json()["status"] == "healthy"
+        body = r.json()
+        assert body["status"] == "healthy"
+        assert body["service"] == "admz"
+        assert "version" in body
 
-    def test_api_health(self, client):
+    def test_api_health_when_registry_works(self, client):
+        """Readiness probe: 200 + 'connected' when registry.list_devices() succeeds."""
         r = client.get("/api/health")
         assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "healthy"
+        assert body["registry"] == "connected"
+
+    def test_api_health_when_registry_broken(self, client, monkeypatch):
+        """Readiness probe: 503 + error detail when registry.list_devices() raises."""
+        import admz.api.main as main_mod
+
+        class _BrokenRegistry:
+            def list_devices(self):
+                raise RuntimeError("simulated backend failure")
+
+        monkeypatch.setattr(main_mod, "registry", _BrokenRegistry())
+        r = client.get("/api/health")
+        assert r.status_code == 503
+        body = r.json()
+        assert body["status"] == "unhealthy"
+        assert body["registry"] == "error"
+        assert "simulated backend failure" in body["error"]
 
 
 class TestDevices:

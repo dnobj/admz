@@ -50,25 +50,25 @@ This document tracks the per-issue follow-up for the production-quality review o
 
 | # | Item | File:line | Status |
 |---|---|---|---|
-| 1.14 | README tool count 33 → 40 | `README.md:71, 131` | 📝 |
-| 1.15 | README "~30 operations" → actual count (200+) | `README.md:19` | 📝 |
-| 1.16 | README REST endpoint groups — add `/api/confirm/...`, fix snapshot path prefixes | `README.md:100` | 📝 |
-| 1.17 | ARCHITECTURE.md tool count 33 → 40 | `docs/ARCHITECTURE.md:55` | 📝 |
-| 1.18 | ARCHITECTURE.md module map — add `capabilities/`, `knowledge/`, `firmware/`, `fleet_settings.py`, `mcp/temp_credentials.py`, `api/confirm_store.py`, `api/context.py` | `docs/ARCHITECTURE.md:7-82` | 📝 |
-| 1.19 | ARCHITECTURE.md — update `_cgi.yaml` → `_api.yaml` references | `docs/ARCHITECTURE.md:76` | 📝 |
-| 1.20 | ARCHITECTURE.md "Where state lives" table — capture/confirm/fleet are now SQLite-backed | `docs/ARCHITECTURE.md:180-189` | 📝 |
-| 1.21 | MCP_TOOLS_REFERENCE.md — fix "33 tools" claim and add 10 missing tool entries (query_knowledge, test_device_credentials, get/set_fleet_settings, provision_device, download/import/list_cached_firmware, create/cleanup_temp_credentials) | `docs/MCP_TOOLS_REFERENCE.md` | 📝 |
-| 1.22 | MCP_INTEGRATION.md — full rewrite (last touched ~3 months ago, ends at tool #10, still says "AxisSecrets") | `docs/MCP_INTEGRATION.md` | 📝 |
-| 1.23 | VAULT_SETUP.md — "Axis Secrets" → "ADMZ", `cameras/` → `devices/`, fix imports and URL | `docs/VAULT_SETUP.md:3, 47, 208, 226, 390` | 📝 |
-| 1.24 | MIGRATION.md — fix v2-side examples that still use `axis_secrets` | `docs/MIGRATION.md:265, 293-297` | 📝 |
+| 1.14 | README tool count 33 → 41 | `README.md:71, 131` | ✅ |
+| 1.15 | README "~30 operations" → actual count (~250+) | `README.md:19` | ✅ |
+| 1.16 | README REST endpoint groups — added `/api/confirm/...`, `/api/fleet/...`, fixed snapshot path prefixes | `README.md:100` | ✅ |
+| 1.17 | ARCHITECTURE.md tool count 33 → 41 | `docs/ARCHITECTURE.md:55` | ✅ |
+| 1.18 | ARCHITECTURE.md module map — added `capabilities/`, `knowledge/`, `firmware/`, `fleet_settings.py`, `mcp/temp_credentials.py`, `api/confirm_store.py`, `__main__.py`, `discovery/credential_probe.py` | `docs/ARCHITECTURE.md:7-82` | ✅ |
+| 1.19 | ARCHITECTURE.md — updated `_cgi.yaml` → `_api.yaml` references and the catalog layout to show cgi/ + rest/ + ws/ | `docs/ARCHITECTURE.md:76` | ✅ |
+| 1.20 | ARCHITECTURE.md "Where state lives" table — capture/confirm/fleet are now SQLite-backed; added knowledge/capabilities/firmware/temp-creds rows | `docs/ARCHITECTURE.md:180-189` | ✅ |
+| 1.21 | MCP_TOOLS_REFERENCE.md — fixed "33 tools" claim and added 11 missing tool entries (provision_device, test_device_credentials, query_knowledge, check_api_support, create_temp_credentials, cleanup_temp_credentials, get_fleet_settings, set_fleet_setting, download_firmware, import_firmware, list_cached_firmware) | `docs/MCP_TOOLS_REFERENCE.md` | ✅ |
+| 1.22 | MCP_INTEGRATION.md — fixed all `AxisSecrets` / path placeholders, added pointer to MCP_TOOLS_REFERENCE for the full 41-tool list (full rewrite deferred — existing 10-tool section retained as quick-start examples) | `docs/MCP_INTEGRATION.md` | ✅ |
+| 1.23 | VAULT_SETUP.md — "Axis Secrets" → "ADMZ", `cameras/` → `devices/`, fixed imports and support URL | `docs/VAULT_SETUP.md:3, 47, 208, 226, 390` | ✅ |
+| 1.24 | MIGRATION.md — fixed v2-side examples that still used `axis_secrets` and `secret/cameras` | `docs/MIGRATION.md:265, 293-297` | ✅ |
 
 ### Operational hygiene
 
 | # | Item | Status |
 |---|---|---|
-| 1.25 | Make `/health` actually exercise the registry | 📝 |
-| 1.26 | Add `ADMZ_LOG_LEVEL` env var (currently `logging.basicConfig(level=INFO)` hardcoded twice) | 📝 |
-| 1.27 | Document the joint `admz.db` + `admz.key` backup requirement | 📝 |
+| 1.25 | Make `/health` actually exercise the registry. `/health` remains a cheap liveness probe; `/api/health` now calls `registry.list_devices()` and returns 503 + error detail on failure. 3 new tests in `tests/test_api_routes.py::TestHealth`. | ✅ |
+| 1.26 | Add `ADMZ_LOG_LEVEL` env var via new `admz/logging_config.py` (`configure_logging()` called from `__main__.run_api_server` and `mcp/server.py`). 12 new tests in `tests/test_logging_config.py`. | ✅ |
+| 1.27 | Document the joint `admz.db` + `admz.key` backup requirement — added "Backup" section to `README.md`. | ✅ |
 
 ---
 

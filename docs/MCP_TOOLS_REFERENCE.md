@@ -1,15 +1,24 @@
 # ADMZ MCP Tools Reference
 
-Complete reference for the 33 tools the ADMZ MCP server exposes.
+Complete reference for the **41 tools** the ADMZ MCP server exposes.
+
+> Note: `get_credentials` is filtered out of `list_tools()` unless the
+> fleet setting `tool_get_credentials_enabled = "true"` is set (via the
+> `/confirm-settings` web UI). With it disabled, the server appears to
+> expose 40 tools.
 
 Group key:
 - 🗂 = registry + accounts
 - 🔐 = out-of-band credential capture
+- 🔑 = provisioning &amp; temp credentials
 - 📡 = network discovery
-- 📚 = catalog + operation execution
+- 📚 = catalog + knowledge + capabilities
+- ⚙️ = operation execution
 - 📋 = multi-step plans
 - 📸 = snapshot / restore / drift
 - ⏰ = scheduled snapshots
+- 🎛 = fleet settings
+- 💾 = firmware
 
 ---
 
@@ -114,15 +123,85 @@ Add a discovered device to the registry.
 
 ---
 
-## 📚 Catalog & operation execution
+## 🔑 Provisioning & temp credentials
+
+### `provision_device`
+Probe a device, then take state-appropriate action: factory-default →
+create admin user; legacy default → store; unknown → error. Auto-registers
+the device using its MAC if `device_id` is omitted. Generated passwords
+are stored under account `default` and **never returned** in the response
+— use `get_credentials` (if enabled) to retrieve them.
+- **Args:** `device_id?` or `host?` (one required), `username` (default
+  `"root"`), `password?` (else fleet default or 24-char generated),
+  `force_change` (bool, default `false`)
+- **Returns:** `{success, device_id, host, status, action_taken,
+  username, password_source, auto_registered, detail}`
+- **Password source precedence:** explicit > fleet `default_password` >
+  generated.
+
+### `test_device_credentials`
+Probe a host with no-auth, legacy `root/pass`, and up to 5 user-supplied
+passwords. Returns auth status; passwords are never echoed.
+- **Args:** `host?` or `device_id?`, `username?`, `password?`,
+  `passwords` (array, max 5), `store?` (bool — save working creds to
+  registry under account `default`)
+- **Returns:** `{success, status, auth_method, auth, device_info, …}`
+  (with `include_credentials=false` masking).
+
+### `create_temp_credentials`
+Create a short-lived device user via `pwdgrp.cgi:add-user`. Username
+pattern `at_<8 hex>`, 16-char URL-safe password, TTL 60–3600s, max 3
+active per device. Password **is returned in plaintext** (this is the
+whole point — short-lived creds the LLM can use directly).
+- **Args:** `device_id`, `permissions` (`"viewer"` | `"operator"` |
+  `"admin"`), `ttl_seconds` (default 600)
+- **Returns:** `{success, device_id, username, password,
+  expires_at, permissions}`
+- A background loop reaps expired temp users via `pwdgrp.cgi:remove-user`.
+
+### `cleanup_temp_credentials`
+No args → list active temp creds (metadata only). `device_id` →
+remove expired creds for that device. `device_id + username` → remove
+immediately.
+- **Args:** `device_id?`, `username?`
+- **Returns:** depends on call shape; metadata or removal results.
+
+---
+
+## 📚 Catalog, knowledge, capabilities
 
 ### `query_catalog`
 Given a device and an intent (in natural language), return the relevant
-catalog operations + parameter group docs.
+catalog operations + parameter group docs. Also merges in knowledge
+hints — always probes the `vapix-support` topic plus the user's intent.
 - **Args:** `device_id`, `intent` (string), `family` (default `"vapix"`)
 - **Returns:** `{success, operations, parameter_groups, device, risk_summary, notes}`
 - **Recommended workflow:** call this first; pass the results to the LLM;
   the LLM picks an operation + params; then call `execute_operation`.
+
+### `query_knowledge`
+Look up product-specific hints for a device (separate from the catalog).
+Returns advice from `catalog/knowledge/{products,series,product-lines}/`
+about API support, limitations, and device-specific workflows.
+- **Args:** `device_id`, `topic?` (e.g. `"vapix-support"`, `"poe"`,
+  `"audio"`)
+- **Returns:** `{success, device_id, model, hints: [...], levels_loaded,
+  notes}`. Each hint has `id, topic, summary, text, tags, source_level,
+  source_file`.
+
+### `check_api_support`
+Check whether a device's (model, firmware) supports a specific catalog
+API based on the pre-populated `catalog/capabilities/models/<model>.yaml`
+snapshot. Lets the LLM filter plan steps before execution rather than
+discovering at execute time that the device doesn't speak the API. Omit
+`api_id` to retrieve the full snapshot.
+- **Args:** `device_id`, `api_id?`
+- **Returns:** `{success, device_id, model, firmware, api_id, supported,
+  api_version, snapshot: {firmware, discovered, api_count, apis?}, notes}`
+
+---
+
+## ⚙️ Operation execution
 
 ### `execute_operation`
 Run a single catalog operation.
@@ -230,6 +309,60 @@ Remove a schedule.
 Manually trigger a scheduled snapshot right now.
 - **Args:** `schedule_id`
 - **Returns:** `{success, schedule_id, devices_snapshot, succeeded, failed}`
+
+---
+
+## 🎛 Fleet settings
+
+Fleet-wide settings persist in SQLite (`fleet_settings` table). Some keys
+are **protected** — they can only be changed via the web UI at
+`/confirm-settings`. Protected keys include `confirm_level_*`,
+`confirm_password_hash`, and `tool_get_credentials_enabled`.
+
+### `get_fleet_settings`
+List all settings. Password-shaped values are returned masked
+(`****** (N chars)`) — never plaintext.
+- **Args:** none
+- **Returns:** `{success, count, settings: {key: value_or_mask}}`
+
+### `set_fleet_setting`
+Set, delete, or capture a fleet-wide setting. Protected keys are
+rejected with `{success: false, error: "..."}`. For password-class keys
+(`key` contains `"password"`), omitting `value` generates a
+`/capture/fleet/{token}` URL so the password never enters the LLM
+context.
+- **Args:** `key`, `value?`
+- **Returns:** `{success, action: "set"|"delete"|"capture", key, …}` —
+  shape depends on action. Capture flow returns `{capture_url, token}`.
+
+---
+
+## 💾 Firmware
+
+Cached firmware lives in `~/.admz/firmware/*.bin`. Source: Axis public
+FTP at `https://www.axis.com/ftp/pub_soft/{MPQT,PACS}/`.
+
+### `download_firmware`
+Fetch a firmware `.bin` from Axis FTP, cache locally, and compute an
+LTS-aware upgrade path for cross-major upgrades.
+- **Args:** `model?` or `device_id?` (one required), `version?` (omit
+  for latest), `check_only?` (don't actually download — just check)
+- **Returns:** `{success, model, version, file_path, file_size,
+  upgrade_path, already_cached}` or error envelope including
+  `FirmwareLoginRequiredError` when the FTP redirects to login.
+
+### `import_firmware`
+Scan a local directory (default `~/Downloads`) for Axis `.bin` files and
+copy them into the firmware cache. `scan_only=true` previews without
+copying.
+- **Args:** `directory?`, `scan_only?`, `device_id?`
+- **Returns:** `{success, count, imported: [...], skipped: [...]}`
+
+### `list_cached_firmware`
+List files currently in the firmware cache.
+- **Args:** none
+- **Returns:** `{success, count, files: [{model, version, file_name,
+  file_path, file_size}, ...]}`
 
 ---
 

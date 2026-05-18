@@ -12,6 +12,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -93,14 +94,42 @@ app.include_router(web.router, tags=["web"])
 
 @app.get("/health", tags=["health"])
 async def health_check():
-    return {"status": "healthy", "service": "admz", "version": "2.0.0"}
+    """Liveness probe. Returns 200 if the process is up; doesn't check deps."""
+    return {"status": "healthy", "service": "admz", "version": __version__}
 
 
 @app.get("/api/health", tags=["health"])
 async def api_health_check():
+    """Readiness probe. Actively exercises the registry connection."""
+    if registry is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "service": "admz-api",
+                "version": __version__,
+                "registry": "not_initialized",
+                "error": "Registry has not been initialized (lifespan not run)",
+            },
+        )
+    try:
+        # Actively exercise the registry: list_devices is the cheapest write-free
+        # operation that touches the backend.
+        registry.list_devices()
+    except Exception as exc:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "service": "admz-api",
+                "version": __version__,
+                "registry": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+        )
     return {
         "status": "healthy",
         "service": "admz-api",
-        "version": "2.0.0",
-        "registry": "connected" if registry else "not_initialized",
+        "version": __version__,
+        "registry": "connected",
     }

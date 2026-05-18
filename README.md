@@ -16,7 +16,8 @@ conversationally.
 - **Captures credentials out-of-band** so passwords never enter the
   LLM conversation
 - **Catalogs VAPIX operations** as YAML so the LLM picks parameters
-  from a single source of truth (~30 operations, growing)
+  from a single source of truth (~250 operations across legacy CGI,
+  config-REST, and SOAP — growing)
 - **Executes operations** against devices with a two-gate risk check
 - **Plans multi-step changes** that are reviewed once and run
   autonomously
@@ -65,20 +66,24 @@ registry.add_account("camera-lobby-01", "default", {
 
 ```bash
 # Configure your MCP client (Claude Desktop, etc.) to launch:
-python -m admz.mcp.server
+python -m admz mcp
 ```
 
-The server exposes 33 tools across these areas:
+The server exposes 41 tools across these areas:
 
 | Area | Tools |
 |---|---|
-| Devices & accounts | `list_devices`, `get_device`, `search_devices`, `register_device`, `update_device`, `delete_device`, `list_accounts`, `add_account`, `delete_account`, `get_credentials` |
+| Devices & accounts | `list_devices`, `get_device`, `search_devices`, `register_device`, `update_device`, `delete_device`, `list_accounts`, `add_account`, `delete_account`, `get_credentials` (disabled by default — see fleet settings) |
 | Out-of-band capture | `capture_credentials`, `check_capture_status` |
+| Provisioning & temp creds | `provision_device`, `test_device_credentials`, `create_temp_credentials`, `cleanup_temp_credentials` |
 | Discovery | `discover_network_devices`, `register_discovered_device` |
-| Catalog & execution | `query_catalog`, `execute_operation`, `confirm_dangerous_operation` |
+| Catalog, knowledge, capabilities | `query_catalog`, `query_knowledge`, `check_api_support` |
+| Execution | `execute_operation`, `confirm_dangerous_operation` |
 | Plans | `create_plan`, `execute_plan`, `get_plan_status` |
 | Snapshots | `snapshot_device`, `snapshot_fleet`, `restore_device`, `diff_device`, `check_drift` |
 | Schedules | `create_snapshot_schedule`, `list_snapshot_schedules`, `update_snapshot_schedule`, `delete_snapshot_schedule`, `run_snapshot_schedule` |
+| Fleet settings | `get_fleet_settings`, `set_fleet_setting` |
+| Firmware | `download_firmware`, `import_firmware`, `list_cached_firmware` |
 
 See [`docs/MCP_TOOLS_REFERENCE.md`](docs/MCP_TOOLS_REFERENCE.md) for the
 full parameter reference.
@@ -86,7 +91,7 @@ full parameter reference.
 ### As a web service
 
 ```bash
-uvicorn admz.api.main:app --host 0.0.0.0 --port 8000
+python -m admz api --host 127.0.0.1 --port 8000
 ```
 
 Provides:
@@ -94,20 +99,29 @@ Provides:
 - JSON REST API mirroring the MCP surface — devices, accounts, catalog,
   plans, snapshots, drift, discovery, schedules (see `/api/docs` for the
   full OpenAPI reference)
-- Browser UI for browsing devices and accounts
+- Browser UI for browsing devices and accounts, managing fleet settings,
+  and setting the dangerous-operation confirmation policy
 - Out-of-band credential capture URLs (`/capture/<token>`)
+- Out-of-band confirmation URLs (`/confirm/<token>`)
 
 REST endpoint groups:
 
 | Group | Path prefix |
 |---|---|
 | Devices & accounts | `/api/devices`, `/api/devices/{id}/accounts/...` |
+| Fleet settings | `/api/fleet/settings`, `/api/fleet/settings/{key}` |
 | Catalog & execution | `/api/catalog/query`, `/api/catalog/execute`, `/api/catalog/confirm` |
-| Plans | `/api/plans`, `/api/plans/{id}/execute` |
-| Snapshots | `/api/snapshot/device`, `/snapshot/fleet`, `/snapshot/restore`, `/snapshot/diff/{id}`, `/snapshot/drift` |
+| Plans | `/api/plans`, `/api/plans/{id}/execute`, `/api/plans/{id}` |
+| Snapshots | `/api/snapshot/device`, `/api/snapshot/fleet`, `/api/snapshot/restore`, `/api/snapshot/diff/{id}`, `/api/snapshot/drift` |
 | Discovery | `/api/discovery/scan`, `/api/discovery/register` |
 | Schedules | `/api/schedules`, `/api/schedules/{id}/run` |
-| Capture | `/api/capture`, `/capture/{token}` |
+| Capture | `/api/capture`, `/api/capture/{token}/status`, `/capture/{token}` (HTML) |
+| Confirm | `/api/confirm/{token}/status`, `/confirm/{token}` (HTML) |
+
+> ⚠️ **No auth on the web UI / REST API as of this release.** Bind to
+> `127.0.0.1` and put a reverse proxy with auth in front for any
+> non-localhost deployment. Default `--host` is `127.0.0.1`; pass
+> `--host 0.0.0.0` explicitly to expose on all interfaces.
 
 ## Configuration
 
@@ -121,14 +135,19 @@ ADMZ is configured via environment variables:
 | `ADMZ_CATALOG_PATH` | `<repo>/catalog` | Operation catalog directory |
 | `ADMZ_CONFIG_REPO_PATH` | `~/.admz/config-repo` | Config git repo path |
 | `ADMZ_CONFIG_REPO_REMOTE` | _unset_ | Git remote URL for config repo |
+| `ADMZ_LOG_LEVEL` | `INFO` | Log level: `CRITICAL`/`ERROR`/`WARNING`/`INFO`/`DEBUG` |
+| `ADMZ_VAPIX_RETRIES` | `1` | Per-request retry count in the VAPIX executor |
+| `ADMZ_BASE_URL` | `http://localhost:8000` | Base URL the MCP server uses when generating fleet-password capture links |
 | `VAULT_ADDR` | _unset_ | Vault server URL (vault backend only) |
 | `VAULT_TOKEN` | _unset_ | Vault auth token |
+| `VAULT_ROLE_ID` | _unset_ | AppRole role id (vault backend only) |
+| `VAULT_SECRET_ID` | _unset_ | AppRole secret id (vault backend only) |
 
 ## Architecture
 
 ```
                           ┌─────────────────────┐
-                          │   MCP server (33    │
+                          │   MCP server (41    │
                           │      tools)         │
                           └──────────┬──────────┘
                                      │
@@ -158,10 +177,17 @@ ADMZ is configured via environment variables:
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for a deeper walkthrough.
 
-## Design documents
+## Documentation
 
-The `docs/` folder contains the design thinking behind major subsystems:
+The `docs/` folder contains:
 
+**Specification** (start here for new contributors):
+- **[docs/specification/](docs/specification/)** — the spec-of-record:
+  personas, user stories, requirements, decision records, and a
+  production-review follow-up tracker. Index at
+  [docs/specification/INDEX.md](docs/specification/INDEX.md).
+
+**Design documents** (the thinking behind major subsystems):
 - **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** — module map and data flow
 - **[MCP_TOOLS_REFERENCE.md](docs/MCP_TOOLS_REFERENCE.md)** — every tool's
   inputs and outputs
@@ -176,10 +202,30 @@ The `docs/` folder contains the design thinking behind major subsystems:
 ## Tests
 
 ```bash
-pytest tests/ --ignore=tests/test_vault_backend.py --ignore=tests/test_factory.py
+pytest tests/ --ignore=tests/test_vault_backend.py
 ```
 
-132 tests across catalog, snapshot, scheduler, and SQLite backend.
+534 tests across the catalog, executor, plans, snapshots, scheduler,
+discovery, capture, confirm-store, capabilities, knowledge, firmware,
+API routes, and SQLite backend. (Vault backend tests are skipped unless
+a Vault server is reachable.)
+
+Coverage is measured via `pytest-cov`; an HTML report is written to
+`htmlcov/`.
+
+## Backup
+
+ADMZ stores two files on first run that must be backed up **together**:
+
+| File | Default location | Override env var |
+|---|---|---|
+| Encrypted device registry | `~/.admz/admz.db` | `ADMZ_DB_PATH` |
+| Fernet encryption key | `~/.admz/admz.key` | `ADMZ_KEY_PATH` |
+
+The DB without the key is useless (passwords cannot be decrypted). The
+key without the DB has nothing to decrypt. Treat them as a single
+inseparable backup unit. For Vault-backed deployments, both files are
+empty and you back up Vault instead.
 
 ## License
 
