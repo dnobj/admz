@@ -7,6 +7,10 @@ python-multipart>=0.0.6
 mcp>=0.9.0
 pyyaml>=6.0
 
+# LDAP (optional — only used when ADMZ_LDAP_ENABLED=true for Windows
+# IWA group enrichment). Pure-Python so no native deps.
+ldap3>=2.9.1
+
 # Network discovery (all optional — discovery degrades gracefully)
 zeroconf>=0.131.0
 WSDiscovery>=2.0.0

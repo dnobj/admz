@@ -227,12 +227,27 @@ class ReverseProxyAuth(AuthBackend):
             )
 
         try:
-            return parse_windows_identity(raw)
+            principal = parse_windows_identity(raw)
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Could not parse {self.header} header: {e}",
             )
+
+        # Phase 4E: enrich with AD groups when LDAP is configured.
+        # Failures are non-fatal — empty groups, logged warning.
+        try:
+            from admz.ldap_groups import get_resolver
+            resolver = get_resolver()
+            if resolver.enabled:
+                principal.groups = resolver.resolve_groups(principal.name)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "LDAP group enrichment failed for %r: %s",
+                principal.name, exc,
+            )
+
+        return principal
 
 
 class ApiKeyAuth(AuthBackend):
