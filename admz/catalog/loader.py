@@ -39,22 +39,27 @@ class CatalogLoader:
             return yaml.safe_load(f) or {}
 
     # ------------------------------------------------------------------
-    # CGI metadata
+    # API metadata
     # ------------------------------------------------------------------
 
-    def get_cgi_metadata(self, family: str, cgi_name: str) -> Optional[CgiMetadata]:
-        """Load _cgi.yaml for a CGI endpoint."""
-        cache_key = f"{family}/{cgi_name}"
+    def get_api_metadata(self, family: str, api_name: str) -> Optional[CgiMetadata]:
+        """Load _api.yaml for an API endpoint (CGI or config-rest)."""
+        cache_key = f"{family}/{api_name}"
         if cache_key in self._cgi_cache:
             return self._cgi_cache[cache_key]
 
-        path = self.catalog_path / family / "cgi" / cgi_name / "_cgi.yaml"
+        # Try cgi/ first, then rest/, then ws/
+        path = self.catalog_path / family / "cgi" / api_name / "_api.yaml"
+        if not path.exists():
+            path = self.catalog_path / family / "rest" / api_name / "_api.yaml"
+        if not path.exists():
+            path = self.catalog_path / family / "ws" / api_name / "_api.yaml"
         if not path.exists():
             return None
 
         data = self._load_yaml(path)
         meta = CgiMetadata(
-            endpoint=data["endpoint"],
+            endpoint=data.get("endpoint", ""),
             generation=data["generation"],
             auth=data.get("auth"),
             min_firmware=data.get("min_firmware"),
@@ -65,6 +70,9 @@ class CatalogLoader:
         self._cgi_cache[cache_key] = meta
         return meta
 
+    # Backward-compatible alias
+    get_cgi_metadata = get_api_metadata
+
     # ------------------------------------------------------------------
     # Operations
     # ------------------------------------------------------------------
@@ -73,48 +81,53 @@ class CatalogLoader:
         """
         Load a single operation by ID.
 
-        Operation IDs follow the pattern: cgi_name:action
-        e.g., "param.cgi:update", "basicdeviceinfo.cgi:getAllProperties"
+        Operation IDs follow the pattern: api_name:action
+        e.g., "param.cgi:update", "basicdeviceinfo.cgi:getAllProperties",
+              "cert:listCertificates", "ssh:listUsers"
         """
         cache_key = f"{family}/{operation_id}"
         if cache_key in self._operation_cache:
             return self._operation_cache[cache_key]
 
-        # Parse operation_id into cgi_name and action
+        # Parse operation_id into api_name and action
         parts = operation_id.split(":", 1)
         if len(parts) != 2:
             return None
-        cgi_name, action = parts
+        api_name, action = parts
 
-        # Find the operation file
-        cgi_dir = self.catalog_path / family / "cgi" / cgi_name
-        if not cgi_dir.exists():
+        # Find the API directory — try cgi/ first, then rest/, then ws/
+        api_dir = self.catalog_path / family / "cgi" / api_name
+        if not api_dir.exists():
+            api_dir = self.catalog_path / family / "rest" / api_name
+        if not api_dir.exists():
+            api_dir = self.catalog_path / family / "ws" / api_name
+        if not api_dir.exists():
             return None
 
         # Search for a YAML file with matching id
-        for yaml_file in cgi_dir.glob("*.yaml"):
-            if yaml_file.name == "_cgi.yaml":
+        for yaml_file in api_dir.glob("*.yaml"):
+            if yaml_file.name == "_api.yaml":
                 continue
             data = self._load_yaml(yaml_file)
             if data.get("id") == operation_id:
-                op = self._parse_operation(data, family, cgi_name)
+                op = self._parse_operation(data, family, api_name)
                 self._operation_cache[cache_key] = op
                 return op
 
-        # Also search in subdirectories (e.g., groups/)
-        for yaml_file in cgi_dir.rglob("*.yaml"):
-            if yaml_file.name == "_cgi.yaml":
+        # Also search in subdirectories (e.g., groups/, version dirs)
+        for yaml_file in api_dir.rglob("*.yaml"):
+            if yaml_file.name == "_api.yaml":
                 continue
             data = self._load_yaml(yaml_file)
             if data.get("id") == operation_id:
-                op = self._parse_operation(data, family, cgi_name)
+                op = self._parse_operation(data, family, api_name)
                 self._operation_cache[cache_key] = op
                 return op
 
         return None
 
     def _parse_operation(
-        self, data: Dict[str, Any], family: str, cgi_name: str
+        self, data: Dict[str, Any], family: str, api_name: str
     ) -> Operation:
         """Parse a raw YAML dict into an Operation."""
         rollback = None
@@ -130,7 +143,7 @@ class CatalogLoader:
 
         op = Operation(
             id=data["id"],
-            cgi=data.get("cgi", cgi_name),
+            cgi=data.get("cgi", api_name),
             method=data.get("method", "GET"),
             risk_level=data.get("risk_level", "normal"),
             request=data.get("request", {}),
@@ -144,17 +157,19 @@ class CatalogLoader:
             param_rules=data.get("param_rules"),
             base_path=data.get("base_path"),
             path=data.get("path"),
+            soap_namespace=data.get("soap_namespace"),
+            soap_action=data.get("soap_action"),
         )
 
-        # Enrich with CGI metadata
-        cgi_meta = self.get_cgi_metadata(family, cgi_name)
-        if cgi_meta:
-            op.endpoint = cgi_meta.endpoint
-            op.generation = cgi_meta.generation
-            op.auth = cgi_meta.auth
-            # Inherit CGI-level notes if operation has none
-            if not op.notes and cgi_meta.notes:
-                op.notes = cgi_meta.notes
+        # Enrich with API metadata
+        api_meta = self.get_api_metadata(family, api_name)
+        if api_meta:
+            op.endpoint = api_meta.endpoint
+            op.generation = api_meta.generation
+            op.auth = api_meta.auth
+            # Inherit API-level notes if operation has none
+            if not op.notes and api_meta.notes:
+                op.notes = api_meta.notes
 
         return op
 

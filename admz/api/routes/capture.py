@@ -266,8 +266,9 @@ async def fleet_capture_submit(
     request: Request,
     token: str,
     password: str = Form(...),
+    username: str = Form("admin"),
 ):
-    """Process the submitted fleet password."""
+    """Process the submitted fleet credentials (username + password)."""
     session = capture_store.get_fleet_session(token)
 
     if session is None or session.effective_status != CaptureStatus.PENDING:
@@ -278,6 +279,7 @@ async def fleet_capture_submit(
         )
 
     fleet_settings.set(session.setting_key, password)
+    fleet_settings.set("default_username", username.strip() or "admin")
     capture_store.complete_fleet_session(token)
 
     return templates.TemplateResponse(

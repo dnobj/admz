@@ -19,6 +19,8 @@ class ExecutionRequest:
     form_data: Optional[Dict[str, str]] = None
     file_path: Optional[str] = None
     file_field_name: str = "file"
+    # Pre-built body string (for SOAP XML)
+    raw_body: Optional[str] = None
     # Per-operation timeout override (seconds)
     timeout_override: Optional[float] = None
 

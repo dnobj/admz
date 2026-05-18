@@ -1,7 +1,0 @@
-endpoint: /axis-cgi/findmydevice.cgi
-generation: json-rpc
-min_firmware: "7.10"
-api_id: find-my-device
-description: >
-  Device location aid. Triggers audible beep and/or visual LED
-  indicator to help physically locate a device in an installation.

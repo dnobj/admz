@@ -20,12 +20,13 @@ response:
 risk_level: dangerous
 danger_description: >
   Uploads new firmware to the device. The device will reboot automatically
-  after the upload completes. Firmware must be committed within 10 minutes
-  or the device auto-rolls back to the previous version.
+  after the upload completes.
 notes: >
-  Firmware upgrade with optional auto-rollback. Device reboots
-  after upgrade. Pass factoryDefaultMode (none|soft|hard) as a param
-  for downgrade scenarios.
+  After reboot the device auto-verifies and auto-commits the new firmware.
+  If verification fails, it rolls back to the previous version automatically.
+  Manual commit (firmwaremanagement.cgi:commit) is not normally required —
+  use it only to force-commit before auto-verification completes.
+  Pass factoryDefaultMode (none|soft|hard) as a param for downgrade scenarios.
 
 requires:
   auth_level: admin

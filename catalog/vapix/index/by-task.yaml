@@ -86,6 +86,10 @@ manage-privacy-masks:
   - cgi/pencil.cgi/1.0/getFilterCapabilities.yaml
   - cgi/pencil.cgi/1.0/getSelectedFilter.yaml
   - cgi/pencil.cgi/1.0/setSelectedFilter.yaml
+  - cgi/privacymask.cgi/v1/listMasks.yaml
+  - cgi/privacymask.cgi/v1/addMask.yaml
+  - cgi/privacymask.cgi/v1/removeMask.yaml
+  - cgi/privacymask.cgi/v1/setMask.yaml
 
 # --- PTZ ---
 
@@ -175,22 +179,22 @@ configure-http-headers:
 # --- Config-REST Infrastructure ---
 
 configure-snmp:
-  - cgi/snmp.cgi/v1/getConfiguration.yaml
-  - cgi/snmp.cgi/v1/setConfiguration.yaml
-  - cgi/snmp.cgi/v1/getV1V2Config.yaml
-  - cgi/snmp.cgi/v1/setV3Config.yaml
-  - cgi/snmp.cgi/v1/setTrapConfig.yaml
+  - rest/snmp/v1/getConfiguration.yaml
+  - rest/snmp/v1/setConfiguration.yaml
+  - rest/snmp/v1/getV1V2Config.yaml
+  - rest/snmp/v1/setV3Config.yaml
+  - rest/snmp/v1/setTrapConfig.yaml
 
 configure-time-modern:
-  - cgi/time-config.cgi/v2/getTime.yaml
-  - cgi/time-config.cgi/v2/setTime.yaml
-  - cgi/time-config.cgi/v2/getTimezone.yaml
-  - cgi/time-config.cgi/v2/setTimezone.yaml
+  - rest/time/v2/getTime.yaml
+  - rest/time/v2/setTime.yaml
+  - rest/time/v2/getTimezone.yaml
+  - rest/time/v2/setTimezone.yaml
 
 manage-persistent-log:
-  - cgi/log-config.cgi/v1/getPersistentStatus.yaml
-  - cgi/log-config.cgi/v1/setPersistentEnabled.yaml
-  - cgi/log-config.cgi/v1/writeMessage.yaml
+  - rest/log/v1/getPersistentStatus.yaml
+  - rest/log/v1/setPersistentEnabled.yaml
+  - rest/log/v1/writeMessage.yaml
 
 # --- Time ---
 
@@ -214,6 +218,7 @@ check-time:
 
 get-device-info:
   - cgi/basicdeviceinfo.cgi/1.0/getAllProperties.yaml
+  - cgi/basicdeviceinfo.cgi/1.0/getProperties.yaml
   - cgi/param.cgi/unversioned/groups/root.Brand.yaml
   - cgi/param.cgi/unversioned/groups/root.Properties.yaml
 
@@ -296,10 +301,27 @@ manage-io-ports:
 # --- Light Control ---
 
 control-lights:
+  - cgi/lightcontrol.cgi/1.0/getSupportedVersions.yaml
   - cgi/lightcontrol.cgi/1.0/getLightInformation.yaml
   - cgi/lightcontrol.cgi/1.0/activateLight.yaml
   - cgi/lightcontrol.cgi/1.0/deactivateLight.yaml
+  - cgi/lightcontrol.cgi/1.0/enableLight.yaml
+  - cgi/lightcontrol.cgi/1.0/disableLight.yaml
+  - cgi/lightcontrol.cgi/1.0/getValidIntensity.yaml
   - cgi/lightcontrol.cgi/1.0/setManualIntensity.yaml
+  - cgi/lightcontrol.cgi/1.0/setIndividualIntensity.yaml
+  - cgi/lightcontrol.cgi/1.0/getIndividualIntensity.yaml
+  - cgi/lightcontrol.cgi/1.0/setCurrentIntensity.yaml
+  - cgi/lightcontrol.cgi/1.0/getCurrentIntensity.yaml
+  - cgi/lightcontrol.cgi/1.0/setAutomaticIntensityMode.yaml
+  - cgi/lightcontrol.cgi/1.0/getValidAngleOfIllumination.yaml
+  - cgi/lightcontrol.cgi/1.0/setAngleOfIllumination.yaml
+  - cgi/lightcontrol.cgi/1.0/getAngleOfIllumination.yaml
+  - cgi/lightcontrol.cgi/1.0/setAutomaticAngleOfIllumination.yaml
+  - cgi/lightcontrol.cgi/1.0/setManualAngleOfIllumination.yaml
+  - cgi/lightcontrol.cgi/1.0/getManualAngleOfIllumination.yaml
+  - cgi/lightcontrol.cgi/1.0/getLightSynchronizeDayNightMode.yaml
+  - cgi/lightcontrol.cgi/1.0/setLightSynchronizeDayNightMode.yaml
 
 # --- MQTT ---
 
@@ -384,26 +406,30 @@ manage-app-license:
 # --- Security (Config-REST) ---
 
 manage-certificates:
-  - cgi/cert.cgi/v1/listCertificates.yaml
-  - cgi/cert.cgi/v1/getCertificate.yaml
-  - cgi/cert.cgi/v1/listCACertificates.yaml
-  - cgi/cert.cgi/v1/generateCSR.yaml
-  - cgi/cert.cgi/v1/installCertificate.yaml
-  - cgi/cert.cgi/v1/removeCertificate.yaml
+  - rest/cert/v1/listCertificates.yaml
+  - rest/cert/v1/getCertificate.yaml
+  - rest/cert/v1/listCACertificates.yaml
+  - rest/cert/v1/generateCSR.yaml
+  - rest/cert/v1/installCertificate.yaml
+  - rest/cert/v1/removeCertificate.yaml
+  - ws/certificates/CreateCertificate2.yaml
+  - ws/certificates/GetClientCertificates.yaml
+  - ws/certificates/GetCACertificates.yaml
+  - ws/certificates/DeleteCertificates.yaml
 
 manage-ssh:
-  - cgi/ssh.cgi/v2/listUsers.yaml
-  - cgi/ssh.cgi/v2/addUser.yaml
-  - cgi/ssh.cgi/v2/modifyUser.yaml
-  - cgi/ssh.cgi/v2/removeUser.yaml
+  - rest/ssh/v2/listUsers.yaml
+  - rest/ssh/v2/addUser.yaml
+  - rest/ssh/v2/modifyUser.yaml
+  - rest/ssh/v2/removeUser.yaml
 
 manage-firewall:
-  - cgi/firewall.cgi/v1/getStatus.yaml
-  - cgi/firewall.cgi/v1/activate.yaml
-  - cgi/firewall.cgi/v1/deactivate.yaml
-  - cgi/firewall.cgi/v1/listRules.yaml
-  - cgi/firewall.cgi/v1/setRules.yaml
-  - cgi/firewall.cgi/v1/confirmRules.yaml
+  - rest/firewall/v1/getStatus.yaml
+  - rest/firewall/v1/activate.yaml
+  - rest/firewall/v1/deactivate.yaml
+  - rest/firewall/v1/listRules.yaml
+  - rest/firewall/v1/setRules.yaml
+  - rest/firewall/v1/confirmRules.yaml
 
 # --- Specialized Hardware ---
 
@@ -442,6 +468,7 @@ manage-media-clips:
 
 configure-zipstream:
   - cgi/zipstream.cgi/unversioned/getStatus.yaml
+  - cgi/zipstream.cgi/unversioned/getSupportedStrengths.yaml
   - cgi/zipstream.cgi/unversioned/setStrength.yaml
   - cgi/zipstream.cgi/unversioned/setGop.yaml
   - cgi/zipstream.cgi/unversioned/setFpsMode.yaml
@@ -463,3 +490,41 @@ manage-feature-flags:
   - cgi/featureflag.cgi/1.0/listAll.yaml
   - cgi/featureflag.cgi/1.0/get.yaml
   - cgi/featureflag.cgi/1.0/set.yaml
+
+# --- SOAP Services ---
+
+manage-certificates-soap:
+  - ws/certificates/CreateCertificate2.yaml
+  - ws/certificates/GetClientCertificates.yaml
+  - ws/certificates/GetCACertificates.yaml
+  - ws/certificates/DeleteCertificates.yaml
+
+discover-services:
+  - ws/entry-service/GetServices.yaml
+  - ws/entry-service/GetServiceCapabilities.yaml
+
+manage-actions:
+  - ws/action-service/GetActionTemplates.yaml
+  - ws/action-service/GetActionConfigurations.yaml
+  - ws/action-service/AddActionConfiguration.yaml
+
+manage-events-soap:
+  - ws/event-service/GetEventInstances.yaml
+  - ws/event-service/GetTopicTree.yaml
+
+# --- Syslog ---
+
+configure-syslog:
+  - cgi/remotesyslog.cgi/v1/getConfig.yaml
+  - cgi/remotesyslog.cgi/v1/setConfig.yaml
+
+# --- Config-REST Network ---
+
+configure-network-rest:
+  - rest/network-settings/v1/getConfig.yaml
+  - rest/network-settings/v1/setDNS.yaml
+  - rest/network-settings/v1/setIPv4.yaml
+
+configure-lldp:
+  - rest/lldp/v1/getStatus.yaml
+  - rest/lldp/v1/getNeighbors.yaml

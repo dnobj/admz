@@ -1,0 +1,17 @@
+id: time:setTime
+cgi: time
+
+method: PATCH
+base_path: /config/rest/time/v2
+path: /time
+
+request:
+  content_type: application/json
+
+response:
+  format: json
+
+risk_level: normal
+
+requires:
+  auth_level: admin

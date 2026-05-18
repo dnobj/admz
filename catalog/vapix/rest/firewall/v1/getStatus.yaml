@@ -1,0 +1,14 @@
+id: firewall:getStatus
+cgi: firewall
+
+method: GET
+base_path: /config/rest/firewall/v1
+path: /activated
+
+response:
+  format: json
+
+risk_level: read-only
+
+requires:
+  auth_level: admin

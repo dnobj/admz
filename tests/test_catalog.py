@@ -45,6 +45,28 @@ class TestCatalogLoader:
         meta = loader.get_cgi_metadata("vapix", "nonexistent.cgi")
         assert meta is None
 
+    def test_load_api_metadata_config_rest(self, loader):
+        meta = loader.get_api_metadata("vapix", "cert")
+        assert meta is not None
+        assert meta.generation == "config-rest"
+        assert meta.api_id == "cert"
+        assert "/config/rest/cert" in meta.endpoint
+
+    def test_load_operation_config_rest(self, loader):
+        op = loader.get_operation("vapix", "cert:listCertificates")
+        assert op is not None
+        assert isinstance(op, Operation)
+        assert op.id == "cert:listCertificates"
+        assert op.cgi == "cert"
+        assert op.generation == "config-rest"
+        assert op.risk_level == "read-only"
+
+    def test_load_operation_config_rest_ssh(self, loader):
+        op = loader.get_operation("vapix", "ssh:listUsers")
+        assert op is not None
+        assert op.id == "ssh:listUsers"
+        assert op.generation == "config-rest"
+
     def test_load_operation_param_update(self, loader):
         op = loader.get_operation("vapix", "param.cgi:update")
         assert op is not None
@@ -133,6 +155,46 @@ class TestCatalogLoader:
         loader.clear_cache()
         assert len(loader._operation_cache) == 0
 
+    # SOAP tests
+
+    def test_load_api_metadata_soap(self, loader):
+        meta = loader.get_api_metadata("vapix", "certificates")
+        assert meta is not None
+        assert meta.generation == "soap"
+        assert meta.endpoint == "/vapix/services"
+        assert meta.api_id == "certificates"
+
+    def test_load_operation_soap(self, loader):
+        op = loader.get_operation("vapix", "certificates:CreateCertificate2")
+        assert op is not None
+        assert isinstance(op, Operation)
+        assert op.id == "certificates:CreateCertificate2"
+        assert op.generation == "soap"
+        assert op.soap_namespace == "http://www.axis.com/vapix/ws/certificates"
+        assert op.endpoint == "/vapix/services"
+
+    def test_load_operation_soap_no_params(self, loader):
+        op = loader.get_operation("vapix", "certificates:GetClientCertificates")
+        assert op is not None
+        assert op.generation == "soap"
+        assert op.risk_level == "read-only"
+
+    def test_load_operation_soap_entry_service(self, loader):
+        op = loader.get_operation("vapix", "entry-service:GetServices")
+        assert op is not None
+        assert op.generation == "soap"
+        assert op.endpoint == "/vapix/services"
+
+    def test_load_operation_soap_action_service(self, loader):
+        op = loader.get_operation("vapix", "action-service:GetActionTemplates")
+        assert op is not None
+        assert op.generation == "soap"
+
+    def test_load_operation_soap_event_service(self, loader):
+        op = loader.get_operation("vapix", "event-service:GetEventInstances")
+        assert op is not None
+        assert op.generation == "soap"
+
 
 # ------------------------------------------------------------------
 # CatalogResolver tests
@@ -200,12 +262,63 @@ class TestCatalogResolver:
         groups = [pg.get("group") for pg in result.parameter_groups]
         assert "root.Network" in groups
 
+    def test_resolve_certificates(self, resolver):
+        result = resolver.resolve("cam-01", "manage certificates")
+        op_ids = [op.get("id") for op in result.operations]
+        assert any(oid.startswith("cert:") for oid in op_ids)
+
+    def test_resolve_ssh(self, resolver):
+        result = resolver.resolve("cam-01", "manage ssh")
+        op_ids = [op.get("id") for op in result.operations]
+        assert any(oid.startswith("ssh:") for oid in op_ids)
+
+    def test_resolve_firewall(self, resolver):
+        result = resolver.resolve("cam-01", "manage firewall")
+        op_ids = [op.get("id") for op in result.operations]
+        assert any(oid.startswith("firewall:") for oid in op_ids)
+
+    def test_resolve_soap_certificates(self, resolver):
+        result = resolver.resolve("cam-01", "soap certificate")
+        op_ids = [op.get("id") for op in result.operations]
+        assert any(oid.startswith("certificates:") for oid in op_ids)
+
+    def test_resolve_entry_service(self, resolver):
+        result = resolver.resolve("cam-01", "what services")
+        op_ids = [op.get("id") for op in result.operations]
+        assert "entry-service:GetServices" in op_ids
+
+    def test_resolve_action_service(self, resolver):
+        result = resolver.resolve("cam-01", "action template")
+        op_ids = [op.get("id") for op in result.operations]
+        assert "action-service:GetActionTemplates" in op_ids
+
+    def test_resolve_events(self, resolver):
+        result = resolver.resolve("cam-01", "event topic")
+        op_ids = [op.get("id") for op in result.operations]
+        assert any(oid.startswith("event-service:") for oid in op_ids)
+
+    def test_resolve_syslog(self, resolver):
+        result = resolver.resolve("cam-01", "syslog")
+        op_ids = [op.get("id") for op in result.operations]
+        assert "remotesyslog.cgi:getConfig" in op_ids
+
+    def test_resolve_light_control_full(self, resolver):
+        result = resolver.resolve("cam-01", "light control")
+        op_ids = [op.get("id") for op in result.operations]
+        # Should now have all 21 operations
+        assert len(op_ids) >= 20
+        assert "lightcontrol.cgi:setIndividualIntensity" in op_ids
+        assert "lightcontrol.cgi:getAngleOfIllumination" in op_ids
+
     def test_list_available_tasks(self, resolver):
         tasks = resolver.list_available_tasks()
         assert len(tasks) > 10
         assert "change-resolution" in tasks
         assert "factory-reset" in tasks
         assert "configure-ntp" in tasks
+        assert "manage-certificates-soap" in tasks
+        assert "discover-services" in tasks
+        assert "configure-syslog" in tasks
 
 
 # ------------------------------------------------------------------
@@ -299,6 +412,65 @@ class TestVapixExecutorBuildRequest:
         assert req.method == "POST"
         assert req.path == "/config/rest/ssh/v2/users"
         assert req.json_body["username"] == "test"
+
+    def test_build_soap_request(self):
+        from admz.executor.vapix import VapixExecutor
+
+        executor = VapixExecutor()
+        operation = {
+            "id": "certificates:CreateCertificate2",
+            "method": "POST",
+            "_generation": "soap",
+            "soap_namespace": "http://www.axis.com/vapix/ws/certificates",
+            "request": {
+                "body_xml": (
+                    '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope">'
+                    "<SOAP-ENV:Body>"
+                    "<CreateCertificate2>"
+                    "<Id>{cert_id}</Id>"
+                    "<CN>{common_name}</CN>"
+                    "</CreateCertificate2>"
+                    "</SOAP-ENV:Body>"
+                    "</SOAP-ENV:Envelope>"
+                ),
+            },
+        }
+        params = {"cert_id": "test-cert", "common_name": "192.168.1.100"}
+
+        req = executor.build_request(operation, params)
+        assert req.method == "POST"
+        assert req.path == "/vapix/services"
+        assert req.content_type == "application/xml"
+        assert req.raw_body is not None
+        assert "test-cert" in req.raw_body
+        assert "192.168.1.100" in req.raw_body
+        assert "{cert_id}" not in req.raw_body
+        assert req.json_body is None
+
+    def test_build_soap_no_params(self):
+        from admz.executor.vapix import VapixExecutor
+
+        executor = VapixExecutor()
+        operation = {
+            "id": "certificates:GetClientCertificates",
+            "method": "POST",
+            "_generation": "soap",
+            "request": {
+                "body_xml": (
+                    '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope">'
+                    "<SOAP-ENV:Body>"
+                    "<tds:GetCertificates />"
+                    "</SOAP-ENV:Body>"
+                    "</SOAP-ENV:Envelope>"
+                ),
+            },
+        }
+
+        req = executor.build_request(operation, {})
+        assert req.method == "POST"
+        assert req.path == "/vapix/services"
+        assert req.content_type == "application/xml"
+        assert "GetCertificates" in req.raw_body
 
     def test_build_legacy_cgi_list(self):
         from admz.executor.vapix import VapixExecutor

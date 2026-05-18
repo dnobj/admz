@@ -1,0 +1,17 @@
+id: cert:installCertificate
+cgi: cert
+
+method: POST
+base_path: /config/rest/cert/v1
+path: /certificates
+
+request:
+  content_type: application/json
+
+response:
+  format: json
+
+risk_level: normal
+
+requires:
+  auth_level: admin

@@ -1,0 +1,14 @@
+id: cert:listCACertificates
+cgi: cert
+
+method: GET
+base_path: /config/rest/cert/v1
+path: /ca_certificates
+
+response:
+  format: json
+
+risk_level: read-only
+
+requires:
+  auth_level: viewer

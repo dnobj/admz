@@ -8,10 +8,10 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class CgiMetadata:
-    """Metadata for a CGI endpoint (_cgi.yaml)."""
+    """Metadata for an API endpoint (_api.yaml)."""
 
     endpoint: str
-    generation: str  # "legacy-cgi" | "json-rpc" | "config-rest"
+    generation: str  # "legacy-cgi" | "json-rpc" | "config-rest" | "soap"
     auth: str  # "digest" | "basic" | "none"
     min_firmware: Optional[str] = None
     api_id: Optional[str] = None
@@ -82,7 +82,11 @@ class Operation:
     base_path: Optional[str] = None
     path: Optional[str] = None
 
-    # Populated by loader from _cgi.yaml
+    # SOAP-specific
+    soap_namespace: Optional[str] = None    # e.g. "http://www.axis.com/vapix/ws/certificates"
+    soap_action: Optional[str] = None       # SOAPAction header value (if needed)
+
+    # Populated by loader from _api.yaml
     endpoint: Optional[str] = None
     generation: Optional[str] = None
     auth: Optional[str] = None

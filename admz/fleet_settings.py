@@ -8,6 +8,8 @@ device registry and capture store.
 Known keys:
   - ``default_password``: When set, ``provision_device`` uses this
     password instead of generating a random one per device.
+  - ``default_username``: Admin username for provisioning (default: "admin").
+    Used together with ``default_password`` as the fleet credential pair.
 """
 
 import os

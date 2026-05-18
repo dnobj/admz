@@ -19,6 +19,7 @@ from admz.api.context import init_context
 from admz.api.routes import (
     capture,
     catalog,
+    confirm,
     devices,
     discovery,
     plans,
@@ -83,8 +84,9 @@ app.include_router(snapshot.router, prefix="/api", tags=["snapshot"])
 app.include_router(discovery.router, prefix="/api", tags=["discovery"])
 app.include_router(schedules.router, prefix="/api", tags=["schedules"])
 
-# Capture and web UI — no /api prefix because they are user-facing
+# Capture, confirm, and web UI — no /api prefix because they are user-facing
 app.include_router(capture.router, tags=["capture"])
+app.include_router(confirm.router, tags=["confirm"])
 app.include_router(web.router, tags=["web"])
 
 

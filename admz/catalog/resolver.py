@@ -249,6 +249,44 @@ _INTENT_SYNONYMS: Dict[str, List[str]] = {
     "raid": ["manage-raid"],
     "raid status": ["manage-raid"],
     "raid array": ["manage-raid"],
+    # SOAP certificate management
+    "soap certificate": ["manage-certificates-soap"],
+    "self-signed cert": ["manage-certificates-soap", "manage-certificates"],
+    "create certificate": ["manage-certificates-soap", "manage-certificates"],
+    "delete certificate": ["manage-certificates-soap", "manage-certificates"],
+    "client certificate": ["manage-certificates-soap"],
+    "ca certificate": ["manage-certificates-soap", "manage-certificates"],
+    # Entry service (service discovery)
+    "services": ["discover-services"],
+    "what services": ["discover-services"],
+    "service discovery": ["discover-services"],
+    "supported services": ["discover-services"],
+    # Action service
+    "action rule": ["manage-actions"],
+    "action template": ["manage-actions"],
+    "action configuration": ["manage-actions"],
+    # Event service
+    "event": ["manage-events-soap"],
+    "events": ["manage-events-soap"],
+    "event topic": ["manage-events-soap"],
+    "event instance": ["manage-events-soap"],
+    # Syslog
+    "syslog": ["configure-syslog"],
+    "remote syslog": ["configure-syslog"],
+    "remote log": ["configure-syslog"],
+    # Light control (augment existing)
+    "light control": ["control-lights"],
+    "illumination": ["control-lights"],
+    "ir led": ["control-lights"],
+    "white light": ["control-lights"],
+    "light intensity": ["control-lights"],
+    "angle of illumination": ["control-lights"],
+    # LLDP
+    "lldp": ["configure-lldp"],
+    "lldp neighbor": ["configure-lldp"],
+    "lldp status": ["configure-lldp"],
+    # Network settings (config-rest)
+    "network config rest": ["configure-network-rest"],
 }
 
 
@@ -344,7 +382,7 @@ class CatalogResolver:
 
                 operations.append(data)
 
-        # 5. Also load _cgi.yaml for each referenced CGI
+        # 5. Also load _api.yaml for each referenced API
         cgi_names = set()
         for op in operations:
             if op.get("cgi"):

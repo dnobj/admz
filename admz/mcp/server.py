@@ -43,6 +43,7 @@ from mcp.types import Tool, TextContent
 from admz import create_device_registry
 from admz.device_registry import DeviceRegistry
 from admz.api.capture import capture_store, CaptureStatus
+from admz.api.confirm_store import PROTECTED_SETTING_KEYS
 from admz.discovery import discover_devices as run_discovery
 from admz.discovery.credential_probe import probe_credentials, ProbeStatus
 from admz.fleet_settings import fleet_settings
@@ -68,6 +69,7 @@ from admz.firmware.upgrade_path import (
     compute_upgrade_path,
     format_upgrade_path,
 )
+from admz.mcp.temp_credentials import TempCredentialManager
 from admz.plans.engine import PlanEngine
 from admz.snapshot.engine import SnapshotEngine
 from admz.snapshot.git_repo import GitRepo
@@ -175,8 +177,15 @@ class ADMZMCPServer:
         # Dangerous operation confirm tokens (token → operation details)
         self._confirm_tokens: Dict[str, Dict[str, Any]] = {}
 
+        # Temporary credential manager
+        self.temp_creds = TempCredentialManager()
+
         # Register tool handlers
         self._register_handlers()
+
+    def _is_get_credentials_enabled(self) -> bool:
+        """Check if the get_credentials tool is enabled via fleet setting."""
+        return fleet_settings.get("tool_get_credentials_enabled") == "true"
 
     def _register_handlers(self):
         """Register MCP tool handlers."""
@@ -184,7 +193,7 @@ class ADMZMCPServer:
         @self.server.list_tools()
         async def list_tools() -> List[Tool]:
             """List available ADMZ tools."""
-            return [
+            tools = [
                 Tool(
                     name="list_devices",
                     description=(
@@ -1289,7 +1298,68 @@ class ADMZMCPServer:
                         "required": [],
                     },
                 ),
+                # --- Temporary credentials tools ---
+                Tool(
+                    name="create_temp_credentials",
+                    description=(
+                        "Create a short-lived user account on a device. Returns "
+                        "temporary credentials the LLM can use directly — the real "
+                        "admin password never leaves the server. The account is "
+                        "automatically removed after the TTL expires."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Target device",
+                            },
+                            "ttl_seconds": {
+                                "type": "integer",
+                                "description": (
+                                    "Lifetime in seconds (min 60, max 3600, default 300)"
+                                ),
+                                "default": 300,
+                            },
+                            "permissions": {
+                                "type": "string",
+                                "enum": ["viewer", "operator", "admin"],
+                                "description": "Permission level for the temporary account",
+                            },
+                        },
+                        "required": ["device_id", "permissions"],
+                    },
+                ),
+                Tool(
+                    name="cleanup_temp_credentials",
+                    description=(
+                        "Manage temporary device credentials. "
+                        "No args → list all active temp credentials (metadata only, no passwords). "
+                        "device_id only → remove all expired creds for that device. "
+                        "device_id + username → remove a specific temp user immediately."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID to clean up",
+                            },
+                            "username": {
+                                "type": "string",
+                                "description": "Specific temp username to remove",
+                            },
+                        },
+                        "required": [],
+                    },
+                ),
             ]
+
+            # Filter out get_credentials when disabled
+            if not self._is_get_credentials_enabled():
+                tools = [t for t in tools if t.name != "get_credentials"]
+
+            return tools
 
         @self.server.call_tool()
         async def call_tool(name: str, arguments: Any) -> List[TextContent]:
@@ -1305,11 +1375,21 @@ class ADMZMCPServer:
                 elif name == "list_accounts":
                     result = await self._list_accounts(arguments["device_id"])
                 elif name == "get_credentials":
-                    result = await self._get_credentials(
-                        arguments["device_id"],
-                        arguments.get("account_id", "default"),
-                        arguments.get("requester"),
-                    )
+                    if not self._is_get_credentials_enabled():
+                        result = {
+                            "error": "ToolDisabled",
+                            "message": (
+                                "get_credentials is disabled. An admin can enable it "
+                                "in the web UI at /confirm-settings. Consider using "
+                                "create_temp_credentials instead."
+                            ),
+                        }
+                    else:
+                        result = await self._get_credentials(
+                            arguments["device_id"],
+                            arguments.get("account_id", "default"),
+                            arguments.get("requester"),
+                        )
                 elif name == "register_device":
                     result = await self._register_device(
                         arguments["device_id"],
@@ -1455,6 +1535,11 @@ class ADMZMCPServer:
                     result = await self._import_firmware(arguments)
                 elif name == "list_cached_firmware":
                     result = await self._list_cached_firmware()
+                # --- Temporary credentials ---
+                elif name == "create_temp_credentials":
+                    result = await self._create_temp_credentials(arguments)
+                elif name == "cleanup_temp_credentials":
+                    result = await self._cleanup_temp_credentials(arguments)
                 else:
                     raise ValueError(f"Unknown tool: {name}")
 
@@ -2424,6 +2509,18 @@ class ADMZMCPServer:
     async def _set_fleet_setting(
         self, key: str, value: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """Set, delete, or capture a fleet-wide setting."""
+        # Block writes to protected keys from MCP
+        if key in PROTECTED_SETTING_KEYS:
+            return {
+                "success": False,
+                "error": (
+                    f"Setting '{key}' is protected and can only be changed "
+                    "via the web UI at /confirm-settings."
+                ),
+            }
+
+        # No value provided for a password key → generate capture URL
         if value is None and "password" in key.lower():
             base_url = os.getenv("ADMZ_BASE_URL", "http://localhost:8000")
             session = capture_store.create_fleet_session(
@@ -3028,9 +3125,240 @@ class ADMZMCPServer:
             "files": cached,
         }
 
+    # ------------------------------------------------------------------
+    # Temporary credentials handlers
+    # ------------------------------------------------------------------
+
+    # Permissions → VAPIX group mapping
+    _PERM_MAP = {
+        "admin":    {"group": "root",  "sgrp": "admin:operator:viewer:ptz"},
+        "operator": {"group": "users", "sgrp": "operator:viewer:ptz"},
+        "viewer":   {"group": "users", "sgrp": "viewer"},
+    }
+
+    async def _create_temp_credentials(
+        self, arguments: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Create a short-lived user account on a device."""
+        device_id = arguments["device_id"]
+        ttl = arguments.get("ttl_seconds", 300)
+        permissions = arguments["permissions"]
+
+        # Validate TTL
+        ttl = max(60, min(3600, int(ttl)))
+
+        # Validate permissions
+        if permissions not in self._PERM_MAP:
+            return {
+                "success": False,
+                "error": f"Invalid permissions '{permissions}'. Use: viewer, operator, admin",
+            }
+
+        # Per-device limit
+        active_count = self.temp_creds.count_active_for_device(device_id)
+        if active_count >= self.temp_creds.max_per_device:
+            return {
+                "success": False,
+                "error": (
+                    f"Device '{device_id}' already has {active_count} active temp "
+                    f"credentials (max {self.temp_creds.max_per_device}). "
+                    "Use cleanup_temp_credentials to remove expired ones first."
+                ),
+            }
+
+        # Get admin credentials from registry (never returned to LLM)
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+
+        device_info = self.registry.get_device_info(device_id)
+        host = device_info.get("host") or device_info.get("ip_address")
+        if not host:
+            return {
+                "success": False,
+                "error": f"Device '{device_id}' has no host/IP configured.",
+            }
+
+        try:
+            admin_creds = self.registry.get_credentials(device_id, "default")
+        except (AccountNotFoundError, Exception):
+            return {
+                "success": False,
+                "error": (
+                    f"No admin credentials stored for '{device_id}'. "
+                    "Use capture_credentials or provision_device first."
+                ),
+            }
+
+        # Generate temp username and password
+        username = self.temp_creds.generate_username()
+        password = self.temp_creds.generate_password()
+        perm = self._PERM_MAP[permissions]
+
+        # Create user on device via pwdgrp.cgi
+        params = {
+            "user": username,
+            "pwd": password,
+            "grp": perm["group"],
+            "sgrp": perm["sgrp"],
+            "comment": "ADMZ temp account",
+        }
+
+        success, error = await self._execute_on_host(
+            host,
+            "pwdgrp.cgi:add-user",
+            params,
+            credentials=admin_creds,
+        )
+
+        if not success:
+            return {
+                "success": False,
+                "error": f"Failed to create temp user on device: {error}",
+            }
+
+        # Track in manager
+        from admz.mcp.temp_credentials import TempCredential
+        cred = TempCredential(
+            device_id=device_id,
+            username=username,
+            password=password,
+            group=perm["group"],
+            ttl_seconds=ttl,
+        )
+        self.temp_creds.register(cred)
+
+        return {
+            "success": True,
+            "device_id": device_id,
+            "username": username,
+            "password": password,
+            "permissions": permissions,
+            "ttl_seconds": ttl,
+            "expires_at": cred.expires_at_iso,
+            "message": (
+                f"Temporary {permissions} account created. "
+                f"It will be automatically removed after {ttl} seconds."
+            ),
+        }
+
+    async def _cleanup_temp_credentials(
+        self, arguments: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """List or remove temporary credentials."""
+        device_id = arguments.get("device_id")
+        username = arguments.get("username")
+
+        # No args → list all active temp credentials
+        if not device_id and not username:
+            active = self.temp_creds.list_active()
+            return {
+                "success": True,
+                "action": "list",
+                "count": len(active),
+                "credentials": active,
+            }
+
+        # device_id + username → remove specific temp user immediately
+        if device_id and username:
+            cred = self.temp_creds.remove(device_id, username)
+            if not cred:
+                return {
+                    "success": False,
+                    "error": f"No tracked temp credential for {username}@{device_id}",
+                }
+
+            # Remove from device
+            removed = await self._remove_temp_user(cred)
+            return {
+                "success": True,
+                "action": "removed",
+                "device_id": device_id,
+                "username": username,
+                "device_cleanup": "success" if removed else "failed",
+            }
+
+        # device_id only → remove all expired for that device
+        if device_id:
+            expired = [
+                c for c in self.temp_creds.get_expired()
+                if c.device_id == device_id
+            ]
+            results = []
+            for cred in expired:
+                self.temp_creds.remove(cred.device_id, cred.username)
+                removed = await self._remove_temp_user(cred)
+                results.append({
+                    "username": cred.username,
+                    "device_cleanup": "success" if removed else "failed",
+                })
+            return {
+                "success": True,
+                "action": "cleanup",
+                "device_id": device_id,
+                "removed_count": len(results),
+                "results": results,
+            }
+
+        return {"success": False, "error": "Invalid argument combination."}
+
+    async def _remove_temp_user(self, cred) -> bool:
+        """Remove a temp user from the device. Returns True on success."""
+        try:
+            device_info = self.registry.get_device_info(cred.device_id)
+            host = device_info.get("host") or device_info.get("ip_address")
+            if not host:
+                return False
+
+            admin_creds = self.registry.get_credentials(cred.device_id, "default")
+            success, _ = await self._execute_on_host(
+                host,
+                "pwdgrp.cgi:remove-user",
+                {"user": cred.username},
+                credentials=admin_creds,
+            )
+            return success
+        except Exception as e:
+            logger.warning(
+                "Failed to remove temp user %s from %s: %s",
+                cred.username, cred.device_id, e,
+            )
+            return False
+
+    async def _temp_credential_cleanup_loop(self):
+        """Background loop that removes expired temp credentials from devices."""
+        try:
+            while True:
+                await asyncio.sleep(30)
+                expired = self.temp_creds.get_expired()
+                for cred in expired:
+                    if not cred.should_retry_cleanup:
+                        # Give up after max attempts
+                        logger.warning(
+                            "Giving up on temp user %s@%s after %d cleanup attempts",
+                            cred.username, cred.device_id, cred.cleanup_attempts,
+                        )
+                        self.temp_creds.remove(cred.device_id, cred.username)
+                        continue
+
+                    removed = await self._remove_temp_user(cred)
+                    if removed:
+                        self.temp_creds.remove(cred.device_id, cred.username)
+                        logger.info(
+                            "Cleaned up temp user %s from %s",
+                            cred.username, cred.device_id,
+                        )
+                    else:
+                        cred.cleanup_attempts += 1
+        except asyncio.CancelledError:
+            # Server shutting down — attempt final cleanup of all active creds
+            logger.info("Shutting down: cleaning up all temp credentials...")
+            for cred in self.temp_creds.get_all():
+                await self._remove_temp_user(cred)
+
     async def run(self):
         """Run the MCP server with stdio transport."""
         await self.scheduler.start()
+        cleanup_task = asyncio.create_task(self._temp_credential_cleanup_loop())
         try:
             async with stdio_server() as (read_stream, write_stream):
                 logger.info("ADMZ MCP server starting...")
@@ -3040,6 +3368,11 @@ class ADMZMCPServer:
                     self.server.create_initialization_options(),
                 )
         finally:
+            cleanup_task.cancel()
+            try:
+                await cleanup_task
+            except asyncio.CancelledError:
+                pass
             await self.scheduler.stop()
 
 

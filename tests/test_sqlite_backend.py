@@ -1,6 +1,7 @@
 """Tests for the SQLite backend."""
 
 import os
+import sys
 
 import pytest
 
@@ -146,6 +147,10 @@ class TestAccountOperations:
 
 class TestEncryption:
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows file ACLs don't map to Unix-style chmod 0o600",
+    )
     def test_key_file_created_with_secure_permissions(self, tmp_path):
         db_path = str(tmp_path / "admz.db")
         key_path = str(tmp_path / "admz.key")

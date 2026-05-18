@@ -13,8 +13,9 @@ def isolate_admz_dirs(tmp_path, monkeypatch):
     monkeypatch.setenv("ADMZ_KEY_PATH", str(tmp_path / "admz.key"))
     monkeypatch.setenv("ADMZ_CONFIG_REPO_PATH", str(tmp_path / "config-repo"))
     monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
-    # Schedule path
+    # Schedule path — os.path.expanduser("~") uses HOME on Unix and USERPROFILE on Windows
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
 
 
 @pytest.fixture

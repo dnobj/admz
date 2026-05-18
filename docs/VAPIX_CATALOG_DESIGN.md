@@ -115,9 +115,11 @@ vapix-catalog/
 │   │   #   json-rpc APIs  → numbered version folders (1.0/, 1.1/, etc.)
 │   │   #   legacy-cgi APIs → unversioned/
 │   │   #   Each version folder is self-contained with all operations.
+│   │   #
+│   │   # Metadata file: _api.yaml in each API directory
 │   │
 │   ├── param.cgi/                    # legacy-cgi
-│   │   ├── _cgi.yaml
+│   │   ├── _api.yaml
 │   │   └── unversioned/
 │   │       ├── list.yaml
 │   │       ├── update.yaml
@@ -135,7 +137,7 @@ vapix-catalog/
 │   │           └── ...
 │   │
 │   ├── com-ptz.cgi/                  # legacy-cgi
-│   │   ├── _cgi.yaml
+│   │   ├── _api.yaml
 │   │   └── unversioned/
 │   │       ├── move.yaml
 │   │       ├── relative-move.yaml
@@ -147,13 +149,13 @@ vapix-catalog/
 │   │       └── info.yaml
 │   │
 │   ├── basicdeviceinfo.cgi/          # json-rpc
-│   │   ├── _cgi.yaml
+│   │   ├── _api.yaml
 │   │   └── 1.0/
 │   │       ├── getAllProperties.yaml
 │   │       └── getAllUnrestrictedProperties.yaml
 │   │
 │   ├── lightcontrol.cgi/             # json-rpc (version example)
-│   │   ├── _cgi.yaml
+│   │   ├── _api.yaml
 │   │   ├── 1.0/                      # complete for v1.0
 │   │   │   ├── getLightInformation.yaml
 │   │   │   ├── activateLight.yaml
@@ -167,35 +169,107 @@ vapix-catalog/
 │   │       └── setIndividualIntensity.yaml
 │   │
 │   ├── restart.cgi/                  # legacy-cgi
-│   │   ├── _cgi.yaml
+│   │   ├── _api.yaml
 │   │   └── unversioned/
 │   │       └── restart.yaml
 │   │
 │   ├── factorydefault.cgi/           # legacy-cgi
-│   │   ├── _cgi.yaml
+│   │   ├── _api.yaml
 │   │   └── unversioned/
 │   │       └── factory-reset.yaml
 │   │
-│   └── ...                           # 34 CGI endpoints total
+│   └── ...                           # ~70 CGI endpoints total
 │
-├── config-rest/                      # Generation 3 REST APIs
-│   ├── ssh/
-│   │   └── v2/
-│   │       ├── _api.yaml
-│   │       ├── list-users.yaml
-│   │       ├── create-user.yaml
-│   │       └── delete-user.yaml
-│   ├── firewall/
+├── rest/                             # Generation 3 config-rest APIs
+│   │
+│   │   # Directory naming convention:
+│   │   #   dir name = API name from URL: /config/rest/{name}/v{N}
+│   │   #   e.g. /config/rest/ssh/v2 → rest/ssh/
+│   │   #
+│   │   # Version folder convention:
+│   │   #   v{N}/ matching the URL version segment
+│   │
+│   ├── cert/                         # config-rest
+│   │   ├── _api.yaml
 │   │   └── v1/
-│   │       ├── _api.yaml
-│   │       ├── list-rules.yaml
-│   │       ├── add-rule.yaml
-│   │       └── delete-rule.yaml
-│   └── param/
-│       └── v1beta/
-│           ├── _api.yaml
-│           ├── get.yaml
-│           └── update.yaml
+│   │       ├── listCertificates.yaml
+│   │       ├── getCertificate.yaml
+│   │       ├── generateCSR.yaml
+│   │       ├── installCertificate.yaml
+│   │       ├── listCACertificates.yaml
+│   │       └── removeCertificate.yaml
+│   │
+│   ├── ssh/                          # config-rest
+│   │   ├── _api.yaml
+│   │   └── v2/
+│   │       ├── listUsers.yaml
+│   │       ├── addUser.yaml
+│   │       ├── modifyUser.yaml
+│   │       └── removeUser.yaml
+│   │
+│   ├── firewall/                     # config-rest
+│   │   ├── _api.yaml
+│   │   └── v1/
+│   │       ├── getStatus.yaml
+│   │       ├── activate.yaml
+│   │       ├── deactivate.yaml
+│   │       ├── listRules.yaml
+│   │       ├── setRules.yaml
+│   │       └── confirmRules.yaml
+│   │
+│   ├── snmp/                         # config-rest
+│   │   ├── _api.yaml
+│   │   └── v1/
+│   │       ├── getConfiguration.yaml
+│   │       ├── setConfiguration.yaml
+│   │       ├── getV1V2Config.yaml
+│   │       ├── setV3Config.yaml
+│   │       └── setTrapConfig.yaml
+│   │
+│   ├── time/                         # config-rest
+│   │   ├── _api.yaml
+│   │   └── v2/
+│   │       ├── getTime.yaml
+│   │       ├── setTime.yaml
+│   │       ├── getTimezone.yaml
+│   │       └── setTimezone.yaml
+│   │
+│   └── log/                          # config-rest
+│       ├── _api.yaml
+│       └── v1/
+│           ├── getPersistentStatus.yaml
+│           ├── setPersistentEnabled.yaml
+│           └── writeMessage.yaml
+│
+├── ws/                               # Generation 4 SOAP/WSDL services
+│   │
+│   │   # Directory naming convention:
+│   │   #   dir name = service name from WSDL/namespace
+│   │   #   All services POST XML to /vapix/services
+│   │   #   Differentiated by XML namespace in SOAP body
+│   │
+│   ├── certificates/                 # soap
+│   │   ├── _api.yaml
+│   │   ├── CreateCertificate2.yaml
+│   │   ├── GetClientCertificates.yaml
+│   │   ├── GetCACertificates.yaml
+│   │   └── DeleteCertificates.yaml
+│   │
+│   ├── entry-service/                # soap
+│   │   ├── _api.yaml
+│   │   ├── GetServices.yaml
+│   │   └── GetServiceCapabilities.yaml
+│   │
+│   ├── action-service/               # soap
+│   │   ├── _api.yaml
+│   │   ├── GetActionTemplates.yaml
+│   │   ├── GetActionConfigurations.yaml
+│   │   └── AddActionConfiguration.yaml
+│   │
+│   └── event-service/                # soap
+│       ├── _api.yaml
+│       ├── GetEventInstances.yaml
+│       └── GetTopicTree.yaml
 │
 ├── devices/                          # Device capability profiles
 │   ├── p1455-le.yaml
@@ -233,16 +307,17 @@ vapix-catalog/
 
 ## File Formats
 
-### `_cgi.yaml` — CGI-level metadata
+### `_api.yaml` — API-level metadata
 
-Every CGI directory has a `_cgi.yaml` that describes the endpoint itself,
+Every API directory has an `_api.yaml` that describes the endpoint itself,
 separate from its individual operations. This avoids repeating the same
-base URL and auth info in every operation file.
+base URL and auth info in every operation file. Both `cgi/` and `rest/`
+directories use the same `_api.yaml` filename.
 
 ```yaml
-# cgi/param.cgi/_cgi.yaml
+# cgi/param.cgi/_api.yaml
 endpoint: /axis-cgi/param.cgi
-generation: legacy-cgi          # legacy-cgi | json-rpc | config-rest
+generation: legacy-cgi          # legacy-cgi | json-rpc | config-rest | soap
 auth: digest                    # digest | basic | none
 min_firmware: null              # available on all firmware
 description: >
@@ -252,7 +327,7 @@ description: >
 ```
 
 ```yaml
-# cgi/basicdeviceinfo.cgi/_cgi.yaml
+# cgi/basicdeviceinfo.cgi/_api.yaml
 endpoint: /axis-cgi/basicdeviceinfo.cgi
 generation: json-rpc
 auth: digest
@@ -265,11 +340,11 @@ description: >
 ```
 
 ```yaml
-# config-rest/ssh/v2/_api.yaml
-base_path: /config/rest/ssh/v2
+# rest/ssh/_api.yaml
+endpoint: /config/rest/ssh/v2
 generation: config-rest
 auth: digest
-min_firmware: "12.3"
+min_firmware: "11.8"
 api_id: ssh
 description: SSH user and access management via REST API.
 ```
@@ -279,7 +354,7 @@ description: SSH user and access management via REST API.
 ```yaml
 # cgi/param.cgi/update.yaml
 id: param.cgi:update
-cgi: param.cgi                    # references _cgi.yaml in same dir
+cgi: param.cgi                    # references _api.yaml in same dir
 
 method: GET
 request:
@@ -341,14 +416,30 @@ requires:
 
 Again — no tags here. Pure technical reference.
 
+### `_api.yaml` — SOAP service metadata
+
+```yaml
+# ws/certificates/_api.yaml
+endpoint: /vapix/services
+generation: soap
+api_id: certificates
+description: >
+  SOAP-based certificate management. Create self-signed certificates,
+  get/delete client and CA certificates.
+notes: >
+  All SOAP requests POST XML to /vapix/services. The service is
+  differentiated by the XML namespace in the SOAP body.
+```
+
 ### Operation file — config-rest endpoint
 
 ```yaml
-# config-rest/ssh/v2/create-user.yaml
-id: config-rest:ssh:v2:create-user
-api: ssh/v2                       # references _api.yaml
+# rest/ssh/v2/addUser.yaml
+id: ssh:addUser
+cgi: ssh                          # references _api.yaml in rest/ssh/
 
 method: POST
+base_path: /config/rest/ssh/v2
 path: /users                      # appended to base_path
 
 request:
@@ -368,8 +459,41 @@ rollback:
 
 requires:
   auth_level: admin
-  min_firmware: "12.3"
 ```
+
+### Operation file — SOAP method
+
+```yaml
+# ws/certificates/GetClientCertificates.yaml
+id: certificates:GetClientCertificates
+cgi: certificates                 # references _api.yaml in ws/certificates/
+
+method: POST
+risk_level: read-only
+
+soap_namespace: "http://www.onvif.org/ver10/device/wsdl"
+
+request:
+  content_type: application/xml
+  body_xml: |
+    <SOAP-ENV:Envelope
+        xmlns:tds="http://www.onvif.org/ver10/device/wsdl"
+        xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope">
+      <SOAP-ENV:Body>
+        <tds:GetCertificates />
+      </SOAP-ENV:Body>
+    </SOAP-ENV:Envelope>
+
+response:
+  format: xml
+
+requires:
+  auth_level: admin
+```
+
+SOAP operations use `body_xml` instead of `body` — the XML string is sent directly as
+the request body to `/vapix/services`. Placeholders like `{cert_id}` work the same way
+as in other generations.
 
 ### Parameter group file
 
@@ -621,12 +745,12 @@ Rules are returned in `query_catalog` results and included in
 The `notes` field provides free-form operational context that doesn't
 fit structured conventions. Available at two levels:
 
-### CGI-level notes (`_cgi.yaml`)
+### API-level notes (`_api.yaml`)
 
-Endpoint-wide context that applies to all operations on this CGI:
+Endpoint-wide context that applies to all operations on this API:
 
 ```yaml
-# cgi/factorydefault.cgi/_cgi.yaml
+# cgi/factorydefault.cgi/_api.yaml
 endpoint: /axis-cgi/factorydefault.cgi
 generation: legacy-cgi
 auth: digest
@@ -648,8 +772,8 @@ notes: >
 
 ### Inheritance
 
-If an operation doesn't have its own `notes`, it inherits the CGI-level
-notes from `_cgi.yaml`. If both exist, only the operation-level notes
+If an operation doesn't have its own `notes`, it inherits the API-level
+notes from `_api.yaml`. If both exist, only the operation-level notes
 are used (no merging).
 
 Notes are surfaced to the LLM via `query_catalog` and `execute_operation`.
@@ -1024,7 +1148,7 @@ for a specific device and task:
    → No extra confirmation needed.
 
 6. Load only the matching files:
-   - cgi/param.cgi/_cgi.yaml                (endpoint metadata)
+   - cgi/param.cgi/_api.yaml                (endpoint metadata)
    - cgi/param.cgi/update.yaml              (how to write params)
    - cgi/param.cgi/groups/root.Image.yaml   (resolution params)
 
@@ -1736,7 +1860,7 @@ Step 2 — MCP server runs the resolver:
   b. Reads index/by-task.yaml → gets file paths:
      - vapix/cgi/param.cgi/groups/root.Image.yaml
      - vapix/cgi/param.cgi/update.yaml
-     - vapix/cgi/param.cgi/_cgi.yaml
+     - vapix/cgi/param.cgi/_api.yaml
   c. Checks device profile: lobby-cam is P1455-LE fw 11.6,
      supports param.cgi, no config-rest yet
   d. Loads the matching files (~60 lines of YAML)
@@ -1899,7 +2023,7 @@ async def execute_operation(
 ```
 
 The `build_request` function is the only part that needs to know
-about VAPIX generations. It's ~50 lines covering three cases:
+about VAPIX generations. It's ~60 lines covering four cases:
 
 ```python
 def build_request(operation, device, params):
@@ -1932,9 +2056,21 @@ def build_request(operation, device, params):
             path=operation["base_path"] + operation.get("path", ""),
             json_body=params,
         )
+
+    elif gen == "soap":
+        # XML body with placeholder substitution, always POST to /vapix/services
+        body_xml = operation["request"]["body_xml"]
+        for k, v in params.items():
+            body_xml = body_xml.replace("{" + k + "}", v)
+        return Request(
+            method="POST",
+            path="/vapix/services",
+            raw_body=body_xml,
+            content_type="application/xml",
+        )
 ```
 
-That's it. Three generation handlers. Not hundreds of typed tools.
+That's it. Four generation handlers. Not hundreds of typed tools.
 
 ### MCP tool inventory (complete)
 
@@ -2488,7 +2624,7 @@ operations-catalog/
 ├── vapix/
 │   ├── cgi/
 │   │   ├── param.cgi/
-│   │   │   ├── _cgi.yaml
+│   │   │   ├── _api.yaml
 │   │   │   ├── list.yaml
 │   │   │   ├── update.yaml
 │   │   │   └── groups/
@@ -2497,6 +2633,11 @@ operations-catalog/
 │   │   │       └── ...
 │   │   ├── basicdeviceinfo.cgi/
 │   │   ├── apidiscovery.cgi/
+│   │   └── ...
+│   ├── rest/
+│   │   ├── cert/
+│   │   ├── ssh/
+│   │   ├── firewall/
 │   │   └── ...
 │   ├── devices/
 │   ├── firmware/
@@ -2534,8 +2675,8 @@ class CatalogLoader:
     def get_operation(self, operation_id: str) -> Operation:
         """Load a single operation by ID."""
 
-    def get_cgi_metadata(self, cgi_name: str) -> CgiMetadata:
-        """Load _cgi.yaml for a CGI endpoint."""
+    def get_api_metadata(self, api_name: str) -> CgiMetadata:
+        """Load _api.yaml for an API endpoint (CGI or config-rest)."""
 
     def get_parameter_group(self, group: str) -> ParameterGroup:
         """Load a param.cgi parameter group file."""
@@ -2594,7 +2735,7 @@ interesting part. Options:
 ```
 admz/executor/
 ├── base.py            # abstract executor interface
-├── vapix.py           # VAPIX executor (digest auth, 3 generations)
+├── vapix.py           # VAPIX executor (digest auth, 4 generations)
 ├── http_client.py     # shared async HTTP with retry, timeout
 └── models.py          # Request, Response, StepResult dataclasses
 ```
@@ -2629,10 +2770,12 @@ class VapixExecutor(BaseExecutor):
             ...  # JSON body
         elif gen == "config-rest":
             ...  # REST path + body
+        elif gen == "soap":
+            ...  # XML body to /vapix/services
 ```
 
 **Complexity:** MEDIUM — digest auth handling is the fiddly part,
-but `httpx` handles it natively. The three generation handlers
+but `httpx` handles it natively. The four generation handlers
 are straightforward.
 
 **Dependency:** needs catalog loader + device registry.
@@ -2771,7 +2914,7 @@ Rough estimate of the full catalog at maturity:
 
 | Content | Files | Avg lines | Total lines |
 |---|---|---|---|
-| CGI metadata (`_cgi.yaml`) | ~25 | 10 | 250 |
+| API metadata (`_api.yaml`) | ~80 | 10 | 800 |
 | CGI operations | ~120 | 40 | 4,800 |
 | param.cgi groups | ~50 | 60 | 3,000 |
 | config-rest operations | ~30 | 35 | 1,050 |
@@ -2799,8 +2942,8 @@ The catalog repo would have CI that runs on every PR:
 2. **Index integrity** — every file path in `index/*.yaml` actually exists
 3. **Orphan detection** — warn about CGI operation files not referenced
    by any index entry (unreachable via search)
-4. **Referential integrity** — `_cgi.yaml` exists for every CGI directory,
-   device profiles reference CGIs that exist in `cgi/`
+4. **Referential integrity** — `_api.yaml` exists for every API directory,
+   device profiles reference APIs that exist in `cgi/` or `rest/`
 5. **Duplicate detection** — no two operations have the same `id`
 
 ---

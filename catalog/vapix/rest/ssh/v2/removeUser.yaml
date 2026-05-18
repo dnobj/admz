@@ -1,0 +1,16 @@
+id: ssh:removeUser
+cgi: ssh
+
+method: DELETE
+base_path: /config/rest/ssh/v2
+path: /users/{username}
+
+response:
+  format: json
+
+risk_level: service-affecting
+service_impact: >
+  Removing an SSH user revokes their SSH access immediately.
+
+requires:
+  auth_level: admin

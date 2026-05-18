@@ -2,10 +2,11 @@
 Web UI routes for device management.
 """
 
-from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi import APIRouter, Request, Depends, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
+from typing import Optional
 
 from admz.exceptions import (
     DeviceNotFoundError,
@@ -15,6 +16,11 @@ from admz.exceptions import (
 )
 from admz.device_registry import DeviceRegistry
 from admz.fleet_settings import fleet_settings
+from admz.api.confirm_store import (
+    get_confirmation_level,
+    hash_confirm_password,
+    VALID_CONFIRMATION_LEVELS,
+)
 
 
 router = APIRouter()
@@ -382,4 +388,113 @@ async def fleet_settings_page(request: Request):
             "settings": display,
             "title": "Fleet Settings",
         },
+    )
+
+
+# ── Confirmation settings ────────────────────────────────────────────────
+
+def _build_confirm_settings_context(request: Request, **extra):
+    """Build the template context for the confirm-settings page."""
+    risk_levels = ["dangerous", "service-affecting", "normal", "read-only"]
+    levels = {r: get_confirmation_level(r) for r in risk_levels}
+    has_password = bool(fleet_settings.get("confirm_password_hash"))
+    get_creds_enabled = fleet_settings.get("tool_get_credentials_enabled") == "true"
+    ctx = {
+        "request": request,
+        "title": "Confirmation Settings",
+        "levels": levels,
+        "has_password": has_password,
+        "get_creds_enabled": get_creds_enabled,
+    }
+    ctx.update(extra)
+    return ctx
+
+
+@router.get("/confirm-settings", response_class=HTMLResponse)
+async def confirm_settings_page(request: Request):
+    """Confirmation settings page — configure confirmation levels and password."""
+    return templates.TemplateResponse(
+        "confirm_settings.html",
+        _build_confirm_settings_context(request),
+    )
+
+
+@router.post("/confirm-settings", response_class=HTMLResponse)
+async def confirm_settings_save(
+    request: Request,
+    action: str = Form(...),
+    # Level fields (only present when action=levels)
+    level_dangerous: Optional[str] = Form(None),
+    level_service_affecting: Optional[str] = Form(None, alias="level_service-affecting"),
+    level_normal: Optional[str] = Form(None),
+    level_read_only: Optional[str] = Form(None, alias="level_read-only"),
+    # Password fields (only present when action=password)
+    new_password: Optional[str] = Form(None),
+    confirm_new_password: Optional[str] = Form(None),
+):
+    """Save confirmation settings."""
+    if action == "levels":
+        mapping = {
+            "dangerous": level_dangerous,
+            "service-affecting": level_service_affecting,
+            "normal": level_normal,
+            "read-only": level_read_only,
+        }
+        for risk, level in mapping.items():
+            key = f"confirm_level_{risk}"
+            if level and level in VALID_CONFIRMATION_LEVELS:
+                fleet_settings.set(key, level)
+
+        return templates.TemplateResponse(
+            "confirm_settings.html",
+            _build_confirm_settings_context(
+                request, success="Confirmation levels saved."
+            ),
+        )
+
+    elif action == "password":
+        # Empty password → remove
+        if not new_password:
+            fleet_settings.delete("confirm_password_hash")
+            return templates.TemplateResponse(
+                "confirm_settings.html",
+                _build_confirm_settings_context(
+                    request, success="Confirmation password removed."
+                ),
+            )
+
+        if new_password != confirm_new_password:
+            return templates.TemplateResponse(
+                "confirm_settings.html",
+                _build_confirm_settings_context(
+                    request, error="Passwords do not match."
+                ),
+            )
+
+        hashed = hash_confirm_password(new_password)
+        fleet_settings.set("confirm_password_hash", hashed)
+        return templates.TemplateResponse(
+            "confirm_settings.html",
+            _build_confirm_settings_context(
+                request, success="Confirmation password updated."
+            ),
+        )
+
+    elif action == "tool_toggle":
+        form_data = await request.form()
+        enabled = "get_credentials_enabled" in form_data
+        if enabled:
+            fleet_settings.set("tool_get_credentials_enabled", "true")
+        else:
+            fleet_settings.delete("tool_get_credentials_enabled")
+        return templates.TemplateResponse(
+            "confirm_settings.html",
+            _build_confirm_settings_context(
+                request, success="MCP tool access settings saved."
+            ),
+        )
+
+    return templates.TemplateResponse(
+        "confirm_settings.html",
+        _build_confirm_settings_context(request, error="Unknown action."),
     )

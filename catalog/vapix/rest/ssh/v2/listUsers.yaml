@@ -1,0 +1,14 @@
+id: ssh:listUsers
+cgi: ssh
+
+method: GET
+base_path: /config/rest/ssh/v2
+path: /users
+
+response:
+  format: json
+
+risk_level: read-only
+
+requires:
+  auth_level: admin

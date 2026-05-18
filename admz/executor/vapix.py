@@ -1,10 +1,11 @@
 """
 VAPIX executor — builds and sends HTTP requests for VAPIX operations.
 
-Handles all three VAPIX generations:
+Handles all four VAPIX generations:
   - legacy-cgi: GET with query parameters
   - json-rpc: POST with JSON body
   - config-rest: REST methods with JSON body
+  - soap: POST XML to /vapix/services
 """
 
 import json as json_module
@@ -114,6 +115,17 @@ class VapixExecutor(BaseExecutor):
                             files=files,
                             auth=auth,
                         )
+                elif request.raw_body is not None:
+                    # SOAP XML or other pre-built body
+                    response = await client.request(
+                        method=request.method,
+                        url=url,
+                        content=request.raw_body,
+                        auth=auth,
+                        headers={"Content-Type": request.content_type}
+                        if request.content_type
+                        else None,
+                    )
                 else:
                     response = await client.request(
                         method=request.method,
@@ -305,7 +317,7 @@ class VapixExecutor(BaseExecutor):
         if content_type == "multipart/form-data":
             return self._build_multipart(operation, endpoint, params)
 
-        # Generation comes from _cgi.yaml, enriched by loader/resolver
+        # Generation comes from _api.yaml, enriched by loader/resolver
         generation = (
             operation.get("_generation")
             or operation.get("generation")
@@ -318,6 +330,8 @@ class VapixExecutor(BaseExecutor):
             return self._build_json_rpc(operation, endpoint, params)
         elif generation == "config-rest":
             return self._build_config_rest(operation, params)
+        elif generation == "soap":
+            return self._build_soap(operation, params)
         else:
             raise ValueError(f"Unknown VAPIX generation: {generation}")
 
@@ -416,6 +430,41 @@ class VapixExecutor(BaseExecutor):
             content_type="application/json"
             if operation.get("method", "GET") != "GET"
             else None,
+            timeout_override=timeout_override,
+        )
+
+    def _build_soap(
+        self,
+        operation: Dict[str, Any],
+        params: Dict[str, str],
+    ) -> ExecutionRequest:
+        """Build a SOAP request (POST XML to /vapix/services).
+
+        Resolves {placeholder} values in the body_xml template using
+        the same _resolve_template logic as other generations.
+        """
+        request_spec = operation.get("request", {})
+        body_xml = request_spec.get("body_xml", "")
+
+        # Resolve placeholders in XML body
+        if body_xml and params:
+            resolved = self._resolve_template(body_xml, params)
+            if isinstance(resolved, str):
+                body_xml = resolved
+
+        timeout_val = request_spec.get("timeout")
+        timeout_override = float(timeout_val) if timeout_val else None
+
+        headers_extra = {}
+        soap_action = operation.get("soap_action")
+        if soap_action:
+            headers_extra["SOAPAction"] = soap_action
+
+        return ExecutionRequest(
+            method="POST",
+            path="/vapix/services",
+            raw_body=body_xml,
+            content_type="application/xml",
             timeout_override=timeout_override,
         )
 
