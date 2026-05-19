@@ -51,8 +51,27 @@
 - **Real-time alerting** when a demo device drifts. Drift detection is poll-based.
 - **Direct VMS / video-storage management.** ADMZ manages configuration, not video.
 
+## How this persona uses ADMZ
+
+Two paths, neither exclusive:
+
+1. **Via a bundled web chatbot** (📋 planned — see
+   [web-chatbot-user](web-chatbot-user.md) and
+   [ADR-0024](../decisions/0024-bundled-web-chatbot.md)). This is
+   expected to be the primary path for most Experience Center
+   operators: open a browser, type "snapshot the lobby cameras before
+   the Acme visit," see the work happen with inline approval cards
+   for anything destructive.
+2. **Via an existing MCP-capable agent** (Claude Code, etc.) for
+   power users. Same tool surface, same safety gates, but the
+   operator hosts the conversation themselves.
+
+Until the chatbot lands, the practical path for non-developer
+operators is the existing web UI's CRUD interfaces — clunkier than
+the chatbot will be, but it covers the workflows.
+
 ## Anti-personas (what this persona is *not*)
 
 - Not a developer adding catalog entries (see [catalog-contributor](catalog-contributor.md)).
 - Not a security officer setting confirmation policy (see [security-conscious-operator](security-conscious-operator.md)) — though they do need the policy to allow their daily workflow.
-- Not an LLM agent — though they may *direct* an LLM that drives ADMZ for them.
+- Not an LLM agent — though they may *direct* an LLM (via chatbot or external MCP client) that drives ADMZ for them.

@@ -15,6 +15,7 @@ Who ADMZ is built for. Each persona drives a set of user stories and requirement
 - [Experience Center operator](personas/experience-center-operator.md) — the original driver of the snapshot/restore work
 - [Enterprise fleet operator](personas/enterprise-fleet-operator.md) — Vault-backed, hundreds-of-devices use case
 - [LLM agent](personas/llm-agent.md) — the AI consumer of the MCP surface
+- [Web-Chatbot user](personas/web-chatbot-user.md) 📋 — the operator who doesn't run their own agent (expected primary persona)
 - [Security-conscious operator](personas/security-conscious-operator.md) — the human at the keyboard who cares about safety gates
 - [Catalog contributor](personas/catalog-contributor.md) — an external developer adding new operations, protocols, or backends
 
@@ -26,6 +27,7 @@ Workflows the system must support. Grouped by area.
 - [Credential management](user-stories/credential-management.md) — capture, probe, rotate, temp creds
 - [Snapshot and restore](user-stories/snapshot-and-restore.md) — capturing, restoring, forking device configs
 - [LLM-driven configuration](user-stories/llm-driven-configuration.md) — catalog query → execute → confirm
+- [Chatbot-driven workflows](user-stories/chatbot-driven-workflows.md) 📋 — what the bundled chat client will deliver
 - [Network discovery](user-stories/network-discovery.md) — finding devices on the local network
 - [Demo workflows](user-stories/demo-workflows.md) — Experience Center-specific demo/tag/restore patterns
 - [Drift and monitoring](user-stories/drift-and-monitoring.md) — detecting and reconciling unauthorized changes
@@ -51,6 +53,7 @@ What the system must do, per capability area. Each file has Functional Requireme
 - [MCP server](requirements/mcp-server.md) — tool surface, gating
 - [Web API](requirements/web-api.md) — REST surface
 - [Web UI](requirements/web-ui.md)
+- [Web chatbot](requirements/web-chatbot.md) 📋 — bundled chat client (planned)
 
 ### Cross-cutting requirements
 
@@ -86,6 +89,10 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 - [0021 — Windows IWA via reverse proxy](decisions/0021-windows-iwa-via-reverse-proxy.md)
 - [0022 — API keys for agents](decisions/0022-api-keys-for-agents.md)
 - [0023 — LDAP group enrichment](decisions/0023-ldap-group-enrichment.md)
+
+### Entry-point surfaces (planned)
+
+- [0024 — Bundled web chatbot](decisions/0024-bundled-web-chatbot.md) 📋 (direction accepted, implementation deferred)
 
 ### Authentication & secrets
 

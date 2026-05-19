@@ -11,11 +11,19 @@ It rests on four pillars:
 3. **A safe execution engine** that turns catalog operations into authenticated HTTP calls, with two-gate approval for anything destructive.
 4. **A git-backed configuration store** that snapshots device state, supports diff and restore, and treats device configuration as a versioned, branchable, reviewable asset.
 
-The system exposes these pillars through two surfaces: an **MCP server** (the primary entry point, designed for LLM consumption) and a **FastAPI REST API + web UI** (the human entry point).
+The system exposes these pillars through **three planned surfaces:**
+
+1. **MCP server** — for users who already operate an MCP-capable agent (Claude Code, custom Anthropic SDK clients, etc.). Live today.
+2. **FastAPI REST API + Jinja2 web UI** — CRUD + management UI for humans, also the AJAX target for the chatbot. Live today.
+3. **Bundled web chatbot** — a built-in chat client for users who don't operate their own agent. The expected primary path for most users. Currently 📋 planned; deferred until the rest of the app is otherwise complete. See [ADR-0024](decisions/0024-bundled-web-chatbot.md).
+
+The MCP server and the chatbot are intended as **co-equal entry points**, not primary/secondary — power users keep using their own clients, while everyone else gets the bundled chat experience. Same safety gates, same audit log, same tool surface.
 
 ## Why this exists
 
-Operating an Axis fleet — whether it's six demo cameras at an Experience Center, a thousand devices at a stadium, or a hundred mixed access-control and audio devices at a corporate campus — currently means:
+Operating an Axis fleet — whether it's six demo cameras at an Axis
+Experience Center, a thousand devices at a stadium, or a hundred mixed
+access-control and audio devices at a corporate campus — currently means:
 
 - Logging into each device's web UI individually.
 - Manually tracking which device runs which firmware, which configuration, which password.
@@ -25,6 +33,32 @@ Operating an Axis fleet — whether it's six demo cameras at an Experience Cente
 - Having no defensible audit trail of what was changed when, and by whom.
 
 ADMZ addresses all of this by providing programmatic, catalog-driven, auditable, LLM-safe management of those fleets — with safety gates baked into the operation model itself rather than bolted on as policy.
+
+The configuration-management story specifically traces back to the
+Axis Experience Center use case: demo devices are reconfigured
+constantly for customer visits, demos break, and there's no clean way
+to restore the prior state. The git-backed snapshot system in
+`admz/snapshot/` is the answer to that specific problem, and the same
+patterns apply to live production deployments.
+
+## Two foundational safety properties
+
+Two properties are non-negotiable across every surface ADMZ exposes,
+and the architecture exists to enforce them:
+
+1. **Device passwords never enter LLM context.** All credential
+   capture is out-of-band — the user types the password into a
+   browser form that submits directly to the registry. The LLM sees
+   only "stored: yes/no" status.
+2. **High-risk operations require a token-mediated human approval.**
+   Anything classified `dangerous` in the catalog blocks at execution
+   time and returns a single-use confirm token. The user must
+   explicitly approve via a separate channel (browser click,
+   ApproveButton in the bundled chatbot, or `confirm_dangerous_operation`
+   MCP tool call) before the operation runs.
+
+The token/approval workflow is documented in [ADR-0005](decisions/0005-two-gate-plan-approval.md)
+and the multi-level confirmation policy in [ADR-0006](decisions/0006-multi-level-confirmation.md).
 
 ## Scope
 
