@@ -163,6 +163,14 @@ async def chat_submit(
         groups=principal.groups,
     )
 
+    logger.debug(
+        "[chat] user=%s model=%s prev_id=%s message=%r",
+        principal.name,
+        chosen_model,
+        prev_id,
+        message,
+    )
+
     error_text: Optional[str] = None
     answer_text: Optional[str] = None
     usage = None
@@ -196,6 +204,18 @@ async def chat_submit(
     except Exception as exc:  # pragma: no cover — defensive
         logger.exception("Unexpected chat turn failure: %s", exc)
         error_text = f"Unexpected error: {exc}"
+
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "[chat] user=%s model=%s tokens=%s/%s ok=%s response=%r%s",
+            principal.name,
+            chosen_model,
+            (usage or {}).get("input_tokens") if usage else None,
+            (usage or {}).get("output_tokens") if usage else None,
+            error_text is None,
+            answer_text or "",
+            f" error={error_text!r}" if error_text else "",
+        )
 
     return templates.TemplateResponse(
         "chat.html",
@@ -286,11 +306,27 @@ async def chat_stream(
             groups=principal.groups,
         )
 
+        # DEBUG logging: capture the user's message at turn start. The
+        # full conversation only ends up in logs when ADMZ_LOG_LEVEL=DEBUG.
+        # See the requirements doc (web-chatbot.md) for the privacy note.
+        logger.debug(
+            "[chat] user=%s model=%s prev_id=%s message=%r",
+            principal.name,
+            chosen_model,
+            prev_id,
+            message,
+        )
+
         captured_interaction_id: Optional[str] = None
         captured_input_tokens: int = 0
         captured_output_tokens: int = 0
         turn_succeeded = True
         turn_error: Optional[str] = None
+        # DEBUG-only buffer of streamed text so we can log the full
+        # assistant response at end-of-turn. Kept local to the route;
+        # never persisted.
+        assistant_text_parts: list = []
+        tool_call_log: list = []
 
         try:
             async for chat_event in stream_turn(
@@ -323,6 +359,15 @@ async def chat_stream(
                 elif chat_event.type == ChatEventType.ERROR:
                     turn_succeeded = False
                     turn_error = chat_event.payload.get("message", "")
+                elif chat_event.type == ChatEventType.TEXT:
+                    # Accumulate for end-of-turn DEBUG log.
+                    chunk = chat_event.payload.get("chunk", "")
+                    if chunk:
+                        assistant_text_parts.append(chunk)
+                elif chat_event.type == ChatEventType.TOOL_CALL:
+                    tool_call_log.append(
+                        chat_event.payload.get("name", "?")
+                    )
                 yield chat_event.to_sse()
         except ChatbotDependencyMissing as exc:
             turn_succeeded = False
@@ -346,6 +391,25 @@ async def chat_stream(
         if captured_interaction_id:
             _sessions().set_interaction_id(
                 principal.name, captured_interaction_id, chosen_model
+            )
+
+        # DEBUG: emit the assembled assistant response + any tool calls.
+        # Skipped silently when logger isn't at DEBUG, so production
+        # operators don't pay for the string construction.
+        if logger.isEnabledFor(logging.DEBUG):
+            assistant_text = "".join(assistant_text_parts)
+            logger.debug(
+                "[chat] user=%s model=%s tools=%s tokens=%d/%d cost=$%s "
+                "ok=%s response=%r%s",
+                principal.name,
+                chosen_model,
+                tool_call_log or "(none)",
+                captured_input_tokens,
+                captured_output_tokens,
+                f"{estimate_cost_usd(chosen_model, captured_input_tokens, captured_output_tokens) or 0:.6f}",
+                turn_succeeded,
+                assistant_text,
+                f" error={turn_error!r}" if turn_error else "",
             )
 
         # Phase 5D: record usage + emit an audit entry for this turn.

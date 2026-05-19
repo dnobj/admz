@@ -212,6 +212,17 @@ The "Clear chat" button only releases ADMZ's pointer; whether
 Google retains the transcript after that is governed by the
 Google data-handling agreement, not ADMZ.
 
+ADMZ itself does **not** persist user messages or assistant
+responses. The audit log records turn metadata (model, tokens,
+cost, success/error) but never the message bodies. The one
+exception is **DEBUG-level logging**: when the operator sets
+`ADMZ_LOG_LEVEL=DEBUG`, the chat routes emit a per-turn
+`[chat] user=… message=…` line before the call and a
+`[chat] user=… response=…` line after. These go to whatever sink
+the operator's logging configuration uses (stderr by default).
+DEBUG is opt-in and noisy; it's the right knob for short-term
+investigation, not production observability.
+
 ### KL-CB-003 — Streaming requires SSE, which is new for ADMZ ✅
 Resolved in Phase 5B: `POST /chat/stream` is the first SSE
 endpoint in the codebase. The wire format uses `event:` + `data:`
