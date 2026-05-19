@@ -51,7 +51,17 @@ class TurnResult:
 
 
 def _import_genai() -> Any:
-    """Lazy-import :mod:`google.genai`. Raises ChatbotDependencyMissing if absent."""
+    """Lazy-import :mod:`google.genai`. Raises ChatbotDependencyMissing if absent.
+
+    Also disables genai's optional aiohttp transport — it has a bug
+    in 2.4.0 where the streaming response reader calls
+    ``aiohttp.StreamReader.readline(max_line_length=...)``, which
+    aiohttp 3.13+ doesn't accept. Forcing ``has_aiohttp=False`` makes
+    genai route streaming through its httpx transport, which works.
+    Aiohttp itself stays installed (the discovery stack depends on
+    it transitively via ``async_upnp_client``) — we just stop genai
+    from picking it up.
+    """
     try:
         from google import genai  # type: ignore[import-not-found]
     except ImportError as exc:
@@ -59,6 +69,23 @@ def _import_genai() -> Any:
             "The google-genai package is not installed. Add it to "
             "requirements.txt and pip install, or disable the chatbot."
         ) from exc
+
+    # Workaround for google-genai 2.4.0 streaming bug. Setting the
+    # module attribute is enough — the flag is checked at request
+    # time, not import time. Harmless if genai later fixes the bug
+    # (forcing httpx still works).
+    try:
+        from google.genai import _api_client as _genai_api_client
+        if getattr(_genai_api_client, "has_aiohttp", False):
+            _genai_api_client.has_aiohttp = False
+            logger.debug(
+                "google-genai aiohttp transport disabled to avoid the "
+                "readline(max_line_length=...) streaming bug; falling "
+                "back to httpx."
+            )
+    except Exception:  # pragma: no cover — defensive
+        pass
+
     return genai
 
 
