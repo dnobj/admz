@@ -406,15 +406,32 @@ async def stream_turn(
                 # shapes the translator misses. Off in production.
                 if logger.isEnabledFor(logging.DEBUG):
                     _log_chunk_shape(chunk)
+
+                # Track usage_metadata + interaction_id from EVERY
+                # chunk, not just terminal ones. google-genai 2.x
+                # attaches usage_metadata to every text chunk in a
+                # streaming response — keep the latest values seen so
+                # the final done event has accurate totals.
+                chunk_in, chunk_out = _extract_usage_from_chunk(chunk)
+                if chunk_in is not None:
+                    input_tokens = chunk_in
+                if chunk_out is not None:
+                    output_tokens = chunk_out
+                chunk_id = (
+                    getattr(chunk, "id", None)
+                    or getattr(chunk, "interaction_id", None)
+                    or getattr(chunk, "response_id", None)
+                )
+                if chunk_id:
+                    final_interaction_id = chunk_id
+
                 event = _translate_stream_chunk(chunk)
                 if event is None:
                     continue
-                # Capture terminal metadata for the final 'done' event.
+                # Terminal-shape 'done' events also carry metadata; the
+                # tracking above already covered them, so skip yielding
+                # here (we emit one done at the end).
                 if event.type.value == "done":
-                    final_interaction_id = event.payload.get("interaction_id")
-                    input_tokens = event.payload.get("input_tokens")
-                    output_tokens = event.payload.get("output_tokens")
-                    # Don't yield 'done' here — we yield it once at the end.
                     continue
                 yield event
     except Exception as exc:
