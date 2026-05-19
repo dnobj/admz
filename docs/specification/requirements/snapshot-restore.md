@@ -127,10 +127,27 @@ The clone path strips IP / hostname / MAC. New per-device fields
 landing in future facets need to be added to the filter list — no
 schema-driven mechanism yet.
 
-### KL-SNP-004 — No snapshot retention / GC ⚠️
+### KL-SNP-004 — No automated retention; manual gc available 🚧
 The git repo grows monotonically. A fleet of 500 devices snapshotted
-daily for a year produces a large repo. Manual `git gc` works; no
-automated retention policy yet.
+daily for a year produces a large repo.
+
+Phase 6 added a maintenance surface to mitigate disk overhead
+without rewriting history:
+
+- `admz/snapshot/maintenance.py` — `get_repo_stats()` reports
+  disk usage + commit count; `run_gc(repo, aggressive=…)` packs
+  loose objects via ``git gc --prune=now``. Non-destructive — no
+  commits are dropped.
+- CLI: ``admz maintenance stats`` and ``admz maintenance gc
+  [--aggressive]``. Operators can wire these into cron for
+  weekly/monthly runs.
+- Fleet settings ``snapshot_gc_enabled`` / ``snapshot_gc_aggressive``
+  carry the operator's preference (in-process scheduling of
+  maintenance jobs is still a follow-up).
+
+True retention (history rewrite, ``git filter-repo``) is
+deliberately out of scope — it's a human-led operation, not
+something ADMZ does behind the operator's back.
 
 ## References
 

@@ -156,6 +156,32 @@ def main():
     )
     apikey_revoke.add_argument("id", type=int, help="The key's numeric id")
 
+    # Snapshot-repo maintenance command (Phase 6)
+    maint_parser = subparsers.add_parser(
+        "maintenance",
+        help="Snapshot-repo maintenance (size report + git gc)",
+    )
+    maint_sub = maint_parser.add_subparsers(
+        dest="maint_command", help="Maintenance subcommand"
+    )
+    maint_stats = maint_sub.add_parser(
+        "stats", help="Print repo disk usage and commit count"
+    )
+    maint_stats.add_argument(
+        "--json", action="store_true", help="Output as JSON"
+    )
+    maint_gc = maint_sub.add_parser(
+        "gc",
+        help="Pack loose git objects (non-destructive; never drops commits)",
+    )
+    maint_gc.add_argument(
+        "--aggressive", action="store_true",
+        help="Slower but tighter pack (--aggressive). Run weekly at most.",
+    )
+    maint_gc.add_argument(
+        "--json", action="store_true", help="Output as JSON",
+    )
+
     args = parser.parse_args()
 
     if args.command == "api":
@@ -166,6 +192,8 @@ def main():
         run_api_key(args)
     elif args.command == "discover":
         run_discover(args)
+    elif args.command == "maintenance":
+        run_maintenance(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -376,6 +404,74 @@ def run_mcp_server():
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def run_maintenance(args):
+    """Snapshot-repo maintenance — stats + optional gc."""
+    from admz.snapshot.git_repo import GitRepo
+    from admz.snapshot.maintenance import (
+        get_repo_stats,
+        run_gc,
+    )
+
+    repo_path = os.getenv(
+        "ADMZ_CONFIG_REPO_PATH",
+        str(os.path.join(os.path.expanduser("~"), ".admz", "configs")),
+    )
+
+    if args.maint_command == "stats" or args.maint_command is None:
+        try:
+            repo = GitRepo(repo_path)
+        except Exception as exc:
+            print(f"Error: cannot open repo {repo_path}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        stats = get_repo_stats(repo)
+        if args.maint_command == "stats" and getattr(args, "json", False):
+            import json as _json
+            print(_json.dumps(stats.to_dict(), indent=2))
+        else:
+            print(f"Repo:       {stats.repo_path}")
+            print(f"Total:      {stats.total_mb:.2f} MB")
+            print(f"  .git:     {stats.git_mb:.2f} MB")
+            print(
+                f"  fleet:    {stats.fleet_bytes / (1024 * 1024):.2f} MB"
+            )
+            print(f"Commits:    {stats.commit_count}")
+            if stats.oldest_commit_iso:
+                print(f"Oldest:     {stats.oldest_commit_iso}")
+            if stats.newest_commit_iso:
+                print(f"Newest:     {stats.newest_commit_iso}")
+        return
+
+    if args.maint_command == "gc":
+        try:
+            repo = GitRepo(repo_path)
+        except Exception as exc:
+            print(f"Error: cannot open repo {repo_path}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(
+            f"Running git gc{'(aggressive)' if args.aggressive else ''} on {repo_path}…"
+        )
+        result = run_gc(repo, aggressive=args.aggressive)
+        if args.json:
+            import json as _json
+            print(_json.dumps(result.to_dict(), indent=2))
+        elif result.ran:
+            print(
+                f"Done. {result.before_bytes / (1024*1024):.2f} MB → "
+                f"{result.after_bytes / (1024*1024):.2f} MB "
+                f"(saved {result.saved_mb:.2f} MB)"
+            )
+        else:
+            print(f"gc did not run: {result.error}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    print(
+        "Unknown maintenance subcommand. Try 'stats' or 'gc'.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def run_discover(args):
