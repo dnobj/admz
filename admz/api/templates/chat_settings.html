@@ -79,6 +79,47 @@
     </form>
   </section>
 
+  <!-- Daily token budget -->
+  <section style="margin-bottom:32px;">
+    <h2 style="font-size:18px;margin-bottom:8px;">Daily token budget</h2>
+    <p style="font-size:13px;color:#6b7280;margin-bottom:12px;">
+      Per-principal cap on total tokens (input + output, all models)
+      consumed in a single UTC day. Resets at 00:00 UTC. Set to
+      <code>0</code> to disable enforcement (unlimited).
+    </p>
+
+    <p style="font-size:13px;color:#374151;margin-bottom:12px;">
+      Current budget:
+      {% if daily_token_budget == 0 %}
+        <strong>unlimited</strong>
+      {% else %}
+        <strong>{{ "{:,}".format(daily_token_budget) }}</strong> tokens / principal / day
+      {% endif %}
+    </p>
+
+    {% if today_usage %}
+    <p style="font-size:13px;color:#374151;margin-bottom:12px;">
+      Your usage today (<code>{{ principal.name }}</code>):
+      <strong>{{ "{:,}".format(today_usage.total_tokens) }}</strong> tokens
+      across <strong>{{ today_usage.turn_count }}</strong> turn(s)
+      {% if today_usage.cost_usd > 0 %}
+        — est. cost <strong>${{ "%.4f"|format(today_usage.cost_usd) }}</strong>
+      {% endif %}
+    </p>
+    {% endif %}
+
+    <form method="POST" action="/settings/chat">
+      <input type="hidden" name="action" value="set_daily_token_budget">
+      <input type="number" name="daily_token_budget" min="0" step="1000"
+        value="{{ daily_token_budget }}"
+        style="padding:6px 10px;border:1px solid #d1d5db;border-radius:4px;font-size:14px;width:200px;">
+      <button type="submit"
+        style="margin-left:8px;padding:6px 16px;background:#2563eb;color:white;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer;">
+        Save budget
+      </button>
+    </form>
+  </section>
+
   <section>
     <h2 style="font-size:18px;margin-bottom:8px;">Pricing</h2>
     <table style="width:100%;border-collapse:collapse;font-size:13px;">

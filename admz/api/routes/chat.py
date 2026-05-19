@@ -47,6 +47,19 @@ from admz.chatbot.events import (
     event_error,
 )
 from admz.chatbot.system_prompt import build_system_prompt
+from admz.chatbot.usage import (
+    check_budget,
+    estimate_cost_usd,
+    get_daily_budget,
+    set_daily_budget,
+)
+import admz.chatbot.usage as _usage_module
+from admz.audit import record_event
+
+
+def _token_usage():
+    """Lookup the live token_usage singleton at call time (tests swap it)."""
+    return _usage_module.token_usage
 
 
 def _sessions():
@@ -247,6 +260,25 @@ async def chat_stream(
             ).to_sse()
             return
 
+        # Phase 5D: budget gate. Checked here (not inside stream_turn)
+        # so the route can audit-log the rejection with the principal.
+        budget = check_budget(principal.name)
+        if not budget.allowed:
+            record_event(
+                principal,
+                action="chat_budget_exceeded",
+                resource=f"model:{chosen_model}",
+                details={
+                    "via_chatbot": True,
+                    "used_today": budget.used_today,
+                    "budget": budget.budget,
+                },
+                success=False,
+                error_message=budget.reason,
+            )
+            yield event_error(budget.reason).to_sse()
+            return
+
         prev_id = _sessions().get_interaction_id(principal.name)
         system_prompt = build_system_prompt(
             principal_name=principal.name,
@@ -255,6 +287,10 @@ async def chat_stream(
         )
 
         captured_interaction_id: Optional[str] = None
+        captured_input_tokens: int = 0
+        captured_output_tokens: int = 0
+        turn_succeeded = True
+        turn_error: Optional[str] = None
 
         try:
             async for chat_event in stream_turn(
@@ -264,27 +300,86 @@ async def chat_stream(
                 system_prompt=system_prompt,
                 previous_interaction_id=prev_id,
             ):
-                # Persist the new interaction_id when the stream
-                # completes so subsequent turns thread correctly.
+                # Capture terminal metadata + augment the done event
+                # with cost estimate before forwarding.
                 if chat_event.type == ChatEventType.DONE:
                     captured_interaction_id = chat_event.payload.get(
                         "interaction_id"
                     )
+                    captured_input_tokens = int(
+                        chat_event.payload.get("input_tokens") or 0
+                    )
+                    captured_output_tokens = int(
+                        chat_event.payload.get("output_tokens") or 0
+                    )
+                    cost = estimate_cost_usd(
+                        chosen_model,
+                        captured_input_tokens,
+                        captured_output_tokens,
+                    )
+                    chat_event.payload["cost_usd"] = cost
+                    chat_event.payload["model"] = chosen_model
+                elif chat_event.type == ChatEventType.ERROR:
+                    turn_succeeded = False
+                    turn_error = chat_event.payload.get("message", "")
                 yield chat_event.to_sse()
         except ChatbotDependencyMissing as exc:
+            turn_succeeded = False
+            turn_error = str(exc)
             yield event_error(str(exc)).to_sse()
         except ChatbotNotConfigured as exc:
+            turn_succeeded = False
+            turn_error = str(exc)
             yield event_error(str(exc)).to_sse()
         except ChatbotTurnError as exc:
+            turn_succeeded = False
+            turn_error = str(exc)
             yield event_error(f"Gemini stream error: {exc}").to_sse()
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("Unexpected chat stream failure: %s", exc)
+            turn_succeeded = False
+            turn_error = str(exc)
             yield event_error(f"Unexpected error: {exc}").to_sse()
             return
 
         if captured_interaction_id:
             _sessions().set_interaction_id(
                 principal.name, captured_interaction_id, chosen_model
+            )
+
+        # Phase 5D: record usage + emit an audit entry for this turn.
+        # Best-effort — never let a usage/audit failure break the
+        # already-streamed response.
+        try:
+            cost = estimate_cost_usd(
+                chosen_model, captured_input_tokens, captured_output_tokens
+            )
+            if captured_input_tokens or captured_output_tokens:
+                _token_usage().record_turn(
+                    principal=principal.name,
+                    model=chosen_model,
+                    input_tokens=captured_input_tokens,
+                    output_tokens=captured_output_tokens,
+                    cost_usd=cost,
+                )
+            record_event(
+                principal,
+                action="chat_turn",
+                resource=f"model:{chosen_model}",
+                details={
+                    "via_chatbot": True,
+                    "model": chosen_model,
+                    "input_tokens": captured_input_tokens,
+                    "output_tokens": captured_output_tokens,
+                    "cost_usd": cost,
+                    "had_previous_session": prev_id is not None,
+                },
+                success=turn_succeeded,
+                error_message=turn_error or "",
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "Failed to record chat turn usage/audit: %s", exc
             )
 
     return StreamingResponse(
@@ -308,7 +403,7 @@ async def chat_settings_page(
     request: Request,
     principal: Principal = Depends(get_current_principal),
 ):
-    """Render the chatbot admin page (API key + default model)."""
+    """Render the chatbot admin page (API key + default model + budget)."""
     config = get_chatbot_config()
     return templates.TemplateResponse(
         "chat_settings.html",
@@ -320,6 +415,8 @@ async def chat_settings_page(
             "configured": config.configured,
             "selectable_models": config.selectable_models,
             "default_model": config.default_model,
+            "daily_token_budget": get_daily_budget(),
+            "today_usage": _token_usage().today_summary(principal.name),
             "success": None,
             "error": None,
         },
@@ -332,9 +429,10 @@ async def chat_settings_save(
     action: str = Form(...),
     api_key: Optional[str] = Form(None),
     default_model: Optional[str] = Form(None),
+    daily_token_budget: Optional[str] = Form(None),
     principal: Principal = Depends(get_current_principal),
 ):
-    """Persist API key or default-model changes from the admin page."""
+    """Persist API key / default-model / daily-budget changes."""
     success: Optional[str] = None
     error: Optional[str] = None
 
@@ -353,6 +451,22 @@ async def chat_settings_save(
         else:
             set_default_model(default_model)
             success = f"Default model set to {default_model}."
+    elif action == "set_daily_token_budget":
+        try:
+            budget = int((daily_token_budget or "0").strip())
+            if budget < 0:
+                raise ValueError("must be >= 0")
+            set_daily_budget(budget)
+            success = (
+                "Daily token budget cleared (unlimited)."
+                if budget == 0
+                else f"Daily token budget set to {budget:,} tokens per principal."
+            )
+        except (ValueError, TypeError) as exc:
+            error = (
+                f"Invalid budget: {exc}. Use a non-negative integer; "
+                "0 disables enforcement."
+            )
     else:
         error = f"Unknown action: {action!r}"
 
@@ -367,6 +481,8 @@ async def chat_settings_save(
             "configured": config.configured,
             "selectable_models": config.selectable_models,
             "default_model": config.default_model,
+            "daily_token_budget": get_daily_budget(),
+            "today_usage": _token_usage().today_summary(principal.name),
             "success": success,
             "error": error,
         },

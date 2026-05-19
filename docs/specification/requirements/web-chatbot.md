@@ -154,12 +154,17 @@ the `/settings/chat` page shows only a redacted indicator.
 ### NFR-CB-002 — Tool execution time is bounded 📋
 Long-running tools (snapshot_fleet on 1000 devices, firmware
 download) report progress via the streaming channel rather than
-hanging the LLM's tool-call response. Phase 5B / 5D.
+hanging the LLM's tool-call response. Deferred — the native MCP
+path means tool execution latency is hidden inside the SDK loop.
 
-### NFR-CB-003 — Cost telemetry visible to operators 📋
-Each chat response shows an approximate token count footer so
-operators understand the bill they're generating. Per-user
-daily budgets are Phase 5D.
+### NFR-CB-003 — Cost telemetry visible to operators ✅
+Each chat response footer shows token counts + model + an
+approximate USD cost (Phase 5D). Pricing table embedded in
+`admz/chatbot/usage.py` covers the three selectable Gemini 3.1
+models (Pro / Flash / Flash-Lite). Per-principal per-day usage is
+recorded in the `chat_token_usage` SQLite table; the Chat
+Settings page surfaces both the configured budget and the user's
+running total.
 
 ### NFR-CB-004 — Safety gates apply uniformly ✅
 The chatbot has no privilege the MCP server doesn't. Same
@@ -174,6 +179,22 @@ operators in the same ADMZ instance never see each other's
 conversations — at most, an admin can `DELETE FROM chat_sessions
 WHERE principal=…` to forcibly reset someone's session, but they
 can't read it.
+
+### NFR-CB-006 — Per-principal daily token budget ✅
+A fleet-wide setting `chat_daily_token_budget` (added to
+`PROTECTED_SETTING_KEYS` per ADR-0020 — MCP can't write it) caps
+how many tokens any one principal may consume in a single UTC
+day. Set to `0` (default) to disable enforcement. Over-budget
+turns are rejected at the route layer *before* the SDK call,
+with the rejection recorded in the audit log.
+
+### NFR-CB-007 — Audit log records every chat turn ✅
+After each turn (success or rejected by budget), the route emits
+one audit entry with `via_chatbot=true`, the principal, the
+model, the token counts, and the estimated USD cost. Failed
+turns include the error message. Audit-log filters can
+distinguish chatbot-initiated work from direct MCP / REST
+calls via the flag.
 
 ## Known limitations
 

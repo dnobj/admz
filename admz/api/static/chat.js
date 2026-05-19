@@ -430,6 +430,11 @@
     const parts = [];
     if (data.input_tokens != null) parts.push("in=" + data.input_tokens);
     if (data.output_tokens != null) parts.push("out=" + data.output_tokens);
+    if (data.model) parts.push("model=" + data.model);
+    if (data.cost_usd != null) {
+      // Show cost to four decimals — typical turn is sub-cent.
+      parts.push("≈$" + Number(data.cost_usd).toFixed(4));
+    }
     if (parts.length) {
       footer.textContent = "tokens: " + parts.join(" · ");
     }

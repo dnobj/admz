@@ -57,6 +57,10 @@ PROTECTED_SETTING_KEYS = {
     # MCP set_fleet_setting must never read or change it. See ADR-0025.
     "gemini_api_key",
     "gemini_default_model",
+    # Daily per-principal token budget (Phase 5D). Letting MCP rewrite
+    # the budget through chat-driven tool calls would defeat the
+    # purpose. Set only via the web UI.
+    "chat_daily_token_budget",
 }
 
 
