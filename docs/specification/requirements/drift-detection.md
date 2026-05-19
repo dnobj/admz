@@ -1,0 +1,112 @@
+# Requirements: drift detection
+
+Compare a device's live state against the configuration stored in
+git. Surface field-level differences so operators can decide:
+re-snapshot, restore, or investigate.
+
+## Status legend
+✅ implemented · 🚧 partial · ⚠️ known limitation · 📋 planned
+
+## Functional requirements
+
+### FR-DRF-001 — DriftReport is the unit of result ✅
+`admz/snapshot/models.py::DriftReport`:
+- `device_id`, `has_drift`
+- `fields` — list of `DriftField` (facet, dotted path, expected,
+  actual)
+- `facets_checked`, `facets_drifted`, `timestamp`
+
+Empty `fields` + `has_drift=False` means "in sync." Each
+`DriftField` is a single point of disagreement, so a report with
+20 changed values has 20 entries.
+
+### FR-DRF-002 — DriftDetector reuses facets ✅
+`admz/snapshot/drift.py::DriftDetector.check_drift(device_id,
+ref="HEAD")` reads the device's live state via the same facet
+adapters that captured the snapshot (FR-SNP-002), and compares
+against the YAML in `~/.admz/configs/<device_id>/<facet>.yaml` at
+the given git ref.
+
+### FR-DRF-003 — Field-level diffing via flatten ✅
+Both stored and live facet outputs are flattened to dotted-key
+strings (`network.dns.servers.0 = "8.8.8.8"`), which gives stable
+per-field diffs even when nested. The flattening is in
+`admz/snapshot/drift.py::_flatten`.
+
+### FR-DRF-004 — Compare against an arbitrary git ref ✅
+The `ref` parameter accepts any git-resolvable name — `HEAD`, a
+specific commit SHA, a tag (`pre-firmware-upgrade`), or a date
+(`HEAD@{2026-04-01}`). Lets operators ask: "what changed since
+last Tuesday?"
+
+### FR-DRF-005 — Fleet-wide drift sweep ✅
+`check_fleet_drift(device_ids=None, ref="HEAD")` runs drift checks
+across many devices concurrently, bounded by the same fleet
+semaphore as snapshot (FR-SNP-004). Returns a list of
+DriftReports; the caller filters to `has_drift=True`.
+
+### FR-DRF-006 — Drift report is read-only ✅
+`check_drift` never modifies the device or the git repo. It's
+safe to schedule against the whole fleet hourly. Acting on the
+report — restoring or accepting the new state — is an explicit
+follow-up.
+
+### FR-DRF-007 — Per-facet skip when unstored ✅
+If a facet has never been snapshotted (no file in git), it's
+skipped, not flagged as drift. `facets_checked` counts only facets
+with stored baselines. This lets operators roll out drift checks
+incrementally as new facet adapters land.
+
+### FR-DRF-008 — Drift exposed via MCP and REST ✅
+- MCP: `check_device_drift(device_id, ref?)`,
+  `check_fleet_drift(device_ids?, ref?)`
+- REST: `GET /api/v2/devices/{id}/drift?ref=...`,
+  `GET /api/v2/fleet/drift?ref=...`
+
+Both surface the DriftReport JSON; agents typically narrow the
+result to `fields` matching a particular path before acting.
+
+## Non-functional requirements
+
+### NFR-DRF-001 — No side effects on the device ✅
+Drift checks issue only the read operations that the facet
+adapters use during snapshot. No state-changing call ever fires
+from `check_drift`.
+
+### NFR-DRF-002 — Normalized comparison is firmware-tolerant ✅
+The compared values are the *normalized* facet outputs, not raw
+VAPIX response strings. Whitespace differences, key ordering, and
+representation quirks (e.g. `"true"` vs `"yes"`) are absorbed by
+the facet adapter.
+
+## Known limitations
+
+### KL-DRF-001 — String-equality compare ⚠️
+The diff treats every value as a string after flatten. Numeric
+fields like `image.fps = 30` vs `30.0` would surface as drift.
+None of the current facets emit ambiguous numerics, but this is a
+latent issue if a new facet does.
+
+### KL-DRF-002 — No "accept current state" shortcut ⚠️
+To accept the live state as the new baseline, operators run a
+fresh `snapshot_device`. There's no `accept_drift` command. This
+is intentional — accepting drift should be an explicit recorded
+event — but operators sometimes ask for a one-call shortcut.
+
+### KL-DRF-003 — Drift sweep cost grows with fleet × facets ⚠️
+A fleet of 500 devices with 6 facets each is ~3000 read calls per
+sweep. The semaphore caps in-flight concurrency, but wall-clock
+time still scales linearly. See KL-PERF-001.
+
+### KL-DRF-004 — No alerting / watch mode ⚠️
+Drift checks are pull-based. There's no `watch --interval` mode
+that emits an event when drift first appears; operators schedule
+the check externally (cron, `admz/snapshot/scheduler.py`) and
+inspect the report.
+
+## References
+
+- ADRs: [0012](../decisions/0012-snapshot-on-plans.md), [0014](../decisions/0014-config-in-git-creds-in-db.md), [0015](../decisions/0015-pluggable-facets.md)
+- Cross-cutting: [observability.md](observability.md), [performance.md](performance.md)
+- Sibling: [snapshot-restore.md](snapshot-restore.md), [scheduling.md](scheduling.md)
+- Code: `admz/snapshot/drift.py`
