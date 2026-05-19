@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -16,6 +17,43 @@ from admz.snapshot.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Maximum number of devices snapshotted concurrently.
+# Default 50 is a balanced value for typical Experience Center fleets
+# (~6-50 devices) and small enterprise installs (~100-500); higher
+# values may exhaust file descriptors or device-side connection limits
+# at scale (~1000+ devices over httpx-pooled connections). Override
+# with ADMZ_SNAPSHOT_FLEET_CONCURRENCY for unusual deployments.
+_DEFAULT_FLEET_CONCURRENCY = 50
+
+
+def _resolve_fleet_concurrency() -> int:
+    """Read ADMZ_SNAPSHOT_FLEET_CONCURRENCY env var.
+
+    Values must parse as a positive integer; anything else falls back
+    to the default with a warning so misconfigurations are visible.
+    """
+    raw = os.getenv("ADMZ_SNAPSHOT_FLEET_CONCURRENCY", "")
+    if not raw:
+        return _DEFAULT_FLEET_CONCURRENCY
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "ADMZ_SNAPSHOT_FLEET_CONCURRENCY=%r is not an integer — "
+            "falling back to %d",
+            raw, _DEFAULT_FLEET_CONCURRENCY,
+        )
+        return _DEFAULT_FLEET_CONCURRENCY
+    if value < 1:
+        logger.warning(
+            "ADMZ_SNAPSHOT_FLEET_CONCURRENCY=%d is not positive — "
+            "falling back to %d",
+            value, _DEFAULT_FLEET_CONCURRENCY,
+        )
+        return _DEFAULT_FLEET_CONCURRENCY
+    return value
 
 VOLATILE_PREFIXES = [
     "root.Properties.System.Soc.",
@@ -57,11 +95,17 @@ class SnapshotEngine:
         registry: DeviceRegistry,
         executors: Dict[str, BaseExecutor],
         git_repo: GitRepo,
+        fleet_concurrency: Optional[int] = None,
     ):
         self.catalog = catalog
         self.registry = registry
         self.executors = executors
         self.git = git_repo
+        self.fleet_concurrency = (
+            fleet_concurrency
+            if fleet_concurrency is not None
+            else _resolve_fleet_concurrency()
+        )
 
     async def snapshot_device(
         self,
@@ -123,9 +167,18 @@ class SnapshotEngine:
                     for d in all_devices
                 ]
 
-        tasks = [
-            self._snapshot_device_no_commit(did, family) for did in device_ids
-        ]
+        # Phase 3D: bound the fan-out. At N devices, unbounded asyncio
+        # gather opens N concurrent httpx connection pools and N file
+        # descriptors — fine at fleet sizes <100, problematic at 1000+
+        # where we'd exhaust the OS limits. Semaphore caps in-flight
+        # work to self.fleet_concurrency.
+        semaphore = asyncio.Semaphore(self.fleet_concurrency)
+
+        async def _bounded(device_id: str) -> DeviceSnapshot:
+            async with semaphore:
+                return await self._snapshot_device_no_commit(device_id, family)
+
+        tasks = [_bounded(did) for did in device_ids]
         snapshots = await asyncio.gather(*tasks, return_exceptions=True)
 
         results = []
