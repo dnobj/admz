@@ -1,9 +1,11 @@
 """
 Web routes for operation confirmation gate.
 
-GET  /confirm/{token}             → render the confirmation form
-POST /confirm/{token}             → validate and complete the session
-GET  /api/confirm/{token}/status  → poll session status (JSON, for MCP)
+GET  /confirm/{token}                → render the confirmation form
+POST /confirm/{token}                → validate and complete the session
+GET  /api/confirm/{token}/status     → poll session status (JSON, for MCP)
+GET  /api/chat/confirm/{token}       → session details JSON (for chat client)
+POST /api/chat/confirm/{token}       → approve/deny in-chat, JSON response
 """
 
 from fastapi import APIRouter, Request, Form, HTTPException
@@ -232,3 +234,134 @@ async def confirm_submit(
             "plan_summary": plan_summary,
         },
     )
+
+
+# ── JSON twin for in-chat approval (Phase 5C) ───────────────────────────────
+#
+# The chat client (admz/api/static/chat.js) detects /confirm/{token}
+# URLs in the assistant's streamed text, replaces them with an inline
+# approval card, and uses these endpoints to fetch session details +
+# submit approval — all without leaving the chat tab.
+#
+# These mirror the HTML form-handler above but return JSON. Same
+# ConfirmStore, same rate limit, same per-token lockout, same fleet
+# password — the only difference is the response shape.
+
+
+@router.get("/api/chat/confirm/{token}", tags=["confirm"])
+async def chat_confirm_details(token: str):
+    """Return session details for the in-chat approval card.
+
+    Used by the chat client to populate the approval card after
+    detecting a confirmation URL in the assistant's text. The
+    response intentionally mirrors the fields the HTML form would
+    render: device, operation, risk, danger description, whether a
+    password is required, and (if it's a plan) the plan summary.
+    """
+    session = confirm_store.get_session(token)
+    if session is None:
+        return JSONResponse(
+            status_code=410,
+            content={"status": "expired_or_not_found"},
+        )
+
+    if session.effective_status == ConfirmStatus.EXPIRED:
+        return JSONResponse(
+            status_code=410, content={"status": "expired"}
+        )
+
+    needs_password = session.confirmation_level == "url_and_password"
+    if needs_password and not fleet_settings.get("confirm_password_hash"):
+        # Same fallback as the HTML route: no password configured →
+        # downgrade to url_only so the operator isn't permanently
+        # locked out.
+        needs_password = False
+
+    return {
+        "status": session.effective_status.value,
+        "device_id": session.device_id,
+        "operation_id": session.operation_id,
+        "risk_level": session.risk_level,
+        "confirmation_level": session.confirmation_level,
+        "danger_description": session.danger_description,
+        "needs_password": needs_password,
+        "is_plan": session.is_plan,
+        "plan_summary": session.plan_summary if session.is_plan else None,
+    }
+
+
+@router.post("/api/chat/confirm/{token}", tags=["confirm"])
+async def chat_confirm_submit(
+    request: Request,
+    token: str,
+    confirm_password: Optional[str] = Form(None),
+):
+    """Approve a confirmation session from within chat.
+
+    Returns JSON ``{"status": "completed"}`` on success, or
+    ``{"status": "<reason>", "error": "..."}`` on failure. HTTP
+    status codes mirror the HTML route: 410 expired, 429
+    rate-limited or locked out, 403 wrong password.
+
+    Always returns a body (even on error) so the chat client can
+    render a meaningful card update without parsing HTML.
+    """
+    if not rate_limiter.check("confirm", client_key_from_request(request)):
+        return JSONResponse(
+            status_code=429,
+            content={
+                "status": "rate_limited",
+                "error": (
+                    "Too many confirm attempts from this address. "
+                    "Try again in a few minutes."
+                ),
+            },
+        )
+
+    session = confirm_store.get_session(token)
+    if session is None or session.effective_status != ConfirmStatus.PENDING:
+        return JSONResponse(
+            status_code=410,
+            content={"status": "expired_or_not_found"},
+        )
+
+    if _is_locked(token):
+        return JSONResponse(
+            status_code=429,
+            content={
+                "status": "locked",
+                "error": (
+                    "Too many failed password attempts. "
+                    "This confirmation link is temporarily locked."
+                ),
+            },
+        )
+
+    if session.confirmation_level == "url_and_password":
+        password_hash = fleet_settings.get("confirm_password_hash")
+        if password_hash:
+            if not confirm_password or not verify_confirm_password(
+                confirm_password, password_hash
+            ):
+                _record_password_failure(token)
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "status": "wrong_password",
+                        "error": "Incorrect confirmation password.",
+                    },
+                )
+
+    _clear_password_failures(token)
+    if not confirm_store.complete_session(token, confirmed_by="chat"):
+        return JSONResponse(
+            status_code=410,
+            content={"status": "expired_or_not_found"},
+        )
+
+    return {
+        "status": "completed",
+        "is_plan": session.is_plan,
+        "device_id": session.device_id,
+        "operation_id": session.operation_id,
+    }

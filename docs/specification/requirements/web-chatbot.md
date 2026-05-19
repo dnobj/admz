@@ -50,13 +50,27 @@ at end-of-turn. If the bridge fails (mcp not installed, spawn
 error), the turn degrades gracefully: chat continues without tools
 and an inline notice tells the user.
 
-### FR-CB-004 — Inline approval cards for dangerous operations 📋
-When the LLM proposes a `dangerous`-risk operation or executes
-a plan containing one, the chat renders an approval card (not
-plain text) showing the operation, the device(s), the
-`danger_description`, and [Approve] / [Deny] buttons. Approval
-consumes a `ConfirmStore` token the same way the existing
-`/confirm/{token}` POST does. Phase 5C.
+### FR-CB-004 — Inline approval cards for dangerous operations ✅
+When the LLM proposes a `dangerous`-risk operation or executes a
+plan containing one, the chat renders an approval card (not plain
+text) showing the operation, the device(s), the
+`danger_description`, and [Approve] / [Dismiss] buttons.
+
+Implementation (Phase 5C):
+- A JSON twin of the existing form endpoint —
+  `GET /api/chat/confirm/{token}` (session details) and
+  `POST /api/chat/confirm/{token}` (approval submission) — backs
+  the card. Same `ConfirmStore`, same per-token lockout, same
+  rate limiter, same fleet-password gate. The HTML route
+  (`/confirm/{token}`) is untouched, so out-of-band approval via
+  a separate tab still works.
+- The browser-side renderer detects `/confirm/{token}` URLs in
+  the assistant's streamed text using a regex over the
+  accumulated text buffer (chunk boundaries don't break it). Each
+  unique token gets one card inserted after the assistant bubble.
+- "Dismiss" closes the card without consuming the token —
+  matches the semantics of closing the browser tab on the HTML
+  flow.
 
 ### FR-CB-005 — Inline capture cards for credential entry 📋
 `capture_credentials(...)` returns a capture URL that the chat
@@ -195,6 +209,20 @@ daily budget (Phase 5D) is the primary lever.
 As of April 2026, only Flash and Flash-Lite are free-tier-eligible.
 Operators evaluating ADMZ on the free tier should default to
 Flash-Lite via `ADMZ_GEMINI_DEFAULT_MODEL=gemini-3.1-flash-lite`.
+
+### KL-CB-007 — Approval card detection is URL-text based ⚠️
+The inline approval card (FR-CB-004) is triggered by detecting a
+`/confirm/{token}` URL in the streamed assistant text. This is
+robust to typical LLM behavior — the MCP tool's response always
+includes the URL and Gemini relays it — but it's not a structured
+channel. If a future model variant omits the URL or rewrites the
+token, the card won't render and the user falls back to the
+out-of-band HTML form route (which still works).
+
+A more robust path would be to wrap the MCP session and intercept
+tool responses server-side, surfacing structured "approval needed"
+events through the SSE stream. Deferred — would require changing
+the FastMCP integration model, see ADR-0025 fallback note.
 
 ### KL-CB-006 — Per-turn MCP subprocess overhead ⚠️
 The MCP bridge spawns `python -m admz mcp` once per chat turn.

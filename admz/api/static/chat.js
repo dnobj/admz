@@ -166,9 +166,229 @@
     return div;
   }
 
+  // Token format: secrets.token_urlsafe(32) → base64url, 43 chars.
+  // Match /confirm/{token} anywhere in text. The token alphabet
+  // (a-z A-Z 0-9 - _) excludes everything outside that, so the
+  // boundary character class catches the end naturally.
+  const CONFIRM_URL_RE = /\/confirm\/([A-Za-z0-9_-]{20,})/g;
+  const seenTokens = new Set();
+
   function appendText(bubble, chunk) {
     const textEl = bubble.querySelector(".chat-text");
     textEl.textContent += chunk;
+    // After accumulating, scan the WHOLE assistant text for new
+    // confirmation URLs. Scanning the buffer rather than each
+    // chunk is robust to token URLs that arrive split across
+    // chunk boundaries.
+    const buffer = textEl.textContent;
+    let m;
+    CONFIRM_URL_RE.lastIndex = 0;
+    while ((m = CONFIRM_URL_RE.exec(buffer)) !== null) {
+      const token = m[1];
+      if (!seenTokens.has(token)) {
+        seenTokens.add(token);
+        renderApprovalCard(token);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Inline approval cards (Phase 5C)
+  // ---------------------------------------------------------------------
+  //
+  // When the assistant emits a "/confirm/{token}" URL, we insert an
+  // approval card after the latest assistant bubble. The card fetches
+  // session details from /api/chat/confirm/{token}, renders an
+  // appropriate UI (with or without password field), and POSTs the
+  // approval inline — no separate browser tab.
+
+  function renderApprovalCard(token) {
+    const card = document.createElement("div");
+    card.style.cssText =
+      "background:#fff7ed;border:1px solid #fdba74;padding:12px;" +
+      "border-radius:6px;margin:8px 0;color:#7c2d12;";
+    card.innerHTML =
+      '<div style="font-size:12px;font-weight:600;color:#9a3412;margin-bottom:4px;">Approval required</div>' +
+      '<div class="approval-body" style="font-size:13px;">Loading…</div>';
+    transcript.appendChild(card);
+
+    fetch("/api/chat/confirm/" + encodeURIComponent(token))
+      .then(function (r) {
+        return r.json().then(function (body) {
+          return { ok: r.ok, body: body };
+        });
+      })
+      .then(function (resp) {
+        if (!resp.ok || !resp.body) {
+          renderApprovalDone(
+            card,
+            "error",
+            resp.body && resp.body.status === "expired_or_not_found"
+              ? "This confirmation link has expired."
+              : "Could not load confirmation details."
+          );
+          return;
+        }
+        if (resp.body.status === "completed") {
+          renderApprovalDone(card, "ok", "Already approved.");
+          return;
+        }
+        populateApprovalForm(card, token, resp.body);
+      })
+      .catch(function (err) {
+        renderApprovalDone(card, "error", String(err));
+      });
+  }
+
+  function populateApprovalForm(card, token, details) {
+    const body = card.querySelector(".approval-body");
+    const riskLabel = details.risk_level
+      ? '<span style="display:inline-block;padding:1px 8px;border-radius:3px;' +
+        'background:#fecaca;color:#991b1b;font-size:11px;font-weight:600;' +
+        'text-transform:uppercase;margin-left:6px;">' +
+        details.risk_level +
+        "</span>"
+      : "";
+
+    const opLine =
+      "<div style=\"margin-bottom:6px;\"><strong>" +
+      escapeHtml(details.operation_id || "operation") +
+      "</strong>" +
+      riskLabel +
+      "</div>";
+
+    const deviceLine = details.device_id
+      ? '<div style="font-size:12px;color:#9a3412;margin-bottom:6px;">on <code>' +
+        escapeHtml(details.device_id) +
+        "</code></div>"
+      : "";
+
+    const dangerLine = details.danger_description
+      ? '<div style="font-size:12px;background:#fffbeb;padding:6px 8px;border-radius:4px;margin-bottom:8px;color:#78350f;">' +
+        escapeHtml(details.danger_description) +
+        "</div>"
+      : "";
+
+    const passwordRow = details.needs_password
+      ? '<div style="margin-bottom:8px;">' +
+        '<label for="pw-' +
+        token +
+        '" style="display:block;font-size:12px;color:#7c2d12;margin-bottom:2px;">' +
+        "Confirmation password</label>" +
+        '<input id="pw-' +
+        token +
+        '" type="password" autocomplete="off" ' +
+        'style="width:100%;padding:6px;border:1px solid #fdba74;border-radius:4px;font-size:13px;">' +
+        "</div>"
+      : "";
+
+    body.innerHTML =
+      opLine +
+      deviceLine +
+      dangerLine +
+      passwordRow +
+      '<div style="display:flex;gap:8px;">' +
+      '<button class="approve-btn" style="padding:6px 14px;background:#dc2626;color:white;border:none;border-radius:4px;font-size:13px;font-weight:600;cursor:pointer;">Approve</button>' +
+      '<button class="deny-btn" style="padding:6px 14px;background:transparent;color:#7c2d12;border:1px solid #fdba74;border-radius:4px;font-size:13px;cursor:pointer;">Dismiss</button>' +
+      "</div>" +
+      '<div class="approval-error" style="font-size:12px;color:#991b1b;margin-top:6px;display:none;"></div>';
+
+    body.querySelector(".approve-btn").addEventListener("click", function () {
+      submitApproval(card, token, details.needs_password);
+    });
+    body.querySelector(".deny-btn").addEventListener("click", function () {
+      // Dismiss removes the card from the UI; the server-side session
+      // stays pending until it expires (or until someone approves it
+      // through the URL). Same semantics as closing the browser tab.
+      card.remove();
+    });
+  }
+
+  function submitApproval(card, token, needsPassword) {
+    const body = card.querySelector(".approval-body");
+    const errorEl = body.querySelector(".approval-error");
+    const approveBtn = body.querySelector(".approve-btn");
+
+    const params = new URLSearchParams();
+    if (needsPassword) {
+      const pwInput = body.querySelector("#pw-" + token);
+      const pw = pwInput ? pwInput.value : "";
+      if (!pw) {
+        showApprovalError(errorEl, "Password required.");
+        return;
+      }
+      params.set("confirm_password", pw);
+    }
+
+    approveBtn.disabled = true;
+    approveBtn.textContent = "Approving…";
+    errorEl.style.display = "none";
+
+    fetch("/api/chat/confirm/" + encodeURIComponent(token), {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
+    })
+      .then(function (r) {
+        return r.json().then(function (body) {
+          return { ok: r.ok, status: r.status, body: body };
+        });
+      })
+      .then(function (resp) {
+        if (resp.ok && resp.body && resp.body.status === "completed") {
+          renderApprovalDone(card, "ok", "Approved.");
+          return;
+        }
+        // Failure paths return a body with status + error.
+        const msg =
+          (resp.body && (resp.body.error || resp.body.status)) ||
+          ("HTTP " + resp.status);
+        // Re-enable Approve unless the session is gone for good.
+        const terminal =
+          resp.body &&
+          (resp.body.status === "expired_or_not_found" ||
+            resp.body.status === "locked");
+        if (terminal) {
+          renderApprovalDone(card, "error", msg);
+        } else {
+          showApprovalError(errorEl, msg);
+          approveBtn.disabled = false;
+          approveBtn.textContent = "Approve";
+        }
+      })
+      .catch(function (err) {
+        showApprovalError(errorEl, String(err));
+        approveBtn.disabled = false;
+        approveBtn.textContent = "Approve";
+      });
+  }
+
+  function showApprovalError(errorEl, msg) {
+    if (!errorEl) return;
+    errorEl.textContent = msg;
+    errorEl.style.display = "block";
+  }
+
+  function renderApprovalDone(card, status, message) {
+    const body = card.querySelector(".approval-body");
+    const icon = status === "ok" ? "✓" : "✗";
+    const color = status === "ok" ? "#166534" : "#991b1b";
+    body.innerHTML =
+      '<span style="color:' +
+      color +
+      ';font-weight:600;">' +
+      icon +
+      "</span> " +
+      escapeHtml(message);
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
 
   function renderToolCard(data) {
