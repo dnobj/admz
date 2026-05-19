@@ -321,6 +321,10 @@ async def stream_turn(
             async for chunk in _invoke_stream(
                 client, request_kwargs, mcp_session=mcp_session
             ):
+                # DEBUG-only: log every raw chunk so we can diagnose
+                # shapes the translator misses. Off in production.
+                if logger.isEnabledFor(logging.DEBUG):
+                    _log_chunk_shape(chunk)
                 event = _translate_stream_chunk(chunk)
                 if event is None:
                     continue
@@ -499,62 +503,160 @@ async def _as_async_iter(result: Any):
         yield item
 
 
-def _translate_stream_chunk(chunk: Any) -> Optional[ChatEvent]:
-    """Translate one SDK chunk into a ChatEvent.
+def _log_chunk_shape(chunk: Any) -> None:
+    """DEBUG: log a chunk's shape so translator misses are visible.
 
-    Returns None to skip the chunk silently. The SDK's chunk
-    shape varies across point releases, so we probe a few common
-    attribute names. Streaming chunks come in three flavors:
-
-      - text chunk: a partial text delta
-      - tool_call: an explicit function-call step (Phase 5B-MCP
-        will exercise this once tools are wired)
-      - terminal: the final chunk carries the interaction_id +
-        usage info; we use the ``done`` event type as a carrier
-        in the stream and translate it to a real ``done`` at the
-        end (see stream_turn)
+    Off unless the logger is at DEBUG. Stays compact — repr of the
+    chunk plus the candidate-part text if present.
     """
-    # Tool-call step: most relevant once MCP is wired.
-    step_type = getattr(chunk, "step_type", None)
-    if step_type == "function_call" or step_type == "tool_call":
-        name = (
-            getattr(chunk, "name", None)
-            or getattr(getattr(chunk, "function_call", None), "name", None)
-            or "tool"
+    try:
+        text = _extract_text_from_chunk(chunk) or ""
+        usage = getattr(chunk, "usage_metadata", None) or getattr(chunk, "usage", None)
+        logger.debug(
+            "[chat] raw chunk type=%s text=%r usage=%r",
+            type(chunk).__name__,
+            text[:200],
+            usage,
         )
-        return event_tool_call(name=name, args_summary=f"{name}(...)")
+    except Exception:  # pragma: no cover — diagnostic must never crash
+        logger.debug("[chat] raw chunk type=%s (repr failed)", type(chunk).__name__)
 
-    # Text delta.
-    delta = (
+
+def _extract_text_from_chunk(chunk: Any) -> Optional[str]:
+    """Pull text out of a google-genai streaming chunk.
+
+    The SDK puts text under ``candidates[0].content.parts[*].text``.
+    Older shapes might surface a flat ``.text`` property or ``.delta``;
+    we try the flat path first, then walk the nested structure.
+    """
+    flat = (
         getattr(chunk, "text", None)
         or getattr(chunk, "delta", None)
         or getattr(chunk, "output_text", None)
     )
-    if isinstance(delta, str) and delta:
+    if isinstance(flat, str) and flat:
+        return flat
+
+    # google-genai GenerateContentResponse: candidates[0].content.parts[*].text
+    candidates = getattr(chunk, "candidates", None)
+    if candidates:
+        try:
+            content = getattr(candidates[0], "content", None)
+            parts = getattr(content, "parts", None) if content else None
+        except (IndexError, AttributeError):
+            return None
+        if parts:
+            collected = []
+            for part in parts:
+                t = getattr(part, "text", None)
+                if isinstance(t, str) and t:
+                    collected.append(t)
+            if collected:
+                return "".join(collected)
+    return None
+
+
+def _extract_function_call_from_chunk(chunk: Any) -> Optional[str]:
+    """Pull a function_call name from a chunk if present.
+
+    With AFC enabled the SDK handles tool roundtrips internally, but
+    some response shapes surface the function_call to the consumer
+    too. Return the name (we render a card) so the UI can show what
+    fired.
+    """
+    fc = getattr(chunk, "function_call", None)
+    if fc is not None:
+        name = getattr(fc, "name", None)
+        if isinstance(name, str) and name:
+            return name
+
+    candidates = getattr(chunk, "candidates", None)
+    if candidates:
+        try:
+            content = getattr(candidates[0], "content", None)
+            parts = getattr(content, "parts", None) if content else None
+        except (IndexError, AttributeError):
+            return None
+        if parts:
+            for part in parts:
+                fc = getattr(part, "function_call", None)
+                if fc is not None:
+                    name = getattr(fc, "name", None)
+                    if isinstance(name, str) and name:
+                        return name
+    return None
+
+
+def _extract_usage_from_chunk(chunk: Any):
+    """Return (input_tokens, output_tokens) from a chunk, or (None, None).
+
+    google-genai puts usage on ``usage_metadata`` with fields
+    ``prompt_token_count`` and ``candidates_token_count``. Older
+    SDKs used ``input_tokens``/``output_tokens`` on a ``usage`` dict.
+    """
+    um = getattr(chunk, "usage_metadata", None)
+    if um is not None:
+        in_t = (
+            getattr(um, "prompt_token_count", None)
+            or getattr(um, "input_tokens", None)
+        )
+        out_t = (
+            getattr(um, "candidates_token_count", None)
+            or getattr(um, "output_tokens", None)
+        )
+        if in_t is not None or out_t is not None:
+            return in_t, out_t
+
+    usage = getattr(chunk, "usage", None)
+    if isinstance(usage, dict):
+        return (
+            usage.get("input_tokens") or usage.get("prompt_tokens"),
+            usage.get("output_tokens") or usage.get("completion_tokens"),
+        )
+    if usage is not None:
+        return (
+            getattr(usage, "input_tokens", None)
+            or getattr(usage, "prompt_tokens", None),
+            getattr(usage, "output_tokens", None)
+            or getattr(usage, "completion_tokens", None),
+        )
+    return None, None
+
+
+def _translate_stream_chunk(chunk: Any) -> Optional[ChatEvent]:
+    """Translate one SDK chunk into a ChatEvent.
+
+    Returns None to skip the chunk silently. Probes both the legacy
+    flat shape (text/delta/output_text on the chunk object) and the
+    real google-genai 2.x shape (candidates[].content.parts[]).
+    """
+    # Tool-call step (Phase 5B-MCP). AFC may handle these internally
+    # but some chunks still surface them.
+    step_type = getattr(chunk, "step_type", None)
+    if step_type in ("function_call", "tool_call"):
+        name = (
+            getattr(chunk, "name", None)
+            or _extract_function_call_from_chunk(chunk)
+            or "tool"
+        )
+        return event_tool_call(name=name, args_summary=f"{name}(...)")
+    fc_name = _extract_function_call_from_chunk(chunk)
+    if fc_name and not _extract_text_from_chunk(chunk):
+        return event_tool_call(name=fc_name, args_summary=f"{fc_name}(...)")
+
+    # Text delta — flat OR nested under candidates[].content.parts[].
+    delta = _extract_text_from_chunk(chunk)
+    if delta:
         return event_text(delta)
 
-    # Terminal metadata (the SDK calls the last chunk
-    # "completion" or surfaces usage on it).
-    usage = getattr(chunk, "usage", None)
+    # Terminal metadata — usage_metadata on the final chunk.
+    input_tokens, output_tokens = _extract_usage_from_chunk(chunk)
     interaction_id = (
         getattr(chunk, "id", None)
         or getattr(chunk, "interaction_id", None)
+        or getattr(chunk, "response_id", None)
     )
-    if usage or interaction_id:
-        input_tokens = None
-        output_tokens = None
-        if isinstance(usage, dict):
-            input_tokens = usage.get("input_tokens") or usage.get("prompt_tokens")
-            output_tokens = usage.get("output_tokens") or usage.get("completion_tokens")
-        elif usage is not None:
-            input_tokens = (
-                getattr(usage, "input_tokens", None)
-                or getattr(usage, "prompt_tokens", None)
-            )
-            output_tokens = (
-                getattr(usage, "output_tokens", None)
-                or getattr(usage, "completion_tokens", None)
-            )
+    if input_tokens is not None or output_tokens is not None or interaction_id:
         return event_done(
             interaction_id=interaction_id,
             input_tokens=input_tokens,

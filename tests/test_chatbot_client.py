@@ -169,3 +169,175 @@ class TestResultFromResponse:
         result = client_mod._result_from_response(resp, "gemini-2.5-pro")
         assert result.input_tokens is None
         assert result.output_tokens is None
+
+
+# ---------------------------------------------------------------------------
+# Stream-chunk translation: real Gemini 2.x shape
+# ---------------------------------------------------------------------------
+#
+# google-genai 2.x yields GenerateContentResponse-like chunks where
+# text lives at candidates[0].content.parts[0].text. The original
+# translator only probed chunk.text, so a response that didn't
+# expose that flat attribute returned empty. These tests cover the
+# nested-shape extraction.
+
+
+class _FakePart:
+    def __init__(self, *, text=None, function_call=None):
+        if text is not None:
+            self.text = text
+        if function_call is not None:
+            self.function_call = function_call
+
+
+class _FakeFunctionCall:
+    def __init__(self, name):
+        self.name = name
+
+
+class _FakeContent:
+    def __init__(self, parts):
+        self.parts = parts
+
+
+class _FakeCandidate:
+    def __init__(self, parts):
+        self.content = _FakeContent(parts)
+
+
+class _FakeUsageMetadata:
+    def __init__(self, prompt=None, candidates=None):
+        if prompt is not None:
+            self.prompt_token_count = prompt
+        if candidates is not None:
+            self.candidates_token_count = candidates
+
+
+class _FakeStreamChunk:
+    """Mimics google-genai 2.x GenerateContentResponse streaming chunk."""
+
+    def __init__(self, *, candidates=None, usage_metadata=None, response_id=None):
+        if candidates is not None:
+            self.candidates = candidates
+        if usage_metadata is not None:
+            self.usage_metadata = usage_metadata
+        if response_id is not None:
+            self.response_id = response_id
+
+
+class TestExtractTextFromChunk:
+    def test_flat_text_attr(self):
+        chunk = MagicMock(spec=["text"])
+        chunk.text = "hello"
+        assert client_mod._extract_text_from_chunk(chunk) == "hello"
+
+    def test_nested_candidates_parts(self):
+        chunk = _FakeStreamChunk(
+            candidates=[_FakeCandidate([_FakePart(text="hello world")])]
+        )
+        assert client_mod._extract_text_from_chunk(chunk) == "hello world"
+
+    def test_multiple_parts_joined(self):
+        chunk = _FakeStreamChunk(
+            candidates=[
+                _FakeCandidate(
+                    [_FakePart(text="hello "), _FakePart(text="world")]
+                )
+            ]
+        )
+        assert client_mod._extract_text_from_chunk(chunk) == "hello world"
+
+    def test_empty_chunk_returns_none(self):
+        chunk = _FakeStreamChunk(candidates=[])
+        assert client_mod._extract_text_from_chunk(chunk) is None
+
+    def test_function_call_only_returns_none(self):
+        """A chunk that's a function_call (no text) should yield None."""
+        chunk = _FakeStreamChunk(
+            candidates=[
+                _FakeCandidate(
+                    [_FakePart(function_call=_FakeFunctionCall("list_devices"))]
+                )
+            ]
+        )
+        assert client_mod._extract_text_from_chunk(chunk) is None
+
+
+class TestExtractFunctionCallFromChunk:
+    def test_nested_function_call(self):
+        chunk = _FakeStreamChunk(
+            candidates=[
+                _FakeCandidate(
+                    [_FakePart(function_call=_FakeFunctionCall("list_devices"))]
+                )
+            ]
+        )
+        assert client_mod._extract_function_call_from_chunk(chunk) == "list_devices"
+
+    def test_no_function_call_returns_none(self):
+        chunk = _FakeStreamChunk(
+            candidates=[_FakeCandidate([_FakePart(text="hi")])]
+        )
+        assert client_mod._extract_function_call_from_chunk(chunk) is None
+
+
+class TestExtractUsageFromChunk:
+    def test_usage_metadata_shape(self):
+        chunk = _FakeStreamChunk(
+            usage_metadata=_FakeUsageMetadata(prompt=42, candidates=87)
+        )
+        in_t, out_t = client_mod._extract_usage_from_chunk(chunk)
+        assert in_t == 42
+        assert out_t == 87
+
+    def test_legacy_dict_usage(self):
+        chunk = MagicMock(spec=["usage"])
+        chunk.usage = {"input_tokens": 10, "output_tokens": 20}
+        in_t, out_t = client_mod._extract_usage_from_chunk(chunk)
+        assert in_t == 10
+        assert out_t == 20
+
+    def test_no_usage(self):
+        chunk = _FakeStreamChunk()
+        assert client_mod._extract_usage_from_chunk(chunk) == (None, None)
+
+
+class TestTranslateStreamChunk:
+    def test_yields_text_event_for_nested_text(self):
+        """The Gemini 2.x case that broke the chat — nested parts."""
+        chunk = _FakeStreamChunk(
+            candidates=[_FakeCandidate([_FakePart(text="real response")])]
+        )
+        ev = client_mod._translate_stream_chunk(chunk)
+        assert ev is not None
+        assert ev.type.value == "text"
+        assert ev.payload["chunk"] == "real response"
+
+    def test_yields_tool_call_for_nested_function_call(self):
+        chunk = _FakeStreamChunk(
+            candidates=[
+                _FakeCandidate(
+                    [_FakePart(function_call=_FakeFunctionCall("list_devices"))]
+                )
+            ]
+        )
+        ev = client_mod._translate_stream_chunk(chunk)
+        assert ev is not None
+        assert ev.type.value == "tool_call"
+        assert ev.payload["name"] == "list_devices"
+
+    def test_yields_done_for_terminal_chunk_with_usage_metadata(self):
+        chunk = _FakeStreamChunk(
+            usage_metadata=_FakeUsageMetadata(prompt=100, candidates=50),
+            response_id="resp-1",
+        )
+        ev = client_mod._translate_stream_chunk(chunk)
+        assert ev is not None
+        assert ev.type.value == "done"
+        assert ev.payload["input_tokens"] == 100
+        assert ev.payload["output_tokens"] == 50
+        assert ev.payload["interaction_id"] == "resp-1"
+
+    def test_empty_chunk_returns_none(self):
+        chunk = _FakeStreamChunk(candidates=[_FakeCandidate([])])
+        assert client_mod._translate_stream_chunk(chunk) is None
