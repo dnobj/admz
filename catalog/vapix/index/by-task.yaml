@@ -528,3 +528,35 @@ configure-network-rest:
 configure-lldp:
   - rest/lldp/v1/getStatus.yaml
   - rest/lldp/v1/getNeighbors.yaml
+
+# --- Physical Access Control (door + schedule) ---
+
+list-doors:
+  - ws/door-control-service/GetDoorInfoList.yaml
+
+inspect-door:
+  - ws/door-control-service/GetDoorInfoList.yaml
+  - ws/door-control-service/GetDoorState.yaml
+  - ws/door-control-service/GetDoorConfigurationList.yaml
+
+grant-door-access:
+  - ws/door-control-service/AccessDoor.yaml
+  - ws/door-control-service/GetDoorState.yaml
+
+manual-door-lock-unlock:
+  - ws/door-control-service/LockDoor.yaml
+  - ws/door-control-service/UnlockDoor.yaml
+  - ws/door-control-service/ReleaseDoor.yaml
+  - ws/door-control-service/GetDoorState.yaml
+
+emergency-lockdown:
+  - ws/door-control-service/LockDownDoor.yaml
+  - ws/door-control-service/BlockDoor.yaml
+  - ws/door-control-service/ReleaseDoor.yaml
+
+list-schedules:
+  - ws/schedule-service/GetScheduleList.yaml
+
+check-schedule-active:
+  - ws/schedule-service/ScheduleActive.yaml
+  - ws/schedule-service/GetScheduleList.yaml

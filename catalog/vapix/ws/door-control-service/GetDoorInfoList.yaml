@@ -1,0 +1,36 @@
+id: door-control-service:GetDoorInfoList
+cgi: door-control-service
+method: POST
+risk_level: read-only
+
+soap_namespace: "http://www.axis.com/vapix/ws/door-control/"
+
+request:
+  content_type: application/xml
+  body_xml: |
+    <SOAP-ENV:Envelope
+        xmlns:axtdc="http://www.axis.com/vapix/ws/door-control/"
+        xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope">
+      <SOAP-ENV:Body>
+        <axtdc:GetDoorInfoList>
+          <axtdc:Limit>{limit}</axtdc:Limit>
+        </axtdc:GetDoorInfoList>
+      </SOAP-ENV:Body>
+    </SOAP-ENV:Envelope>
+  params:
+    limit:
+      required: false
+      default: "100"
+      description: "Maximum number of door entries to return"
+
+response:
+  format: xml
+
+notes: >
+  Returns summary info (token, name, description, capabilities) for
+  every door known to the controller. Use this as the entry point to
+  discover door tokens; pass the tokens to GetDoor / GetDoorState /
+  AccessDoor and the lock-control operations.
+
+requires:
+  auth_level: admin

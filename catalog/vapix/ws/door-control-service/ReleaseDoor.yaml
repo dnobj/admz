@@ -1,0 +1,39 @@
+id: door-control-service:ReleaseDoor
+cgi: door-control-service
+method: POST
+risk_level: service-affecting
+
+soap_namespace: "http://www.axis.com/vapix/ws/door-control/"
+
+request:
+  content_type: application/xml
+  body_xml: |
+    <SOAP-ENV:Envelope
+        xmlns:axtdc="http://www.axis.com/vapix/ws/door-control/"
+        xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope">
+      <SOAP-ENV:Body>
+        <axtdc:ReleaseDoor>
+          <axtdc:Token>{token}</axtdc:Token>
+        </axtdc:ReleaseDoor>
+      </SOAP-ENV:Body>
+    </SOAP-ENV:Envelope>
+  params:
+    token:
+      required: true
+      description: "Door token (from GetDoorInfoList)"
+
+response:
+  format: xml
+
+service_impact: >
+  Cancels an active override (LockDoor / UnlockDoor / BlockDoor /
+  LockDownDoor / LockOpenDoor) and returns the door to its scheduled
+  default behavior.
+
+notes: >
+  The "undo" verb for the lock-state-change operations. Pair every
+  LockDownDoor / BlockDoor with a documented ReleaseDoor plan so
+  operators know how to restore normal access.
+
+requires:
+  auth_level: admin

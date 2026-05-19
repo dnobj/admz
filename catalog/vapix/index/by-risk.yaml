@@ -170,6 +170,13 @@ read-only:
   # disks-raid.cgi
   - cgi/disks-raid.cgi/1.0/getStatus.yaml
   - cgi/disks-raid.cgi/1.0/getCapabilities.yaml
+  # Physical access control — door-control-service (SOAP)
+  - ws/door-control-service/GetDoorInfoList.yaml
+  - ws/door-control-service/GetDoorState.yaml
+  - ws/door-control-service/GetDoorConfigurationList.yaml
+  # Physical access control — schedule-service (SOAP)
+  - ws/schedule-service/GetScheduleList.yaml
+  - ws/schedule-service/ScheduleActive.yaml
 
 normal:
   # param.cgi
@@ -358,6 +365,12 @@ service-affecting:
   - cgi/network_settings.cgi/1.0/removeVlan.yaml
   - cgi/network_settings.cgi/1.0/setIPv6AddressConfiguration.yaml
   - cgi/network_settings.cgi/1.0/setWired8021XConfiguration.yaml
+  # Physical access control — door state changes (each affects physical security)
+  - ws/door-control-service/AccessDoor.yaml
+  - ws/door-control-service/LockDoor.yaml
+  - ws/door-control-service/UnlockDoor.yaml
+  - ws/door-control-service/BlockDoor.yaml
+  - ws/door-control-service/ReleaseDoor.yaml
 
 dangerous:
   # factorydefault.cgi
@@ -372,3 +385,5 @@ dangerous:
   - ws/certificates/DeleteCertificates.yaml
   # privacymask.cgi
   - cgi/privacymask.cgi/v1/removeMask.yaml
+  # Physical access control — emergency lockdown
+  - ws/door-control-service/LockDownDoor.yaml
