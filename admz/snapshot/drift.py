@@ -89,6 +89,20 @@ class DriftDetector:
                 report.facets_drifted += 1
                 report.has_drift = True
 
+        # Phase 8: hand the report to the alert store so transitions
+        # (sync→drifted, drift-set-changed, drifted→sync) get
+        # recorded for ``list_drift_alerts``. Best-effort — a store
+        # failure must never mask the report from the caller.
+        try:
+            import admz.snapshot.drift_alerts as _alerts_module
+            _alerts_module.drift_alerts.process_report(report)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "DriftDetector: alert store failed for %s: %s",
+                device_id,
+                exc,
+            )
+
         return report
 
     async def check_fleet_drift(

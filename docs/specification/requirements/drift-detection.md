@@ -98,11 +98,30 @@ A fleet of 500 devices with 6 facets each is ~3000 read calls per
 sweep. The semaphore caps in-flight concurrency, but wall-clock
 time still scales linearly. See KL-PERF-001.
 
-### KL-DRF-004 — No alerting / watch mode ⚠️
-Drift checks are pull-based. There's no `watch --interval` mode
-that emits an event when drift first appears; operators schedule
-the check externally (cron, `admz/snapshot/scheduler.py`) and
-inspect the report.
+### KL-DRF-004 — Transition alerting on top of pull-based checks ✅
+Resolved in Phase 8. `admz/snapshot/drift_alerts.py` hooks into
+every `DriftDetector.check_drift` call and compares the report
+against the last-known drift signature for that device. Three
+transitions are recorded:
+
+  - `appeared` — device was in sync; drift fields appeared.
+  - `changed` — drift set or values changed.
+  - `cleared` — drift is gone.
+
+The first observation for a device is the baseline — no alert.
+Alerts persist to the `drift_alerts` SQLite table with timestamp,
+device, transition, field counts, signature hash, and a one-line
+summary. Operators query via `DriftAlertStore.list_alerts(since=…,
+device_id=…, transitions=…, limit=…)`.
+
+The check itself is still pull-based — drift sweeps via the
+scheduler or operator-initiated checks feed the alert log
+naturally. `clear_baseline(device_id)` lets an operator accept
+the current state as the new baseline without manually editing
+the DB.
+
+A true push-based notifier (webhook, chat alert, Slack) is the
+next layer up — not in Phase 8.
 
 ## References
 
