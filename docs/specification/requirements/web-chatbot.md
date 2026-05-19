@@ -136,7 +136,28 @@ Gemini's server-side conversation store; ADMZ doesn't keep
 transcripts locally. "Clear chat" deletes the principal's row,
 which makes the next turn start a fresh server-side interaction.
 
-### FR-CB-013 — Chat is the new home page ✅
+### FR-CB-013 — JSON endpoint for programmatic testing ✅
+`POST /api/chat` is the scriptable twin of `POST /chat/stream`:
+accepts `{message, model?, use_tools?}` JSON, returns the full
+turn result as JSON (`success`, `response`, `model`,
+`input_tokens`, `output_tokens`, `cost_usd`, `interaction_id`,
+`tool_calls`, `error`, `rejected_by_budget`). Same auth, budget
+gate, audit log, and MCP tool surface as the SSE route — only
+the wire format differs.
+
+Curl example:
+```
+curl -X POST http://localhost:4242/api/chat \
+     -H 'Content-Type: application/json' \
+     -d '{"message": "list my devices"}'
+```
+
+Suitable for end-to-end smoke tests, scripted demos, or driving
+the chatbot from automation. Internal: both the SSE and JSON
+routes share a single `_run_chat_turn` helper so policy (budget,
+audit, usage) stays in one place.
+
+### FR-CB-014 — Chat is the new home page ✅
 `GET /` redirects to `/chat`. The previous home (`/devices`)
 keeps its URL; users can still navigate to it directly or from
 the nav bar. Top-level nav order: Chat, Devices, Search,

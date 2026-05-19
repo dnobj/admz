@@ -22,7 +22,10 @@ import logging
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
-from fastapi import APIRouter, Depends, Form, Request
+from dataclasses import dataclass, field
+
+from fastapi import APIRouter, Body, Depends, Form, Request
+from pydantic import BaseModel, Field
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
@@ -245,6 +248,210 @@ async def chat_clear(
 
 
 # ---------------------------------------------------------------------------
+# Shared turn-runner
+# ---------------------------------------------------------------------------
+#
+# Both /chat/stream (SSE) and /api/chat (JSON) need the same machinery:
+# budget check → invoke stream_turn → forward/collect events → record
+# usage + audit. The SSE route forwards each event to the wire as it
+# arrives; the JSON route accumulates events and returns them at end of
+# turn. Factor that machinery into one async generator so neither
+# duplicates the policy.
+
+
+@dataclass
+class _TurnSummary:
+    """Aggregated result of one chat turn — what /api/chat returns."""
+
+    success: bool = True
+    response: str = ""
+    error: Optional[str] = None
+    model: str = ""
+    interaction_id: Optional[str] = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: Optional[float] = None
+    tool_calls: list = field(default_factory=list)
+    # Set when budget gate rejected the turn before the SDK ran.
+    rejected_by_budget: bool = False
+
+
+async def _run_chat_turn(
+    *,
+    principal: Principal,
+    message: str,
+    model_request: str,
+    config,
+    use_tools: bool = True,
+):
+    """Async generator: yields (event, summary) tuples per chat event.
+
+    The generator does the policy work — budget gate, stream_turn
+    invocation, exception wrapping, usage/audit recording. Callers
+    consume the events to forward downstream (SSE) or accumulate them
+    (JSON). A final ``(None, summary)`` tuple signals end-of-turn with
+    the populated summary.
+    """
+    summary = _TurnSummary()
+    chosen_model = (
+        model_request if model_request in SELECTABLE_MODELS
+        else config.default_model
+    )
+    summary.model = chosen_model
+
+    if not config.configured:
+        summary.success = False
+        summary.error = "Gemini API key is not configured. Visit /settings/chat."
+        yield (event_error(summary.error), None)
+        yield (None, summary)
+        return
+
+    budget = check_budget(principal.name)
+    if not budget.allowed:
+        summary.success = False
+        summary.error = budget.reason
+        summary.rejected_by_budget = True
+        record_event(
+            principal,
+            action="chat_budget_exceeded",
+            resource=f"model:{chosen_model}",
+            details={
+                "via_chatbot": True,
+                "used_today": budget.used_today,
+                "budget": budget.budget,
+            },
+            success=False,
+            error_message=budget.reason,
+        )
+        yield (event_error(budget.reason), None)
+        yield (None, summary)
+        return
+
+    prev_id = _sessions().get_interaction_id(principal.name)
+    system_prompt = build_system_prompt(
+        principal_name=principal.name,
+        display_name=principal.display_name,
+        groups=principal.groups,
+    )
+
+    logger.debug(
+        "[chat] user=%s model=%s prev_id=%s message=%r",
+        principal.name,
+        chosen_model,
+        prev_id,
+        message,
+    )
+
+    text_parts: list = []
+    try:
+        async for chat_event in stream_turn(
+            user_message=message,
+            api_key=config.api_key,
+            model=chosen_model,
+            system_prompt=system_prompt,
+            previous_interaction_id=prev_id,
+            principal=principal.name,
+            use_tools=use_tools,
+        ):
+            if chat_event.type == ChatEventType.DONE:
+                summary.interaction_id = chat_event.payload.get("interaction_id")
+                summary.input_tokens = int(
+                    chat_event.payload.get("input_tokens") or 0
+                )
+                summary.output_tokens = int(
+                    chat_event.payload.get("output_tokens") or 0
+                )
+                summary.cost_usd = estimate_cost_usd(
+                    chosen_model,
+                    summary.input_tokens,
+                    summary.output_tokens,
+                )
+                # Augment the event so SSE consumers see model + cost.
+                chat_event.payload["cost_usd"] = summary.cost_usd
+                chat_event.payload["model"] = chosen_model
+            elif chat_event.type == ChatEventType.ERROR:
+                summary.success = False
+                summary.error = chat_event.payload.get("message", "")
+            elif chat_event.type == ChatEventType.TEXT:
+                chunk = chat_event.payload.get("chunk", "")
+                if chunk:
+                    text_parts.append(chunk)
+            elif chat_event.type == ChatEventType.TOOL_CALL:
+                summary.tool_calls.append(chat_event.payload.get("name", "?"))
+            yield (chat_event, None)
+    except ChatbotDependencyMissing as exc:
+        summary.success = False
+        summary.error = str(exc)
+        yield (event_error(str(exc)), None)
+    except ChatbotNotConfigured as exc:
+        summary.success = False
+        summary.error = str(exc)
+        yield (event_error(str(exc)), None)
+    except ChatbotTurnError as exc:
+        summary.success = False
+        summary.error = str(exc)
+        yield (event_error(f"Gemini stream error: {exc}"), None)
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.exception("Unexpected chat turn failure: %s", exc)
+        summary.success = False
+        summary.error = str(exc)
+        yield (event_error(f"Unexpected error: {exc}"), None)
+
+    summary.response = "".join(text_parts)
+
+    if summary.interaction_id:
+        _sessions().set_interaction_id(
+            principal.name, summary.interaction_id, chosen_model
+        )
+
+    # Record usage + audit (best-effort).
+    try:
+        if summary.input_tokens or summary.output_tokens:
+            _token_usage().record_turn(
+                principal=principal.name,
+                model=chosen_model,
+                input_tokens=summary.input_tokens,
+                output_tokens=summary.output_tokens,
+                cost_usd=summary.cost_usd,
+            )
+        record_event(
+            principal,
+            action="chat_turn",
+            resource=f"model:{chosen_model}",
+            details={
+                "via_chatbot": True,
+                "model": chosen_model,
+                "input_tokens": summary.input_tokens,
+                "output_tokens": summary.output_tokens,
+                "cost_usd": summary.cost_usd,
+                "had_previous_session": prev_id is not None,
+                "tool_calls": summary.tool_calls,
+            },
+            success=summary.success,
+            error_message=summary.error or "",
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("Failed to record chat turn usage/audit: %s", exc)
+
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "[chat] user=%s model=%s tools=%s tokens=%d/%d cost=$%s "
+            "ok=%s response=%r%s",
+            principal.name,
+            chosen_model,
+            summary.tool_calls or "(none)",
+            summary.input_tokens,
+            summary.output_tokens,
+            f"{summary.cost_usd or 0:.6f}",
+            summary.success,
+            summary.response,
+            f" error={summary.error!r}" if summary.error else "",
+        )
+
+    yield (None, summary)
+
+
+# ---------------------------------------------------------------------------
 # /chat/stream — Server-Sent Events
 # ---------------------------------------------------------------------------
 
@@ -269,183 +476,19 @@ async def chat_stream(
         caches storing the event stream.
     """
     config = get_chatbot_config()
-    chosen_model = (
-        model if model in SELECTABLE_MODELS else config.default_model
-    )
 
     async def event_source() -> AsyncIterator[str]:
-        if not config.configured:
-            yield event_error(
-                "Gemini API key is not configured. Visit /settings/chat."
-            ).to_sse()
-            return
-
-        # Phase 5D: budget gate. Checked here (not inside stream_turn)
-        # so the route can audit-log the rejection with the principal.
-        budget = check_budget(principal.name)
-        if not budget.allowed:
-            record_event(
-                principal,
-                action="chat_budget_exceeded",
-                resource=f"model:{chosen_model}",
-                details={
-                    "via_chatbot": True,
-                    "used_today": budget.used_today,
-                    "budget": budget.budget,
-                },
-                success=False,
-                error_message=budget.reason,
-            )
-            yield event_error(budget.reason).to_sse()
-            return
-
-        prev_id = _sessions().get_interaction_id(principal.name)
-        system_prompt = build_system_prompt(
-            principal_name=principal.name,
-            display_name=principal.display_name,
-            groups=principal.groups,
-        )
-
-        # DEBUG logging: capture the user's message at turn start. The
-        # full conversation only ends up in logs when ADMZ_LOG_LEVEL=DEBUG.
-        # See the requirements doc (web-chatbot.md) for the privacy note.
-        logger.debug(
-            "[chat] user=%s model=%s prev_id=%s message=%r",
-            principal.name,
-            chosen_model,
-            prev_id,
-            message,
-        )
-
-        captured_interaction_id: Optional[str] = None
-        captured_input_tokens: int = 0
-        captured_output_tokens: int = 0
-        turn_succeeded = True
-        turn_error: Optional[str] = None
-        # DEBUG-only buffer of streamed text so we can log the full
-        # assistant response at end-of-turn. Kept local to the route;
-        # never persisted.
-        assistant_text_parts: list = []
-        tool_call_log: list = []
-
-        try:
-            async for chat_event in stream_turn(
-                user_message=message,
-                api_key=config.api_key,
-                model=chosen_model,
-                system_prompt=system_prompt,
-                previous_interaction_id=prev_id,
-                principal=principal.name,
-            ):
-                # Capture terminal metadata + augment the done event
-                # with cost estimate before forwarding.
-                if chat_event.type == ChatEventType.DONE:
-                    captured_interaction_id = chat_event.payload.get(
-                        "interaction_id"
-                    )
-                    captured_input_tokens = int(
-                        chat_event.payload.get("input_tokens") or 0
-                    )
-                    captured_output_tokens = int(
-                        chat_event.payload.get("output_tokens") or 0
-                    )
-                    cost = estimate_cost_usd(
-                        chosen_model,
-                        captured_input_tokens,
-                        captured_output_tokens,
-                    )
-                    chat_event.payload["cost_usd"] = cost
-                    chat_event.payload["model"] = chosen_model
-                elif chat_event.type == ChatEventType.ERROR:
-                    turn_succeeded = False
-                    turn_error = chat_event.payload.get("message", "")
-                elif chat_event.type == ChatEventType.TEXT:
-                    # Accumulate for end-of-turn DEBUG log.
-                    chunk = chat_event.payload.get("chunk", "")
-                    if chunk:
-                        assistant_text_parts.append(chunk)
-                elif chat_event.type == ChatEventType.TOOL_CALL:
-                    tool_call_log.append(
-                        chat_event.payload.get("name", "?")
-                    )
-                yield chat_event.to_sse()
-        except ChatbotDependencyMissing as exc:
-            turn_succeeded = False
-            turn_error = str(exc)
-            yield event_error(str(exc)).to_sse()
-        except ChatbotNotConfigured as exc:
-            turn_succeeded = False
-            turn_error = str(exc)
-            yield event_error(str(exc)).to_sse()
-        except ChatbotTurnError as exc:
-            turn_succeeded = False
-            turn_error = str(exc)
-            yield event_error(f"Gemini stream error: {exc}").to_sse()
-        except Exception as exc:  # pragma: no cover — defensive
-            logger.exception("Unexpected chat stream failure: %s", exc)
-            turn_succeeded = False
-            turn_error = str(exc)
-            yield event_error(f"Unexpected error: {exc}").to_sse()
-            return
-
-        if captured_interaction_id:
-            _sessions().set_interaction_id(
-                principal.name, captured_interaction_id, chosen_model
-            )
-
-        # DEBUG: emit the assembled assistant response + any tool calls.
-        # Skipped silently when logger isn't at DEBUG, so production
-        # operators don't pay for the string construction.
-        if logger.isEnabledFor(logging.DEBUG):
-            assistant_text = "".join(assistant_text_parts)
-            logger.debug(
-                "[chat] user=%s model=%s tools=%s tokens=%d/%d cost=$%s "
-                "ok=%s response=%r%s",
-                principal.name,
-                chosen_model,
-                tool_call_log or "(none)",
-                captured_input_tokens,
-                captured_output_tokens,
-                f"{estimate_cost_usd(chosen_model, captured_input_tokens, captured_output_tokens) or 0:.6f}",
-                turn_succeeded,
-                assistant_text,
-                f" error={turn_error!r}" if turn_error else "",
-            )
-
-        # Phase 5D: record usage + emit an audit entry for this turn.
-        # Best-effort — never let a usage/audit failure break the
-        # already-streamed response.
-        try:
-            cost = estimate_cost_usd(
-                chosen_model, captured_input_tokens, captured_output_tokens
-            )
-            if captured_input_tokens or captured_output_tokens:
-                _token_usage().record_turn(
-                    principal=principal.name,
-                    model=chosen_model,
-                    input_tokens=captured_input_tokens,
-                    output_tokens=captured_output_tokens,
-                    cost_usd=cost,
-                )
-            record_event(
-                principal,
-                action="chat_turn",
-                resource=f"model:{chosen_model}",
-                details={
-                    "via_chatbot": True,
-                    "model": chosen_model,
-                    "input_tokens": captured_input_tokens,
-                    "output_tokens": captured_output_tokens,
-                    "cost_usd": cost,
-                    "had_previous_session": prev_id is not None,
-                },
-                success=turn_succeeded,
-                error_message=turn_error or "",
-            )
-        except Exception as exc:  # pragma: no cover — defensive
-            logger.warning(
-                "Failed to record chat turn usage/audit: %s", exc
-            )
+        async for chat_event, _summary in _run_chat_turn(
+            principal=principal,
+            message=message,
+            model_request=model,
+            config=config,
+        ):
+            if chat_event is None:
+                # End-of-turn sentinel; summary is in _summary but the
+                # SSE consumer already has it (done + text events).
+                continue
+            yield chat_event.to_sse()
 
     return StreamingResponse(
         event_source(),
@@ -455,6 +498,95 @@ async def chat_stream(
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+# ---------------------------------------------------------------------------
+# /api/chat — JSON endpoint for programmatic testing / scripted scenarios
+# ---------------------------------------------------------------------------
+
+
+class ChatRequest(BaseModel):
+    """Body of POST /api/chat."""
+
+    message: str = Field(
+        ..., description="User message to send to the chatbot.",
+    )
+    model: Optional[str] = Field(
+        None,
+        description=(
+            "Gemini model id (one of SELECTABLE_MODELS). When omitted "
+            "or unknown, falls back to the org default."
+        ),
+    )
+    use_tools: bool = Field(
+        True,
+        description=(
+            "Pass the ADMZ MCP server to Gemini as a tool source. "
+            "Set false to run a tool-less turn for isolating SDK behavior."
+        ),
+    )
+
+
+class ChatResponse(BaseModel):
+    """Body of POST /api/chat."""
+
+    success: bool
+    response: str
+    error: Optional[str] = None
+    model: str
+    interaction_id: Optional[str] = None
+    input_tokens: int
+    output_tokens: int
+    cost_usd: Optional[float] = None
+    tool_calls: list[str] = Field(default_factory=list)
+    rejected_by_budget: bool = False
+
+
+@router.post("/api/chat", response_model=ChatResponse, tags=["chat"])
+async def chat_json(
+    body: ChatRequest = Body(...),
+    principal: Principal = Depends(get_current_principal),
+) -> ChatResponse:
+    """Run a chat turn and return the full result as JSON.
+
+    Same auth, budget gate, audit log, and MCP tool surface as
+    ``/chat/stream`` — the only difference is the wire format. Lets
+    operators script test scenarios (curl, requests, pytest, etc.)
+    without parsing SSE.
+
+    Example::
+
+        curl -X POST http://localhost:4242/api/chat \\
+             -H 'Content-Type: application/json' \\
+             -d '{"message": "list my devices"}'
+    """
+    config = get_chatbot_config()
+    final_summary: Optional[_TurnSummary] = None
+
+    async for _event, summary in _run_chat_turn(
+        principal=principal,
+        message=body.message,
+        model_request=body.model or "",
+        config=config,
+        use_tools=body.use_tools,
+    ):
+        if summary is not None:
+            final_summary = summary
+
+    assert final_summary is not None  # _run_chat_turn always yields it last
+
+    return ChatResponse(
+        success=final_summary.success,
+        response=final_summary.response,
+        error=final_summary.error,
+        model=final_summary.model,
+        interaction_id=final_summary.interaction_id,
+        input_tokens=final_summary.input_tokens,
+        output_tokens=final_summary.output_tokens,
+        cost_usd=final_summary.cost_usd,
+        tool_calls=final_summary.tool_calls,
+        rejected_by_budget=final_summary.rejected_by_budget,
     )
 
 
