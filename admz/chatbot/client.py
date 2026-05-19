@@ -17,12 +17,93 @@ this phase.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import random
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Retry policy for transient Gemini errors
+# ---------------------------------------------------------------------------
+
+
+# HTTP codes we consider retryable. 429 = rate-limited, 5xx = server-side
+# transient failures (the canonical 503 "high demand" message from Gemini
+# falls here).
+_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
+_DEFAULT_RETRY_MAX_ATTEMPTS = 3   # 1 try + 2 retries
+_DEFAULT_RETRY_BASE_DELAY = 0.5   # 0.5s, 1.0s, 2.0s
+_DEFAULT_RETRY_JITTER = 0.25       # ±25% jitter on the delay
+
+
+def _get_retry_max_attempts() -> int:
+    """Read ADMZ_GEMINI_RETRY_MAX_ATTEMPTS (default 3, min 1)."""
+    raw = os.getenv("ADMZ_GEMINI_RETRY_MAX_ATTEMPTS")
+    if raw is None:
+        return _DEFAULT_RETRY_MAX_ATTEMPTS
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning(
+            "Invalid ADMZ_GEMINI_RETRY_MAX_ATTEMPTS=%r; using default %d",
+            raw,
+            _DEFAULT_RETRY_MAX_ATTEMPTS,
+        )
+        return _DEFAULT_RETRY_MAX_ATTEMPTS
+
+
+def _get_retry_base_delay() -> float:
+    """Read ADMZ_GEMINI_RETRY_BASE_DELAY (seconds, default 0.5)."""
+    raw = os.getenv("ADMZ_GEMINI_RETRY_BASE_DELAY")
+    if raw is None:
+        return _DEFAULT_RETRY_BASE_DELAY
+    try:
+        return max(0.05, float(raw))
+    except ValueError:
+        logger.warning(
+            "Invalid ADMZ_GEMINI_RETRY_BASE_DELAY=%r; using default %ss",
+            raw,
+            _DEFAULT_RETRY_BASE_DELAY,
+        )
+        return _DEFAULT_RETRY_BASE_DELAY
+
+
+def _is_retryable_error(exc: BaseException) -> bool:
+    """True if ``exc`` is a transient Gemini error worth retrying.
+
+    google-genai raises errors.ServerError / ClientError with a
+    ``code`` (or ``status_code``) attribute. We retry on the
+    canonical transient set; everything else surfaces immediately.
+    """
+    # Probe both common attribute names; SDK has used both.
+    code = (
+        getattr(exc, "code", None)
+        or getattr(exc, "status_code", None)
+    )
+    try:
+        code_int = int(code) if code is not None else None
+    except (TypeError, ValueError):
+        code_int = None
+    return code_int in _RETRYABLE_STATUS_CODES
+
+
+def _compute_retry_delay(attempt: int, base: float, jitter: float = _DEFAULT_RETRY_JITTER) -> float:
+    """Exponential backoff with optional jitter.
+
+    ``attempt`` is 1-indexed (first retry = 1). Delay is base * 2**(attempt-1)
+    with ±jitter*100% randomization to spread retries from concurrent users.
+    """
+    delay = base * (2 ** (attempt - 1))
+    if jitter:
+        delay *= 1.0 + random.uniform(-jitter, jitter)
+    return max(0.0, delay)
 
 
 class ChatbotNotConfigured(Exception):
@@ -318,7 +399,7 @@ async def stream_turn(
                     "(MCP tools unavailable — proceeding without device access. "
                     "Check server logs for bridge errors.)\n"
                 )
-            async for chunk in _invoke_stream(
+            async for chunk in _invoke_stream_with_retry(
                 client, request_kwargs, mcp_session=mcp_session
             ):
                 # DEBUG-only: log every raw chunk so we can diagnose
@@ -378,6 +459,67 @@ async def _open_mcp_or_none(use_tools: bool, *, principal: Optional[str] = None)
     except (McpBridgeMissing, McpBridgeError) as exc:
         logger.warning("MCP bridge unavailable, proceeding without tools: %s", exc)
         yield None
+
+
+async def _invoke_stream_with_retry(
+    client: Any,
+    request_kwargs: dict,
+    *,
+    mcp_session: Any = None,
+):
+    """Wrap _invoke_stream with retry-on-transient-error semantics.
+
+    Retries the *entire* stream call when Gemini returns a
+    retryable status (429 / 5xx) and **no chunks have yet been
+    yielded** to the caller. Once a chunk has been forwarded
+    downstream we can't safely retry — the user would see
+    duplicated text — so the next failure surfaces unchanged.
+
+    Safety notes:
+      - With AFC enabled, retrying means the SDK re-executes any
+        tools it already invoked. Read-only tools (list_devices,
+        get_device, query_catalog, etc.) are idempotent so this
+        is fine. Write tools are gated behind the /confirm flow
+        before the MCP tool actually fires, so a retry doesn't
+        re-execute the user's intent.
+      - Bounded by ADMZ_GEMINI_RETRY_MAX_ATTEMPTS (default 3).
+    """
+    max_attempts = _get_retry_max_attempts()
+    base_delay = _get_retry_base_delay()
+
+    for attempt in range(1, max_attempts + 1):
+        yielded_any = False
+        try:
+            async for chunk in _invoke_stream(
+                client, request_kwargs, mcp_session=mcp_session
+            ):
+                yielded_any = True
+                yield chunk
+            # Stream completed cleanly — done.
+            return
+        except Exception as exc:
+            if yielded_any:
+                # Can't retry mid-stream; surface the error so the
+                # caller can convert it into an event_error.
+                raise
+            if not _is_retryable_error(exc):
+                raise
+            if attempt >= max_attempts:
+                logger.warning(
+                    "Gemini stream giving up after %d attempt(s): %s",
+                    attempt,
+                    exc,
+                )
+                raise
+            delay = _compute_retry_delay(attempt, base_delay)
+            logger.info(
+                "Gemini stream retrying (attempt %d/%d) after %.2fs: %s",
+                attempt,
+                max_attempts,
+                delay,
+                exc,
+            )
+            await asyncio.sleep(delay)
 
 
 async def _invoke_stream(

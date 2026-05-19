@@ -252,11 +252,22 @@ SSE lines; the browser-side consumer reads via `fetch()` +
 POST + form-encoded args work without round-tripping through GET).
 The non-streaming `POST /chat` remains for clients without JS.
 
-### KL-CB-004 — Provider rate limits aren't centrally managed ⚠️
-Gemini has its own rate-limit story; Phase 5A surfaces 429s back
-to the user as-is. No retry-with-backoff yet. Production
-deployments hitting limits will see chat hiccups; the per-user
-daily budget (Phase 5D) is the primary lever.
+### KL-CB-004 — Provider rate limits aren't centrally managed 🚧
+Partial resolution: ADMZ now auto-retries 429 + 5xx responses
+from Gemini with exponential backoff (defaults 3 attempts at
+0.5s, 1.0s, 2.0s with ±25% jitter). Configurable via
+`ADMZ_GEMINI_RETRY_MAX_ATTEMPTS` and `ADMZ_GEMINI_RETRY_BASE_DELAY`.
+
+Retries only fire *before* any chunk has been forwarded to the
+user — once text starts flowing we can't un-yield it, so a
+mid-stream 503 still surfaces immediately. Read-only AFC tool
+calls retry safely; write operations are gated behind the
+/confirm flow so the actual operation isn't re-executed.
+
+Still missing: cross-request rate-limit coordination, sustained
+overload backpressure (currently a steady 503 hammer would just
+make every turn slow). Per-user daily budget (Phase 5D) remains
+the primary cost lever; retry is the latency-smoothing lever.
 
 ### KL-CB-005 — Gemini Pro is not on Google's free tier ⚠️
 As of April 2026, only Flash and Flash-Lite are free-tier-eligible.
