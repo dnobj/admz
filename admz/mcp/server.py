@@ -219,14 +219,20 @@ class ADMZMCPServer:
                     name="get_device",
                     description=(
                         "Get detailed information about a specific device by ID or nickname. "
-                        "Returns device metadata without credentials."
+                        "Returns device metadata without credentials. The device_id is the "
+                        "MAC address (e.g. E827250959C6), NOT the model name (e.g. C1710). "
+                        "If the user refers to a device by model, look up the MAC in your "
+                        "prior conversation history or call list_devices first."
                     ),
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "device_id": {
                                 "type": "string",
-                                "description": "Device ID (e.g., 'front-door') or nickname",
+                                "description": (
+                                    "MAC address (e.g. 'E827250959C6'), nickname, or "
+                                    "device ID. NOT the model name."
+                                ),
                             },
                         },
                         "required": ["device_id"],
@@ -700,20 +706,29 @@ class ADMZMCPServer:
                         "to the config git repository. Reads all applicable "
                         "facets (image, network, time, events, etc.) and writes "
                         "normalized YAML + raw responses. Returns a summary "
-                        "of what was captured."
+                        "of what was captured. Just call this with device_id — "
+                        "the optional git commit message defaults to a sensible "
+                        "value; do not prompt the user for it."
                     ),
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "device_id": {
                                 "type": "string",
-                                "description": "Device ID to snapshot",
+                                "description": (
+                                    "Device ID — the MAC address (e.g. "
+                                    "E827250959C6), not the model name. "
+                                    "Get this from list_devices first if "
+                                    "you don't already have it."
+                                ),
                             },
                             "message": {
                                 "type": "string",
                                 "description": (
-                                    "Optional commit message "
-                                    "(default: 'Snapshot <device_id>')"
+                                    "Optional git commit message. DO NOT ask "
+                                    "the user for this. Omit it unless the "
+                                    "user explicitly provided one. Default: "
+                                    "'Snapshot <device_id>'."
                                 ),
                             },
                         },
@@ -724,7 +739,10 @@ class ADMZMCPServer:
                     name="snapshot_fleet",
                     description=(
                         "Snapshot all devices (or a filtered subset) in a "
-                        "single commit. Devices are read in parallel."
+                        "single commit. Devices are read in parallel. Call "
+                        "this with no arguments to snapshot every device, or "
+                        "with a tag_filter to scope. Do not prompt the user "
+                        "for a commit message."
                     ),
                     inputSchema={
                         "type": "object",
@@ -738,7 +756,11 @@ class ADMZMCPServer:
                             },
                             "message": {
                                 "type": "string",
-                                "description": "Optional commit message",
+                                "description": (
+                                    "Optional git commit message. DO NOT ask "
+                                    "the user for this. Omit unless the user "
+                                    "explicitly provided one."
+                                ),
                             },
                         },
                         "required": [],

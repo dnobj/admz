@@ -56,3 +56,33 @@ class TestBuildSystemPrompt:
         assert "device_id" in prompt.lower() or "device id" in prompt.lower()
         # Mention MAC to clarify the format.
         assert "mac" in prompt.lower()
+
+    # The next four tests target the specific bugs we saw in
+    # multi-turn smoke testing (see tools/chat_multiturn_test.py).
+    # If anyone trims the system prompt later, these break the
+    # build so the regression is visible.
+
+    def test_model_name_vs_mac_guidance(self):
+        """Bug 1: LLM was passing 'C1710' (model name) where device_id (MAC) is required."""
+        prompt = build_system_prompt("alice").lower()
+        assert "model name" in prompt
+        assert "never" in prompt or "do not" in prompt or "don't" in prompt
+
+    def test_no_fabricated_success_guidance(self):
+        """Bug 2: LLM claimed it had snapshotted a device without firing the tool."""
+        prompt = build_system_prompt("alice").lower()
+        assert "never claim" in prompt or "don't fabricate" in prompt or "fabricate" in prompt
+
+    def test_capability_discovery_guidance(self):
+        """Bug 4: LLM said it couldn't reboot devices despite the catalog supporting it."""
+        prompt = build_system_prompt("alice").lower()
+        assert "query_catalog" in prompt
+        assert "execute_operation" in prompt
+
+    def test_no_permission_for_reads_guidance(self):
+        """Bug 6: LLM kept asking permission to run read-only queries."""
+        prompt = build_system_prompt("alice").lower()
+        # Should explicitly tell the LLM not to ask for read-only ops.
+        assert "never ask permission" in prompt or "without asking" in prompt or (
+            "read-only" in prompt and "just call" in prompt
+        )

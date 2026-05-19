@@ -37,7 +37,11 @@ except ImportError:  # pragma: no cover
 
 
 BASE = "http://localhost:4242"
-MODEL = "gemini-2.5-flash-lite"  # free-tier friendly default for the test driver
+# Flash is the right balance for multi-turn driver. Flash-Lite is
+# cheap but consistently produces empty responses on follow-up
+# "what's its X" questions (its thinking-mode quirks). Flash is
+# ~5x the cost per turn but completes the scenarios reliably.
+MODEL = "gemini-2.5-flash"
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +65,18 @@ def chat(message: str, model: str = MODEL, use_tools: bool = True) -> dict:
         payload = {
             "success": False,
             "error": f"HTTP {e.code}: {e.read().decode()[:200]}",
+            "response": "",
+            "model": model,
+            "input_tokens": 0, "output_tokens": 0, "cost_usd": 0,
+            "tool_calls": [],
+        }
+    except (TimeoutError, urllib.error.URLError) as e:
+        # Don't crash the whole driver if one turn hangs — usually
+        # means the LLM kicked off a tool that tried to reach an
+        # unreachable device.
+        payload = {
+            "success": False,
+            "error": f"Driver timeout / connection error: {e}",
             "response": "",
             "model": model,
             "input_tokens": 0, "output_tokens": 0, "cost_usd": 0,
@@ -148,27 +164,40 @@ def scenario_topic_switch_and_return() -> None:
     )
 
 
-def scenario_task_planning() -> None:
-    """Stated intent → clarification → confirmation flow → recall."""
+def scenario_capability_discovery() -> None:
+    """Capability questions that previously hit Bug 4 — does the
+    LLM now find non-wrapper operations via query_catalog?
+
+    This replaces the destructive scenario_task_planning. Real
+    snapshot/restart calls hit the network and can hang the driver
+    if devices are offline; that's an environment issue, not a
+    chat-behavior issue.
+    """
     run_scenario(
-        "Task planning with clarification",
+        "Capability discovery (catalog-driven ops)",
         [
-            ("I'd like to snapshot the C1710. What does a snapshot include?", {"use_tools": False}),
-            ("Sounds good. Take a snapshot of it.", {}),  # 'it' = C1710
-            ("Now do the same for the I8016-LVE.", {}),  # different device
-            ("Summarize what we just did.", {"use_tools": False}),  # recap from history
+            ("Can you reboot a device?", {"use_tools": False}),
+            ("What about a firmware upgrade — is that something you can do?", {"use_tools": False}),
+            ("List my devices.", {}),
+            ("Look at the P3748. Can you tell me about its capabilities? Don't actually do anything to it.", {}),
         ],
     )
 
 
 def scenario_clarification_loop() -> None:
-    """Ambiguous question → ask for clarification → continue."""
+    """Ambiguous question → disambiguate via history → topic switch.
+
+    Uses 'tell me about' (read-only) instead of 'restart' so we
+    don't actually fire writes that need confirmation tokens.
+    """
     run_scenario(
         "Ambiguous query + clarification",
         [
-            ("Restart the camera.", {}),  # ambiguous — which camera?
+            ("List my devices briefly.", {}),
+            ("Tell me about the camera.", {}),  # ambiguous — multiple cameras
             ("The P3748.", {}),  # disambiguate
-            ("Wait, never mind. What about the C1110-E?", {}),  # change subject
+            ("Wait, scratch that — what about the C1110-E?", {}),  # topic switch
+            ("Going back to the P3748, what's its IP?", {"use_tools": False}),  # return to earlier topic
         ],
     )
 
@@ -186,7 +215,7 @@ if __name__ == "__main__":
     scenarios = [
         scenario_drill_down,
         scenario_topic_switch_and_return,
-        scenario_task_planning,
+        scenario_capability_discovery,
         scenario_clarification_loop,
     ]
 

@@ -257,6 +257,54 @@ class TestJsonChatBudgetGate:
         assert called["count"] == 0
 
 
+class TestJsonChatEmptyResponseBackstop:
+    """Bug 5: Flash-Lite occasionally returns 200 OK with zero text
+    chunks. We surface that as a friendly error rather than letting
+    the user see an empty bot bubble."""
+
+    def test_zero_output_surfaced_as_helpful_error(self, client):
+        _seed_api_key()
+        from admz.chatbot.events import event_done
+
+        async def empty_stream(**kwargs):
+            # Done event with zero tokens, no text emitted.
+            yield event_done(interaction_id="x", input_tokens=42, output_tokens=0)
+
+        with patch("admz.api.routes.chat.stream_turn", side_effect=empty_stream):
+            r = client.post(
+                "/api/chat",
+                json={"message": "hi", "model": "gemini-2.5-flash"},
+            )
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["success"] is False
+        assert "no text" in body["error"].lower()
+        # Message names the actual model the user was on, not a hardcoded one.
+        assert "gemini-2.5-flash" in body["error"]
+        # Suggests trying a more capable model.
+        assert "gemini-2.5-pro" in body["error"]
+        assert body["response"] == ""
+
+    def test_nonzero_output_with_text_is_normal(self, client):
+        """Sanity: a turn with actual text is NOT flagged."""
+        _seed_api_key()
+        from admz.chatbot.events import event_done, event_text
+
+        async def normal_stream(**kwargs):
+            yield event_text("hello")
+            yield event_done(interaction_id="x", input_tokens=10, output_tokens=5)
+
+        with patch("admz.api.routes.chat.stream_turn", side_effect=normal_stream):
+            r = client.post("/api/chat", json={"message": "hi"})
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["success"] is True
+        assert body["response"] == "hello"
+        assert body["error"] is None
+
+
 class TestJsonChatSdkError:
     def test_stream_error_surfaced_as_json(self, client):
         _seed_api_key()

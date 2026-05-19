@@ -59,6 +59,26 @@ def _get_retry_max_attempts() -> int:
         return _DEFAULT_RETRY_MAX_ATTEMPTS
 
 
+def _get_thinking_budget() -> int:
+    """Return the Gemini 'thinking' token budget.
+
+    0 (default) disables thinking — recommended for chat-style use
+    where thinking-only completions show up as empty responses.
+    Set ADMZ_GEMINI_THINKING_BUDGET to a positive integer to enable
+    thinking with that many tokens.
+    """
+    raw = os.getenv("ADMZ_GEMINI_THINKING_BUDGET")
+    if raw is None:
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning(
+            "Invalid ADMZ_GEMINI_THINKING_BUDGET=%r; using default 0", raw
+        )
+        return 0
+
+
 def _get_retry_base_delay() -> float:
     """Read ADMZ_GEMINI_RETRY_BASE_DELAY (seconds, default 0.5)."""
     raw = os.getenv("ADMZ_GEMINI_RETRY_BASE_DELAY")
@@ -598,42 +618,22 @@ async def _invoke_stream(
 ):
     """Call the SDK's streaming method and yield raw chunks.
 
-    When ``mcp_session`` is provided, route through
-    ``client.aio.models.generate_content_stream`` with
-    ``config=GenerateContentConfig(tools=[mcp_session])``. That's
-    the documented path for ``google-genai``'s native MCP
-    integration. When no session is provided, fall back to the
-    Interactions API (which is leaner but doesn't support MCP tools
-    in the same way).
+    Always routes through ``client.aio.models.generate_content_stream``
+    — that's the SDK surface that supports MCP tools, history
+    threading via the ``contents=[...]`` shape, AND the
+    ``thinking_config`` knob we use to suppress empty-output
+    completions. The Interactions API path was attractive for its
+    server-side conversation state but it doesn't honor
+    thinking_config, doesn't support MCP tools, and the
+    ``previous_interaction_id`` it returns is silently ignored by
+    every other API surface we use. Not worth the inconsistency.
 
     Isolated as its own function so tests can patch it without
     monkey-patching the SDK.
     """
-    # MCP-bearing path: aio.models.generate_content_stream with
-    # tools=[session]. This is the FastMCP-confirmed shape.
-    if mcp_session is not None:
-        async for chunk in _stream_via_models_api(
-            client, request_kwargs, mcp_session=mcp_session
-        ):
-            yield chunk
-        return
-
-    # Otherwise, prefer the Interactions API (slimmer protocol for
-    # text-only turns). Fall back to the models API if the SDK
-    # version doesn't surface interactions.
-    interactions = getattr(client, "interactions", None)
-    if interactions is not None:
-        stream_fn = (
-            getattr(interactions, "astream", None)
-            or getattr(interactions, "stream", None)
-        )
-        if stream_fn is not None:
-            result = stream_fn(**request_kwargs)
-            async for chunk in _as_async_iter(result):
-                yield chunk
-            return
-
-    async for chunk in _stream_via_models_api(client, request_kwargs):
+    async for chunk in _stream_via_models_api(
+        client, request_kwargs, mcp_session=mcp_session
+    ):
         yield chunk
 
 
@@ -661,6 +661,22 @@ async def _stream_via_models_api(
         config["system_instruction"] = sys_inst
     if mcp_session is not None:
         config["tools"] = [mcp_session]
+
+    # Disable Gemini 2.5's "thinking" mode by default. Thinking-mode
+    # responses occasionally emit zero output tokens (the model spent
+    # its budget reasoning internally without producing visible text),
+    # which surfaces to the user as empty bot bubbles. For chat-style
+    # use, the cost of thinking outweighs the benefit; explicit
+    # reasoning isn't useful when the answer is "look up the device's
+    # IP from history" or "list 8 devices."
+    #
+    # Operators who want thinking enabled can set
+    # ADMZ_GEMINI_THINKING_BUDGET > 0 (in tokens). 0 disables.
+    thinking_budget = _get_thinking_budget()
+    if thinking_budget == 0:
+        config["thinking_config"] = {"thinking_budget": 0}
+    elif thinking_budget > 0:
+        config["thinking_config"] = {"thinking_budget": thinking_budget}
 
     call_kwargs = {
         "model": request_kwargs["model"],

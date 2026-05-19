@@ -76,6 +76,32 @@ class TestRetryConfig:
 
 
 # ---------------------------------------------------------------------------
+# Thinking-budget config (Phase 5E: empty-response mitigation)
+# ---------------------------------------------------------------------------
+
+
+class TestThinkingBudget:
+    """Disabling thinking-mode helps with Gemini 2.5's occasional
+    empty-output completions on chat-style prompts."""
+
+    def test_default_is_zero_disabled(self, monkeypatch):
+        monkeypatch.delenv("ADMZ_GEMINI_THINKING_BUDGET", raising=False)
+        assert client_mod._get_thinking_budget() == 0
+
+    def test_env_override_positive(self, monkeypatch):
+        monkeypatch.setenv("ADMZ_GEMINI_THINKING_BUDGET", "5000")
+        assert client_mod._get_thinking_budget() == 5000
+
+    def test_invalid_env_falls_back_to_zero(self, monkeypatch):
+        monkeypatch.setenv("ADMZ_GEMINI_THINKING_BUDGET", "lots")
+        assert client_mod._get_thinking_budget() == 0
+
+    def test_negative_clamps_to_zero(self, monkeypatch):
+        monkeypatch.setenv("ADMZ_GEMINI_THINKING_BUDGET", "-100")
+        assert client_mod._get_thinking_budget() == 0
+
+
+# ---------------------------------------------------------------------------
 # Backoff schedule (no jitter)
 # ---------------------------------------------------------------------------
 

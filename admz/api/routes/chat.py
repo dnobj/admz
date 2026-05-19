@@ -404,6 +404,33 @@ async def _run_chat_turn(
 
     summary.response = "".join(text_parts)
 
+    # Bug 5 backstop: Gemini 2.5 (Flash *and* Flash-Lite, occasionally
+    # Pro) sometimes returns 200 OK with zero text chunks and zero
+    # output tokens — usually a thinking-only completion or a
+    # content-filter near-miss. With ADMZ_GEMINI_THINKING_BUDGET=0
+    # we should see this less often, but it can still happen on
+    # ambiguous prompts. Surface a clear notice instead of letting
+    # the user see an empty bot bubble.
+    if (
+        summary.success
+        and not summary.response
+        and not summary.error
+        and summary.output_tokens == 0
+    ):
+        summary.success = False
+        summary.error = (
+            f"The model ({chosen_model}) returned no text. This sometimes "
+            "happens on ambiguous prompts, when the model's safety filters "
+            "are triggered, or when thinking-mode consumed the response "
+            "budget. Try rephrasing the question — being more specific "
+            "often helps. If it persists, switch to gemini-2.5-pro for "
+            "a more capable model."
+        )
+        logger.warning(
+            "[chat] zero-output response on %s — surfacing as friendly error",
+            chosen_model,
+        )
+
     if summary.interaction_id:
         _sessions().set_interaction_id(
             principal.name, summary.interaction_id, chosen_model
