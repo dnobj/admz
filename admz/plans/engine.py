@@ -232,20 +232,37 @@ class PlanEngine:
         plan: ExecutionPlan,
         rollback_data: Dict[int, Dict[str, str]],
     ) -> None:
-        """Execute steps sequentially, respecting dependencies."""
+        """Execute steps sequentially, honoring failure policy.
+
+        Three failure policies (Phase 3C fix):
+
+        STOP — break on first failure. Dependents never run, but that's
+          implicit because the loop terminates.
+
+        SKIP_DEPENDENTS — continue to subsequent steps, but skip any
+          step whose dependency tree contains a failure. Useful for
+          large plans where you want all the independent work done
+          even if one branch fails.
+
+        CONTINUE — run every step regardless. Dependent steps may
+          fail for the same reason their parent failed, but the
+          attempt is made. Useful for "best-effort" cleanup plans.
+        """
         failed_steps: set = set()
 
         for step in plan.steps:
-            # Check if dependencies are met
-            if not self._dependencies_met(step, failed_steps, plan):
-                plan.results.append(StepResult(
-                    operation_id=step.operation_id,
-                    device_id=step.device_id,
-                    success=False,
-                    error="Skipped: dependency failed",
-                ))
-                failed_steps.add(step.step_number)
-                continue
+            # Phase 3C: only enforce the dep-met check under STOP /
+            # SKIP_DEPENDENTS. Under CONTINUE we run every step.
+            if plan.on_failure != FailurePolicy.CONTINUE:
+                if not self._dependencies_met(step, failed_steps, plan):
+                    plan.results.append(StepResult(
+                        operation_id=step.operation_id,
+                        device_id=step.device_id,
+                        success=False,
+                        error="Skipped: dependency failed",
+                    ))
+                    failed_steps.add(step.step_number)
+                    continue
 
             # Pre-read for rollback if this is a write operation
             pre_read = await self._pre_read_for_rollback(step)

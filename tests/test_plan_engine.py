@@ -457,3 +457,87 @@ class TestDangerousPlanGate:
             await engine.execute_plan(plan.plan_id)
         # Neither step should have executed.
         assert executor.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 3C: FailurePolicy.CONTINUE actually runs dependents
+# ---------------------------------------------------------------------------
+
+
+class TestContinuePolicyRunsDependents:
+    """Regression: before Phase 3C, FailurePolicy.CONTINUE silently
+    behaved like SKIP_DEPENDENTS — when a step failed, downstream
+    dependents were skipped instead of attempted. The catalog
+    contract says CONTINUE means "run everything"; this test verifies
+    we now honor that."""
+
+    @pytest.mark.asyncio
+    async def test_continue_attempts_dependent_after_failure(self, setup):
+        engine, executor, _, _ = setup
+        # Step 1 fails
+        executor.scripted_results["param.cgi:list"] = StepResult(
+            operation_id="param.cgi:list",
+            device_id="cam-01",
+            success=False,
+            error="boom",
+        )
+        # Step 2 will succeed (scripted_results miss → default factory)
+        plan = engine.create_plan(
+            description="Continue past dep failure",
+            steps=[
+                {"operation_id": "param.cgi:list", "device_id": "cam-01", "params": {}},
+                {
+                    "operation_id": "param.cgi:update",
+                    "device_id": "cam-01",
+                    "params": {},
+                    "depends_on": [1],
+                },
+            ],
+            on_failure="continue",
+        )
+        result = await engine.execute_plan(plan.plan_id)
+
+        # The dependent step MUST have been attempted (not skipped)
+        assert len(executor.calls) == 2, (
+            "step 2 should have been attempted under CONTINUE; was it "
+            "silently skipped by the old dependency check?"
+        )
+        results_by_op = {r.operation_id: r for r in result.results}
+        # Step 1: failed (scripted)
+        assert results_by_op["param.cgi:list"].success is False
+        # Step 2: succeeded (no error from the default factory)
+        assert results_by_op["param.cgi:update"].success is True
+        # Importantly: step 2's error must NOT mention "dependency"
+        # (i.e. it wasn't skipped — it actually ran)
+        if results_by_op["param.cgi:update"].error:
+            assert "dependency" not in results_by_op["param.cgi:update"].error.lower()
+
+    @pytest.mark.asyncio
+    async def test_skip_dependents_still_skips_dependent_on_failure(self, setup):
+        """Companion test: under SKIP_DEPENDENTS, the dependent must
+        still be skipped (we didn't break that behavior in fixing CONTINUE)."""
+        engine, executor, _, _ = setup
+        executor.scripted_results["param.cgi:list"] = StepResult(
+            operation_id="param.cgi:list",
+            device_id="cam-01",
+            success=False,
+            error="boom",
+        )
+        plan = engine.create_plan(
+            description="Skip on dep failure",
+            steps=[
+                {"operation_id": "param.cgi:list", "device_id": "cam-01", "params": {}},
+                {
+                    "operation_id": "param.cgi:update",
+                    "device_id": "cam-01",
+                    "params": {},
+                    "depends_on": [1],
+                },
+            ],
+            on_failure="skip_dependents",
+        )
+        result = await engine.execute_plan(plan.plan_id)
+        # Step 2 should NOT have been called
+        assert len(executor.calls) == 1
+        results_by_op = {r.operation_id: r for r in result.results}
+        assert "dependency" in results_by_op["param.cgi:update"].error.lower()
