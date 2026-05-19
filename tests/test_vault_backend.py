@@ -169,24 +169,30 @@ class TestVaultDeviceRegistry:
             "data": {"keys": ["front-door/", "parking-1/"]}
         }
 
-        # Mock device info for each camera
+        # list_devices calls get_device_info per device, which itself calls
+        # device_exists first — so each device consumes TWO read_secret_version
+        # calls: one existence probe, one actual read. Two devices = four reads.
+        front_door = {
+            "data": {
+                "data": {
+                    "host": "192.168.1.10",
+                    "location": "Main Entrance",
+                }
+            }
+        }
+        parking_1 = {
+            "data": {
+                "data": {
+                    "host": "192.168.1.11",
+                    "location": "Parking Lot",
+                }
+            }
+        }
         registry.client.secrets.kv.v2.read_secret_version.side_effect = [
-            {
-                "data": {
-                    "data": {
-                        "host": "192.168.1.10",
-                        "location": "Main Entrance",
-                    }
-                }
-            },
-            {
-                "data": {
-                    "data": {
-                        "host": "192.168.1.11",
-                        "location": "Parking Lot",
-                    }
-                }
-            },
+            front_door,  # device_exists("front-door")
+            front_door,  # get_device_info("front-door")
+            parking_1,   # device_exists("parking-1")
+            parking_1,   # get_device_info("parking-1")
         ]
 
         devices = registry.list_devices()
