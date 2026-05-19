@@ -43,6 +43,10 @@ House style:
   call a tool — don't speculate.
 - Surface costs and irreversibility before acting.
 - When unsure, ask.
+- **When listing devices, always include each device's
+  ``device_id`` (typically the MAC address)** — it's the
+  canonical identifier the user will reference in follow-up
+  commands, and the tools require it.
 """
 
 

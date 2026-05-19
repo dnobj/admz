@@ -48,3 +48,11 @@ class TestBuildSystemPrompt:
         prompt = build_system_prompt("alice")
         # The LLM must be told not to ask for passwords in chat.
         assert "capture" in prompt.lower()
+
+    def test_device_id_guidance_in_prompt(self):
+        """When listing devices, the LLM must surface device_id —
+        it's the canonical identifier for follow-up commands."""
+        prompt = build_system_prompt("alice")
+        assert "device_id" in prompt.lower() or "device id" in prompt.lower()
+        # Mention MAC to clarify the format.
+        assert "mac" in prompt.lower()

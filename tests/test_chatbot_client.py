@@ -341,3 +341,65 @@ class TestTranslateStreamChunk:
     def test_empty_chunk_returns_none(self):
         chunk = _FakeStreamChunk(candidates=[_FakeCandidate([])])
         assert client_mod._translate_stream_chunk(chunk) is None
+
+
+# ---------------------------------------------------------------------------
+# _build_contents — chat-history threading via the contents=[] wire shape
+# ---------------------------------------------------------------------------
+
+
+class TestBuildContents:
+    def test_no_history_returns_bare_string(self):
+        """Without history we send the new message as a plain string —
+        the SDK accepts that for a fresh turn."""
+        contents = client_mod._build_contents(None, "hi")
+        assert contents == "hi"
+
+    def test_empty_history_list_returns_bare_string(self):
+        contents = client_mod._build_contents([], "hi")
+        assert contents == "hi"
+
+    def test_with_history_builds_role_tagged_list(self):
+        history = [
+            {"role": "user", "text": "what devices do I have?"},
+            {"role": "model", "text": "You have 2 devices: A and B."},
+        ]
+        contents = client_mod._build_contents(history, "restart device A")
+        assert isinstance(contents, list)
+        assert len(contents) == 3
+        assert contents[0] == {
+            "role": "user",
+            "parts": [{"text": "what devices do I have?"}],
+        }
+        assert contents[1] == {
+            "role": "model",
+            "parts": [{"text": "You have 2 devices: A and B."}],
+        }
+        assert contents[2] == {
+            "role": "user",
+            "parts": [{"text": "restart device A"}],
+        }
+
+    def test_assistant_role_normalized_to_model(self):
+        """OpenAI uses 'assistant', Gemini uses 'model'. We accept
+        either input and normalize to Gemini's wire name."""
+        history = [{"role": "assistant", "text": "hello"}]
+        contents = client_mod._build_contents(history, "hi again")
+        assert contents[0]["role"] == "model"
+
+    def test_unknown_role_falls_back_to_user(self):
+        history = [{"role": "system", "text": "x"}]
+        contents = client_mod._build_contents(history, "hi")
+        assert contents[0]["role"] == "user"
+
+    def test_empty_text_entries_skipped(self):
+        history = [
+            {"role": "user", "text": ""},
+            {"role": "model", "text": "kept"},
+        ]
+        contents = client_mod._build_contents(history, "new")
+        # The empty user entry is dropped; the new user message is added.
+        texts = [item["parts"][0]["text"] for item in contents]
+        assert "" not in texts
+        assert "kept" in texts
+        assert "new" in texts

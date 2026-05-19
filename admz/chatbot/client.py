@@ -319,6 +319,37 @@ from admz.chatbot.mcp_bridge import (  # noqa: E402
 )
 
 
+def _build_contents(history: Optional[list], user_message: str):
+    """Build the ``contents`` arg for generate_content_stream.
+
+    Without history: returns the bare user_message string (SDK accepts
+    it as a single user turn). With history: builds a list of role-
+    tagged items in chronological order ending with the new user
+    message.
+
+    Each item has the shape::
+
+        {"role": "user" | "model", "parts": [{"text": "<text>"}]}
+
+    The 'model' role is what Gemini uses for assistant turns (not
+    'assistant' as OpenAI does — same content, different name).
+    """
+    if not history:
+        return user_message
+
+    items = []
+    for entry in history:
+        role = entry.get("role", "user")
+        text = entry.get("text", "")
+        if not text:
+            continue
+        # Normalize: only 'user' and 'model' roles are accepted.
+        normalized_role = "model" if role in ("model", "assistant") else "user"
+        items.append({"role": normalized_role, "parts": [{"text": text}]})
+    items.append({"role": "user", "parts": [{"text": user_message}]})
+    return items
+
+
 async def stream_turn(
     *,
     user_message: str,
@@ -326,6 +357,7 @@ async def stream_turn(
     model: str,
     system_prompt: str,
     previous_interaction_id: Optional[str] = None,
+    history: Optional[list] = None,
     use_tools: bool = True,
     principal: Optional[str] = None,
 ):
@@ -343,6 +375,16 @@ async def stream_turn(
     The route consumes these and forwards them over SSE.
     Streaming is one-shot: a single async iteration consumes the
     whole stream.
+
+    ``history`` is a list of ``{"role": "user"|"model", "text": ...}``
+    dicts representing prior turns. When non-empty, it's converted
+    to the Gemini ``contents=[...]`` wire shape with role markers
+    so the model sees prior conversation. The route loads this from
+    the chat_history SQLite table per principal.
+
+    ``previous_interaction_id`` is retained for backward compatibility
+    but the models API ignores it — history threading happens via
+    ``history`` now.
 
     ``use_tools`` is True by default: the bridge passes an MCP
     session to Gemini as a tool source. When ``principal`` is
@@ -374,12 +416,21 @@ async def stream_turn(
 
     yield event_start(model)
 
+    # Build the contents array. If history is present, include each
+    # prior turn as a separate item with role markers, then append the
+    # new user message. The SDK accepts either a plain string (single
+    # user turn) or a list of role-tagged items — we always use the
+    # list form when there's history.
+    contents = _build_contents(history, user_message)
+
     request_kwargs = {
         "model": model,
         "system_instruction": system_prompt,
-        "contents": user_message,
+        "contents": contents,
     }
     if previous_interaction_id:
+        # Retained for any legacy path that still cares; the models
+        # API ignores it but no harm in carrying it.
         request_kwargs["previous_interaction_id"] = previous_interaction_id
 
     final_interaction_id: Optional[str] = None

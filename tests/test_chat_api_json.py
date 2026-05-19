@@ -279,6 +279,109 @@ class TestJsonChatSdkError:
 # ---------------------------------------------------------------------------
 
 
+class TestJsonChatHistory:
+    """Phase 5E: conversation history threading across turns."""
+
+    def test_first_turn_sends_empty_history(self, client):
+        _seed_api_key()
+        captured = {}
+
+        async def fake(**kwargs):
+            from admz.chatbot.events import event_done, event_text
+            captured["history"] = kwargs.get("history")
+            yield event_text("first answer")
+            yield event_done(input_tokens=1, output_tokens=1, interaction_id="x")
+
+        with patch("admz.api.routes.chat.stream_turn", side_effect=fake):
+            r = client.post("/api/chat", json={"message": "first question"})
+
+        assert r.status_code == 200
+        # First turn: history is empty.
+        assert captured["history"] == []
+
+    def test_second_turn_includes_first_turn_in_history(self, client):
+        """The chronological [user, model, user, model, ...] shape
+        is what gets fed to stream_turn on subsequent turns."""
+        _seed_api_key()
+
+        async def first_stream(**kwargs):
+            from admz.chatbot.events import event_done, event_text
+            yield event_text("8 devices")
+            yield event_done(input_tokens=1, output_tokens=1, interaction_id="x")
+
+        with patch("admz.api.routes.chat.stream_turn", side_effect=first_stream):
+            client.post(
+                "/api/chat",
+                json={"message": "list my devices"},
+            )
+
+        captured_history = {}
+
+        async def second_stream(**kwargs):
+            from admz.chatbot.events import event_done, event_text
+            captured_history["history"] = kwargs.get("history")
+            yield event_text("done")
+            yield event_done(input_tokens=1, output_tokens=1, interaction_id="y")
+
+        with patch("admz.api.routes.chat.stream_turn", side_effect=second_stream):
+            client.post(
+                "/api/chat",
+                json={"message": "restart device A"},
+            )
+
+        history = captured_history["history"]
+        assert len(history) == 2
+        assert history[0] == {"role": "user", "text": "list my devices"}
+        assert history[1] == {"role": "model", "text": "8 devices"}
+
+    def test_empty_response_not_persisted(self, client):
+        """Budget rejections / SDK errors shouldn't pollute history."""
+        _seed_api_key()
+        from admz.chatbot.events import event_error
+
+        async def err_stream(**kwargs):
+            yield event_error("503 unavailable")
+
+        with patch("admz.api.routes.chat.stream_turn", side_effect=err_stream):
+            client.post("/api/chat", json={"message": "failing message"})
+
+        # Next turn should still see an empty history.
+        captured = {}
+
+        async def ok_stream(**kwargs):
+            from admz.chatbot.events import event_done, event_text
+            captured["history"] = kwargs.get("history")
+            yield event_text("ok")
+            yield event_done(input_tokens=1, output_tokens=1, interaction_id="x")
+
+        with patch("admz.api.routes.chat.stream_turn", side_effect=ok_stream):
+            client.post("/api/chat", json={"message": "second"})
+
+        assert captured["history"] == []
+
+    def test_chat_clear_drops_history(self, client):
+        _seed_api_key()
+
+        async def fake(**kwargs):
+            from admz.chatbot.events import event_done, event_text
+            yield event_text("answer")
+            yield event_done(input_tokens=1, output_tokens=1, interaction_id="x")
+
+        with patch("admz.api.routes.chat.stream_turn", side_effect=fake):
+            client.post("/api/chat", json={"message": "first"})
+            client.post("/api/chat", json={"message": "second"})
+
+        # Two turns happened — verify by direct DB inspection.
+        import admz.chatbot.sessions as sess_module
+        assert len(sess_module.chat_sessions.get_history("anonymous")) == 4
+
+        # /chat/clear is a form POST that redirects.
+        r = client.post("/chat/clear")
+        assert r.status_code == 303
+
+        assert sess_module.chat_sessions.get_history("anonymous") == []
+
+
 class TestJsonChatAudit:
     def test_successful_turn_audited_with_via_chatbot(self, client):
         _seed_api_key()

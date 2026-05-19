@@ -242,8 +242,10 @@ async def chat_submit(
 async def chat_clear(
     principal: Principal = Depends(get_current_principal),
 ):
-    """Reset the principal's Gemini conversation."""
+    """Reset the principal's conversation — drop both the interaction
+    pointer and the chat history rows."""
     _sessions().clear(principal.name)
+    _sessions().clear_history(principal.name)
     return RedirectResponse(url="/chat", status_code=303)
 
 
@@ -328,6 +330,7 @@ async def _run_chat_turn(
         return
 
     prev_id = _sessions().get_interaction_id(principal.name)
+    history = _sessions().get_history(principal.name)
     system_prompt = build_system_prompt(
         principal_name=principal.name,
         display_name=principal.display_name,
@@ -335,10 +338,11 @@ async def _run_chat_turn(
     )
 
     logger.debug(
-        "[chat] user=%s model=%s prev_id=%s message=%r",
+        "[chat] user=%s model=%s prev_id=%s history_turns=%d message=%r",
         principal.name,
         chosen_model,
         prev_id,
+        len(history) // 2,  # 2 rows per turn
         message,
     )
 
@@ -350,6 +354,7 @@ async def _run_chat_turn(
             model=chosen_model,
             system_prompt=system_prompt,
             previous_interaction_id=prev_id,
+            history=history,
             principal=principal.name,
             use_tools=use_tools,
         ):
@@ -403,6 +408,19 @@ async def _run_chat_turn(
         _sessions().set_interaction_id(
             principal.name, summary.interaction_id, chosen_model
         )
+
+    # Append this turn to conversation history so the next turn sees
+    # it. Only persist successful turns with non-empty responses —
+    # replaying budget rejections / SDK errors would just confuse
+    # the LLM next time. Best-effort: a write failure here must not
+    # break the already-streamed response.
+    if summary.success and summary.response:
+        try:
+            _sessions().append_turn(
+                principal.name, message, summary.response
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("Failed to append chat history: %s", exc)
 
     # Record usage + audit (best-effort).
     try:

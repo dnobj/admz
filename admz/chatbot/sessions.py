@@ -26,7 +26,25 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     model           TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS chat_history (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    principal    TEXT NOT NULL,
+    role         TEXT NOT NULL,        -- 'user' | 'model'
+    text         TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_history_principal_id
+    ON chat_history(principal, id);
 """
+
+
+# Default cap on prior turns surfaced to the LLM. One "turn" = one
+# user message + one assistant response = 2 history rows. Each turn
+# costs a few hundred tokens of context (much less than the MCP tool
+# catalog at ~6700 tokens, so 10 turns is comfortable).
+DEFAULT_HISTORY_TURNS = 10
 
 
 def _default_db_path() -> Path:
@@ -113,6 +131,86 @@ class ChatSessionStore:
         finally:
             conn.close()
         return row[0] if row else None
+
+    # ------------------------------------------------------------------
+    # Conversation history (chat_history table)
+    # ------------------------------------------------------------------
+    #
+    # We store per-turn (user_msg, assistant_msg) pairs because the
+    # Gemini models API needs the full history fed back as a
+    # contents=[...] array each call. The previous_interaction_id
+    # approach only works with the Interactions API surface, which
+    # doesn't support MCP tools — so we maintain history ourselves.
+
+    def append_turn(
+        self, principal: str, user_message: str, assistant_message: str
+    ) -> None:
+        """Record one turn (user + assistant) in history.
+
+        Empty assistant responses (e.g. budget rejections, errors)
+        skip the record — replaying them in subsequent turns would
+        confuse the LLM with messages it didn't actually send.
+        """
+        if not assistant_message:
+            return
+        conn = self._connect()
+        try:
+            now = _utc_iso()
+            conn.execute(
+                "INSERT INTO chat_history (principal, role, text, created_at) "
+                "VALUES (?, 'user', ?, ?)",
+                (principal, user_message, now),
+            )
+            conn.execute(
+                "INSERT INTO chat_history (principal, role, text, created_at) "
+                "VALUES (?, 'model', ?, ?)",
+                (principal, assistant_message, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_history(
+        self, principal: str, max_turns: int = DEFAULT_HISTORY_TURNS
+    ) -> list:
+        """Return last ``max_turns`` turns as a chronologically-ordered
+        list of ``{"role": "user"|"model", "text": ...}`` dicts.
+
+        Suitable for converting into the Gemini ``contents=[...]``
+        wire shape: each item becomes ``{"role": role, "parts": [{"text": ...}]}``.
+        """
+        if max_turns <= 0:
+            return []
+        # 2 rows per turn (user + model). Fetch the latest 2*max_turns
+        # rows, then reverse to chronological order.
+        limit = max_turns * 2
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT role, text FROM chat_history "
+                "WHERE principal=? "
+                "ORDER BY id DESC LIMIT ?",
+                (principal, limit),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [{"role": r, "text": t} for r, t in reversed(rows)]
+
+    def clear_history(self, principal: str) -> int:
+        """Delete all history rows for ``principal``. Returns row count.
+
+        Called by the /chat/clear route alongside dropping the
+        interaction_id pointer.
+        """
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                "DELETE FROM chat_history WHERE principal=?", (principal,)
+            )
+            conn.commit()
+            return cur.rowcount
+        finally:
+            conn.close()
 
 
 # Module-level singleton.
