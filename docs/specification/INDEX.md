@@ -53,7 +53,7 @@ What the system must do, per capability area. Each file has Functional Requireme
 - [MCP server](requirements/mcp-server.md) — tool surface, gating
 - [Web API](requirements/web-api.md) — REST surface
 - [Web UI](requirements/web-ui.md)
-- [Web chatbot](requirements/web-chatbot.md) 📋 — bundled chat client (planned)
+- [Web chatbot](requirements/web-chatbot.md) 🚧 — bundled Gemini-powered chat client (Phase 5)
 
 ### Cross-cutting requirements
 
@@ -90,9 +90,10 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 - [0022 — API keys for agents](decisions/0022-api-keys-for-agents.md)
 - [0023 — LDAP group enrichment](decisions/0023-ldap-group-enrichment.md)
 
-### Entry-point surfaces (planned)
+### Entry-point surfaces
 
-- [0024 — Bundled web chatbot](decisions/0024-bundled-web-chatbot.md) 📋 (direction accepted, implementation deferred)
+- [0024 — Bundled web chatbot](decisions/0024-bundled-web-chatbot.md) 🚧 (accepted, Phase 5 in progress)
+- [0025 — Gemini 3.1 + native MCP for the chatbot](decisions/0025-gemini-chatbot-mcp-native.md) 🚧
 
 ### Authentication & secrets
 

@@ -39,13 +39,22 @@ def get_registry() -> DeviceRegistry:
     return registry
 
 
-@router.get("/", response_class=HTMLResponse)
-async def index(
+@router.get("/")
+async def home_redirect():
+    """Home page redirects to /chat (the new primary entry point).
+
+    The legacy device list moved to /devices.
+    """
+    return RedirectResponse(url="/chat", status_code=302)
+
+
+@router.get("/devices", response_class=HTMLResponse)
+async def devices_page(
     request: Request,
     registry: DeviceRegistry = Depends(get_registry),
 ):
     """
-    Home page - Display list of all devices.
+    Device list page — the pre-chatbot home page, now at /devices.
     """
     try:
         devices = registry.list_devices()

@@ -1,7 +1,8 @@
 # ADR-0024: Bundled web-based chatbot client
 
-**Status:** 📋 Accepted (direction), deferred (implementation).
-**Date:** 2026-05-18.
+**Status:** Accepted, in progress (Phase 5).
+**Date:** Direction accepted 2026-05-18; implementation started
+2026-05-18.
 
 ## Context
 
@@ -56,10 +57,11 @@ for users with their own clients. The chatbot is additive.
 
 ## Status
 
-**Accepted as a direction; deferred for implementation** until the
-rest of the application is "otherwise complete" (per the project
-owner). When implementation starts, this ADR will be updated with
-the actual landing date and any course corrections.
+Implementation began 2026-05-18 after the rest of the application
+reached "otherwise complete" per the project owner. The provider
+choice and the MCP-native integration that shapes the
+implementation are captured in
+[ADR-0025](0025-gemini-chatbot-mcp-native.md).
 
 ## Alternatives considered
 

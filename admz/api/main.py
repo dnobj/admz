@@ -23,6 +23,7 @@ from admz.api.routes import (
     audit as audit_route,
     capture,
     catalog,
+    chat as chat_route,
     confirm,
     devices,
     discovery,
@@ -121,9 +122,10 @@ app.include_router(schedules.router, prefix="/api", tags=["schedules"])
 app.include_router(api_keys_route.router, prefix="/api", tags=["api-keys"])
 app.include_router(audit_route.router, prefix="/api", tags=["audit"])
 
-# Capture, confirm, and web UI — no /api prefix because they are user-facing
+# Capture, confirm, chatbot, and web UI — no /api prefix because they are user-facing
 app.include_router(capture.router, tags=["capture"])
 app.include_router(confirm.router, tags=["confirm"])
+app.include_router(chat_route.router, tags=["chat"])
 app.include_router(web.router, tags=["web"])
 
 

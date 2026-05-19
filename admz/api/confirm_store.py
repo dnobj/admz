@@ -53,6 +53,10 @@ PROTECTED_SETTING_KEYS = {
     "confirm_level_read-only",
     "confirm_password_hash",
     "tool_get_credentials_enabled",
+    # Chatbot provider API key. Set only via /settings/chat admin page;
+    # MCP set_fleet_setting must never read or change it. See ADR-0025.
+    "gemini_api_key",
+    "gemini_default_model",
 }
 
 
