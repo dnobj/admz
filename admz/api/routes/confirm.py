@@ -18,6 +18,42 @@ from admz.api.confirm_store import (
     verify_confirm_password,
 )
 from admz.fleet_settings import fleet_settings
+from admz.rate_limit import rate_limiter, client_key_from_request
+
+
+# Per-token in-memory tracker of failed password attempts.
+# Maps token -> (failed_count, locked_until_timestamp).
+# After _MAX_PW_ATTEMPTS failures the session is locked for
+# _PW_LOCKOUT_SECONDS. Cleared on successful submit (the session is
+# then completed and never re-attempted).
+import threading
+import time as _time
+_PW_ATTEMPTS: dict = {}
+_PW_ATTEMPTS_LOCK = threading.Lock()
+_MAX_PW_ATTEMPTS = 5
+_PW_LOCKOUT_SECONDS = 300.0
+
+
+def _record_password_failure(token: str) -> bool:
+    """Increment fail-count for token. Returns True if now locked out."""
+    with _PW_ATTEMPTS_LOCK:
+        count, locked_until = _PW_ATTEMPTS.get(token, (0, 0.0))
+        count += 1
+        if count >= _MAX_PW_ATTEMPTS:
+            locked_until = _time.time() + _PW_LOCKOUT_SECONDS
+        _PW_ATTEMPTS[token] = (count, locked_until)
+        return locked_until > _time.time()
+
+
+def _is_locked(token: str) -> bool:
+    with _PW_ATTEMPTS_LOCK:
+        _, locked_until = _PW_ATTEMPTS.get(token, (0, 0.0))
+        return locked_until > _time.time()
+
+
+def _clear_password_failures(token: str) -> None:
+    with _PW_ATTEMPTS_LOCK:
+        _PW_ATTEMPTS.pop(token, None)
 
 
 router = APIRouter()
@@ -107,6 +143,14 @@ async def confirm_submit(
     confirm_password: Optional[str] = Form(None),
 ):
     """Process the confirmation form submission."""
+    # Phase 4 stretch: per-IP rate limit on confirm POST. Catches
+    # password-attempt hammering before the per-token lockout kicks in.
+    if not rate_limiter.check("confirm", client_key_from_request(request)):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many confirm attempts from this address. Try again in a few minutes.",
+        )
+
     session = confirm_store.get_session(token)
 
     if session is None or session.effective_status != ConfirmStatus.PENDING:
@@ -116,6 +160,28 @@ async def confirm_submit(
             status_code=410,
         )
 
+    # Phase 4 stretch: per-token password-attempt lockout. After
+    # _MAX_PW_ATTEMPTS failures within _PW_LOCKOUT_SECONDS we refuse
+    # this token entirely until the lockout clears. Defeats slow brute
+    # force of the confirm password.
+    if _is_locked(token):
+        is_plan = session.is_plan
+        plan_summary = session.plan_summary if is_plan else None
+        return templates.TemplateResponse(
+            "confirm_form.html",
+            {
+                "request": request,
+                "title": "Confirm Plan" if is_plan else "Confirm Operation",
+                "token": token,
+                "session": session,
+                "needs_password": True,
+                "error": "Too many failed attempts. This confirmation link is temporarily locked.",
+                "is_plan": is_plan,
+                "plan_summary": plan_summary,
+            },
+            status_code=429,
+        )
+
     # Check password if required
     if session.confirmation_level == "url_and_password":
         password_hash = fleet_settings.get("confirm_password_hash")
@@ -123,6 +189,8 @@ async def confirm_submit(
             if not confirm_password or not verify_confirm_password(
                 confirm_password, password_hash
             ):
+                # Record the failure and (potentially) trigger lockout
+                _record_password_failure(token)
                 is_plan = session.is_plan
                 plan_summary = session.plan_summary if is_plan else None
                 # Re-render form with error
@@ -139,6 +207,9 @@ async def confirm_submit(
                         "plan_summary": plan_summary,
                     },
                 )
+
+    # Success: clear any partial failure history for this token
+    _clear_password_failures(token)
 
     # Mark session as completed
     if not confirm_store.complete_session(token, confirmed_by="web"):

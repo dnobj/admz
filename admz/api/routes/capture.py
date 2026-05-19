@@ -17,6 +17,7 @@ from admz.api.capture import capture_store, CaptureStatus
 from admz.device_registry import DeviceRegistry
 from admz.exceptions import DeviceNotFoundError, BackendError
 from admz.fleet_settings import fleet_settings
+from admz.rate_limit import rate_limiter, client_key_from_request
 
 
 router = APIRouter()
@@ -156,6 +157,15 @@ async def capture_submit(
     registry: DeviceRegistry = Depends(get_registry),
 ):
     """Process the submitted credentials."""
+    # Phase 4 stretch: per-IP rate limit. The token is 256-bit and
+    # single-use, so brute force isn't the threat — overwrite races
+    # and accidental double-submits are. 10 attempts then 10/minute.
+    if not rate_limiter.check("capture", client_key_from_request(request)):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many capture attempts from this address. Try again in a few minutes.",
+        )
+
     session = capture_store.get_session(token)
 
     if session is None or session.effective_status != CaptureStatus.PENDING:
