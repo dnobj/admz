@@ -103,7 +103,7 @@ class TestBudgetGate:
         ):
             r = client.post(
                 "/chat/stream",
-                data={"message": "hi", "model": "gemini-3.1-pro"},
+                data={"message": "hi", "model": "gemini-2.5-pro"},
             )
         assert r.status_code == 200
         assert "event: text" in r.text
@@ -117,7 +117,7 @@ class TestBudgetGate:
         # Pre-seed today's usage *over* the budget.
         token_usage.record_turn(
             principal="anonymous",
-            model="gemini-3.1-pro",
+            model="gemini-2.5-pro",
             input_tokens=200,
             output_tokens=0,
         )
@@ -133,7 +133,7 @@ class TestBudgetGate:
         with patch("admz.api.routes.chat.stream_turn", side_effect=fake_stream):
             r = client.post(
                 "/chat/stream",
-                data={"message": "hi", "model": "gemini-3.1-pro"},
+                data={"message": "hi", "model": "gemini-2.5-pro"},
             )
 
         assert r.status_code == 200
@@ -157,7 +157,7 @@ class TestUsageRecording:
         ):
             client.post(
                 "/chat/stream",
-                data={"message": "hi", "model": "gemini-3.1-pro"},
+                data={"message": "hi", "model": "gemini-2.5-pro"},
             )
 
         from admz.chatbot.usage import token_usage
@@ -183,7 +183,7 @@ class TestUsageRecording:
         with patch("admz.api.routes.chat.stream_turn", side_effect=fake_stream):
             client.post(
                 "/chat/stream",
-                data={"message": "hi", "model": "gemini-3.1-pro"},
+                data={"message": "hi", "model": "gemini-2.5-pro"},
             )
 
         from admz.chatbot.usage import token_usage
@@ -205,7 +205,7 @@ class TestAuditLog:
         ):
             client.post(
                 "/chat/stream",
-                data={"message": "hi", "model": "gemini-3.1-pro"},
+                data={"message": "hi", "model": "gemini-2.5-pro"},
             )
 
         from admz.audit import AuditLog
@@ -218,7 +218,7 @@ class TestAuditLog:
         assert entry.requester == "anonymous"
         assert entry.success is True
         assert entry.details.get("via_chatbot") is True
-        assert entry.details.get("model") == "gemini-3.1-pro"
+        assert entry.details.get("model") == "gemini-2.5-pro"
         assert entry.details.get("input_tokens") == 100
         assert entry.details.get("output_tokens") == 50
 
@@ -228,14 +228,14 @@ class TestAuditLog:
         set_daily_budget(50)
         token_usage.record_turn(
             principal="anonymous",
-            model="gemini-3.1-pro",
+            model="gemini-2.5-pro",
             input_tokens=100,
             output_tokens=0,
         )
 
         client.post(
             "/chat/stream",
-            data={"message": "hi", "model": "gemini-3.1-pro"},
+            data={"message": "hi", "model": "gemini-2.5-pro"},
         )
 
         from admz.audit import AuditLog
@@ -266,7 +266,7 @@ class TestDoneEventEnrichment:
         ):
             r = client.post(
                 "/chat/stream",
-                data={"message": "hi", "model": "gemini-3.1-pro"},
+                data={"message": "hi", "model": "gemini-2.5-pro"},
             )
 
         body = r.text
@@ -281,9 +281,10 @@ class TestDoneEventEnrichment:
                 done_data = json.loads(line[len("data: "):])
                 break
         assert done_data is not None
-        assert done_data["model"] == "gemini-3.1-pro"
-        # 1000 in + 500 out on Pro: 1000*2/1M + 500*12/1M = 0.002 + 0.006 = 0.008
-        assert done_data["cost_usd"] == pytest.approx(0.008, rel=1e-3)
+        assert done_data["model"] == "gemini-2.5-pro"
+        # 1000 in + 500 out on 2.5-pro:
+        # 1000 * 1.25/1M + 500 * 10/1M = 0.00125 + 0.005 = 0.00625
+        assert done_data["cost_usd"] == pytest.approx(0.00625, rel=1e-3)
 
 
 # ---------------------------------------------------------------------------

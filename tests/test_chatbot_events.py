@@ -34,7 +34,7 @@ class TestSseWireFormat:
     def test_each_event_carries_its_type_name(self):
         # SSE consumers dispatch on the ``event:`` line; verify the
         # exact strings match ChatEventType values.
-        assert event_start("gemini-3.1-pro").to_sse().startswith("event: start\n")
+        assert event_start("gemini-2.5-pro").to_sse().startswith("event: start\n")
         assert event_text("x").to_sse().startswith("event: text\n")
         assert event_tool_call("t", "t()").to_sse().startswith("event: tool_call\n")
         assert event_tool_result("t", "ok").to_sse().startswith("event: tool_result\n")
@@ -44,8 +44,8 @@ class TestSseWireFormat:
 
 class TestPayloads:
     def test_start_carries_model(self):
-        ev = event_start("gemini-3.1-flash")
-        assert ev.payload == {"model": "gemini-3.1-flash"}
+        ev = event_start("gemini-2.5-flash")
+        assert ev.payload == {"model": "gemini-2.5-flash"}
 
     def test_tool_call_omits_call_id_when_none(self):
         ev = event_tool_call("list_devices", "list_devices()")

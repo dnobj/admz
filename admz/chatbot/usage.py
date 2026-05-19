@@ -48,9 +48,12 @@ class ModelPricing:
 
 
 PRICING: dict[str, ModelPricing] = {
-    "gemini-3.1-pro": ModelPricing(2.00, 12.00),
-    "gemini-3.1-flash": ModelPricing(0.30, 2.00),
-    "gemini-3.1-flash-lite": ModelPricing(0.25, 1.50),
+    # Approximate $/1M tokens as of May 2026. The cost telemetry is
+    # informational — refer to ai.google.dev/pricing for authoritative
+    # billing.
+    "gemini-2.5-pro": ModelPricing(1.25, 10.00),
+    "gemini-2.5-flash": ModelPricing(0.30, 2.50),
+    "gemini-2.5-flash-lite": ModelPricing(0.10, 0.40),
 }
 
 

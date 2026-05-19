@@ -44,8 +44,8 @@ def _reset_state(monkeypatch, tmp_path):
 
 
 class TestDefaults:
-    def test_default_model_is_gemini_3_1_pro(self):
-        assert cfg_mod.DEFAULT_MODEL == "gemini-3.1-pro"
+    def test_default_model_is_gemini_2_5_flash(self):
+        assert cfg_mod.DEFAULT_MODEL == "gemini-2.5-flash"
 
     def test_default_model_is_in_selectable(self):
         assert cfg_mod.DEFAULT_MODEL in cfg_mod.SELECTABLE_MODELS
@@ -53,7 +53,7 @@ class TestDefaults:
     def test_selectable_has_three_tiers(self):
         # Pro, Flash, Flash-Lite — ADR-0025.
         assert len(cfg_mod.SELECTABLE_MODELS) == 3
-        assert "gemini-3.1-flash-lite" in cfg_mod.SELECTABLE_MODELS
+        assert "gemini-2.5-flash-lite" in cfg_mod.SELECTABLE_MODELS
 
     def test_unconfigured_when_no_key(self, monkeypatch):
         monkeypatch.delenv("ADMZ_GEMINI_API_KEY", raising=False)
@@ -99,9 +99,9 @@ class TestEnvBootstrap:
         assert config.api_key is None  # bootstrap didn't re-fire
 
     def test_seeds_default_model_from_env(self, monkeypatch):
-        monkeypatch.setenv("ADMZ_GEMINI_DEFAULT_MODEL", "gemini-3.1-flash-lite")
+        monkeypatch.setenv("ADMZ_GEMINI_DEFAULT_MODEL", "gemini-2.5-flash-lite")
         config = cfg_mod.get_chatbot_config()
-        assert config.default_model == "gemini-3.1-flash-lite"
+        assert config.default_model == "gemini-2.5-flash-lite"
 
     def test_invalid_env_model_falls_back(self, monkeypatch):
         monkeypatch.setenv("ADMZ_GEMINI_DEFAULT_MODEL", "gemini-99-superduper")
@@ -117,9 +117,9 @@ class TestEnvBootstrap:
 class TestPersistedOverrides:
     def test_fleet_setting_overrides_default_model(self):
         from admz.fleet_settings import fleet_settings as fs
-        fs.set("gemini_default_model", "gemini-3.1-flash")
+        fs.set("gemini_default_model", "gemini-2.5-flash")
         config = cfg_mod.get_chatbot_config()
-        assert config.default_model == "gemini-3.1-flash"
+        assert config.default_model == "gemini-2.5-flash"
 
     def test_invalid_persisted_default_falls_back(self):
         from admz.fleet_settings import fleet_settings as fs

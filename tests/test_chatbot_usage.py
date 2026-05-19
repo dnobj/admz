@@ -50,31 +50,31 @@ class TestPricing:
     def test_pro_more_expensive_than_flash_lite(self):
         # Sanity: Pro > Flash > Flash-Lite on both axes
         assert (
-            PRICING["gemini-3.1-pro"].input_per_million_usd
-            > PRICING["gemini-3.1-flash-lite"].input_per_million_usd
+            PRICING["gemini-2.5-pro"].input_per_million_usd
+            > PRICING["gemini-2.5-flash-lite"].input_per_million_usd
         )
         assert (
-            PRICING["gemini-3.1-pro"].output_per_million_usd
-            > PRICING["gemini-3.1-flash-lite"].output_per_million_usd
+            PRICING["gemini-2.5-pro"].output_per_million_usd
+            > PRICING["gemini-2.5-flash-lite"].output_per_million_usd
         )
 
     def test_cost_for_pro(self):
-        # 1M in + 1M out = $2 + $12 = $14
-        cost = estimate_cost_usd("gemini-3.1-pro", 1_000_000, 1_000_000)
-        assert cost == pytest.approx(14.0, rel=1e-6)
+        # 1M in + 1M out on 2.5-pro = $1.25 + $10.00 = $11.25
+        cost = estimate_cost_usd("gemini-2.5-pro", 1_000_000, 1_000_000)
+        assert cost == pytest.approx(11.25, rel=1e-6)
 
     def test_cost_for_flash_lite_typical_turn(self):
         # 1000 in + 200 out on Flash-Lite
-        # = 1000 × 0.25/1M + 200 × 1.50/1M
-        # = 0.00025 + 0.00030 = 0.00055
-        cost = estimate_cost_usd("gemini-3.1-flash-lite", 1000, 200)
-        assert cost == pytest.approx(0.00055, rel=1e-3)
+        # = 1000 × 0.10/1M + 200 × 0.40/1M
+        # = 0.0001 + 0.00008 = 0.00018
+        cost = estimate_cost_usd("gemini-2.5-flash-lite", 1000, 200)
+        assert cost == pytest.approx(0.00018, rel=1e-3)
 
     def test_cost_for_unknown_model_is_none(self):
         assert estimate_cost_usd("gemini-99-fake", 1000, 200) is None
 
     def test_zero_tokens_zero_cost(self):
-        assert estimate_cost_usd("gemini-3.1-pro", 0, 0) == 0.0
+        assert estimate_cost_usd("gemini-2.5-pro", 0, 0) == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +86,7 @@ class TestUsageStore:
     def test_record_turn_creates_row(self):
         usage_mod.token_usage.record_turn(
             principal="AXIS\\alice",
-            model="gemini-3.1-pro",
+            model="gemini-2.5-pro",
             input_tokens=100,
             output_tokens=50,
             cost_usd=0.0008,
@@ -102,7 +102,7 @@ class TestUsageStore:
         for _ in range(3):
             usage_mod.token_usage.record_turn(
                 principal="alice",
-                model="gemini-3.1-pro",
+                model="gemini-2.5-pro",
                 input_tokens=10,
                 output_tokens=5,
                 cost_usd=0.0001,
@@ -115,13 +115,13 @@ class TestUsageStore:
     def test_record_turn_aggregates_across_models(self):
         usage_mod.token_usage.record_turn(
             principal="alice",
-            model="gemini-3.1-pro",
+            model="gemini-2.5-pro",
             input_tokens=100,
             output_tokens=50,
         )
         usage_mod.token_usage.record_turn(
             principal="alice",
-            model="gemini-3.1-flash-lite",
+            model="gemini-2.5-flash-lite",
             input_tokens=200,
             output_tokens=100,
         )
@@ -132,13 +132,13 @@ class TestUsageStore:
     def test_two_principals_are_isolated(self):
         usage_mod.token_usage.record_turn(
             principal="alice",
-            model="gemini-3.1-pro",
+            model="gemini-2.5-pro",
             input_tokens=100,
             output_tokens=50,
         )
         usage_mod.token_usage.record_turn(
             principal="bob",
-            model="gemini-3.1-pro",
+            model="gemini-2.5-pro",
             input_tokens=999,
             output_tokens=999,
         )
@@ -165,7 +165,7 @@ class TestBudget:
         # No matter how much was already used, budget=0 lets through.
         usage_mod.token_usage.record_turn(
             principal="alice",
-            model="gemini-3.1-pro",
+            model="gemini-2.5-pro",
             input_tokens=10_000_000,
             output_tokens=10_000_000,
         )
@@ -194,7 +194,7 @@ class TestBudget:
         set_daily_budget(1000)
         usage_mod.token_usage.record_turn(
             principal="alice",
-            model="gemini-3.1-pro",
+            model="gemini-2.5-pro",
             input_tokens=100,
             output_tokens=50,
         )
@@ -207,7 +207,7 @@ class TestBudget:
         set_daily_budget(150)
         usage_mod.token_usage.record_turn(
             principal="alice",
-            model="gemini-3.1-pro",
+            model="gemini-2.5-pro",
             input_tokens=100,
             output_tokens=50,
         )
@@ -220,7 +220,7 @@ class TestBudget:
         set_daily_budget(100)
         usage_mod.token_usage.record_turn(
             principal="alice",
-            model="gemini-3.1-pro",
+            model="gemini-2.5-pro",
             input_tokens=500,
             output_tokens=200,
         )
@@ -233,7 +233,7 @@ class TestBudget:
         set_daily_budget(100)
         usage_mod.token_usage.record_turn(
             principal="alice",
-            model="gemini-3.1-pro",
+            model="gemini-2.5-pro",
             input_tokens=500,
             output_tokens=0,
         )

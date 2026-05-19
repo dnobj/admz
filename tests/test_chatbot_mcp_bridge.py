@@ -73,7 +73,7 @@ async def test_stream_turn_threads_session_into_invoke_stream(monkeypatch):
     async for ev in client_mod.stream_turn(
         user_message="hi",
         api_key="AIza-x",
-        model="gemini-3.1-pro",
+        model="gemini-2.5-pro",
         system_prompt="sys",
         use_tools=True,
     ):
@@ -108,7 +108,7 @@ async def test_stream_turn_proceeds_without_tools_when_bridge_fails(monkeypatch)
     async for ev in client_mod.stream_turn(
         user_message="hi",
         api_key="AIza-x",
-        model="gemini-3.1-pro",
+        model="gemini-2.5-pro",
         system_prompt="sys",
         use_tools=True,
     ):
@@ -176,7 +176,7 @@ async def test_models_api_path_passes_tools_in_config(monkeypatch):
 
     fake_session = object()
     request_kwargs = {
-        "model": "gemini-3.1-pro",
+        "model": "gemini-2.5-pro",
         "system_instruction": "sys",
         "contents": "hi",
     }
@@ -191,7 +191,7 @@ async def test_models_api_path_passes_tools_in_config(monkeypatch):
     ):
         pass
 
-    assert captured["model"] == "gemini-3.1-pro"
+    assert captured["model"] == "gemini-2.5-pro"
     assert captured["contents"] == "hi"
     config = captured["config"]
     assert config["tools"] == [fake_session]
@@ -225,7 +225,7 @@ async def test_invoke_stream_routes_to_models_api_when_session_present(monkeypat
 
     fake_session = object()
     request_kwargs = {
-        "model": "gemini-3.1-pro",
+        "model": "gemini-2.5-pro",
         "system_instruction": "sys",
         "contents": "hi",
     }

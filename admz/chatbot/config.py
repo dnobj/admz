@@ -34,13 +34,16 @@ def _fs():
     return _fs_module.fleet_settings
 
 
-# Latest-GA Gemini 3.1 models as of May 2026. See ADR-0025.
-DEFAULT_MODEL = "gemini-3.1-pro"
+# Gemini 2.5 line — the actually-live GA models on the v1beta API
+# as of May 2026. (Earlier Phase 5A research surfaced forward-looking
+# '3.1' names from press pieces; the real shipped models are 2.5.)
+# See ADR-0025.
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 SELECTABLE_MODELS: List[str] = [
-    "gemini-3.1-pro",
-    "gemini-3.1-flash",
-    "gemini-3.1-flash-lite",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
 ]
 
 

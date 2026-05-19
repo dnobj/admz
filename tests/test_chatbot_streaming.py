@@ -63,7 +63,7 @@ async def test_stream_turn_emits_start_text_done_sequence(monkeypatch):
     async for ev in client_mod.stream_turn(
         user_message="hi",
         api_key="AIza-x",
-        model="gemini-3.1-pro",
+        model="gemini-2.5-pro",
         system_prompt="sys",
         use_tools=False,
     ):
@@ -103,7 +103,7 @@ async def test_stream_turn_emits_tool_call_events(monkeypatch):
     async for ev in client_mod.stream_turn(
         user_message="hi",
         api_key="AIza-x",
-        model="gemini-3.1-pro",
+        model="gemini-2.5-pro",
         system_prompt="sys",
         use_tools=False,
     ):
@@ -122,7 +122,7 @@ async def test_stream_turn_unconfigured_yields_error(monkeypatch):
     async for ev in client_mod.stream_turn(
         user_message="hi",
         api_key="",
-        model="gemini-3.1-pro",
+        model="gemini-2.5-pro",
         system_prompt="sys",
     ):
         events.append(ev)
@@ -150,7 +150,7 @@ async def test_stream_turn_sdk_failure_yields_error(monkeypatch):
     async for ev in client_mod.stream_turn(
         user_message="hi",
         api_key="AIza-x",
-        model="gemini-3.1-pro",
+        model="gemini-2.5-pro",
         system_prompt="sys",
         use_tools=False,
     ):
@@ -272,7 +272,7 @@ class TestChatStreamRoute:
         with patch("admz.api.routes.chat.stream_turn", side_effect=fake_stream):
             r = stream_client.post(
                 "/chat/stream",
-                data={"message": "hi", "model": "gemini-3.1-pro"},
+                data={"message": "hi", "model": "gemini-2.5-pro"},
             )
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("text/event-stream")
@@ -296,7 +296,7 @@ class TestChatStreamRoute:
         with patch("admz.api.routes.chat.stream_turn", side_effect=fake_stream):
             stream_client.post(
                 "/chat/stream",
-                data={"message": "hi", "model": "gemini-3.1-pro"},
+                data={"message": "hi", "model": "gemini-2.5-pro"},
             )
 
         from admz.chatbot.sessions import chat_sessions
@@ -305,7 +305,7 @@ class TestChatStreamRoute:
     def test_stream_endpoint_emits_error_when_unconfigured(self, stream_client):
         # No API key set — the route's first event should be an error.
         r = stream_client.post(
-            "/chat/stream", data={"message": "hi", "model": "gemini-3.1-pro"}
+            "/chat/stream", data={"message": "hi", "model": "gemini-2.5-pro"}
         )
         # Endpoint returns 200 with an error event (rather than 503)
         # because SSE consumers don't read the body of a non-200 response
@@ -331,4 +331,4 @@ class TestChatStreamRoute:
                 "/chat/stream",
                 data={"message": "hi", "model": "gemini-not-real"},
             )
-        assert captured["model"] == "gemini-3.1-pro"
+        assert captured["model"] == "gemini-2.5-flash"  # DEFAULT_MODEL

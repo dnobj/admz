@@ -110,8 +110,8 @@ class TestChatPage:
         # No "not configured" warning now.
         assert "not configured" not in body.lower()
         # Model selector populated.
-        assert "gemini-3.1-pro" in body
-        assert "gemini-3.1-flash-lite" in body
+        assert "gemini-2.5-pro" in body
+        assert "gemini-2.5-flash-lite" in body
 
     def test_chat_post_returns_503_when_unconfigured(self, client):
         r = client.post("/chat", data={"message": "hi"})
@@ -137,7 +137,7 @@ class TestChatPage:
         with patch("admz.api.routes.chat.run_turn", side_effect=fake_run_turn):
             r = client.post(
                 "/chat",
-                data={"message": "hello chatbot", "model": "gemini-3.1-pro"},
+                data={"message": "hello chatbot", "model": "gemini-2.5-pro"},
             )
         assert r.status_code == 200
         assert "hi from gemini" in r.text
@@ -167,11 +167,11 @@ class TestChatPage:
                 data={"message": "x", "model": "gemini-totally-fake"},
             )
         assert r.status_code == 200
-        assert captured["model"] == "gemini-3.1-pro"  # default
+        assert captured["model"] == "gemini-2.5-flash"  # DEFAULT_MODEL
 
     def test_chat_clear_resets_session(self, client):
         from admz.chatbot.sessions import chat_sessions
-        chat_sessions.set_interaction_id("anonymous", "int-old", "gemini-3.1-pro")
+        chat_sessions.set_interaction_id("anonymous", "int-old", "gemini-2.5-pro")
 
         r = client.post("/chat/clear")
         assert r.status_code == 303
@@ -226,12 +226,12 @@ class TestChatSettingsPage:
             "/settings/chat",
             data={
                 "action": "set_default_model",
-                "default_model": "gemini-3.1-flash-lite",
+                "default_model": "gemini-2.5-flash-lite",
             },
         )
         assert r.status_code == 200
         from admz.chatbot.config import get_chatbot_config
-        assert get_chatbot_config().default_model == "gemini-3.1-flash-lite"
+        assert get_chatbot_config().default_model == "gemini-2.5-flash-lite"
 
     def test_set_unknown_model_rejected(self, client):
         r = client.post(

@@ -35,7 +35,7 @@ class TestDependencyMissing:
                 client_mod.run_turn(
                     user_message="hi",
                     api_key="AIza-x",
-                    model="gemini-3.1-pro",
+                    model="gemini-2.5-pro",
                     system_prompt="sys",
                 )
             )
@@ -61,7 +61,7 @@ async def test_run_turn_returns_text_and_interaction_id(monkeypatch):
 
     async def fake_invoke(client, kwargs):
         # Sanity: the model + key flowed through.
-        assert kwargs["model"] == "gemini-3.1-pro"
+        assert kwargs["model"] == "gemini-2.5-pro"
         assert kwargs["system_instruction"] == "sys"
         assert kwargs["contents"] == "hi"
         return _FakeResponse(text="pong", id_="int-xyz")
@@ -71,14 +71,14 @@ async def test_run_turn_returns_text_and_interaction_id(monkeypatch):
     result = await client_mod.run_turn(
         user_message="hi",
         api_key="AIza-good",
-        model="gemini-3.1-pro",
+        model="gemini-2.5-pro",
         system_prompt="sys",
     )
     assert result.text == "pong"
     assert result.interaction_id == "int-xyz"
     assert result.input_tokens == 12
     assert result.output_tokens == 7
-    assert result.model == "gemini-3.1-pro"
+    assert result.model == "gemini-2.5-pro"
 
 
 @pytest.mark.asyncio
@@ -98,7 +98,7 @@ async def test_run_turn_threads_previous_interaction(monkeypatch):
     await client_mod.run_turn(
         user_message="hi",
         api_key="AIza-x",
-        model="gemini-3.1-flash",
+        model="gemini-2.5-flash",
         system_prompt="sys",
         previous_interaction_id="int-prev",
     )
@@ -112,7 +112,7 @@ async def test_empty_key_raises_not_configured(monkeypatch):
         await client_mod.run_turn(
             user_message="hi",
             api_key="",
-            model="gemini-3.1-pro",
+            model="gemini-2.5-pro",
             system_prompt="sys",
         )
 
@@ -132,7 +132,7 @@ async def test_invoke_failure_wrapped_in_turn_error(monkeypatch):
         await client_mod.run_turn(
             user_message="hi",
             api_key="AIza-x",
-            model="gemini-3.1-pro",
+            model="gemini-2.5-pro",
             system_prompt="sys",
         )
     assert "api rate-limited" in str(excinfo.value)
@@ -146,19 +146,19 @@ async def test_invoke_failure_wrapped_in_turn_error(monkeypatch):
 class TestResultFromResponse:
     def test_prefers_text_attr(self):
         resp = MagicMock(text="abc", id="id-1", usage=None)
-        result = client_mod._result_from_response(resp, "gemini-3.1-pro")
+        result = client_mod._result_from_response(resp, "gemini-2.5-pro")
         assert result.text == "abc"
 
     def test_falls_back_to_output_text(self):
         resp = MagicMock(spec=["output_text", "id"])
         resp.output_text = "from output_text"
         resp.id = "id-2"
-        result = client_mod._result_from_response(resp, "gemini-3.1-pro")
+        result = client_mod._result_from_response(resp, "gemini-2.5-pro")
         assert result.text == "from output_text"
 
     def test_handles_dict_usage(self):
         resp = MagicMock(text="t", id="id", usage={"prompt_tokens": 5, "completion_tokens": 3})
-        result = client_mod._result_from_response(resp, "gemini-3.1-pro")
+        result = client_mod._result_from_response(resp, "gemini-2.5-pro")
         assert result.input_tokens == 5
         assert result.output_tokens == 3
 
@@ -166,6 +166,6 @@ class TestResultFromResponse:
         resp = MagicMock(spec=["text", "id"])
         resp.text = "t"
         resp.id = "id"
-        result = client_mod._result_from_response(resp, "gemini-3.1-pro")
+        result = client_mod._result_from_response(resp, "gemini-2.5-pro")
         assert result.input_tokens is None
         assert result.output_tokens is None
