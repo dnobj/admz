@@ -18,6 +18,7 @@ this phase.
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -203,6 +204,11 @@ from admz.chatbot.events import (  # noqa: E402 — kept near its consumer
     event_text,
     event_tool_call,
 )
+from admz.chatbot.mcp_bridge import (  # noqa: E402
+    McpBridgeError,
+    McpBridgeMissing,
+    open_mcp_session,
+)
 
 
 async def stream_turn(
@@ -212,6 +218,7 @@ async def stream_turn(
     model: str,
     system_prompt: str,
     previous_interaction_id: Optional[str] = None,
+    use_tools: bool = True,
 ):
     """Stream a chat turn as :class:`ChatEvent`s.
 
@@ -220,13 +227,19 @@ async def stream_turn(
       1. one ``start`` event with the model name
       2. zero or more ``text`` events with incremental chunks
       3. zero or more ``tool_call`` / ``tool_result`` events
-         (Phase 5B-MCP — currently no tools are wired in)
+         (when MCP bridge is available — Phase 5B-MCP)
       4. one ``done`` event with the final interaction_id + usage
          (or an ``error`` event if the SDK raised)
 
     The route consumes these and forwards them over SSE.
     Streaming is one-shot: a single async iteration consumes the
     whole stream.
+
+    ``use_tools`` is True by default: the bridge spawns
+    ``python -m admz mcp`` and passes the session to Gemini as a
+    tool source. If the bridge fails (mcp not installed, spawn
+    error), the turn proceeds without tools and an informational
+    text event notes the degradation.
     """
     if not api_key:
         yield event_error(
@@ -260,19 +273,32 @@ async def stream_turn(
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
 
+    # Open the MCP bridge if requested; degrade to no-tools on failure.
+    # The bridge subprocess lives for the duration of this turn — when
+    # the async-with exits, the MCP server subprocess is reaped.
+    mcp_cm = _open_mcp_or_none(use_tools)
+
     try:
-        async for chunk in _invoke_stream(client, request_kwargs):
-            event = _translate_stream_chunk(chunk)
-            if event is None:
-                continue
-            # Capture terminal metadata for the final 'done' event.
-            if event.type.value == "done":
-                final_interaction_id = event.payload.get("interaction_id")
-                input_tokens = event.payload.get("input_tokens")
-                output_tokens = event.payload.get("output_tokens")
-                # Don't yield 'done' here — we yield it once at the end.
-                continue
-            yield event
+        async with mcp_cm as mcp_session:
+            if use_tools and mcp_session is None:
+                yield event_text(
+                    "(MCP tools unavailable — proceeding without device access. "
+                    "Check server logs for bridge errors.)\n"
+                )
+            async for chunk in _invoke_stream(
+                client, request_kwargs, mcp_session=mcp_session
+            ):
+                event = _translate_stream_chunk(chunk)
+                if event is None:
+                    continue
+                # Capture terminal metadata for the final 'done' event.
+                if event.type.value == "done":
+                    final_interaction_id = event.payload.get("interaction_id")
+                    input_tokens = event.payload.get("input_tokens")
+                    output_tokens = event.payload.get("output_tokens")
+                    # Don't yield 'done' here — we yield it once at the end.
+                    continue
+                yield event
     except Exception as exc:
         logger.exception("Gemini streaming failed: %s", exc)
         yield event_error(f"Gemini stream error: {exc}")
@@ -285,17 +311,57 @@ async def stream_turn(
     )
 
 
-async def _invoke_stream(client: Any, request_kwargs: dict):
+@asynccontextmanager
+async def _open_mcp_or_none(use_tools: bool):
+    """Yield an MCP session, or ``None`` if tools are disabled / bridge fails.
+
+    Centralizes the 'best-effort tools' policy: if the bridge can't
+    be opened, the chat still works (just without device access).
+    The decision is intentionally not exposed as a flag the model
+    can flip — it's a deployment-time concern.
+    """
+    if not use_tools:
+        yield None
+        return
+    try:
+        async with open_mcp_session() as session:
+            yield session
+    except (McpBridgeMissing, McpBridgeError) as exc:
+        logger.warning("MCP bridge unavailable, proceeding without tools: %s", exc)
+        yield None
+
+
+async def _invoke_stream(
+    client: Any,
+    request_kwargs: dict,
+    *,
+    mcp_session: Any = None,
+):
     """Call the SDK's streaming method and yield raw chunks.
 
-    Isolated so tests can patch it. Phase 5B-MCP will add the
-    ``config=GenerateContentConfig(tools=[mcp_session])`` kwarg
-    inside this function — keeping the route ignorant of SDK
-    surface details.
+    When ``mcp_session`` is provided, route through
+    ``client.aio.models.generate_content_stream`` with
+    ``config=GenerateContentConfig(tools=[mcp_session])``. That's
+    the documented path for ``google-genai``'s native MCP
+    integration. When no session is provided, fall back to the
+    Interactions API (which is leaner but doesn't support MCP tools
+    in the same way).
+
+    Isolated as its own function so tests can patch it without
+    monkey-patching the SDK.
     """
-    # Prefer the Interactions API streaming method when present
-    # (v1.55+). Fall back to the models API stream if the SDK
-    # surfaces only that. Both yield iterables of chunks.
+    # MCP-bearing path: aio.models.generate_content_stream with
+    # tools=[session]. This is the FastMCP-confirmed shape.
+    if mcp_session is not None:
+        async for chunk in _stream_via_models_api(
+            client, request_kwargs, mcp_session=mcp_session
+        ):
+            yield chunk
+        return
+
+    # Otherwise, prefer the Interactions API (slimmer protocol for
+    # text-only turns). Fall back to the models API if the SDK
+    # version doesn't surface interactions.
     interactions = getattr(client, "interactions", None)
     if interactions is not None:
         stream_fn = (
@@ -308,7 +374,19 @@ async def _invoke_stream(client: Any, request_kwargs: dict):
                 yield chunk
             return
 
-    # Fallback: client.aio.models.generate_content_stream
+    async for chunk in _stream_via_models_api(client, request_kwargs):
+        yield chunk
+
+
+async def _stream_via_models_api(
+    client: Any, request_kwargs: dict, *, mcp_session: Any = None
+):
+    """Stream via ``client.aio.models.generate_content_stream``.
+
+    Builds the SDK's ``GenerateContentConfig`` defensively — the
+    config class lives under ``genai.types`` and the SDK is happy
+    to accept a dict in its place across recent versions.
+    """
     aio = getattr(client, "aio", None)
     models = getattr(aio, "models", None) if aio else None
     stream_fn = getattr(models, "generate_content_stream", None) if models else None
@@ -317,15 +395,45 @@ async def _invoke_stream(client: Any, request_kwargs: dict):
             "google-genai client exposes neither interactions.stream nor "
             "aio.models.generate_content_stream. Upgrade google-genai."
         )
-    # generate_content_stream uses different kwargs — translate.
-    fallback_kwargs = {
+
+    config: dict = {}
+    sys_inst = request_kwargs.get("system_instruction")
+    if sys_inst:
+        config["system_instruction"] = sys_inst
+    if mcp_session is not None:
+        config["tools"] = [mcp_session]
+
+    call_kwargs = {
         "model": request_kwargs["model"],
         "contents": request_kwargs["contents"],
     }
-    # system_instruction goes inside the config object in this API.
-    result = stream_fn(**fallback_kwargs)
+    if config:
+        call_kwargs["config"] = _build_generate_config(config)
+
+    result = stream_fn(**call_kwargs)
     async for chunk in _as_async_iter(result):
         yield chunk
+
+
+def _build_generate_config(config: dict) -> Any:
+    """Construct a GenerateContentConfig from a kwargs dict.
+
+    Tries ``genai.types.GenerateContentConfig`` first (the documented
+    class); falls back to the raw dict if the class isn't importable
+    or doesn't accept our kwargs cleanly. The SDK accepts dicts in
+    place of typed configs across recent versions, so the fallback is
+    safe.
+    """
+    try:
+        from google.genai import types  # type: ignore[import-not-found]
+        cls = getattr(types, "GenerateContentConfig", None)
+        if cls is not None:
+            return cls(**config)
+    except Exception as exc:  # pragma: no cover — SDK shape drift
+        logger.debug(
+            "GenerateContentConfig unavailable, passing dict instead: %s", exc
+        )
+    return config
 
 
 async def _as_async_iter(result: Any):

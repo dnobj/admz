@@ -50,7 +50,7 @@ async def test_stream_turn_emits_start_text_done_sequence(monkeypatch):
     fake_genai.Client.return_value = MagicMock()
     monkeypatch.setattr(client_mod, "_import_genai", lambda: fake_genai)
 
-    async def fake_invoke_stream(client, kwargs):
+    async def fake_invoke_stream(client, kwargs, *, mcp_session=None):
         yield _FakeChunk(text="Hello, ")
         yield _FakeChunk(text="world.")
         yield _FakeChunk(
@@ -65,6 +65,7 @@ async def test_stream_turn_emits_start_text_done_sequence(monkeypatch):
         api_key="AIza-x",
         model="gemini-3.1-pro",
         system_prompt="sys",
+        use_tools=False,
     ):
         events.append(ev)
 
@@ -90,7 +91,7 @@ async def test_stream_turn_emits_tool_call_events(monkeypatch):
     fake_genai.Client.return_value = MagicMock()
     monkeypatch.setattr(client_mod, "_import_genai", lambda: fake_genai)
 
-    async def fake_invoke_stream(client, kwargs):
+    async def fake_invoke_stream(client, kwargs, *, mcp_session=None):
         yield _FakeChunk(text="Let me check. ")
         yield _FakeChunk(step_type="function_call", name="list_devices")
         yield _FakeChunk(text="Done.")
@@ -104,6 +105,7 @@ async def test_stream_turn_emits_tool_call_events(monkeypatch):
         api_key="AIza-x",
         model="gemini-3.1-pro",
         system_prompt="sys",
+        use_tools=False,
     ):
         events.append(ev)
 
@@ -137,7 +139,7 @@ async def test_stream_turn_sdk_failure_yields_error(monkeypatch):
     fake_genai.Client.return_value = MagicMock()
     monkeypatch.setattr(client_mod, "_import_genai", lambda: fake_genai)
 
-    async def boom(client, kwargs):
+    async def boom(client, kwargs, *, mcp_session=None):
         # Generators raise during iteration; emulate with one yield then raise.
         yield _FakeChunk(text="partial ")
         raise RuntimeError("rate limited")
@@ -150,6 +152,7 @@ async def test_stream_turn_sdk_failure_yields_error(monkeypatch):
         api_key="AIza-x",
         model="gemini-3.1-pro",
         system_prompt="sys",
+        use_tools=False,
     ):
         events.append(ev)
 

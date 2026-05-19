@@ -34,20 +34,21 @@ never sees the Gemini API key, the tool schemas, or raw model
 output. The browser-server protocol is a thin streaming display
 channel; all logic lives in `admz/chatbot/`.
 
-### FR-CB-003 — Native MCP tool surface (no re-translation) 🚧
+### FR-CB-003 — Native MCP tool surface (no re-translation) ✅
 The chatbot passes the running ADMZ MCP server directly to the
-Gemini Interactions API via `google-genai`'s experimental
-local-MCP-server tool source. No hand-translation of the 19 MCP
-tools into Gemini `FunctionDeclaration` objects. New MCP tools
-become available in chat the moment they land in `mcp/server.py`.
-See [ADR-0025](../decisions/0025-gemini-chatbot-mcp-native.md).
+`google-genai` SDK as a tool source. No hand-translation of the
+19 MCP tools into Gemini `FunctionDeclaration` objects. New MCP
+tools become available in chat the moment they land in
+`mcp/server.py`. See
+[ADR-0025](../decisions/0025-gemini-chatbot-mcp-native.md).
 
-The Phase 5B streaming path is wired to *emit* `tool_call` and
-`tool_result` events through the SSE stream, and the browser-side
-renderer displays them as cards. The actual handoff of the MCP
-server as `tools=[session]` to the SDK lands in Phase 5B-MCP
-(spawning `admz mcp` as a stdio subprocess held for the chat
-session's duration).
+The bridge in `admz/chatbot/mcp_bridge.py` spawns
+`python -m admz mcp` as a stdio subprocess on each turn (Phase
+5B-MCP), performs the MCP handshake, and yields a `ClientSession`
+into the SDK's `config.tools=[session]`. The subprocess is reaped
+at end-of-turn. If the bridge fails (mcp not installed, spawn
+error), the turn degrades gracefully: chat continues without tools
+and an inline notice tells the user.
 
 ### FR-CB-004 — Inline approval cards for dangerous operations 📋
 When the LLM proposes a `dangerous`-risk operation or executes
@@ -194,6 +195,18 @@ daily budget (Phase 5D) is the primary lever.
 As of April 2026, only Flash and Flash-Lite are free-tier-eligible.
 Operators evaluating ADMZ on the free tier should default to
 Flash-Lite via `ADMZ_GEMINI_DEFAULT_MODEL=gemini-3.1-flash-lite`.
+
+### KL-CB-006 — Per-turn MCP subprocess overhead ⚠️
+The MCP bridge spawns `python -m admz mcp` once per chat turn.
+Python startup + ADMZ import + MCP handshake is ~1–2 s on first
+contact (warmer on subsequent turns thanks to OS-level disk
+caching). For interactive chat this is noticeable on every
+message. A per-principal subprocess pool with idle timeout is the
+intended future optimization — out of scope for Phase 5B-MCP.
+
+Mitigation: hide the latency behind the streaming "start" event
+that fires immediately, so the user sees activity even while the
+subprocess warms up.
 
 ## References
 

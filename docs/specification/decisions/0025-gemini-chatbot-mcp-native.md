@@ -112,6 +112,10 @@ no concrete consumer.
   demand.
 - Token-budget per-user-per-day fleet setting (Phase 5D) caps
   worst-case bill.
+- Graceful degradation if the bridge fails: the chat continues
+  without tools and emits an inline notice, rather than 503-ing
+  the whole turn. The user can still get help that doesn't
+  require device access.
 
 ## Alternatives considered
 
