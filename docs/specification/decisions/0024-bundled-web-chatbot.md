@@ -99,7 +99,14 @@ implementation are captured in
 - The architecture forces an extraction of tool implementations from
   `mcp/server.py` into a shared `admz/tools/` package — improves
   testability and reduces the size of the MCP server file. This is a
-  desirable refactor independent of the chatbot.
+  desirable refactor independent of the chatbot. Phase 9 took the
+  first cut: 13 of 41 tool *declarations* moved to
+  `admz/mcp/tools/` (knowledge, schedules, fleet, provision,
+  firmware). The dispatch chain + private method implementations
+  stay on `ADMZMCPServer` until a real second consumer
+  (chatbot direct-call path, REST surface refactor) needs them.
+  The pattern is set; the remaining 28 declarations move in
+  follow-up commits.
 
 **Negative:**
 - New deployment dependency: LLM provider API key + ongoing cost.
