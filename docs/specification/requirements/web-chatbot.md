@@ -245,17 +245,29 @@ tool responses server-side, surfacing structured "approval needed"
 events through the SSE stream. Deferred — would require changing
 the FastMCP integration model, see ADR-0025 fallback note.
 
-### KL-CB-006 — Per-turn MCP subprocess overhead ⚠️
-The MCP bridge spawns `python -m admz mcp` once per chat turn.
-Python startup + ADMZ import + MCP handshake is ~1–2 s on first
-contact (warmer on subsequent turns thanks to OS-level disk
-caching). For interactive chat this is noticeable on every
-message. A per-principal subprocess pool with idle timeout is the
-intended future optimization — out of scope for Phase 5B-MCP.
+### KL-CB-006 — MCP subprocess pool with idle timeout ✅
+Resolved in Phase 7. `admz/chatbot/mcp_pool.py` runs a
+per-principal pool of MCP subprocesses. The first chat turn for
+a principal pays the ~1–2 s spawn + handshake cost; subsequent
+turns reuse the live subprocess.
 
-Mitigation: hide the latency behind the streaming "start" event
-that fires immediately, so the user sees activity even while the
-subprocess warms up.
+Lifecycle:
+
+- Pool entries are created on first acquire and held with an
+  `AsyncExitStack` so the underlying `stdio_client` + `ClientSession`
+  contexts stay open across turns.
+- A background reaper task scans every minute and evicts entries
+  idle past the configured timeout (default 300 s, override via
+  `ADMZ_MCP_POOL_IDLE_SECONDS`).
+- On FastAPI shutdown the pool is drained — every entry's
+  `aclose()` runs so no MCP subprocess is orphaned.
+- Same-principal concurrency is serialized on a per-entry lock
+  (defensive against duplicate-tab scenarios; the UI already
+  enforces sequential turns).
+
+Falls back to the per-turn spawn path (Phase 5B-MCP) when the
+`principal` argument is omitted — used by tests that don't want
+pool semantics.
 
 ## References
 

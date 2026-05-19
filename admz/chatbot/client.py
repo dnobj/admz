@@ -219,6 +219,7 @@ async def stream_turn(
     system_prompt: str,
     previous_interaction_id: Optional[str] = None,
     use_tools: bool = True,
+    principal: Optional[str] = None,
 ):
     """Stream a chat turn as :class:`ChatEvent`s.
 
@@ -235,11 +236,15 @@ async def stream_turn(
     Streaming is one-shot: a single async iteration consumes the
     whole stream.
 
-    ``use_tools`` is True by default: the bridge spawns
-    ``python -m admz mcp`` and passes the session to Gemini as a
-    tool source. If the bridge fails (mcp not installed, spawn
-    error), the turn proceeds without tools and an informational
-    text event notes the degradation.
+    ``use_tools`` is True by default: the bridge passes an MCP
+    session to Gemini as a tool source. When ``principal`` is
+    provided, the session is acquired through the per-principal
+    pool (Phase 7) so multiple turns reuse the same MCP
+    subprocess. With ``principal=None`` we fall back to the
+    per-turn spawn from Phase 5B-MCP — that's the path tests use
+    when they don't want pooling semantics. If the bridge fails
+    (mcp not installed, spawn error), the turn proceeds without
+    tools and an informational text event notes the degradation.
     """
     if not api_key:
         yield event_error(
@@ -274,9 +279,10 @@ async def stream_turn(
     output_tokens: Optional[int] = None
 
     # Open the MCP bridge if requested; degrade to no-tools on failure.
-    # The bridge subprocess lives for the duration of this turn — when
-    # the async-with exits, the MCP server subprocess is reaped.
-    mcp_cm = _open_mcp_or_none(use_tools)
+    # When a principal is supplied, route through the pool so the
+    # MCP subprocess survives between turns. Otherwise use the
+    # per-turn spawn path (Phase 5B-MCP).
+    mcp_cm = _open_mcp_or_none(use_tools, principal=principal)
 
     try:
         async with mcp_cm as mcp_session:
@@ -312,17 +318,29 @@ async def stream_turn(
 
 
 @asynccontextmanager
-async def _open_mcp_or_none(use_tools: bool):
+async def _open_mcp_or_none(use_tools: bool, *, principal: Optional[str] = None):
     """Yield an MCP session, or ``None`` if tools are disabled / bridge fails.
 
     Centralizes the 'best-effort tools' policy: if the bridge can't
     be opened, the chat still works (just without device access).
     The decision is intentionally not exposed as a flag the model
     can flip — it's a deployment-time concern.
+
+    When ``principal`` is provided, route through the pool so the
+    MCP subprocess survives idle between turns (Phase 7). Otherwise
+    use the per-turn spawn (Phase 5B-MCP). Tests that don't want
+    pool semantics pass ``principal=None``.
     """
     if not use_tools:
         yield None
         return
+
+    if principal is not None:
+        from admz.chatbot import mcp_pool as _pool_module
+        async with _pool_module.mcp_pool.acquire(principal) as session:
+            yield session
+        return
+
     try:
         async with open_mcp_session() as session:
             yield session

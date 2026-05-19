@@ -299,6 +299,7 @@ async def chat_stream(
                 model=chosen_model,
                 system_prompt=system_prompt,
                 previous_interaction_id=prev_id,
+                principal=principal.name,
             ):
                 # Capture terminal metadata + augment the done event
                 # with cost estimate before forwarding.

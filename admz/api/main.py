@@ -49,9 +49,16 @@ async def lifespan(app: FastAPI):
     registry = create_device_registry()
     ctx = init_context(registry)
     await ctx.scheduler.start()
+
+    # Phase 7: spin up the per-principal MCP subprocess pool so the
+    # first chat turn doesn't pay subprocess-spawn latency.
+    from admz.chatbot.mcp_pool import mcp_pool
+    await mcp_pool.start()
+
     try:
         yield
     finally:
+        await mcp_pool.stop()
         await ctx.scheduler.stop()
         # Best-effort cleanup; close() is a no-op for backends that
         # don't hold persistent connections, but exists for the few that do.

@@ -54,7 +54,7 @@ async def test_stream_turn_threads_session_into_invoke_stream(monkeypatch):
     fake_session = object()  # sentinel — the test checks identity
 
     @asynccontextmanager
-    async def fake_open(use_tools):
+    async def fake_open(use_tools, *, principal=None):
         assert use_tools is True
         yield fake_session
 
@@ -91,7 +91,7 @@ async def test_stream_turn_proceeds_without_tools_when_bridge_fails(monkeypatch)
     monkeypatch.setattr(client_mod, "_import_genai", lambda: fake_genai)
 
     @asynccontextmanager
-    async def fake_open(use_tools):
+    async def fake_open(use_tools, *, principal=None):
         # Simulate bridge open succeeding but yielding None (degraded mode).
         yield None
 
