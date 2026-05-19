@@ -1,26 +1,29 @@
-"""Chatbot routes — Phase 5A scaffolding.
+"""Chatbot routes — Phase 5A scaffolding + Phase 5B streaming.
 
-Three surfaces:
+Surfaces:
 
-  - ``GET /chat``                   — the chat page (Jinja2)
-  - ``POST /chat``                  — submit one turn, render result
+  - ``GET  /chat``                  — the chat page (Jinja2)
+  - ``POST /chat``                  — non-streaming single turn (fallback,
+                                       still used when JS is disabled)
+  - ``POST /chat/stream``           — Server-Sent Events streaming turn
   - ``POST /chat/clear``            — clear the principal's session
-  - ``GET /settings/chat``          — admin config page
+  - ``GET  /settings/chat``         — admin config page
   - ``POST /settings/chat``         — save API key / default model
 
-The route is intentionally lightweight: Phase 5A is non-streaming
-and renders responses server-side. Phase 5B will introduce the SSE
-endpoint and a small client-side renderer.
+The streaming endpoint emits :class:`~admz.chatbot.events.ChatEvent`
+values over SSE. The browser-side renderer in ``chat.html``
+consumes them via ``fetch()`` + a ``ReadableStream`` reader.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from admz.auth import Principal, get_current_principal
@@ -31,12 +34,17 @@ from admz.chatbot.client import (
     ChatbotNotConfigured,
     ChatbotTurnError,
     run_turn,
+    stream_turn,
 )
 from admz.chatbot.config import (
     clear_api_key,
     mask_api_key,
     set_api_key,
     set_default_model,
+)
+from admz.chatbot.events import (
+    ChatEventType,
+    event_error,
 )
 from admz.chatbot.system_prompt import build_system_prompt
 
@@ -201,6 +209,93 @@ async def chat_clear(
     """Reset the principal's Gemini conversation."""
     _sessions().clear(principal.name)
     return RedirectResponse(url="/chat", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# /chat/stream — Server-Sent Events
+# ---------------------------------------------------------------------------
+
+
+@router.post("/chat/stream")
+async def chat_stream(
+    message: str = Form(...),
+    model: str = Form(""),
+    principal: Principal = Depends(get_current_principal),
+):
+    """Stream a chat turn as Server-Sent Events.
+
+    Emits :class:`~admz.chatbot.events.ChatEvent` values in the
+    SSE wire format. The browser-side renderer reads chunks via
+    ``fetch()`` + ``ReadableStream.getReader()`` and dispatches on
+    the event type.
+
+    Headers worth noting:
+      - ``X-Accel-Buffering: no`` — disables nginx/uwsgi
+        buffering so events flush as they're written.
+      - ``Cache-Control: no-cache`` — guards against intermediary
+        caches storing the event stream.
+    """
+    config = get_chatbot_config()
+    chosen_model = (
+        model if model in SELECTABLE_MODELS else config.default_model
+    )
+
+    async def event_source() -> AsyncIterator[str]:
+        if not config.configured:
+            yield event_error(
+                "Gemini API key is not configured. Visit /settings/chat."
+            ).to_sse()
+            return
+
+        prev_id = _sessions().get_interaction_id(principal.name)
+        system_prompt = build_system_prompt(
+            principal_name=principal.name,
+            display_name=principal.display_name,
+            groups=principal.groups,
+        )
+
+        captured_interaction_id: Optional[str] = None
+
+        try:
+            async for chat_event in stream_turn(
+                user_message=message,
+                api_key=config.api_key,
+                model=chosen_model,
+                system_prompt=system_prompt,
+                previous_interaction_id=prev_id,
+            ):
+                # Persist the new interaction_id when the stream
+                # completes so subsequent turns thread correctly.
+                if chat_event.type == ChatEventType.DONE:
+                    captured_interaction_id = chat_event.payload.get(
+                        "interaction_id"
+                    )
+                yield chat_event.to_sse()
+        except ChatbotDependencyMissing as exc:
+            yield event_error(str(exc)).to_sse()
+        except ChatbotNotConfigured as exc:
+            yield event_error(str(exc)).to_sse()
+        except ChatbotTurnError as exc:
+            yield event_error(f"Gemini stream error: {exc}").to_sse()
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.exception("Unexpected chat stream failure: %s", exc)
+            yield event_error(f"Unexpected error: {exc}").to_sse()
+            return
+
+        if captured_interaction_id:
+            _sessions().set_interaction_id(
+                principal.name, captured_interaction_id, chosen_model
+            )
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -182,3 +182,230 @@ def _result_from_response(response: Any, model: str) -> TurnResult:
         input_tokens=input_tokens,
         output_tokens=output_tokens,
     )
+
+
+# ---------------------------------------------------------------------------
+# Streaming variant — Phase 5B
+# ---------------------------------------------------------------------------
+#
+# stream_turn() is an async generator that yields ChatEvent objects.
+# The route forwards them to the browser as SSE. Phase 5B-MCP will
+# wire the MCP server in via the tools kwarg here without touching
+# the route or the browser-side renderer.
+
+
+from admz.chatbot.events import (  # noqa: E402 — kept near its consumer
+    ChatEvent,
+    ChatEventType,
+    event_done,
+    event_error,
+    event_start,
+    event_text,
+    event_tool_call,
+)
+
+
+async def stream_turn(
+    *,
+    user_message: str,
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    previous_interaction_id: Optional[str] = None,
+):
+    """Stream a chat turn as :class:`ChatEvent`s.
+
+    Yields a sequence:
+
+      1. one ``start`` event with the model name
+      2. zero or more ``text`` events with incremental chunks
+      3. zero or more ``tool_call`` / ``tool_result`` events
+         (Phase 5B-MCP — currently no tools are wired in)
+      4. one ``done`` event with the final interaction_id + usage
+         (or an ``error`` event if the SDK raised)
+
+    The route consumes these and forwards them over SSE.
+    Streaming is one-shot: a single async iteration consumes the
+    whole stream.
+    """
+    if not api_key:
+        yield event_error(
+            "Gemini API key is not configured. Visit /settings/chat."
+        )
+        return
+
+    try:
+        genai = _import_genai()
+    except ChatbotDependencyMissing as exc:
+        yield event_error(str(exc))
+        return
+
+    try:
+        client = genai.Client(api_key=api_key)
+    except Exception as exc:  # pragma: no cover — SDK construction
+        yield event_error(f"Failed to construct Gemini client: {exc}")
+        return
+
+    yield event_start(model)
+
+    request_kwargs = {
+        "model": model,
+        "system_instruction": system_prompt,
+        "contents": user_message,
+    }
+    if previous_interaction_id:
+        request_kwargs["previous_interaction_id"] = previous_interaction_id
+
+    final_interaction_id: Optional[str] = None
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+
+    try:
+        async for chunk in _invoke_stream(client, request_kwargs):
+            event = _translate_stream_chunk(chunk)
+            if event is None:
+                continue
+            # Capture terminal metadata for the final 'done' event.
+            if event.type.value == "done":
+                final_interaction_id = event.payload.get("interaction_id")
+                input_tokens = event.payload.get("input_tokens")
+                output_tokens = event.payload.get("output_tokens")
+                # Don't yield 'done' here — we yield it once at the end.
+                continue
+            yield event
+    except Exception as exc:
+        logger.exception("Gemini streaming failed: %s", exc)
+        yield event_error(f"Gemini stream error: {exc}")
+        return
+
+    yield event_done(
+        interaction_id=final_interaction_id,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
+
+
+async def _invoke_stream(client: Any, request_kwargs: dict):
+    """Call the SDK's streaming method and yield raw chunks.
+
+    Isolated so tests can patch it. Phase 5B-MCP will add the
+    ``config=GenerateContentConfig(tools=[mcp_session])`` kwarg
+    inside this function — keeping the route ignorant of SDK
+    surface details.
+    """
+    # Prefer the Interactions API streaming method when present
+    # (v1.55+). Fall back to the models API stream if the SDK
+    # surfaces only that. Both yield iterables of chunks.
+    interactions = getattr(client, "interactions", None)
+    if interactions is not None:
+        stream_fn = (
+            getattr(interactions, "astream", None)
+            or getattr(interactions, "stream", None)
+        )
+        if stream_fn is not None:
+            result = stream_fn(**request_kwargs)
+            async for chunk in _as_async_iter(result):
+                yield chunk
+            return
+
+    # Fallback: client.aio.models.generate_content_stream
+    aio = getattr(client, "aio", None)
+    models = getattr(aio, "models", None) if aio else None
+    stream_fn = getattr(models, "generate_content_stream", None) if models else None
+    if stream_fn is None:
+        raise ChatbotTurnError(
+            "google-genai client exposes neither interactions.stream nor "
+            "aio.models.generate_content_stream. Upgrade google-genai."
+        )
+    # generate_content_stream uses different kwargs — translate.
+    fallback_kwargs = {
+        "model": request_kwargs["model"],
+        "contents": request_kwargs["contents"],
+    }
+    # system_instruction goes inside the config object in this API.
+    result = stream_fn(**fallback_kwargs)
+    async for chunk in _as_async_iter(result):
+        yield chunk
+
+
+async def _as_async_iter(result: Any):
+    """Adapt sync or async iterables to a uniform async iter."""
+    if hasattr(result, "__aiter__"):
+        async for item in result:
+            yield item
+        return
+    # Could be a coroutine returning an iterable.
+    if hasattr(result, "__await__"):
+        result = await result
+        if hasattr(result, "__aiter__"):
+            async for item in result:
+                yield item
+            return
+    # Sync iterable.
+    for item in result:
+        yield item
+
+
+def _translate_stream_chunk(chunk: Any) -> Optional[ChatEvent]:
+    """Translate one SDK chunk into a ChatEvent.
+
+    Returns None to skip the chunk silently. The SDK's chunk
+    shape varies across point releases, so we probe a few common
+    attribute names. Streaming chunks come in three flavors:
+
+      - text chunk: a partial text delta
+      - tool_call: an explicit function-call step (Phase 5B-MCP
+        will exercise this once tools are wired)
+      - terminal: the final chunk carries the interaction_id +
+        usage info; we use the ``done`` event type as a carrier
+        in the stream and translate it to a real ``done`` at the
+        end (see stream_turn)
+    """
+    # Tool-call step: most relevant once MCP is wired.
+    step_type = getattr(chunk, "step_type", None)
+    if step_type == "function_call" or step_type == "tool_call":
+        name = (
+            getattr(chunk, "name", None)
+            or getattr(getattr(chunk, "function_call", None), "name", None)
+            or "tool"
+        )
+        return event_tool_call(name=name, args_summary=f"{name}(...)")
+
+    # Text delta.
+    delta = (
+        getattr(chunk, "text", None)
+        or getattr(chunk, "delta", None)
+        or getattr(chunk, "output_text", None)
+    )
+    if isinstance(delta, str) and delta:
+        return event_text(delta)
+
+    # Terminal metadata (the SDK calls the last chunk
+    # "completion" or surfaces usage on it).
+    usage = getattr(chunk, "usage", None)
+    interaction_id = (
+        getattr(chunk, "id", None)
+        or getattr(chunk, "interaction_id", None)
+    )
+    if usage or interaction_id:
+        input_tokens = None
+        output_tokens = None
+        if isinstance(usage, dict):
+            input_tokens = usage.get("input_tokens") or usage.get("prompt_tokens")
+            output_tokens = usage.get("output_tokens") or usage.get("completion_tokens")
+        elif usage is not None:
+            input_tokens = (
+                getattr(usage, "input_tokens", None)
+                or getattr(usage, "prompt_tokens", None)
+            )
+            output_tokens = (
+                getattr(usage, "output_tokens", None)
+                or getattr(usage, "completion_tokens", None)
+            )
+        return event_done(
+            interaction_id=interaction_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+
+    return None

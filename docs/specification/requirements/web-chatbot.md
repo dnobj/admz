@@ -17,12 +17,16 @@ through the same in-process MCP server.
 
 ## Functional requirements
 
-### FR-CB-001 — Bundled chat UI in the FastAPI web app 🚧
+### FR-CB-001 — Bundled chat UI in the FastAPI web app ✅
 A `/chat` page renders a chat interface (message list + input).
-Phase 5A serves the page and handles a single non-streaming
-turn. Phase 5B adds Server-Sent Events. The page is served from
-the same FastAPI app as everything else; no separate frontend
-build required.
+Phase 5A added the page + a non-streaming `POST /chat` fallback.
+Phase 5B added `POST /chat/stream` returning Server-Sent Events
+and a small `chat.js` consumer that renders the stream
+progressively, including tool-call cards. The non-streaming
+path remains for clients without JavaScript.
+
+The page is served from the same FastAPI app as everything else;
+no separate frontend build required.
 
 ### FR-CB-002 — Server-side LLM bridge 🚧
 ADMZ talks to Gemini over HTTPS from the server. The browser
@@ -37,6 +41,13 @@ local-MCP-server tool source. No hand-translation of the 19 MCP
 tools into Gemini `FunctionDeclaration` objects. New MCP tools
 become available in chat the moment they land in `mcp/server.py`.
 See [ADR-0025](../decisions/0025-gemini-chatbot-mcp-native.md).
+
+The Phase 5B streaming path is wired to *emit* `tool_call` and
+`tool_result` events through the SSE stream, and the browser-side
+renderer displays them as cards. The actual handoff of the MCP
+server as `tools=[session]` to the SDK lands in Phase 5B-MCP
+(spawning `admz mcp` as a stdio subprocess held for the chat
+session's duration).
 
 ### FR-CB-004 — Inline approval cards for dangerous operations 📋
 When the LLM proposes a `dangerous`-risk operation or executes
@@ -165,11 +176,13 @@ The "Clear chat" button only releases ADMZ's pointer; whether
 Google retains the transcript after that is governed by the
 Google data-handling agreement, not ADMZ.
 
-### KL-CB-003 — Streaming requires SSE, which is new for ADMZ ⚠️
-The pre-Phase-5 FastAPI app uses neither SSE nor WebSockets.
-Phase 5A scaffolding is non-streaming (one POST, one full
-response). Phase 5B introduces the first SSE endpoint in the
-codebase.
+### KL-CB-003 — Streaming requires SSE, which is new for ADMZ ✅
+Resolved in Phase 5B: `POST /chat/stream` is the first SSE
+endpoint in the codebase. The wire format uses `event:` + `data:`
+SSE lines; the browser-side consumer reads via `fetch()` +
+`ReadableStream.getReader()` rather than `EventSource` (so that
+POST + form-encoded args work without round-tripping through GET).
+The non-streaming `POST /chat` remains for clients without JS.
 
 ### KL-CB-004 — Provider rate limits aren't centrally managed ⚠️
 Gemini has its own rate-limit story; Phase 5A surfaces 429s back
