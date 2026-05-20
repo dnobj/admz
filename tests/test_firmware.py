@@ -475,12 +475,14 @@ class TestResolverFirmwareSynonyms:
         assert "check-firmware" in _INTENT_SYNONYMS["firmware status"]
 
     def test_reboot(self):
+        # The catalog index key is 'restart-device', not 'reboot-device'.
+        # The mismatch broke live chat — see tests/test_resolver_synonyms.py.
         assert "reboot" in _INTENT_SYNONYMS
-        assert "reboot-device" in _INTENT_SYNONYMS["reboot"]
+        assert "restart-device" in _INTENT_SYNONYMS["reboot"]
 
     def test_restart(self):
         assert "restart" in _INTENT_SYNONYMS
-        assert "reboot-device" in _INTENT_SYNONYMS["restart"]
+        assert "restart-device" in _INTENT_SYNONYMS["restart"]
 
 
 # ------------------------------------------------------------------

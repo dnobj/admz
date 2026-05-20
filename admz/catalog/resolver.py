@@ -73,9 +73,14 @@ _INTENT_SYNONYMS: Dict[str, List[str]] = {
     "rollback firmware": ["rollback-firmware"],
     "firmware rollback": ["rollback-firmware"],
     "firmware status": ["check-firmware"],
-    "commit firmware": ["commit-firmware"],
-    "reboot": ["reboot-device"],
-    "restart": ["reboot-device"],
+    # 'commit firmware' is the final step of upgrade-firmware (the
+    # commit.yaml op lives under the upgrade-firmware task key, not
+    # a separate commit-firmware key).
+    "commit firmware": ["upgrade-firmware"],
+    "reboot": ["restart-device"],
+    "restart": ["restart-device"],
+    "reboot device": ["restart-device"],
+    "restart device": ["restart-device"],
     "disk": ["manage-storage"],
     "disks": ["manage-storage"],
     "storage": ["manage-storage"],
