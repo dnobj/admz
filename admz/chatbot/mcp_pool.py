@@ -255,6 +255,31 @@ class McpSessionPool:
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("MCP pool reaper crashed: %s", exc)
 
+    async def evict(self, principal: str) -> bool:
+        """Drop ``principal``'s pool entry and close its subprocess.
+
+        Used when the caller detects the session is dead (typically
+        anyio.ClosedResourceError raised by the SDK trying to use a
+        subprocess whose stdio streams are gone). Returns True if
+        an entry was actually evicted, False if there was nothing
+        to evict.
+
+        Safe to call concurrently — the entries-lock serializes
+        the lookup, and closing the subprocess happens outside the
+        lock so other principals' acquires aren't blocked.
+        """
+        async with self._entries_lock:
+            entry = self._entries.pop(principal, None)
+        if entry is None:
+            return False
+        logger.info(
+            "MCP pool: explicitly evicting %s (pool size now=%d)",
+            principal,
+            len(self._entries),
+        )
+        await entry.close()
+        return True
+
     async def _evict_idle(self) -> None:
         """Evict any entry whose ``last_used`` is older than the timeout."""
         cutoff = time.monotonic() - self._idle_seconds

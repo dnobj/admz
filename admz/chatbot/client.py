@@ -95,6 +95,45 @@ def _get_retry_base_delay() -> float:
         return _DEFAULT_RETRY_BASE_DELAY
 
 
+# Error types that indicate a pooled MCP session is dead (subprocess
+# crashed, stdio streams closed by the bridge teardown, etc.). When
+# we see one of these *before* any chunks have been yielded to the
+# user, stream_turn evicts the pool entry and retries the turn once.
+def _is_session_dead_error(exc: BaseException) -> bool:
+    """True if ``exc`` indicates the pooled MCP session is unusable."""
+    if isinstance(exc, BrokenPipeError):
+        return True
+    # anyio's ClosedResourceError is the canonical signal from
+    # mcp.client.session when the stdio streams are gone.
+    try:
+        import anyio
+        if isinstance(exc, anyio.ClosedResourceError):
+            return True
+    except ImportError:  # pragma: no cover — anyio is a transitive dep
+        pass
+    # Some SDK versions wrap the underlying error; check the cause/context chain.
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None and cause is not exc:
+        if _is_session_dead_error(cause):
+            return True
+    ctx = getattr(exc, "__context__", None)
+    if ctx is not None and ctx is not exc:
+        if _is_session_dead_error(ctx):
+            return True
+    return False
+
+
+async def _evict_stale_session(principal: Optional[str]) -> None:
+    """Drop ``principal``'s pool entry so the next acquire spawns fresh."""
+    if not principal:
+        return
+    try:
+        from admz.chatbot import mcp_pool as _pool_module
+        await _pool_module.mcp_pool.evict(principal)
+    except Exception as exc:  # pragma: no cover — eviction must never block recovery
+        logger.warning("Failed to evict stale MCP session: %s", exc)
+
+
 def _is_retryable_error(exc: BaseException) -> bool:
     """True if ``exc`` is a transient Gemini error worth retrying.
 
@@ -456,59 +495,86 @@ async def stream_turn(
     final_interaction_id: Optional[str] = None
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
+    yielded_chunks = False  # Tracks whether any text/tool_call event has been emitted
 
     # Open the MCP bridge if requested; degrade to no-tools on failure.
     # When a principal is supplied, route through the pool so the
     # MCP subprocess survives between turns. Otherwise use the
     # per-turn spawn path (Phase 5B-MCP).
-    mcp_cm = _open_mcp_or_none(use_tools, principal=principal)
+    #
+    # Two attempts in the loop: the first tries the pooled session
+    # if one exists; if it's dead (anyio.ClosedResourceError when
+    # the SDK calls list_tools on the stale stdio streams), we evict
+    # the pool entry and retry once with a fresh subprocess. Only
+    # safe to retry if no chunks have been yielded to the caller —
+    # otherwise we'd duplicate text in the user's view.
+    failed_with_session_dead = False
+    for session_attempt in (1, 2):
+        if failed_with_session_dead:
+            await _evict_stale_session(principal)
+            failed_with_session_dead = False
 
-    try:
-        async with mcp_cm as mcp_session:
-            if use_tools and mcp_session is None:
-                yield event_text(
-                    "(MCP tools unavailable — proceeding without device access. "
-                    "Check server logs for bridge errors.)\n"
-                )
-            async for chunk in _invoke_stream_with_retry(
-                client, request_kwargs, mcp_session=mcp_session
+        mcp_cm = _open_mcp_or_none(use_tools, principal=principal)
+        try:
+            async with mcp_cm as mcp_session:
+                if use_tools and mcp_session is None:
+                    yield event_text(
+                        "(MCP tools unavailable — proceeding without device access. "
+                        "Check server logs for bridge errors.)\n"
+                    )
+                    yielded_chunks = True
+                async for chunk in _invoke_stream_with_retry(
+                    client, request_kwargs, mcp_session=mcp_session
+                ):
+                    if logger.isEnabledFor(logging.DEBUG):
+                        _log_chunk_shape(chunk)
+
+                    # Track usage_metadata + interaction_id from EVERY
+                    # chunk, not just terminal ones. google-genai 2.x
+                    # attaches usage_metadata to every text chunk; keep
+                    # the latest so the final done event is accurate.
+                    chunk_in, chunk_out = _extract_usage_from_chunk(chunk)
+                    if chunk_in is not None:
+                        input_tokens = chunk_in
+                    if chunk_out is not None:
+                        output_tokens = chunk_out
+                    chunk_id = (
+                        getattr(chunk, "id", None)
+                        or getattr(chunk, "interaction_id", None)
+                        or getattr(chunk, "response_id", None)
+                    )
+                    if chunk_id:
+                        final_interaction_id = chunk_id
+
+                    event = _translate_stream_chunk(chunk)
+                    if event is None:
+                        continue
+                    if event.type.value == "done":
+                        # done-shape chunks: metadata already tracked above.
+                        continue
+                    yielded_chunks = True
+                    yield event
+            # Stream finished cleanly — break the session-retry loop.
+            break
+        except Exception as exc:
+            if (
+                _is_session_dead_error(exc)
+                and session_attempt == 1
+                and not yielded_chunks
+                and principal is not None
             ):
-                # DEBUG-only: log every raw chunk so we can diagnose
-                # shapes the translator misses. Off in production.
-                if logger.isEnabledFor(logging.DEBUG):
-                    _log_chunk_shape(chunk)
-
-                # Track usage_metadata + interaction_id from EVERY
-                # chunk, not just terminal ones. google-genai 2.x
-                # attaches usage_metadata to every text chunk in a
-                # streaming response — keep the latest values seen so
-                # the final done event has accurate totals.
-                chunk_in, chunk_out = _extract_usage_from_chunk(chunk)
-                if chunk_in is not None:
-                    input_tokens = chunk_in
-                if chunk_out is not None:
-                    output_tokens = chunk_out
-                chunk_id = (
-                    getattr(chunk, "id", None)
-                    or getattr(chunk, "interaction_id", None)
-                    or getattr(chunk, "response_id", None)
+                # Safe to retry — pool entry is stale, evict and try once more.
+                logger.warning(
+                    "MCP pooled session for %s appears dead (%s); "
+                    "evicting and retrying turn once",
+                    principal,
+                    type(exc).__name__,
                 )
-                if chunk_id:
-                    final_interaction_id = chunk_id
-
-                event = _translate_stream_chunk(chunk)
-                if event is None:
-                    continue
-                # Terminal-shape 'done' events also carry metadata; the
-                # tracking above already covered them, so skip yielding
-                # here (we emit one done at the end).
-                if event.type.value == "done":
-                    continue
-                yield event
-    except Exception as exc:
-        logger.exception("Gemini streaming failed: %s", exc)
-        yield event_error(f"Gemini stream error: {exc}")
-        return
+                failed_with_session_dead = True
+                continue
+            logger.exception("Gemini streaming failed: %s", exc)
+            yield event_error(f"Gemini stream error: {exc}")
+            return
 
     yield event_done(
         interaction_id=final_interaction_id,
