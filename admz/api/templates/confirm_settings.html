@@ -116,13 +116,30 @@
 
     <h2 style="font-size:18px;margin-bottom:8px;">Plaintext credential access</h2>
     <p style="color:#666;font-size:14px;margin-bottom:16px;">
-      Controls plaintext password retrieval across every surface
-      (MCP <code>get_credentials</code> tool, REST
-      <code>GET&nbsp;/api/devices/&hellip;/credentials</code>, and the
-      web UI's <strong>Reveal</strong> button on the account detail
-      page). All three share this flag.
-      This setting cannot be changed by the LLM &mdash; only through this web UI.
+      Two independent flags control plaintext password retrieval.
+      Both are off by default. Toggling either one cannot be done
+      by the LLM &mdash; only through this web UI.
     </p>
+
+    <div style="margin-bottom:18px;">
+      <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+        <input type="checkbox" name="web_reveal_credentials_enabled" value="1"
+               {% if web_reveal_enabled %}checked{% endif %}
+               style="margin-top:3px;">
+        <span>
+          <strong style="display:block;margin-bottom:2px;">Allow web UI to reveal passwords</strong>
+          <span style="color:#666;font-size:13px;">
+            Enables the <strong>Reveal</strong> button on the account
+            detail page (and the underlying
+            <code>GET&nbsp;/api/devices/&hellip;/credentials</code>
+            endpoint for authenticated humans / API-key clients).
+            Recommended for operators who need to see their own
+            stored credentials &mdash; <strong>does not</strong>
+            expose passwords to LLMs.
+          </span>
+        </span>
+      </label>
+    </div>
 
     <div style="margin-bottom:24px;">
       <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
@@ -130,16 +147,17 @@
                {% if get_creds_enabled %}checked{% endif %}
                style="margin-top:3px;">
         <span>
-          <strong style="display:block;margin-bottom:2px;">Allow plaintext password retrieval</strong>
+          <strong style="display:block;margin-bottom:2px;">Allow LLMs to retrieve plaintext passwords</strong>
           <span style="color:#666;font-size:13px;">
-            When disabled (the default), the <code>get_credentials</code>
-            MCP tool is hidden from LLMs and the REST credentials
-            endpoint returns 403 &mdash; so the web UI <strong>Reveal</strong>
-            button also won't work. Operators who only need to push
-            credentials onto devices (not read them back) should
-            leave this off and use <code>create_temp_credentials</code>
-            for short-lived LLM access without exposing the real
-            admin password.
+            Exposes the <code>get_credentials</code> MCP tool to
+            LLMs. Stricter than the web-reveal flag &mdash; the
+            password goes into the LLM's context (where it persists
+            across tool calls in that conversation). <strong>Most
+            operators should leave this off</strong> and instead use
+            <code>create_temp_credentials</code>, which mints a
+            short-lived device-side account whose plaintext is safe
+            to pass through chat. The Reveal button works
+            independently of this flag.
           </span>
         </span>
       </label>

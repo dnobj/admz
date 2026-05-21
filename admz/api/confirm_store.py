@@ -57,6 +57,10 @@ PROTECTED_SETTING_KEYS = {
     # MCP set_fleet_setting must never read or change it. See ADR-0025.
     "gemini_api_key",
     "gemini_default_model",
+    # Plaintext-credential access gates. The LLM tool gate is separate
+    # from the web-UI reveal gate so operators can keep the LLM strict
+    # while still using the Reveal button + REST endpoint themselves.
+    "web_reveal_credentials_enabled",
     # Daily per-principal token budget (Phase 5D). Letting MCP rewrite
     # the budget through chat-driven tool calls would defeat the
     # purpose. Set only via the web UI.

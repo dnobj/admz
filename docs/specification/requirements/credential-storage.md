@@ -72,13 +72,22 @@ is that the LLM uses these creds directly for a brief window).
 Max 3 temp creds per device. TTL 60–3600s. Background loop cleans
 expired ones via `pwdgrp.cgi:remove-user`.
 
-### FR-CRED-009 — Plaintext retrieval is opt-in ✅
-`get_credentials` (MCP) and `GET /api/devices/{id}/credentials` (REST)
-both return the plaintext password — but only when
-`tool_get_credentials_enabled == "true"` in fleet settings. Default:
-disabled. The flag is in `PROTECTED_SETTING_KEYS` and can only be
-flipped via the web UI at `/confirm-settings`. See
+### FR-CRED-009 — Plaintext retrieval is opt-in (two independent gates) ✅
+Two separate fleet flags gate plaintext password access, both
+default off, both in `PROTECTED_SETTING_KEYS`, both flipped only
+via `/confirm-settings`. See
 [ADR-0020](../decisions/0020-protected-fleet-settings.md).
+
+| Flag | What it gates |
+|---|---|
+| `web_reveal_credentials_enabled` | Web UI **Reveal** button + REST `GET /api/devices/{id}/credentials` (authenticated humans / API-key clients). **Recommended** when an operator wants to inspect stored credentials without exposing them to LLMs. |
+| `tool_get_credentials_enabled` | MCP `get_credentials` tool. Adds the password to the LLM's conversation context. Stricter — most operators should leave this off and rely on `create_temp_credentials` for ad-hoc LLM access. |
+
+The REST endpoint accepts EITHER flag (so enabling the LLM-tool
+flag implicitly also enables Reveal — useful when an operator
+explicitly wants both surfaces open). The MCP tool only checks
+its own flag, so enabling Reveal does NOT silently expose
+`get_credentials` to LLMs.
 
 ### FR-CRED-010 — Per-protocol detection on every probe ✅
 `_detect_auth_schemes()` parses `WWW-Authenticate` from 401 responses

@@ -172,8 +172,14 @@ async def get_device_credentials(
     audit_requester = requester or principal.name
     resource = f"device:{device_id}/account:{account_id}"
 
-    # Gate on the same fleet flag the MCP server uses
-    if fleet_settings.get("tool_get_credentials_enabled") != "true":
+    # Gate: either the web-UI flag OR the LLM-tool flag opens the
+    # endpoint. The two are separate so operators can keep the LLM
+    # locked down while using the Reveal button themselves. The web
+    # flag is the preferred way to enable Reveal; the LLM flag is
+    # the stricter "yes the LLM may also retrieve plaintext."
+    web_enabled = fleet_settings.get("web_reveal_credentials_enabled") == "true"
+    llm_enabled = fleet_settings.get("tool_get_credentials_enabled") == "true"
+    if not (web_enabled or llm_enabled):
         record_event(
             principal, "get_credentials",
             resource=resource,
@@ -184,9 +190,13 @@ async def get_device_credentials(
         raise HTTPException(
             status_code=403,
             detail=(
-                "Credential retrieval is disabled. Enable it by setting "
-                "'tool_get_credentials_enabled' to 'true' via the web UI at "
-                "/confirm-settings."
+                "Plaintext credential retrieval is disabled. Enable the "
+                "Reveal button via 'Allow web UI to reveal passwords' at "
+                "/confirm-settings (preferred — does not expose passwords "
+                "to LLMs), or — for LLM access too — 'Allow LLMs to "
+                "retrieve plaintext'. Underlying fleet settings: "
+                "'web_reveal_credentials_enabled' (web only) or "
+                "'tool_get_credentials_enabled' (also exposes the MCP tool)."
             ),
         )
 

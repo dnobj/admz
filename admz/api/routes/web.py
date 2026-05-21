@@ -477,12 +477,14 @@ def _build_confirm_settings_context(request: Request, **extra):
     levels = {r: get_confirmation_level(r) for r in risk_levels}
     has_password = bool(fleet_settings.get("confirm_password_hash"))
     get_creds_enabled = fleet_settings.get("tool_get_credentials_enabled") == "true"
+    web_reveal_enabled = fleet_settings.get("web_reveal_credentials_enabled") == "true"
     ctx = {
         "request": request,
         "title": "Confirmation Settings",
         "levels": levels,
         "has_password": has_password,
         "get_creds_enabled": get_creds_enabled,
+        "web_reveal_enabled": web_reveal_enabled,
     }
     ctx.update(extra)
     return ctx
@@ -560,15 +562,20 @@ async def confirm_settings_save(
 
     elif action == "tool_toggle":
         form_data = await request.form()
-        enabled = "get_credentials_enabled" in form_data
-        if enabled:
+        llm_enabled = "get_credentials_enabled" in form_data
+        web_enabled = "web_reveal_credentials_enabled" in form_data
+        if llm_enabled:
             fleet_settings.set("tool_get_credentials_enabled", "true")
         else:
             fleet_settings.delete("tool_get_credentials_enabled")
+        if web_enabled:
+            fleet_settings.set("web_reveal_credentials_enabled", "true")
+        else:
+            fleet_settings.delete("web_reveal_credentials_enabled")
         return templates.TemplateResponse(
             "confirm_settings.html",
             _build_confirm_settings_context(
-                request, success="MCP tool access settings saved."
+                request, success="Plaintext credential access settings saved."
             ),
         )
 
