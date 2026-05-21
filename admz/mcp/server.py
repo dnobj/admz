@@ -556,12 +556,16 @@ class ADMZMCPServer:
                             "params": {
                                 "type": "object",
                                 "description": (
-                                    "Parameters for the operation. For param.cgi:update, "
-                                    "these are the key=value pairs (e.g. "
-                                    "{'root.Image.I0.Resolution': '1920x1080'}). "
+                                    "Parameters for the operation. OPTIONAL — many "
+                                    "operations (e.g. restart.cgi:restart, "
+                                    "firmwaremanagement.cgi:reboot) take no params; "
+                                    "omit this field or pass {} in that case. For "
+                                    "param.cgi:update, these are key=value pairs "
+                                    "(e.g. {'root.Image.I0.Resolution': '1920x1080'}). "
                                     "For param.cgi:list, include 'group' key."
                                 ),
                                 "additionalProperties": {"type": "string"},
+                                "default": {},
                             },
                             "family": {
                                 "type": "string",
@@ -569,7 +573,10 @@ class ADMZMCPServer:
                                 "default": "vapix",
                             },
                         },
-                        "required": ["device_id", "operation_id", "params"],
+                        # params intentionally NOT required — many catalog ops
+                        # take no params and the LLM shouldn't have to invent
+                        # an empty dict to make the SDK happy.
+                        "required": ["device_id", "operation_id"],
                     },
                 ),
                 Tool(

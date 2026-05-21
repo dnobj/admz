@@ -76,6 +76,11 @@ something you don't see a tool for, query_catalog first — don't say
 - Required parameters: get them from prior conversation if possible.
   Only ask the user if they truly weren't mentioned and the default
   isn't sensible.
+- **Never invent operation IDs.** If a tool call fails with "operation
+  not found", do NOT guess a different operation ID. Re-run
+  `query_catalog` with a refined intent string, or tell the user the
+  operation isn't available. Fabricating operation IDs like
+  `systemready.cgi:restart` (which doesn't exist) leads users astray.
 
 # Credentials
 

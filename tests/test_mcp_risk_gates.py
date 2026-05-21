@@ -289,6 +289,43 @@ class TestConfirmTool:
 # ---------------------------------------------------------------------------
 
 
+class TestExecuteOperationSchema:
+    """Regression: 'params' must NOT be marked required.
+
+    Found in live testing: LLM tried restart.cgi:restart (which
+    takes no params), the SDK rejected the call with "the 'params'
+    property is required" before our code even ran, and the LLM
+    then guessed a non-existent operation id. The schema lists
+    params with a default of {} so the LLM can omit it.
+    """
+
+    def test_params_not_required(self):
+        from admz.mcp.server import ADMZMCPServer
+
+        # Find the execute_operation tool definition by walking the
+        # list_tools output via a fresh server instance.
+        server = ADMZMCPServer.__new__(ADMZMCPServer)
+        # Build just the tools list — we don't need a full server.
+        # The tool defs are constructed in the list_tools handler;
+        # the simplest reach-in is to grep the source directly.
+        import inspect
+        src = inspect.getsource(ADMZMCPServer)
+        # Find the execute_operation block and check its required list.
+        idx = src.find('name="execute_operation"')
+        assert idx > 0, "execute_operation tool not found in server source"
+        # Find the next 'required' line within ~50 lines.
+        block = src[idx : idx + 4000]
+        required_idx = block.find('"required":')
+        assert required_idx > 0, "execute_operation has no required list"
+        required_line = block[required_idx : required_idx + 200].split("]")[0] + "]"
+        assert '"params"' not in required_line, (
+            "execute_operation should not require 'params' — many ops "
+            "take no params. Found:\n  " + required_line
+        )
+        assert '"device_id"' in required_line
+        assert '"operation_id"' in required_line
+
+
 class TestReasonText:
     @pytest.mark.asyncio
     async def test_dangerous_uses_danger_description(self, isolate_db):
