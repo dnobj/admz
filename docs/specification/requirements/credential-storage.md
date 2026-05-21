@@ -112,8 +112,21 @@ no master-key wrap (see [ADR-0010](../decisions/0010-fernet-encryption.md)
 "Negative consequences").
 
 ### KL-CRED-002 — No automatic credential rotation ⚠️
-Manual rotation via `provision_device(..., force_change=true)` works.
-Scheduled rotation policies aren't implemented.
+Manual rotation works via three paths:
+- `provision_device(..., force_change=true)` (LLM/MCP/CLI)
+- **Web UI "Change password" button** on the account detail
+  page — creates a one-time capture session bound to the
+  existing device + account_id and redirects the operator to
+  the standard `/capture/{token}` OOB form (per ADR-0009).
+  Reuses the established capture machinery; the new password
+  enters ADMZ only via the browser form, never via chat or
+  arbitrary HTML submissions.
+- `DeviceRegistry.update_account(device_id, account_id, updates)`
+  (programmatic; atomic — replaces the legacy
+  `remove_account` + `add_account` pattern that briefly left
+  the account observably missing).
+
+Scheduled / policy-driven rotation isn't implemented.
 
 ### KL-CRED-003 — No CSRF on capture form POSTs ⚠️
 Tokens are single-use and high-entropy, but a CSRF token in the form

@@ -209,6 +209,75 @@ async def account_detail(
         )
 
 
+@router.post(
+    "/device/{device_id}/account/{account_id}/rotate-password",
+    response_class=RedirectResponse,
+)
+async def rotate_account_password(
+    request: Request,
+    device_id: str,
+    account_id: str,
+    registry: DeviceRegistry = Depends(get_registry),
+):
+    """Start a password-rotation flow for an existing account.
+
+    Per ADR-0009, credentials only enter ADMZ through the
+    out-of-band capture form — never via a chat transcript or
+    a regular HTML form submitted alongside other data. This
+    route creates a single-use capture session bound to the
+    target device + account_id, then redirects the operator to
+    the standard ``/capture/{token}`` page. The form there
+    submits the new password directly to the registry, the
+    capture token is consumed, and the operator lands on the
+    standard "capture done" page.
+
+    The redirect-with-token pattern means the new password is
+    only ever in:
+      - the operator's browser tab (the capture form)
+      - the request body of POST /capture/{token}
+      - the encrypted account row in the DB
+    Crucially, NOT in chat history, NOT in server logs, NOT in
+    the regular form-submission flow.
+    """
+    from admz.api.capture import capture_store
+
+    # Verify the account exists before issuing a token (otherwise
+    # the capture session would dead-end on completion).
+    if not registry.account_exists(device_id, account_id):
+        return templates.TemplateResponse(
+            "error.html",
+            {
+                "request": request,
+                "error": "Account Not Found",
+                "message": (
+                    f"Account '{account_id}' not found for device "
+                    f"'{device_id}'. Add it first via 'Add account'."
+                ),
+                "title": "Error",
+            },
+            status_code=404,
+        )
+
+    # Look up the existing account's metadata so the capture
+    # session preserves account_type and purpose. This keeps the
+    # rotated row shape-identical to what was there before.
+    accounts = registry.list_accounts(device_id)
+    existing = next(
+        (a for a in accounts if a.get("account_id") == account_id), {}
+    )
+
+    session = capture_store.create_session(
+        device_id=device_id,
+        account_id=account_id,
+        account_type=existing.get("account_type", "admin"),
+        purpose=existing.get("purpose") or f"Rotated for {account_id}",
+        ttl=300,  # 5 minutes — same default as fresh captures
+    )
+
+    # 303 See Other so the browser converts the POST into a GET.
+    return RedirectResponse(url=f"/capture/{session.token}", status_code=303)
+
+
 @router.get("/add-device", response_class=HTMLResponse)
 async def add_device_form(
     request: Request,

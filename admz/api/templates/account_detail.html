@@ -55,6 +55,14 @@
 </div>
 
 <div class="actions-footer">
+    <form method="POST"
+          action="/device/{{ device.device_id }}/account/{{ account.account_id }}/rotate-password"
+          style="display:inline;">
+        <button type="submit" class="button"
+                title="Open the out-of-band capture form to enter a new password (per ADR-0009).">
+            Change password
+        </button>
+    </form>
     <a href="/device/{{ device.device_id }}" class="button">Back to Device</a>
     <a href="/" class="button">Back to Devices</a>
 </div>
@@ -91,8 +99,39 @@ async function togglePassword() {
     try {
         const deviceId = encodeURIComponent('{{ device.device_id }}');
         const accountId = encodeURIComponent('{{ account.account_id }}');
-        const resp = await fetch(`/api/devices/${deviceId}/credentials?account_id=${accountId}`);
-        if (!resp.ok) throw new Error('Failed to fetch credentials');
+        const resp = await fetch(
+            `/api/devices/${deviceId}/credentials?account_id=${accountId}`
+        );
+        if (!resp.ok) {
+            // Surface the actual API error to the user. The /credentials
+            // endpoint returns helpful details when the fleet gate
+            // (tool_get_credentials_enabled) is off — we want the
+            // operator to see exactly how to enable it, not a generic
+            // "Failed to fetch" message.
+            let apiMessage = `HTTP ${resp.status}`;
+            try {
+                const body = await resp.json();
+                if (body.detail) apiMessage = body.detail;
+            } catch (_) { /* not JSON */ }
+
+            const errEl = document.createElement('span');
+            errEl.style.color = '#991b1b';
+            errEl.textContent = apiMessage;
+            // If the failure was the standard "feature disabled"
+            // 403, add a one-click link to the settings page.
+            if (resp.status === 403 && apiMessage.toLowerCase().includes('disabled')) {
+                const a = document.createElement('a');
+                a.href = '/confirm-settings';
+                a.textContent = ' Open Confirmation Settings →';
+                a.style.marginLeft = '8px';
+                errEl.appendChild(a);
+            }
+            el.innerHTML = '';
+            el.appendChild(errEl);
+            btn.textContent = 'Retry';
+            btn.disabled = false;
+            return;
+        }
         const data = await resp.json();
         cachedPassword = data.password || '(empty)';
         el.textContent = cachedPassword;

@@ -382,3 +382,45 @@ class SQLiteDeviceRegistry(DeviceRegistry):
                 (device_id, account_id),
             )
             conn.commit()
+
+    def update_account(
+        self,
+        device_id: str,
+        account_id: str,
+        updates: Dict[str, Any],
+    ) -> None:
+        """Partially update an account (merge *updates* into existing data).
+
+        Atomic: the row is rewritten in a single SQL UPDATE — the account
+        is never observably absent during the change (unlike the legacy
+        ``remove_account`` + ``add_account`` pattern, which had a brief
+        window where the account didn't exist and a concurrent reader
+        would see AccountNotFound).
+
+        Re-encrypts the merged data via ``_store_account_data``, so a
+        password update gets a fresh Fernet ciphertext + IV — handy
+        for tests that inspect the encrypted bytes at rest.
+        """
+        if not self.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device '{device_id}' not found")
+        if not self.account_exists(device_id, account_id):
+            raise AccountNotFoundError(
+                f"Account '{account_id}' not found for device '{device_id}'"
+            )
+
+        with self._connect() as conn:
+            # Load existing decrypted data, merge, re-encrypt, write back —
+            # all under one transaction so partial failures roll back.
+            row = conn.execute(
+                "SELECT data_json FROM accounts "
+                "WHERE device_id=? AND account_id=?",
+                (device_id, account_id),
+            ).fetchone()
+            current = self._load_account_data(row[0], include_password=True)
+            current.update(updates)
+            conn.execute(
+                "UPDATE accounts SET data_json=? "
+                "WHERE device_id=? AND account_id=?",
+                (self._store_account_data(current), device_id, account_id),
+            )
+            conn.commit()

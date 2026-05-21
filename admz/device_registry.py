@@ -269,6 +269,35 @@ class DeviceRegistry(ABC):
         """
         raise NotImplementedError("This registry does not support updating device info")
 
+    def update_account(
+        self,
+        device_id: str,
+        account_id: str,
+        updates: Dict[str, Any],
+    ) -> None:
+        """
+        Partially update an account (merge *updates* into existing data).
+
+        Atomic — the account is never observably absent during the
+        update, unlike ``remove_account`` + ``add_account``.
+
+        Args:
+            device_id: Unique device identifier.
+            account_id: Account identifier.
+            updates: Fields to merge into the existing account_data
+                     (typically ``{"password": "<new>"}`` for rotation).
+                     Keys not present in ``updates`` are preserved.
+
+        Raises:
+            NotImplementedError: If backend doesn't support this operation.
+            DeviceNotFoundError: Device not found in registry.
+            AccountNotFoundError: Account not found for the device.
+            BackendError: Backend storage system error.
+        """
+        raise NotImplementedError(
+            "This registry does not support updating accounts"
+        )
+
     def remove_account(self, device_id: str, account_id: str) -> None:
         """
         Remove an account from a device.

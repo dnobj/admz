@@ -439,6 +439,48 @@ class VaultDeviceRegistry(DeviceRegistry):
         except VaultError as e:
             raise BackendError(f"Vault error deleting device: {e}")
 
+    def update_account(
+        self,
+        device_id: str,
+        account_id: str,
+        updates: Dict[str, Any],
+    ) -> None:
+        """Partially update an account in Vault (read-modify-write).
+
+        Vault's KV-v2 supports an atomic ``patch_secret`` for partial
+        updates, but that requires the ``patch`` ACL capability which
+        operators may not have configured. The read-modify-write
+        approach uses only ``read`` + ``create_or_update_secret``,
+        which every read/write-capable token already has. Trade-off
+        is a tiny race window if two updates land at the same instant
+        — last-write-wins, which is acceptable for credential
+        rotation (humans don't race themselves).
+        """
+        if not self.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device '{device_id}' not found")
+        if not self.account_exists(device_id, account_id):
+            raise AccountNotFoundError(
+                f"Account '{account_id}' not found for device '{device_id}'"
+            )
+
+        path = self._build_path(device_id, "accounts", account_id)
+        try:
+            response = self.client.secrets.kv.v2.read_secret_version(
+                path=path, mount_point=self.mount_point
+            )
+            current = dict(response["data"]["data"])
+            current.update(updates)
+            self.client.secrets.kv.v2.create_or_update_secret(
+                path=path, secret=current, mount_point=self.mount_point
+            )
+        except Forbidden as e:
+            raise PermissionDeniedError(
+                f"Access denied to update account {device_id}/{account_id}. "
+                f"Check Vault token permissions. Error: {e}"
+            )
+        except VaultError as e:
+            raise BackendError(f"Vault error updating account: {e}")
+
     def remove_account(self, device_id: str, account_id: str) -> None:
         """Remove an account from a device in Vault."""
         if not self.device_exists(device_id):

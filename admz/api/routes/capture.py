@@ -182,15 +182,19 @@ async def capture_submit(
         "purpose": session.purpose,
     }
 
-    # Store credentials for all target devices (batch or single)
+    # Store credentials for all target devices (batch or single).
+    # Use update_account when the account exists — atomic, no window
+    # during which the account is observably missing. Fall back to
+    # add_account for fresh ones.
     saved: List[str] = []
     errors: List[Dict] = []
 
     for did in session.all_device_ids:
         try:
             if registry.account_exists(did, session.account_id):
-                registry.remove_account(did, session.account_id)
-            registry.add_account(did, session.account_id, account_data)
+                registry.update_account(did, session.account_id, account_data)
+            else:
+                registry.add_account(did, session.account_id, account_data)
             saved.append(did)
         except DeviceNotFoundError:
             errors.append({"device_id": did, "error": "Device not found"})
