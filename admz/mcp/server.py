@@ -47,6 +47,7 @@ from admz.api.confirm_store import (
     PROTECTED_SETTING_KEYS,
     confirm_store,
     ConfirmStatus,
+    get_confirmation_level,
 )
 from admz.discovery.credential_probe import probe_credentials, ProbeStatus
 from admz.fleet_settings import fleet_settings
@@ -528,8 +529,15 @@ class ADMZMCPServer:
                         "Execute a single catalog operation against a device. "
                         "The operation_id and params should come from query_catalog results. "
                         "Handles authentication, HTTP request construction, and response "
-                        "parsing automatically. Dangerous operations will be blocked and "
-                        "return a confirm_token — use confirm_dangerous_operation to proceed."
+                        "parsing automatically. "
+                        "Operations are gated by their risk level: read-only and normal "
+                        "operations run inline; service-affecting and dangerous operations "
+                        "are blocked and return a confirm_token plus a confirm_url. "
+                        "Present the reason to the user, get explicit consent, and then "
+                        "either call confirm_dangerous_operation with the token (for "
+                        "llm_confirm-level ops) or direct the user to the /confirm/{token} "
+                        "URL (for url_only or url_and_password levels). The fleet operator "
+                        "configures which level applies to each risk class."
                     ),
                     inputSchema={
                         "type": "object",
@@ -567,10 +575,14 @@ class ADMZMCPServer:
                 Tool(
                     name="confirm_dangerous_operation",
                     description=(
-                        "Confirm and execute a dangerous operation that was blocked by "
-                        "the risk gate. Requires the confirm_token returned by "
-                        "execute_operation when it blocks a dangerous operation. "
-                        "Tokens are single-use and expire after 5 minutes."
+                        "Confirm and execute a blocked operation. Despite the name "
+                        "(kept for backward compatibility), this works for ANY "
+                        "operation that was blocked by execute_operation's risk gate "
+                        "with confirmation_level='llm_confirm' — typically "
+                        "service-affecting and dangerous operations. Operations whose "
+                        "configured level is url_only or url_and_password must be "
+                        "confirmed via the web /confirm/{token} URL, not through this "
+                        "tool. Tokens are single-use and expire after 5 minutes."
                     ),
                     inputSchema={
                         "type": "object",
@@ -1704,43 +1716,91 @@ class ADMZMCPServer:
         params: Dict[str, str],
         family: str,
     ) -> Dict[str, Any]:
-        """Execute a single catalog operation."""
-        # Check risk level — block dangerous operations
+        """Execute a single catalog operation.
+
+        Honors the per-risk-level confirmation policy
+        (ADR-0006). Operations whose effective confirmation level
+        is ``none`` run inline; everything else returns a blocked
+        response with a confirm_token. The token is consumed via
+        ``confirm_dangerous_operation`` (still named that for
+        backward compat, but now handles every risk level) or via
+        the web ``/confirm/{token}`` form.
+
+        Defaults (overridable per-fleet via
+        ``confirm_level_<risk>`` settings):
+          - read-only         → none      (just run)
+          - normal            → none      (just run)
+          - service-affecting → llm_confirm
+          - dangerous         → url_and_password
+        """
         risk = self.catalog.get_risk_level(family, operation_id)
-        if risk == "dangerous":
+        confirmation_level = get_confirmation_level(risk)
+
+        if confirmation_level != "none":
             op = self.catalog.get_operation(family, operation_id)
-            # Phase 2E: confirmation tokens now live in the SQLite ConfirmStore
-            # so they're shared between the MCP and REST surfaces. A token
-            # issued here can be consumed via confirm_dangerous_operation OR
-            # via the web /confirm/{token} flow.
+            # Pick the most informative description we have for this
+            # risk: danger_description for dangerous ops, service_impact
+            # for service-affecting ops, otherwise a generic stand-in.
+            if op is not None and op.danger_description:
+                reason = op.danger_description
+            elif op is not None and op.service_impact:
+                reason = op.service_impact
+            else:
+                reason = (
+                    f"This operation is classified as '{risk}' "
+                    f"and requires {confirmation_level} confirmation."
+                )
+
+            # Confirmation tokens live in the shared SQLite ConfirmStore
+            # so a token issued here can be consumed via either MCP
+            # (confirm_dangerous_operation) or the web /confirm/{token}
+            # form. The 'dangerous' name on the MCP tool is preserved
+            # for backward compat — internally it works for any risk.
             session = confirm_store.create_session(
                 device_id=device_id,
                 operation_id=operation_id,
                 family=family,
                 params=dict(params or {}),
-                risk_level="dangerous",
-                # llm_confirm = single-use token, no URL+password needed
-                confirmation_level="llm_confirm",
-                danger_description=(
-                    op.danger_description if op else ""
-                ),
+                risk_level=risk,
+                confirmation_level=confirmation_level,
+                danger_description=reason,
                 ttl=CONFIRM_TOKEN_TTL_SECONDS,
             )
+
+            # Per-level next-step hint for the LLM. URL-based levels
+            # need the user to visit the /confirm/{token} page;
+            # llm_confirm lets the LLM proceed via the confirm tool
+            # once the user has agreed in chat.
+            if confirmation_level == "llm_confirm":
+                message = (
+                    f"This operation is classified as '{risk}' and "
+                    f"requires user confirmation. Present the reason "
+                    f"to the user, wait for explicit consent, and "
+                    f"then call confirm_dangerous_operation with the "
+                    f"confirm_token."
+                )
+            else:
+                # url_only or url_and_password
+                message = (
+                    f"This operation is classified as '{risk}' and "
+                    f"requires confirmation via the web UI. Present "
+                    f"the user with the confirmation URL "
+                    f"(/confirm/{session.token}). The page will ask "
+                    f"for "
+                    + ("a password and " if confirmation_level == "url_and_password" else "")
+                    + "explicit approval. The operation cannot be "
+                    f"completed via the chatbot alone."
+                )
+
             return {
                 "blocked": True,
-                "risk_level": "dangerous",
-                "reason": (
-                    op.danger_description
-                    if op
-                    else "This operation is classified as dangerous."
-                ),
+                "risk_level": risk,
+                "confirmation_level": confirmation_level,
+                "reason": reason,
                 "confirm_token": session.token,
                 "confirm_tool": "confirm_dangerous_operation",
-                "message": (
-                    "This operation is blocked because it is classified as dangerous. "
-                    "Present the reason to the user and ask for explicit confirmation. "
-                    "If confirmed, call confirm_dangerous_operation with the token."
-                ),
+                "confirm_url": f"/confirm/{session.token}",
+                "message": message,
             }
 
         # Load operation spec
@@ -1793,16 +1853,36 @@ class ADMZMCPServer:
         return response
 
     async def _confirm_dangerous(self, confirm_token: str) -> Dict[str, Any]:
-        """Confirm and execute a blocked dangerous operation.
+        """Confirm and execute a blocked operation (any risk class).
 
         The token is looked up in the shared SQLite ConfirmStore — a token
         issued by either MCP or the REST surface can be confirmed by either.
+
+        Refuses tokens whose configured confirmation_level requires a URL
+        flow (url_only / url_and_password). Those can only be approved
+        via the web /confirm/{token} page, since MCP has no way to
+        prompt the user for a password.
         """
         session = confirm_store.get_session(confirm_token)
         if session is None or session.effective_status != ConfirmStatus.PENDING:
             return {
                 "success": False,
                 "error": "Invalid or expired confirmation token.",
+            }
+
+        # Block URL-flow tokens here — MCP can't supply a password, and
+        # silently approving a url_and_password op via MCP would defeat
+        # the gate the operator configured.
+        if session.confirmation_level in ("url_only", "url_and_password"):
+            return {
+                "success": False,
+                "error": (
+                    f"This operation requires '{session.confirmation_level}' "
+                    f"confirmation, which must be completed via the web UI. "
+                    f"Direct the user to /confirm/{confirm_token}."
+                ),
+                "confirm_url": f"/confirm/{confirm_token}",
+                "confirmation_level": session.confirmation_level,
             }
 
         # Single-use: atomically mark completed (loses races to other consumers).
@@ -1845,7 +1925,12 @@ class ADMZMCPServer:
 
         response: Dict[str, Any] = {
             "success": result.success,
+            # 'confirmed_dangerous' kept for backward compat; the
+            # more accurate fields below describe what was confirmed.
             "confirmed_dangerous": True,
+            "confirmed": True,
+            "risk_level": session.risk_level,
+            "confirmation_level": session.confirmation_level,
             "operation_id": result.operation_id,
             "device_id": result.device_id,
             "status_code": result.status_code,
