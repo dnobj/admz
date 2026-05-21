@@ -27,6 +27,7 @@ from admz.api.routes import (
     confirm,
     devices,
     discovery,
+    health as health_route,
     plans,
     schedules,
     snapshot,
@@ -50,6 +51,11 @@ async def lifespan(app: FastAPI):
     ctx = init_context(registry)
     await ctx.scheduler.start()
 
+    # Device health monitor: opt-in via the health_monitor_enabled
+    # fleet setting. .start() is a no-op when the flag is off, so
+    # always safe to call here.
+    await ctx.health_monitor.start()
+
     # Phase 7: spin up the per-principal MCP subprocess pool so the
     # first chat turn doesn't pay subprocess-spawn latency.
     from admz.chatbot.mcp_pool import mcp_pool
@@ -59,6 +65,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await mcp_pool.stop()
+        await ctx.health_monitor.stop()
         await ctx.scheduler.stop()
         # Best-effort cleanup; close() is a no-op for backends that
         # don't hold persistent connections, but exists for the few that do.
@@ -128,6 +135,8 @@ app.include_router(discovery.router, prefix="/api", tags=["discovery"])
 app.include_router(schedules.router, prefix="/api", tags=["schedules"])
 app.include_router(api_keys_route.router, prefix="/api", tags=["api-keys"])
 app.include_router(audit_route.router, prefix="/api", tags=["audit"])
+# Health routes already include /api in their paths.
+app.include_router(health_route.router, tags=["health"])
 
 # Capture, confirm, chatbot, and web UI — no /api prefix because they are user-facing
 app.include_router(capture.router, tags=["capture"])

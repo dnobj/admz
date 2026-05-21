@@ -29,6 +29,7 @@ from admz.snapshot.engine import SnapshotEngine
 from admz.snapshot.git_repo import GitRepo
 from admz.snapshot.restore import RestoreBuilder
 from admz.snapshot.scheduler import SnapshotScheduler
+from admz.fleet.health import HealthMonitor
 
 
 @dataclass
@@ -45,6 +46,7 @@ class Components:
     restore_builder: RestoreBuilder
     drift_detector: DriftDetector
     scheduler: SnapshotScheduler
+    health_monitor: HealthMonitor
 
 
 def _default_catalog_path() -> str:
@@ -126,6 +128,15 @@ def build_components(
         schedule_path=schedule_path,
     )
 
+    # Health monitor: background poller that maintains the
+    # device_health table. Opt-in via the health_monitor_enabled
+    # fleet setting; .start() is a no-op when disabled.
+    health_monitor = HealthMonitor(
+        registry=registry,
+        catalog=catalog,
+        executors=executors,
+    )
+
     return Components(
         registry=registry,
         catalog=catalog,
@@ -137,4 +148,5 @@ def build_components(
         restore_builder=restore_builder,
         drift_detector=drift_detector,
         scheduler=scheduler,
+        health_monitor=health_monitor,
     )

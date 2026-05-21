@@ -240,6 +240,49 @@ class ADMZMCPServer:
                     },
                 ),
                 Tool(
+                    name="get_device_health",
+                    description=(
+                        "Return the most recent reachability status for a device. "
+                        "Status comes from the background health monitor (a small "
+                        "poller that pings each device on an interval) and is "
+                        "essentially free — no network call. Status values: "
+                        "'online' (the device responded to the last probe), "
+                        "'unreachable' (TCP connect failed), 'auth_failed' "
+                        "(device responded but rejected credentials), 'unknown' "
+                        "(never checked — monitor likely disabled or just started). "
+                        "Use this BEFORE attempting heavy operations (snapshot, "
+                        "drift check, multi-step plan) so you don't hang on an "
+                        "offline device."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID (MAC) to look up.",
+                            },
+                        },
+                        "required": ["device_id"],
+                    },
+                ),
+                Tool(
+                    name="get_fleet_health",
+                    description=(
+                        "Return reachability status for every registered device. "
+                        "Returns a summary (counts per status) plus a per-device "
+                        "list. Use this when the user asks 'which devices are "
+                        "online?' or before kicking off fleet-wide operations. "
+                        "Data comes from the cached device_health table — no "
+                        "network calls fire. If the monitor is disabled, all "
+                        "devices show status='unknown'."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                    },
+                ),
+                Tool(
                     name="search_devices",
                     description=(
                         "Search devices by tags, location, model, or other criteria. "
@@ -1095,6 +1138,10 @@ class ADMZMCPServer:
                     result = await self._list_devices()
                 elif name == "get_device":
                     result = await self._get_device(arguments["device_id"])
+                elif name == "get_device_health":
+                    result = await self._get_device_health(arguments["device_id"])
+                elif name == "get_fleet_health":
+                    result = await self._get_fleet_health()
                 elif name == "search_devices":
                     result = await self._search_devices(arguments)
                 elif name == "list_accounts":
@@ -1306,6 +1353,68 @@ class ADMZMCPServer:
             "success": True,
             "count": len(devices),
             "devices": devices,
+        }
+
+    async def _get_device_health(self, device_id: str) -> Dict[str, Any]:
+        """Look up the cached reachability status for one device.
+
+        Cheap — reads from the device_health table maintained by the
+        background HealthMonitor. No network call.
+        """
+        from admz.fleet.health import device_health_store, DeviceHealthStatus
+
+        # Sanity: device must exist in the registry.
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device '{device_id}' not found")
+
+        record = device_health_store.get(device_id)
+        if record is None:
+            return {
+                "success": True,
+                "device_id": device_id,
+                "status": DeviceHealthStatus.UNKNOWN.value,
+                "note": (
+                    "No health record yet. The background monitor "
+                    "may be disabled (see health_monitor_enabled fleet "
+                    "setting) or hasn't completed its first sweep."
+                ),
+            }
+        return {
+            "success": True,
+            **record.to_dict(),
+        }
+
+    async def _get_fleet_health(self) -> Dict[str, Any]:
+        """Return reachability status across the whole fleet."""
+        from admz.fleet.health import device_health_store, DeviceHealthStatus
+
+        records = device_health_store.list_all()
+        # Map every registered device → record, filling unknown for any
+        # the monitor hasn't seen yet.
+        all_devices = self.registry.list_devices()
+        seen = {r.device_id: r for r in records}
+        entries = []
+        counts: Dict[str, int] = {"online": 0, "unreachable": 0, "auth_failed": 0, "unknown": 0}
+        for d in all_devices:
+            did = d.get("device_id")
+            if not did:
+                continue
+            rec = seen.get(did)
+            if rec is None:
+                counts["unknown"] += 1
+                entries.append({
+                    "device_id": did,
+                    "status": DeviceHealthStatus.UNKNOWN.value,
+                })
+            else:
+                counts[rec.status.value] = counts.get(rec.status.value, 0) + 1
+                entries.append(rec.to_dict())
+
+        return {
+            "success": True,
+            "total": len(entries),
+            "counts": counts,
+            "devices": entries,
         }
 
     async def _get_device(self, device_id: str) -> Dict[str, Any]:

@@ -61,6 +61,12 @@ PROTECTED_SETTING_KEYS = {
     # from the web-UI reveal gate so operators can keep the LLM strict
     # while still using the Reveal button + REST endpoint themselves.
     "web_reveal_credentials_enabled",
+    # Device health monitor: opt-in background poller. Protected
+    # because letting the LLM toggle a background loop that contacts
+    # devices would be a sneak path around the safety gates.
+    "health_monitor_enabled",
+    "health_check_interval_seconds",
+    "health_check_timeout_seconds",
     # Daily per-principal token budget (Phase 5D). Letting MCP rewrite
     # the budget through chat-driven tool calls would defeat the
     # purpose. Set only via the web UI.

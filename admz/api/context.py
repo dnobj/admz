@@ -64,6 +64,10 @@ class AppContext:
     def scheduler(self):
         return self._components.scheduler
 
+    @property
+    def health_monitor(self):
+        return self._components.health_monitor
+
 
 _ctx: Optional[AppContext] = None
 

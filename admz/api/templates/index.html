@@ -11,6 +11,9 @@
         {% for device in devices %}
         <div class="device-card">
             <h3>
+                <span class="health-dot" data-device-id="{{ device.device_id }}"
+                      title="Health status (loading…)"
+                      style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#9ca3af;margin-right:6px;vertical-align:middle;"></span>
                 <a href="/device/{{ device.device_id }}">
                     {{ device.nickname|default(device.device_id) }}
                 </a>
@@ -36,4 +39,48 @@
         <p class="no-devices">No devices found. <a href="/add-device">Add a device</a> to get started.</p>
     {% endif %}
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Paint health dots from the cached health table. Single fetch
+// per page load; no auto-refresh (keeping the page lightweight).
+// Colors: green=online, red=unreachable, amber=auth_failed, grey=unknown.
+const HEALTH_COLORS = {
+    online: '#16a34a',
+    unreachable: '#dc2626',
+    auth_failed: '#f59e0b',
+    unknown: '#9ca3af',
+};
+const HEALTH_LABELS = {
+    online: 'Online',
+    unreachable: 'Unreachable',
+    auth_failed: 'Auth failed',
+    unknown: 'Unknown (monitor disabled or not yet checked)',
+};
+(async () => {
+    try {
+        const resp = await fetch('/api/fleet/health');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const byId = {};
+        for (const d of (data.devices || [])) {
+            byId[d.device_id] = d;
+        }
+        for (const dot of document.querySelectorAll('.health-dot')) {
+            const did = dot.getAttribute('data-device-id');
+            const rec = byId[did];
+            const status = rec ? rec.status : 'unknown';
+            dot.style.background = HEALTH_COLORS[status] || HEALTH_COLORS.unknown;
+            let title = HEALTH_LABELS[status] || status;
+            if (rec && rec.latency_ms != null) title += ` (${rec.latency_ms}ms)`;
+            if (rec && rec.last_check) {
+                const ago = Math.round((Date.now() / 1000) - rec.last_check);
+                title += `, checked ${ago}s ago`;
+            }
+            dot.setAttribute('title', title);
+        }
+    } catch (_) { /* silent — dots stay grey */ }
+})();
+</script>
 {% endblock %}
