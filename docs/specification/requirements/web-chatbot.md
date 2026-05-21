@@ -225,6 +225,14 @@ experimental. If the API breaks, the fallback is hand-translating
 the 19 MCP tools into Gemini `FunctionDeclaration` objects. The
 fallback path isn't built yet — it's contingency.
 
+**Specific observed regression** (May 2026, google-genai 2.5.0):
+`gemini-3.5-flash` + MCP tools sometimes ends the stream after
+the first tool call without making the AFC continuation request,
+producing a "10 output tokens, empty text" turn. `gemini-2.5-flash`
+doesn't have this issue. The empty-response backstop catches it
+and surfaces a clear error pointing operators at 2.5-flash for
+reliable tool use. Tracking upstream.
+
 ### KL-CB-002 — Conversation history lives in Google's storage ⚠️
 With `previous_interaction_id`-based memory, transcripts live in
 Google's servers attached to the org's API key. Operators with

@@ -263,11 +263,11 @@ class TestJsonChatEmptyResponseBackstop:
     the user see an empty bot bubble."""
 
     def test_zero_output_surfaced_as_helpful_error(self, client):
+        """Case A: output_tokens=0, no text — thinking-only or content filter."""
         _seed_api_key()
         from admz.chatbot.events import event_done
 
         async def empty_stream(**kwargs):
-            # Done event with zero tokens, no text emitted.
             yield event_done(interaction_id="x", input_tokens=42, output_tokens=0)
 
         with patch("admz.api.routes.chat.stream_turn", side_effect=empty_stream):
@@ -280,11 +280,89 @@ class TestJsonChatEmptyResponseBackstop:
         body = r.json()
         assert body["success"] is False
         assert "no text" in body["error"].lower()
-        # Message names the actual model the user was on, not a hardcoded one.
         assert "gemini-2.5-flash" in body["error"]
-        # Suggests trying a more capable model.
+        # The 2.x suggestion is to upgrade to pro.
         assert "gemini-2.5-pro" in body["error"]
         assert body["response"] == ""
+
+    def test_3x_zero_output_mentions_2_5_fallback(self, client):
+        """Case A on 3.x — error should point operator at 2.5-flash."""
+        _seed_api_key()
+        from admz.chatbot.events import event_done
+
+        async def empty_stream(**kwargs):
+            yield event_done(interaction_id="x", input_tokens=100, output_tokens=0)
+
+        with patch("admz.api.routes.chat.stream_turn", side_effect=empty_stream):
+            r = client.post(
+                "/api/chat",
+                json={"message": "hi", "model": "gemini-3.5-flash"},
+            )
+
+        body = r.json()
+        assert body["success"] is False
+        assert "gemini-3.5-flash" in body["error"]
+        # Should mention the 3.x tools quirk + 2.5-flash as the reliable alt.
+        assert "2.5-flash" in body["error"]
+
+    def test_3x_nonzero_tokens_empty_text_surfaced_as_known_bug(self, client):
+        """Case B: the 3.5-flash AFC bug — tokens > 0, response empty.
+        Live: 'what cameras do i have' on gemini-3.5-flash returned
+        7478/10 tokens with no text. Backstop must catch this."""
+        _seed_api_key()
+        from admz.chatbot.events import event_done
+
+        async def afc_broken_stream(**kwargs):
+            # 10 output tokens but no text events — the 3.x AFC failure mode
+            yield event_done(
+                interaction_id="x", input_tokens=7000, output_tokens=10
+            )
+
+        with patch(
+            "admz.api.routes.chat.stream_turn", side_effect=afc_broken_stream
+        ):
+            r = client.post(
+                "/api/chat",
+                json={"message": "what cameras do i have?", "model": "gemini-3.5-flash"},
+            )
+
+        body = r.json()
+        assert body["success"] is False
+        # Names the model, the token count, and the recommended fallback.
+        assert "gemini-3.5-flash" in body["error"]
+        assert "10" in body["error"]  # the output token count
+        assert "AFC continuation" in body["error"] or "tool" in body["error"].lower()
+        assert "2.5-flash" in body["error"]
+        # input_tokens still reported correctly.
+        assert body["input_tokens"] == 7000
+        assert body["output_tokens"] == 10
+
+    def test_2x_nonzero_tokens_empty_text_does_not_falsely_blame_3x(self, client):
+        """If the same shape (tokens > 0, empty text) happens on 2.5,
+        the error should still fire but shouldn't reference the 3.x
+        bug specifically."""
+        _seed_api_key()
+        from admz.chatbot.events import event_done
+
+        async def afc_broken_stream(**kwargs):
+            yield event_done(
+                interaction_id="x", input_tokens=7000, output_tokens=10
+            )
+
+        with patch(
+            "admz.api.routes.chat.stream_turn", side_effect=afc_broken_stream
+        ):
+            r = client.post(
+                "/api/chat",
+                json={"message": "hi", "model": "gemini-2.5-flash"},
+            )
+
+        body = r.json()
+        assert body["success"] is False
+        assert "gemini-2.5-flash" in body["error"]
+        # Should NOT claim this is the 3.x bug.
+        assert "3.x" not in body["error"]
+        assert "gemini-3" not in body["error"]
 
     def test_nonzero_output_with_text_is_normal(self, client):
         """Sanity: a turn with actual text is NOT flagged."""

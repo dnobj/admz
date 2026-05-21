@@ -404,31 +404,68 @@ async def _run_chat_turn(
 
     summary.response = "".join(text_parts)
 
-    # Bug 5 backstop: Gemini 2.5 (Flash *and* Flash-Lite, occasionally
-    # Pro) sometimes returns 200 OK with zero text chunks and zero
-    # output tokens — usually a thinking-only completion or a
-    # content-filter near-miss. With ADMZ_GEMINI_THINKING_BUDGET=0
-    # we should see this less often, but it can still happen on
-    # ambiguous prompts. Surface a clear notice instead of letting
-    # the user see an empty bot bubble.
+    # Bug 5 backstop: detect Gemini's "I called a tool but didn't
+    # produce visible text" failure modes. We split into two cases
+    # because they map to different recommended actions:
+    #
+    # Case A — TRUE empty turn (output_tokens == 0): thinking-only
+    # completion or content-filter near-miss. Rephrasing usually
+    # helps.
+    #
+    # Case B — output_tokens > 0 but no text reached us. We've
+    # observed this on gemini-3.5-flash with MCP tools enabled:
+    # AFC fires the tool, MCP returns the result, but the SDK
+    # doesn't make the AFC continuation call to ask Gemini for
+    # the final text. Net: the user sees nothing. Recommend
+    # switching to gemini-2.5-flash (which doesn't have the
+    # issue) or retrying.
     if (
         summary.success
         and not summary.response
         and not summary.error
-        and summary.output_tokens == 0
     ):
-        summary.success = False
-        summary.error = (
-            f"The model ({chosen_model}) returned no text. This sometimes "
-            "happens on ambiguous prompts, when the model's safety filters "
-            "are triggered, or when thinking-mode consumed the response "
-            "budget. Try rephrasing the question — being more specific "
-            "often helps. If it persists, switch to gemini-2.5-pro for "
-            "a more capable model."
-        )
+        is_3x = chosen_model.startswith("gemini-3")
+        if summary.output_tokens == 0:
+            # Case A
+            summary.success = False
+            summary.error = (
+                f"The model ({chosen_model}) returned no text. This sometimes "
+                "happens on ambiguous prompts, when the model's safety filters "
+                "are triggered, or when thinking-mode consumed the response "
+                "budget. Try rephrasing the question — being more specific "
+                "often helps."
+                + (
+                    " (Note: gemini-3.x with tools occasionally produces empty "
+                    "completions; gemini-2.5-flash is more reliable for "
+                    "tool-using turns.)"
+                    if is_3x
+                    else " If it persists, switch to gemini-2.5-pro for a "
+                    "more capable model."
+                )
+            )
+        else:
+            # Case B — output tokens > 0 but no text visible (3.x AFC bug)
+            summary.success = False
+            summary.error = (
+                f"The model ({chosen_model}) produced {summary.output_tokens} "
+                f"output tokens but no visible text — likely a tool-call "
+                f"that didn't trigger a follow-up response. "
+                + (
+                    "This is a known issue with gemini-3.x and MCP tools "
+                    "in google-genai 2.5.x; the SDK doesn't always make "
+                    "the AFC continuation call after a tool result. "
+                    "Switch to gemini-2.5-flash for reliable tool use, "
+                    "or retry the same prompt (sometimes it works on "
+                    "the second attempt)."
+                    if is_3x
+                    else "Try rephrasing the question, or switch to "
+                    "gemini-2.5-pro for more reliable behavior."
+                )
+            )
         logger.warning(
-            "[chat] zero-output response on %s — surfacing as friendly error",
+            "[chat] empty response on %s (tokens=%d) — surfacing as friendly error",
             chosen_model,
+            summary.output_tokens,
         )
 
     if summary.interaction_id:
