@@ -114,10 +114,14 @@
   <form method="POST" action="/confirm-settings">
     <input type="hidden" name="action" value="tool_toggle">
 
-    <h2 style="font-size:18px;margin-bottom:8px;">MCP Tool Access</h2>
+    <h2 style="font-size:18px;margin-bottom:8px;">Plaintext credential access</h2>
     <p style="color:#666;font-size:14px;margin-bottom:16px;">
-      Control which MCP tools are available to LLMs.
-      These settings cannot be changed by the LLM &mdash; only through this web UI.
+      Controls plaintext password retrieval across every surface
+      (MCP <code>get_credentials</code> tool, REST
+      <code>GET&nbsp;/api/devices/&hellip;/credentials</code>, and the
+      web UI's <strong>Reveal</strong> button on the account detail
+      page). All three share this flag.
+      This setting cannot be changed by the LLM &mdash; only through this web UI.
     </p>
 
     <div style="margin-bottom:24px;">
@@ -126,11 +130,16 @@
                {% if get_creds_enabled %}checked{% endif %}
                style="margin-top:3px;">
         <span>
-          <strong style="display:block;margin-bottom:2px;">Allow LLMs to retrieve device passwords in plaintext</strong>
+          <strong style="display:block;margin-bottom:2px;">Allow plaintext password retrieval</strong>
           <span style="color:#666;font-size:13px;">
-            When disabled, the <code>get_credentials</code> tool is hidden from LLMs.
-            Use <code>create_temp_credentials</code> instead &mdash; it creates short-lived
-            accounts without exposing the real admin password.
+            When disabled (the default), the <code>get_credentials</code>
+            MCP tool is hidden from LLMs and the REST credentials
+            endpoint returns 403 &mdash; so the web UI <strong>Reveal</strong>
+            button also won't work. Operators who only need to push
+            credentials onto devices (not read them back) should
+            leave this off and use <code>create_temp_credentials</code>
+            for short-lived LLM access without exposing the real
+            admin password.
           </span>
         </span>
       </label>
