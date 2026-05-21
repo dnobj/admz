@@ -58,6 +58,18 @@ class TestPricing:
             > PRICING["gemini-2.5-flash-lite"].output_per_million_usd
         )
 
+    def test_gemini_3x_line_present(self):
+        """Regression: don't drop the newer line."""
+        for model in ("gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.1-flash-lite"):
+            assert model in PRICING, f"missing pricing for {model}"
+
+    def test_3x_pricing_higher_than_2x_equivalent(self):
+        """3.5-flash is ~5x 2.5-flash on output; sanity check."""
+        assert (
+            PRICING["gemini-3.5-flash"].output_per_million_usd
+            > PRICING["gemini-2.5-flash"].output_per_million_usd
+        )
+
     def test_cost_for_pro(self):
         # 1M in + 1M out on 2.5-pro = $1.25 + $10.00 = $11.25
         cost = estimate_cost_usd("gemini-2.5-pro", 1_000_000, 1_000_000)

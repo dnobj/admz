@@ -50,7 +50,14 @@ class ModelPricing:
 PRICING: dict[str, ModelPricing] = {
     # Approximate $/1M tokens as of May 2026. The cost telemetry is
     # informational — refer to ai.google.dev/pricing for authoritative
-    # billing.
+    # billing. Pricing entries below the published <=200K tier; jobs
+    # with prompts larger than 200K may cost more.
+    #
+    # Gemini 3.x line (newer):
+    "gemini-3.1-pro-preview": ModelPricing(2.00, 12.00),
+    "gemini-3.5-flash": ModelPricing(1.50, 9.00),
+    "gemini-3.1-flash-lite": ModelPricing(0.25, 1.50),
+    # Gemini 2.5 line (proven stable, still recommended for most uses):
     "gemini-2.5-pro": ModelPricing(1.25, 10.00),
     "gemini-2.5-flash": ModelPricing(0.30, 2.50),
     "gemini-2.5-flash-lite": ModelPricing(0.10, 0.40),

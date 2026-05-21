@@ -50,10 +50,23 @@ class TestDefaults:
     def test_default_model_is_in_selectable(self):
         assert cfg_mod.DEFAULT_MODEL in cfg_mod.SELECTABLE_MODELS
 
-    def test_selectable_has_three_tiers(self):
-        # Pro, Flash, Flash-Lite — ADR-0025.
-        assert len(cfg_mod.SELECTABLE_MODELS) == 3
-        assert "gemini-2.5-flash-lite" in cfg_mod.SELECTABLE_MODELS
+    def test_selectable_has_both_lines(self):
+        """Both Gemini 2.5 and 3.x lines should be available so
+        operators can pick what fits their cost/quality balance."""
+        sm = cfg_mod.SELECTABLE_MODELS
+        # 2.5 line
+        assert "gemini-2.5-pro" in sm
+        assert "gemini-2.5-flash" in sm
+        assert "gemini-2.5-flash-lite" in sm
+        # 3.x line (newest)
+        assert "gemini-3.5-flash" in sm
+        assert "gemini-3.1-flash-lite" in sm
+        assert "gemini-3.1-pro-preview" in sm
+
+    def test_default_is_still_2_5_flash_for_cost(self):
+        """Don't silently bump operator bills 5x by promoting 3.5-flash
+        to the default. Operators have to pick it explicitly."""
+        assert cfg_mod.DEFAULT_MODEL == "gemini-2.5-flash"
 
     def test_unconfigured_when_no_key(self, monkeypatch):
         monkeypatch.delenv("ADMZ_GEMINI_API_KEY", raising=False)

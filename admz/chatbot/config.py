@@ -34,13 +34,23 @@ def _fs():
     return _fs_module.fleet_settings
 
 
-# Gemini 2.5 line — the actually-live GA models on the v1beta API
-# as of May 2026. (Earlier Phase 5A research surfaced forward-looking
-# '3.1' names from press pieces; the real shipped models are 2.5.)
-# See ADR-0025.
+# Selectable Gemini models for the chatbot. List is ordered newest
+# line first so the dropdown shows the latest options at the top.
+# Pricing for each is in admz.chatbot.usage.PRICING.
+#
+# Default is intentionally NOT the newest 3.x — gemini-2.5-flash is
+# still the right floor (proven, ~5x cheaper than gemini-3.5-flash,
+# fine for chat-style turns). Operators who want 3.x agent-tuned
+# performance pick it explicitly from the model dropdown or set
+# ADMZ_GEMINI_DEFAULT_MODEL. See ADR-0025.
 DEFAULT_MODEL = "gemini-2.5-flash"
 
 SELECTABLE_MODELS: List[str] = [
+    # --- Gemini 3.x ---
+    "gemini-3.1-pro-preview",   # most capable (preview)
+    "gemini-3.5-flash",         # stable, agent-tuned (newer + more $$ than 2.5-flash)
+    "gemini-3.1-flash-lite",    # stable budget tier on the 3.x line
+    # --- Gemini 2.5 (proven stable line) ---
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
