@@ -1781,10 +1781,16 @@ class ADMZMCPServer:
             if confirmation_level == "llm_confirm":
                 message = (
                     f"This operation is classified as '{risk}' and "
-                    f"requires user confirmation. Present the reason "
-                    f"to the user, wait for explicit consent, and "
-                    f"then call confirm_dangerous_operation with the "
-                    f"confirm_token."
+                    f"requires user confirmation. "
+                    f"**If the user has already given clear consent in "
+                    f"this conversation** (e.g. they said 'yes', 'go "
+                    f"ahead', 'proceed', or otherwise agreed when you "
+                    f"described the action), call "
+                    f"confirm_dangerous_operation with this "
+                    f"confirm_token IMMEDIATELY — don't re-ask. "
+                    f"Otherwise, briefly summarize what will happen "
+                    f"and ask for their consent before calling "
+                    f"confirm_dangerous_operation."
                 )
             else:
                 # url_only or url_and_password
@@ -1813,9 +1819,25 @@ class ADMZMCPServer:
         # Load operation spec
         operation = self.catalog.get_operation(family, operation_id)
         if not operation:
+            # Active guidance: when the LLM passes a made-up operation_id,
+            # nudge it to discover the right one via query_catalog rather
+            # than guessing another. We've seen Gemini repeatedly invent
+            # operation IDs like 'system.cgi:restart' or
+            # 'systemready.cgi:restart' that don't exist; this message is
+            # the only thing in the trace that can correct it before it
+            # tells the user "doesn't exist."
             return {
                 "success": False,
-                "error": f"Operation '{operation_id}' not found in {family} catalog",
+                "error": (
+                    f"Operation '{operation_id}' not found in the {family} "
+                    f"catalog. DO NOT guess another operation_id. Call "
+                    f"query_catalog(device_id='{device_id}', intent='<what "
+                    f"you want to do, e.g. restart or reboot>') to discover "
+                    f"the correct operation_id, then retry execute_operation "
+                    f"with the id from the result."
+                ),
+                "operation_id_attempted": operation_id,
+                "next_step": "query_catalog",
             }
 
         # Get executor

@@ -289,6 +289,60 @@ class TestConfirmTool:
 # ---------------------------------------------------------------------------
 
 
+class TestUnknownOperationGuidesToCatalog:
+    """When execute_operation is called with a non-existent operation_id,
+    the error response must actively guide the LLM to query_catalog
+    rather than just saying 'not found'."""
+
+    @pytest.mark.asyncio
+    async def test_unknown_op_response_mentions_query_catalog(self, isolate_db):
+        from admz.mcp.server import ADMZMCPServer
+
+        server = ADMZMCPServer.__new__(ADMZMCPServer)
+        server.catalog = MagicMock()
+        server.catalog.get_risk_level.return_value = "normal"
+        # Return None — pretend the operation doesn't exist in catalog
+        server.catalog.get_operation.return_value = None
+
+        server.registry = MagicMock()
+        server.registry.device_exists.return_value = True
+        server.executors = {"vapix": MagicMock()}
+
+        result = await server._execute_operation(
+            device_id="cam-01",
+            operation_id="system.cgi:restart",  # fake op
+            params={},
+            family="vapix",
+        )
+        assert result["success"] is False
+        assert "query_catalog" in result["error"]
+        assert "do not guess" in result["error"].lower()
+        assert result["next_step"] == "query_catalog"
+        assert result["operation_id_attempted"] == "system.cgi:restart"
+
+    @pytest.mark.asyncio
+    async def test_unknown_op_passes_device_id_for_lookup(self, isolate_db):
+        from admz.mcp.server import ADMZMCPServer
+
+        server = ADMZMCPServer.__new__(ADMZMCPServer)
+        server.catalog = MagicMock()
+        server.catalog.get_risk_level.return_value = "normal"
+        server.catalog.get_operation.return_value = None
+        server.registry = MagicMock()
+        server.registry.device_exists.return_value = True
+        server.executors = {"vapix": MagicMock()}
+
+        result = await server._execute_operation(
+            device_id="cam-99",
+            operation_id="fake.cgi:nope",
+            params={},
+            family="vapix",
+        )
+        # The helpful error should include the device_id so the LLM
+        # can plug it straight into query_catalog.
+        assert "cam-99" in result["error"]
+
+
 class TestExecuteOperationSchema:
     """Regression: 'params' must NOT be marked required.
 
