@@ -125,6 +125,58 @@ def _warn_base_url_mismatch() -> None:
 _warn_base_url_mismatch()
 
 
+# ---------------------------------------------------------------------------
+# CR-4: MCP-side audit helpers
+# ---------------------------------------------------------------------------
+
+
+# Field-name substrings whose values must NEVER be written to the audit
+# log. We log the keys (so an operator can tell that an arg was present)
+# but mask the value. Defensive even though CR-1/CR-2 removed the two
+# tools that took plaintext passwords as args — future tools should not
+# accidentally re-introduce a leak via the audit trail.
+_AUDIT_SENSITIVE_KEY_PARTS = ("password", "secret", "token", "api_key", "passwd")
+
+
+def _sanitize_tool_args(arguments: Any) -> Any:
+    """Return a copy of ``arguments`` safe to record in the audit log.
+
+    For dict-shaped arguments, any key matching :data:`_AUDIT_SENSITIVE_KEY_PARTS`
+    has its value replaced with ``"***"``. Non-dict inputs are returned
+    as-is (the audit details column also length-limits via json.dumps).
+    """
+    if not isinstance(arguments, dict):
+        return arguments
+    out: Dict[str, Any] = {}
+    for k, v in arguments.items():
+        if any(part in k.lower() for part in _AUDIT_SENSITIVE_KEY_PARTS):
+            out[k] = "***"
+        elif isinstance(v, dict):
+            out[k] = _sanitize_tool_args(v)
+        else:
+            out[k] = v
+    return out
+
+
+def _tool_resource(name: str, arguments: Any) -> str:
+    """Build a short ``resource`` string for the audit row.
+
+    Many MCP tools take a ``device_id`` / ``account_id``; surface that
+    so the audit log groups by device. For tools without identifiers
+    we fall back to the bare tool name.
+    """
+    if not isinstance(arguments, dict):
+        return f"mcp:{name}"
+    parts = [f"mcp:{name}"]
+    device_id = arguments.get("device_id")
+    if device_id:
+        parts.append(f"device:{device_id}")
+    account_id = arguments.get("account_id")
+    if account_id:
+        parts.append(f"account:{account_id}")
+    return "/".join(parts)
+
+
 class ADMZMCPServer:
     """
     MCP server for ADMZ device management.
@@ -190,8 +242,54 @@ class ADMZMCPServer:
         # Temporary credential manager
         self.temp_creds = TempCredentialManager()
 
+        # CR-4: reconstruct the calling principal from env vars the
+        # MCP pool sets when it spawns this subprocess. When the MCP
+        # server runs standalone (e.g. `python -m admz mcp` for an
+        # external client) the env vars aren't set and we fall back
+        # to a synthetic "mcp-standalone" identity that audit-log
+        # rows attribute to ``mcp-standalone``. Either way, every
+        # call_tool dispatch can produce an audit row with a
+        # meaningful requester.
+        self.principal = self._build_principal_from_env()
+
         # Register tool handlers
         self._register_handlers()
+
+    @staticmethod
+    def _build_principal_from_env():
+        """Read ADMZ_PRINCIPAL_* env vars into a :class:`Principal`.
+
+        Returns a fresh Principal regardless of input shape — when
+        no env vars are set, we return a synthetic ``mcp-standalone``
+        principal so audit rows are still meaningful. The shape
+        matches what :func:`admz.chatbot.mcp_pool._principal_to_env`
+        emits on the calling side.
+        """
+        import os
+
+        from admz.auth import Principal
+
+        name = os.getenv("ADMZ_PRINCIPAL_NAME")
+        if not name:
+            return Principal(
+                name="mcp-standalone",
+                display_name="mcp-standalone",
+                source="mcp-standalone",
+                is_anonymous=False,
+            )
+        display = os.getenv("ADMZ_PRINCIPAL_DISPLAY_NAME") or name
+        domain = os.getenv("ADMZ_PRINCIPAL_DOMAIN") or None
+        source = os.getenv("ADMZ_PRINCIPAL_SOURCE") or "none"
+        groups_raw = os.getenv("ADMZ_PRINCIPAL_GROUPS") or ""
+        groups = [g.strip() for g in groups_raw.split(",") if g.strip()]
+        return Principal(
+            name=name,
+            display_name=display,
+            domain=domain,
+            groups=groups,
+            source=source,
+            is_anonymous=(name == "anonymous" or source == "none"),
+        )
 
     def _register_handlers(self):
         """Register MCP tool handlers."""
@@ -1108,7 +1206,20 @@ class ADMZMCPServer:
 
         @self.server.call_tool()
         async def call_tool(name: str, arguments: Any) -> List[TextContent]:
-            """Handle tool calls."""
+            """Handle tool calls.
+
+            CR-4: every dispatch produces exactly one audit-log row.
+            ``audit_success`` is set to True right before the success
+            return; each except clause sets ``audit_error`` to a short
+            tag identifying the failure type. The ``finally`` block
+            records the outcome with the principal reconstructed from
+            ADMZ_PRINCIPAL_* env vars at startup. Password-shaped
+            argument fields are stripped from ``details`` so the audit
+            log doesn't itself become a credential leak.
+            """
+            args_sanitized = _sanitize_tool_args(arguments)
+            audit_success = False
+            audit_error = ""
             try:
                 # Route to appropriate handler
                 if name == "list_devices":
@@ -1282,30 +1393,53 @@ class ADMZMCPServer:
                 else:
                     raise ValueError(f"Unknown tool: {name}")
 
+                audit_success = True
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
             except DeviceNotFoundError as e:
+                audit_error = f"DeviceNotFound: {e}"
                 error = {"error": "DeviceNotFound", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
             except AccountNotFoundError as e:
+                audit_error = f"AccountNotFound: {e}"
                 error = {"error": "AccountNotFound", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
             except PermissionDeniedError as e:
+                audit_error = f"PermissionDenied: {e}"
                 error = {"error": "PermissionDenied", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
             except NotImplementedError as e:
+                audit_error = f"NotImplemented: {e}"
                 error = {"error": "NotImplemented", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
             except BackendError as e:
+                audit_error = f"BackendError: {e}"
                 error = {"error": "BackendError", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
             except ADMZError as e:
+                audit_error = f"ADMZError: {e}"
                 error = {"error": "ADMZError", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
             except Exception as e:
+                audit_error = f"InternalError: {e}"
                 logger.exception(f"Unexpected error in {name}")
                 error = {"error": "InternalError", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
+            finally:
+                # CR-4: single point of audit for every MCP tool call.
+                # `audit_log.record` is best-effort and swallows DB
+                # errors internally, so an audit failure can't break
+                # the tool surface.
+                from admz.audit import audit_log
+                audit_log.record(
+                    requester=self.principal.name,
+                    auth_source=self.principal.source,
+                    action=f"mcp.{name}",
+                    resource=_tool_resource(name, arguments),
+                    details={"args": args_sanitized},
+                    success=audit_success,
+                    error_message=audit_error,
+                )
 
     async def _list_devices(self) -> Dict[str, Any]:
         """List all devices."""

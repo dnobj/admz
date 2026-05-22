@@ -418,7 +418,7 @@ async def stream_turn(
     previous_interaction_id: Optional[str] = None,
     history: Optional[list] = None,
     use_tools: bool = True,
-    principal: Optional[str] = None,
+    principal: Any = None,
 ):
     """Stream a chat turn as :class:`ChatEvent`s.
 
@@ -584,13 +584,18 @@ async def stream_turn(
 
 
 @asynccontextmanager
-async def _open_mcp_or_none(use_tools: bool, *, principal: Optional[str] = None):
+async def _open_mcp_or_none(use_tools: bool, *, principal: Any = None):
     """Yield an MCP session, or ``None`` if tools are disabled / bridge fails.
 
     Centralizes the 'best-effort tools' policy: if the bridge can't
     be opened, the chat still works (just without device access).
     The decision is intentionally not exposed as a flag the model
     can flip — it's a deployment-time concern.
+
+    ``principal`` accepts either a bare string name (legacy/test
+    callers) or a :class:`admz.auth.Principal` (CR-4: full identity
+    is forwarded to the MCP subprocess via env vars so every tool
+    call is audit-logged with the correct requester).
 
     When ``principal`` is provided, route through the pool so the
     MCP subprocess survives idle between turns (Phase 7). Otherwise
