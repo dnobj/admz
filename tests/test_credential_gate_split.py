@@ -126,24 +126,57 @@ class TestRestCredentialsGate:
 
 
 # ---------------------------------------------------------------------------
-# MCP get_credentials tool gate is NOT affected by the web flag
+# MCP get_credentials tool has been removed entirely (CR-1)
 # ---------------------------------------------------------------------------
 
 
-class TestMcpToolGateIsolated:
-    def test_web_flag_does_not_enable_mcp_tool(self, client):
-        """The whole point of the split: turning on Reveal must NOT
-        also expose get_credentials to LLMs."""
+class TestMcpGetCredentialsRemoved:
+    """The whole point of the original split-flag was to keep
+    plaintext credentials out of LLM context even when the web Reveal
+    flag was on. CR-1 went further and removed the MCP tool entirely
+    — the LLM uses ``create_temp_credentials`` when it needs to act
+    on behalf of the user. The internal callers that still need the
+    admin password (executor, plan engine) go through
+    ``registry.get_credentials`` directly; those values never cross
+    the MCP wire format."""
+
+    def test_get_credentials_tool_not_registered(self):
+        """Source-level check: the MCP server should no longer have
+        a ``_get_credentials`` handler and the legacy gate function
+        should be gone."""
+        from admz.mcp import server as mcp_server_module
+
+        # The handler method was deleted.
+        assert not hasattr(
+            mcp_server_module.ADMZMCPServer, "_get_credentials"
+        ), "MCP _get_credentials handler should have been removed (CR-1)"
+
+        # The gate function was deleted.
+        assert not hasattr(
+            mcp_server_module.ADMZMCPServer, "_is_get_credentials_enabled"
+        ), "MCP _is_get_credentials_enabled gate should have been removed (CR-1)"
+
+    def test_get_credentials_tool_name_absent_from_source(self):
+        """Belt-and-braces: grep the server module's source for the
+        tool name. The only allowed mentions are the comments
+        explaining the removal."""
+        import inspect
+        from admz.mcp import server as mcp_server_module
+
+        source = inspect.getsource(mcp_server_module)
+        # name="get_credentials" was the Tool registration; that string
+        # MUST NOT appear anywhere now.
+        assert 'name="get_credentials"' not in source
+
+    def test_web_flag_does_not_affect_mcp_anymore(self, client):
+        """The web flag still exists for the REST Reveal endpoint
+        fallback. Turning it on must not be observable on the MCP
+        surface (the tool isn't there to be turned on or off)."""
         from admz.fleet_settings import fleet_settings
         fleet_settings.set("web_reveal_credentials_enabled", "true")
         fleet_settings.delete("tool_get_credentials_enabled")
-
-        # The MCP server's list_tools filters out get_credentials when
-        # the LLM flag is off. We import and check directly.
-        from admz.mcp.server import ADMZMCPServer
-        server = ADMZMCPServer.__new__(ADMZMCPServer)
-        # _is_get_credentials_enabled is the gate the MCP server uses.
-        assert server._is_get_credentials_enabled() is False
+        # Nothing to assert on the MCP side — the absence above is
+        # the assertion. This test exists to document the invariant.
 
 
 # ---------------------------------------------------------------------------

@@ -392,8 +392,12 @@ class TestFleetSettingsMasking:
 
 
 class TestCredentialsEndpointGated:
-    """Phase 2A: /api/devices/{id}/credentials must be gated behind the
-    same tool_get_credentials_enabled fleet flag as the MCP tool."""
+    """The /api/devices/{id}/credentials REST endpoint is gated behind
+    the ``tool_get_credentials_enabled`` fleet flag (or the newer
+    ``web_reveal_credentials_enabled`` — see test_reveal_group_gate.py
+    for the full gate matrix). The MCP equivalent of this tool no
+    longer exists (CR-1); plaintext credentials never enter LLM
+    context."""
 
     def _register_device_with_creds(self, client):
         client.post(

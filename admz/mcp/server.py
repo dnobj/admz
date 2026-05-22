@@ -193,10 +193,6 @@ class ADMZMCPServer:
         # Register tool handlers
         self._register_handlers()
 
-    def _is_get_credentials_enabled(self) -> bool:
-        """Check if the get_credentials tool is enabled via fleet setting."""
-        return fleet_settings.get("tool_get_credentials_enabled") == "true"
-
     def _register_handlers(self):
         """Register MCP tool handlers."""
 
@@ -325,33 +321,17 @@ class ADMZMCPServer:
                         "required": ["device_id"],
                     },
                 ),
-                Tool(
-                    name="get_credentials",
-                    description=(
-                        "Get credentials for a specific device and account. "
-                        "Returns username, password, and other authentication details. "
-                        "Use with caution - this retrieves sensitive information."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "device_id": {
-                                "type": "string",
-                                "description": "Device ID",
-                            },
-                            "account_id": {
-                                "type": "string",
-                                "description": "Account ID (default: 'default')",
-                                "default": "default",
-                            },
-                            "requester": {
-                                "type": "string",
-                                "description": "Identifier of who is requesting access (for audit)",
-                            },
-                        },
-                        "required": ["device_id"],
-                    },
-                ),
+                # NOTE: a `get_credentials` MCP tool used to live here.
+                # It was removed (CR-1) because returning plaintext
+                # passwords into LLM context violated the project's
+                # stated invariant. The LLM should call
+                # ``create_temp_credentials`` when it needs to authenticate
+                # to a device on the user's behalf; that returns a
+                # short-lived, scoped account on the device itself rather
+                # than leaking the long-lived admin password into the
+                # model's context window. The REST endpoint
+                # ``GET /api/devices/{id}/credentials`` remains, gated by
+                # the group-membership Reveal check + audit log.
                 Tool(
                     name="register_device",
                     description=(
@@ -925,11 +905,16 @@ class ADMZMCPServer:
                 Tool(
                     name="test_device_credentials",
                     description=(
-                        "Test credentials against a device by probing its VAPIX "
-                        "basicdeviceinfo endpoint. Tries no-auth (factory default), "
-                        "legacy defaults (root/pass), and optionally user-supplied "
-                        "credentials. Returns status without exposing passwords. "
-                        "If store=true and credentials work, saves them to the registry."
+                        "Probe a device with the credentials we already have stored "
+                        "for it, falling back to no-auth (factory default) and the "
+                        "well-known legacy defaults built into the probe. Returns "
+                        "status without exposing passwords. "
+                        "NOTE: this tool does NOT accept user-supplied passwords as "
+                        "arguments — that would put plaintext into the LLM context. "
+                        "If credentials need to be set, drive the operator to the "
+                        "out-of-band capture form via the capture_credentials tool. "
+                        "If store=true and a factory-default probe succeeds, the "
+                        "device's working creds (root/blank or similar) are saved."
                     ),
                     inputSchema={
                         "type": "object",
@@ -941,28 +926,24 @@ class ADMZMCPServer:
                             "device_id": {
                                 "type": "string",
                                 "description": (
-                                    "Resolve host from registry if host not provided"
+                                    "Resolve host from registry if host not provided. "
+                                    "If device_id is supplied, any stored credentials "
+                                    "for the device are also tried."
                                 ),
                             },
-                            "username": {
+                            "account_id": {
                                 "type": "string",
-                                "description": "Single username to try",
-                            },
-                            "password": {
-                                "type": "string",
-                                "description": "Single password to try",
-                            },
-                            "passwords": {
-                                "type": "array",
-                                "items": {"type": "string"},
                                 "description": (
-                                    "List of passwords to try with 'root' username (max 5)"
+                                    "Which stored account to probe with "
+                                    "(default: 'default'). Ignored if no device_id."
                                 ),
+                                "default": "default",
                             },
                             "store": {
                                 "type": "boolean",
                                 "description": (
-                                    "If true and credentials work, save to registry"
+                                    "If true and a factory-default probe succeeds, "
+                                    "save the working creds to the registry."
                                 ),
                                 "default": False,
                             },
@@ -1123,10 +1104,6 @@ class ADMZMCPServer:
                 *MIGRATED_TOOLS,
             ]
 
-            # Filter out get_credentials when disabled
-            if not self._is_get_credentials_enabled():
-                tools = [t for t in tools if t.name != "get_credentials"]
-
             return tools
 
         @self.server.call_tool()
@@ -1146,22 +1123,6 @@ class ADMZMCPServer:
                     result = await self._search_devices(arguments)
                 elif name == "list_accounts":
                     result = await self._list_accounts(arguments["device_id"])
-                elif name == "get_credentials":
-                    if not self._is_get_credentials_enabled():
-                        result = {
-                            "error": "ToolDisabled",
-                            "message": (
-                                "get_credentials is disabled. An admin can enable it "
-                                "in the web UI at /confirm-settings. Consider using "
-                                "create_temp_credentials instead."
-                            ),
-                        }
-                    else:
-                        result = await self._get_credentials(
-                            arguments["device_id"],
-                            arguments.get("account_id", "default"),
-                            arguments.get("requester"),
-                        )
                 elif name == "register_device":
                     result = await self._register_device(
                         arguments["device_id"],
@@ -1481,24 +1442,14 @@ class ADMZMCPServer:
             "accounts": accounts,
         }
 
-    async def _get_credentials(
-        self,
-        device_id: str,
-        account_id: str,
-        requester: Optional[str],
-    ) -> Dict[str, Any]:
-        """Get credentials for a device account."""
-        credentials = self.registry.get_credentials(
-            device_id,
-            account_id,
-            requester,
-        )
-        return {
-            "success": True,
-            "device_id": device_id,
-            "account_id": account_id,
-            "credentials": credentials,
-        }
+    # NOTE: _get_credentials() was deleted (CR-1). The LLM-facing
+    # tool that returned plaintext credentials into context was a
+    # direct violation of the "no plaintext passwords in LLM context"
+    # invariant. Use create_temp_credentials (returns a short-lived
+    # account on the device) instead. Internal callers that need the
+    # admin password to perform a VAPIX request still go through
+    # self.registry.get_credentials() directly — those values never
+    # cross the MCP wire format.
 
     async def _register_device(
         self,
@@ -2273,9 +2224,24 @@ class ADMZMCPServer:
     # ------------------------------------------------------------------
 
     async def _test_credentials(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Probe a device with no-auth, legacy defaults, and/or user creds."""
+        """Probe a device with stored credentials + factory/legacy defaults.
+
+        CR-2: this handler no longer accepts user-supplied passwords as
+        tool arguments. The LLM had been able to put plaintext into
+        ``arguments["password"]`` / ``["passwords"]``, which violated
+        the "no plaintext passwords in LLM context" invariant. The new
+        flow:
+
+        * If ``device_id`` is provided AND a stored account exists for
+          it, that account's credentials are added to the probe list —
+          read from the registry server-side, never crossing the LLM
+          boundary.
+        * The probe always falls through to no-auth (factory default)
+          + the built-in legacy-defaults list inside ``probe_credentials``.
+        """
         host = arguments.get("host")
         device_id = arguments.get("device_id")
+        account_id = arguments.get("account_id", "default")
 
         if not host:
             if not device_id:
@@ -2293,15 +2259,26 @@ class ADMZMCPServer:
                     "error": f"Device '{device_id}' has no host/IP address",
                 }
 
-        credentials_list = []
-        username = arguments.get("username")
-        password = arguments.get("password")
-        if username and password:
-            credentials_list.append((username, password))
-
-        passwords = arguments.get("passwords") or []
-        for pw in passwords[:5]:
-            credentials_list.append(("root", pw))
+        # Build the credentials list from stored creds only. The probe
+        # always tries factory-default no-auth + legacy defaults
+        # regardless; this just adds the registered account if one
+        # exists, so a probe with device_id verifies "do our stored
+        # creds still work?"
+        credentials_list: List[tuple] = []
+        if device_id and self.registry.device_exists(device_id):
+            if self.registry.account_exists(device_id, account_id):
+                try:
+                    creds = self.registry.get_credentials(
+                        device_id, account_id, requester="mcp:test_credentials",
+                    )
+                    if creds.get("username") and creds.get("password"):
+                        credentials_list.append(
+                            (creds["username"], creds["password"])
+                        )
+                except Exception:
+                    # Stored-creds lookup failure is non-fatal — the
+                    # probe still tries factory defaults.
+                    pass
 
         result = await probe_credentials(
             host,
