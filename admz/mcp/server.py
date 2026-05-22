@@ -158,6 +158,60 @@ def _sanitize_tool_args(arguments: Any) -> Any:
     return out
 
 
+def _validate_tool_args(name: str, arguments: Any) -> Optional[str]:
+    """CR-5: validate identifier-shaped args against an allow-list.
+
+    Returns None on success, or an error message string on failure.
+    The dispatcher converts the message into an ``{"error":
+    "InvalidInput", ...}`` envelope that matches the existing error
+    shape (DeviceNotFound / PermissionDenied / BackendError).
+
+    Validates: ``device_id``, ``device_ids`` (list), ``account_id``,
+    ``facet_name``, ``facets`` (list), ``ref``, ``ref_a``, ``ref_b``.
+    Other arguments pass through unexamined.
+    """
+    if not isinstance(arguments, dict):
+        return None
+    from admz.validators import validate_identifier, validate_git_ref
+
+    ident_keys = ("device_id", "account_id", "facet_name")
+    list_ident_keys = ("device_ids", "facets")
+    ref_keys = ("ref", "ref_a", "ref_b")
+
+    for k in ident_keys:
+        v = arguments.get(k)
+        if v is None or v == "":
+            continue
+        try:
+            validate_identifier(v, k)
+        except ValueError as e:
+            return str(e)
+
+    for k in list_ident_keys:
+        v = arguments.get(k)
+        if v is None:
+            continue
+        if not isinstance(v, list):
+            return f"{k} must be a list"
+        kind = "device_id" if k == "device_ids" else "facet_name"
+        for item in v:
+            try:
+                validate_identifier(item, kind)
+            except ValueError as e:
+                return str(e)
+
+    for k in ref_keys:
+        v = arguments.get(k)
+        if v is None or v == "":
+            continue
+        try:
+            validate_git_ref(v)
+        except ValueError as e:
+            return str(e)
+
+    return None
+
+
 def _tool_resource(name: str, arguments: Any) -> str:
     """Build a short ``resource`` string for the audit row.
 
@@ -1216,10 +1270,41 @@ class ADMZMCPServer:
             ADMZ_PRINCIPAL_* env vars at startup. Password-shaped
             argument fields are stripped from ``details`` so the audit
             log doesn't itself become a credential leak.
+
+            CR-5: identifier-shaped arguments (device_id, account_id,
+            facet_name, ref) are validated up-front against an
+            allow-list so a malicious value can't slip through to
+            filesystem-touching code (git_repo.device_path etc.).
             """
             args_sanitized = _sanitize_tool_args(arguments)
             audit_success = False
             audit_error = ""
+
+            # CR-5: validate identifier-shaped args before dispatch.
+            validation_error = _validate_tool_args(name, arguments)
+            if validation_error is not None:
+                audit_error = f"InvalidInput: {validation_error}"
+                err_envelope = {
+                    "error": "InvalidInput",
+                    "message": validation_error,
+                }
+                try:
+                    return [TextContent(
+                        type="text",
+                        text=json.dumps(err_envelope, indent=2),
+                    )]
+                finally:
+                    from admz.audit import audit_log
+                    audit_log.record(
+                        requester=self.principal.name,
+                        auth_source=self.principal.source,
+                        action=f"mcp.{name}",
+                        resource=_tool_resource(name, arguments),
+                        details={"args": args_sanitized},
+                        success=False,
+                        error_message=audit_error,
+                    )
+
             try:
                 # Route to appropriate handler
                 if name == "list_devices":

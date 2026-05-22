@@ -3,13 +3,23 @@ Pydantic models for ADMZ API requests and responses.
 """
 
 from typing import Optional, Dict, List, Any
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from admz.validators import validate_identifier
 
 
 class DeviceCreate(BaseModel):
     """Request model for creating a device."""
 
     device_id: str = Field(..., description="Unique device identifier")
+
+    @field_validator("device_id")
+    @classmethod
+    def _check_device_id(cls, v: str) -> str:
+        # CR-5: reject path-traversal / shell-metachar / unicode-mess
+        # before the value reaches GitRepo.device_path or any other
+        # filesystem-touching code.
+        return validate_identifier(v, "device_id")
     host: str = Field(..., description="Device IP or hostname")
     nickname: Optional[str] = Field(None, description="Human-readable device nickname")
     ip_address: Optional[str] = Field(None, description="IP address")
@@ -120,6 +130,12 @@ class AccountCreate(BaseModel):
     """Request model for creating a device account."""
 
     account_id: str = Field(..., description="Account identifier")
+
+    @field_validator("account_id")
+    @classmethod
+    def _check_account_id(cls, v: str) -> str:
+        # CR-5: same path-traversal defense as device_id.
+        return validate_identifier(v, "account_id")
     username: str = Field(..., description="Account username")
     password: str = Field(..., description="Account password")
     account_type: Optional[str] = Field(

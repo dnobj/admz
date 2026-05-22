@@ -39,6 +39,12 @@ class GitRepo:
         return result
 
     def device_path(self, device_id: str) -> Path:
+        # CR-5 defense-in-depth: even when the REST and MCP entry
+        # points validate device_id, internal callers might forget.
+        # Reject path-traversal-shaped values here before they reach
+        # mkdir/open.
+        from admz.validators import validate_identifier
+        validate_identifier(device_id, "device_id")
         return self.repo_path / "fleet" / device_id
 
     def has_changes(self) -> bool:
@@ -86,6 +92,8 @@ class GitRepo:
         normalized: Dict,
         raw: Optional[Dict] = None,
     ) -> Path:
+        from admz.validators import validate_identifier
+        validate_identifier(facet_name, "facet_name")
         device_dir = self.device_path(device_id)
 
         config_dir = device_dir / "config"
@@ -106,6 +114,10 @@ class GitRepo:
     def read_facet(
         self, device_id: str, facet_name: str, ref: str = "HEAD"
     ) -> Optional[Dict]:
+        from admz.validators import validate_git_ref, validate_identifier
+        validate_identifier(device_id, "device_id")
+        validate_identifier(facet_name, "facet_name")
+        validate_git_ref(ref)
         rel_path = f"fleet/{device_id}/config/{facet_name}.yaml"
         content = self.get_file(rel_path, ref)
         if content is None:

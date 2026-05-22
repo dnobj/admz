@@ -3,10 +3,11 @@
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from admz.api.context import AppContext, get_context
 from admz.exceptions import DeviceNotFoundError
+from admz.validators import validate_git_ref, validate_identifier
 
 router = APIRouter()
 
@@ -14,6 +15,11 @@ router = APIRouter()
 class SnapshotDeviceRequest(BaseModel):
     device_id: str
     message: Optional[str] = None
+
+    @field_validator("device_id")
+    @classmethod
+    def _check_device_id(cls, v: str) -> str:
+        return validate_identifier(v, "device_id")
 
 
 class SnapshotFleetRequest(BaseModel):
@@ -25,6 +31,25 @@ class RestoreRequest(BaseModel):
     device_id: str
     ref: str = "HEAD"
     facets: Optional[List[str]] = None
+
+    @field_validator("device_id")
+    @classmethod
+    def _check_device_id(cls, v: str) -> str:
+        return validate_identifier(v, "device_id")
+
+    @field_validator("ref")
+    @classmethod
+    def _check_ref(cls, v: str) -> str:
+        return validate_git_ref(v)
+
+    @field_validator("facets")
+    @classmethod
+    def _check_facets(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return v
+        for f in v:
+            validate_identifier(f, "facet_name")
+        return v
 
 
 @router.post("/snapshot/device")
