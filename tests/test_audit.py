@@ -187,13 +187,41 @@ class TestAuditEndpoint:
             assert r.status_code == 200
             assert r.json() == []
 
+    @staticmethod
+    def _install_admin():
+        # CR-3: POST /api/api-keys now refuses anonymous. Install a
+        # stub authenticated backend so the test can mint.
+        from admz.auth import (
+            AuthBackend, Principal, set_active_backend,
+        )
+
+        class _Stub(AuthBackend):
+            async def authenticate(self, request):
+                return Principal(
+                    name="test-admin",
+                    display_name="test-admin",
+                    source="windows",
+                    is_anonymous=False,
+                )
+
+        set_active_backend(_Stub())
+
+    @staticmethod
+    def _restore_noauth():
+        from admz.auth import NoAuth, set_active_backend
+        set_active_backend(NoAuth())
+
     def test_records_appear_after_action(self, tmp_path):
         from fastapi.testclient import TestClient
         from admz.api.main import app
 
         with TestClient(app) as client:
-            # Create an API key (this records api_key.create)
-            client.post("/api/api-keys", json={"display_name": "bot"})
+            self._install_admin()
+            try:
+                # Create an API key (this records api_key.create)
+                client.post("/api/api-keys", json={"display_name": "bot"})
+            finally:
+                self._restore_noauth()
             r = client.get("/api/audit")
             assert r.status_code == 200
             entries = r.json()
@@ -204,8 +232,12 @@ class TestAuditEndpoint:
         from admz.api.main import app
 
         with TestClient(app) as client:
-            client.post("/api/api-keys", json={"display_name": "bot-a"})
-            client.post("/api/api-keys", json={"display_name": "bot-b"})
+            self._install_admin()
+            try:
+                client.post("/api/api-keys", json={"display_name": "bot-a"})
+                client.post("/api/api-keys", json={"display_name": "bot-b"})
+            finally:
+                self._restore_noauth()
             r = client.get("/api/audit", params={"action": "api_key.create"})
             assert r.status_code == 200
             entries = r.json()

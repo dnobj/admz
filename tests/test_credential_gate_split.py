@@ -1,5 +1,11 @@
 """Tests for the split plaintext-credential gates.
 
+NOTE (CR-3): POST /confirm-settings now requires an authenticated
+principal — the handler writes to keys in PROTECTED_SETTING_KEYS.
+The helper ``_with_admin`` below installs a Windows-IWA-like
+principal for the duration of a test so the gate is satisfied.
+
+
 Background: a single ``tool_get_credentials_enabled`` flag used to
 gate both the MCP ``get_credentials`` tool AND the REST endpoint
 the web Reveal button hits. Operators who wanted to use Reveal had
@@ -22,7 +28,42 @@ This file pins:
 """
 
 import pytest
+from contextlib import contextmanager
 from fastapi.testclient import TestClient
+
+
+@contextmanager
+def _with_admin():
+    """Install a Windows-IWA-like authenticated principal for the
+    duration of the ``with`` block. Restores NoAuth on exit.
+
+    Used by tests that POST to /confirm-settings — that handler
+    now requires an authenticated principal because every branch
+    writes to a key in PROTECTED_SETTING_KEYS (CR-3).
+    """
+    from admz.auth import (
+        AuthBackend, NoAuth, Principal, set_active_backend,
+    )
+
+    class _StubBackend(AuthBackend):
+        def __init__(self, p):
+            self.p = p
+
+        async def authenticate(self, request):
+            return self.p
+
+    admin = Principal(
+        name="AXIS\\admin",
+        display_name="admin",
+        source="windows",
+        groups=["Administrators"],
+        is_anonymous=False,
+    )
+    set_active_backend(_StubBackend(admin))
+    try:
+        yield admin
+    finally:
+        set_active_backend(NoAuth())
 
 
 @pytest.fixture
@@ -191,29 +232,32 @@ class TestSettingsPageRoundtrip:
         fleet_settings.delete("tool_get_credentials_enabled")
         fleet_settings.delete("web_reveal_credentials_enabled")
 
-        # POST with only the web checkbox ticked
-        r = client.post(
-            "/confirm-settings",
-            data={
-                "action": "tool_toggle",
-                "web_reveal_credentials_enabled": "1",
-                # get_credentials_enabled not sent → unchecked
-            },
-        )
+        # POST with only the web checkbox ticked. CR-3 requires an
+        # authenticated principal for any /confirm-settings write.
+        with _with_admin():
+            r = client.post(
+                "/confirm-settings",
+                data={
+                    "action": "tool_toggle",
+                    "web_reveal_credentials_enabled": "1",
+                    # get_credentials_enabled not sent → unchecked
+                },
+            )
         assert r.status_code == 200
         assert fleet_settings.get("web_reveal_credentials_enabled") == "true"
         assert fleet_settings.get("tool_get_credentials_enabled") is None
 
     def test_save_both_flags(self, client):
         from admz.fleet_settings import fleet_settings
-        r = client.post(
-            "/confirm-settings",
-            data={
-                "action": "tool_toggle",
-                "web_reveal_credentials_enabled": "1",
-                "get_credentials_enabled": "1",
-            },
-        )
+        with _with_admin():
+            r = client.post(
+                "/confirm-settings",
+                data={
+                    "action": "tool_toggle",
+                    "web_reveal_credentials_enabled": "1",
+                    "get_credentials_enabled": "1",
+                },
+            )
         assert r.status_code == 200
         assert fleet_settings.get("web_reveal_credentials_enabled") == "true"
         assert fleet_settings.get("tool_get_credentials_enabled") == "true"
@@ -224,10 +268,11 @@ class TestSettingsPageRoundtrip:
         fleet_settings.set("tool_get_credentials_enabled", "true")
 
         # Submit with neither checkbox ticked
-        r = client.post(
-            "/confirm-settings",
-            data={"action": "tool_toggle"},
-        )
+        with _with_admin():
+            r = client.post(
+                "/confirm-settings",
+                data={"action": "tool_toggle"},
+            )
         assert r.status_code == 200
         assert fleet_settings.get("web_reveal_credentials_enabled") is None
         assert fleet_settings.get("tool_get_credentials_enabled") is None

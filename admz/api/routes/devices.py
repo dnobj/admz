@@ -267,6 +267,7 @@ async def get_device_credentials(
 
 @router.post("/devices", response_model=DeviceResponse, status_code=201)
 async def create_device(
+    request: Request,
     device: DeviceCreate,
     registry: DeviceRegistry = Depends(get_registry),
 ):
@@ -275,6 +276,12 @@ async def create_device(
 
     Note: This endpoint may not be supported by all backends.
     """
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+
+    principal = await get_current_principal(request)
+    resource = f"device:{device.device_id}"
+
     try:
         # Prepare device info dict
         device_info = device.model_dump(exclude={"device_id"}, exclude_none=True)
@@ -283,22 +290,33 @@ async def create_device(
         registry.add_device(device.device_id, device_info)
 
         # Return the created device
-        return registry.get_device_info(device.device_id)
+        result = registry.get_device_info(device.device_id)
+        record_event(principal, "device.create", resource=resource)
+        return result
 
     except NotImplementedError as e:
+        record_event(principal, "device.create", resource=resource,
+                     success=False, error_message=f"NotImplemented: {e}")
         raise HTTPException(
             status_code=501, detail="This registry does not support adding devices"
         )
     except PermissionDeniedError as e:
+        record_event(principal, "device.create", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=403, detail=str(e))
     except BackendError as e:
+        record_event(principal, "device.create", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
+        record_event(principal, "device.create", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.put("/devices/{device_id}", response_model=DeviceResponse)
 async def update_device(
+    request: Request,
     device_id: str,
     device_update: DeviceUpdate,
     registry: DeviceRegistry = Depends(get_registry),
@@ -307,52 +325,95 @@ async def update_device(
     Update a device in the registry. Only provided fields are merged
     into the existing device info; accounts are preserved.
     """
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+
+    principal = await get_current_principal(request)
+    resource = f"device:{device_id}"
+
     try:
         updates = device_update.model_dump(exclude_none=True)
         updates.pop("device_id", None)
         registry.update_device(device_id, updates)
-        return registry.get_device_info(device_id)
+        result = registry.get_device_info(device_id)
+        record_event(principal, "device.update", resource=resource,
+                     details={"fields": list(updates.keys())})
+        return result
 
     except DeviceNotFoundError as e:
+        record_event(principal, "device.update", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=404, detail=str(e))
     except NotImplementedError as e:
+        record_event(principal, "device.update", resource=resource,
+                     success=False, error_message=f"NotImplemented: {e}")
         raise HTTPException(
             status_code=501, detail="This registry does not support updating devices"
         )
     except PermissionDeniedError as e:
+        record_event(principal, "device.update", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=403, detail=str(e))
     except BackendError as e:
+        record_event(principal, "device.update", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
+        record_event(principal, "device.update", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.delete("/devices/{device_id}", status_code=204)
 async def delete_device(
+    request: Request,
     device_id: str,
     registry: DeviceRegistry = Depends(get_registry),
 ):
     """
     Delete a device from the registry.
 
-    Note: This endpoint may not be supported by all backends.
-    This will also delete all accounts associated with the device.
+    CR-3: requires an authenticated principal. Anonymous deletion is
+    too easy to do by accident in shared-host setups. Mint an API
+    key (ADMZ_AUTH_BACKEND=api-key) or use Windows IWA to invoke.
+
+    This also deletes all accounts associated with the device.
+    Note: not supported by all backends.
     """
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+    resource = f"device:{device_id}"
+
     try:
         registry.remove_device(device_id)
+        record_event(principal, "device.delete", resource=resource)
         return None
 
     except DeviceNotFoundError as e:
+        record_event(principal, "device.delete", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=404, detail=str(e))
     except NotImplementedError as e:
+        record_event(principal, "device.delete", resource=resource,
+                     success=False, error_message=f"NotImplemented: {e}")
         raise HTTPException(
             status_code=501, detail="This registry does not support removing devices"
         )
     except PermissionDeniedError as e:
+        record_event(principal, "device.delete", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=403, detail=str(e))
     except BackendError as e:
+        record_event(principal, "device.delete", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
+        record_event(principal, "device.delete", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
@@ -360,6 +421,7 @@ async def delete_device(
     "/devices/{device_id}/accounts", response_model=AccountResponse, status_code=201
 )
 async def create_device_account(
+    request: Request,
     device_id: str,
     account: AccountCreate,
     registry: DeviceRegistry = Depends(get_registry),
@@ -369,6 +431,12 @@ async def create_device_account(
 
     Note: This endpoint may not be supported by all backends.
     """
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+
+    principal = await get_current_principal(request)
+    resource = f"device:{device_id}/account:{account.account_id}"
+
     try:
         # Prepare account data
         account_data = account.model_dump(exclude={"account_id"})
@@ -378,6 +446,7 @@ async def create_device_account(
 
         # Return the created account (without password)
         accounts = registry.list_accounts(device_id)
+        record_event(principal, "account.create", resource=resource)
         for acc in accounts:
             if acc.get("account_id") == account.account_id:
                 return acc
@@ -393,21 +462,32 @@ async def create_device_account(
         )
 
     except DeviceNotFoundError as e:
+        record_event(principal, "account.create", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=404, detail=str(e))
     except NotImplementedError as e:
+        record_event(principal, "account.create", resource=resource,
+                     success=False, error_message=f"NotImplemented: {e}")
         raise HTTPException(
             status_code=501, detail="This registry does not support adding accounts"
         )
     except PermissionDeniedError as e:
+        record_event(principal, "account.create", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=403, detail=str(e))
     except BackendError as e:
+        record_event(principal, "account.create", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
+        record_event(principal, "account.create", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.delete("/devices/{device_id}/accounts/{account_id}", status_code=204)
 async def delete_device_account(
+    request: Request,
     device_id: str,
     account_id: str,
     registry: DeviceRegistry = Depends(get_registry),
@@ -417,23 +497,42 @@ async def delete_device_account(
 
     Note: This endpoint may not be supported by all backends.
     """
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+
+    principal = await get_current_principal(request)
+    resource = f"device:{device_id}/account:{account_id}"
+
     try:
         registry.remove_account(device_id, account_id)
+        record_event(principal, "account.delete", resource=resource)
         return None
 
     except DeviceNotFoundError as e:
+        record_event(principal, "account.delete", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=404, detail=str(e))
     except AccountNotFoundError as e:
+        record_event(principal, "account.delete", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=404, detail=str(e))
     except NotImplementedError as e:
+        record_event(principal, "account.delete", resource=resource,
+                     success=False, error_message=f"NotImplemented: {e}")
         raise HTTPException(
             status_code=501, detail="This registry does not support removing accounts"
         )
     except PermissionDeniedError as e:
+        record_event(principal, "account.delete", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=403, detail=str(e))
     except BackendError as e:
+        record_event(principal, "account.delete", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
+        record_event(principal, "account.delete", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 

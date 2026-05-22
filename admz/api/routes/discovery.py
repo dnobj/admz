@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from admz.api.context import AppContext, get_context
@@ -37,8 +37,14 @@ class RegisterDiscoveredRequest(BaseModel):
 
 @router.post("/discovery/scan")
 async def scan_network(
-    req: DiscoverRequest, ctx: AppContext = Depends(get_context)
+    request: Request,
+    req: DiscoverRequest,
+    ctx: AppContext = Depends(get_context),
 ):
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+
+    principal = await get_current_principal(request)
     devices = await run_network_discovery(
         timeout=req.timeout,
         axis_only=req.axis_only,
@@ -52,6 +58,9 @@ async def scan_network(
         enable_snmp=req.enable_snmp,
         snmp_community=req.snmp_community,
     )
+    record_event(principal, "discovery.scan",
+                 details={"subnet": req.subnet, "axis_only": req.axis_only,
+                          "count": len(devices)})
     return {
         "count": len(devices),
         "devices": [d.to_registry_dict() for d in devices],
@@ -60,8 +69,15 @@ async def scan_network(
 
 @router.post("/discovery/register")
 async def register_discovered(
-    req: RegisterDiscoveredRequest, ctx: AppContext = Depends(get_context)
+    request: Request,
+    req: RegisterDiscoveredRequest,
+    ctx: AppContext = Depends(get_context),
 ):
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+
+    principal = await get_current_principal(request)
+    resource = f"device:{req.device_id}"
     device_info = {
         "host": req.ip_address,
         "ip_address": req.ip_address,
@@ -75,7 +91,11 @@ async def register_discovered(
     try:
         ctx.registry.add_device(req.device_id, device_info)
     except Exception as e:
+        record_event(principal, "discovery.register", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=400, detail=str(e))
+    record_event(principal, "discovery.register", resource=resource,
+                 details={"ip": req.ip_address, "model": req.model})
     return {
         "message": (
             f"Device '{req.device_id}' registered. Use the capture flow "

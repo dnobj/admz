@@ -43,10 +43,43 @@ from admz.factory import create_device_registry
 registry = None
 
 
+def _warn_anonymous_auth_backend() -> None:
+    """Emit a one-time WARNING when ``ADMZ_AUTH_BACKEND=none`` is active.
+
+    CR-3: under the default backend every request is mapped to the
+    synthetic ``anonymous`` principal. That's intentional for local
+    dev (and the localhost-only ``--host 127.0.0.1`` default bounds
+    exposure) but operators should know that every mutation will be
+    attributed to ``anonymous`` in the audit log, and that the most
+    destructive endpoints (mint API key, write protected fleet
+    settings, delete device, restore device, execute plan) refuse
+    the anonymous principal — they require switching the backend
+    to ``api-key``, ``windows``, or ``composite``.
+    """
+    import logging
+
+    backend = (os.getenv("ADMZ_AUTH_BACKEND", "none") or "none").strip().lower()
+    if backend != "none":
+        return
+    logger = logging.getLogger("admz.security")
+    logger.warning(
+        "ADMZ_AUTH_BACKEND=none — anonymous principal has read + "
+        "low-risk-write access to every endpoint. Five destructive "
+        "endpoints (mint API key, write protected fleet settings, "
+        "delete device, restore device, execute plan) refuse "
+        "anonymous and require an API key or Windows IWA. Every "
+        "mutation is audit-logged as 'anonymous'. To unblock the "
+        "destructive endpoints set ADMZ_AUTH_BACKEND=api-key (and "
+        "mint a key) or ADMZ_AUTH_BACKEND=composite (and stand up "
+        "Windows IWA behind a reverse proxy)."
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize context + start scheduler on startup; clean up on shutdown."""
     global registry
+    _warn_anonymous_auth_backend()
     registry = create_device_registry()
     ctx = init_context(registry)
     await ctx.scheduler.start()
