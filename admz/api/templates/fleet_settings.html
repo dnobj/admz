@@ -66,8 +66,29 @@ async function toggleFleetPassword(key, idx) {
     btn.textContent = 'Loading...';
     btn.disabled = true;
     try {
-        const resp = await fetch('/api/fleet/settings/' + encodeURIComponent(key));
-        if (!resp.ok) throw new Error('Failed to fetch');
+        const resp = await fetch('/api/fleet/settings/' + encodeURIComponent(key) + '/reveal');
+        if (!resp.ok) {
+            // Surface the actual API error so the user knows whether
+            // they need a group membership or to flip the fleet flag.
+            let detail = 'HTTP ' + resp.status;
+            try {
+                const errBody = await resp.json();
+                if (errBody && errBody.detail) detail = errBody.detail;
+            } catch (_) { /* fall through with the HTTP code */ }
+            if (resp.status === 403) {
+                el.innerHTML = '';
+                el.appendChild(document.createTextNode(detail + ' '));
+                const link = document.createElement('a');
+                link.href = '/confirm-settings';
+                link.textContent = 'Open settings';
+                el.appendChild(link);
+            } else {
+                el.textContent = 'Error: ' + detail;
+            }
+            btn.textContent = 'Retry';
+            btn.disabled = false;
+            return;
+        }
         const data = await resp.json();
         cache[key] = data.value || '(empty)';
         el.textContent = cache[key];
