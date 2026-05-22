@@ -160,8 +160,49 @@ def require_reveal_permission(principal: Optional[Principal]) -> str:
     )
 
 
+def require_authenticated_principal(principal: Optional[Principal]) -> None:
+    """Raise 403 unless ``principal`` is a real, non-anonymous identity.
+
+    CR-3: used to gate the small set of endpoints that should refuse
+    anonymous callers even when ``ADMZ_AUTH_BACKEND=none`` is in effect:
+
+      * ``POST /api/api-keys`` — anonymous shouldn't mint long-lived
+        credentials.
+      * Writes to ``PROTECTED_SETTING_KEYS`` — confirm levels,
+        confirm-password hash, credential-access flags, scheduler /
+        health-monitor toggles, the Gemini API key.
+      * ``DELETE /api/devices/{id}``,
+        ``POST /api/snapshot/restore``,
+        ``POST /api/plans/{id}/execute`` — destructive / data-loss.
+
+    Local-dev workflow (the common case for ``ADMZ_AUTH_BACKEND=none``
+    with the localhost-only bind) keeps working for read + low-risk
+    mutation; only the few above require a real identity. The
+    operator can mint themselves an API key after switching the
+    backend to ``api-key`` or ``composite``.
+
+    Raises:
+        HTTPException(403): if ``principal`` is None or
+            ``principal.is_anonymous`` is True.
+    """
+    if principal is None or getattr(principal, "is_anonymous", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "This endpoint requires an authenticated principal. "
+                "The default ADMZ_AUTH_BACKEND=none maps every caller "
+                "to the anonymous principal, which can read freely + "
+                "mutate low-risk state but cannot perform destructive "
+                "or credential-affecting actions. To unblock, mint an "
+                "API key (ADMZ_AUTH_BACKEND=api-key) or stand up "
+                "Windows IWA (ADMZ_AUTH_BACKEND=windows / composite)."
+            ),
+        )
+
+
 __all__ = [
     "reveal_groups",
     "principal_can_reveal",
     "require_reveal_permission",
+    "require_authenticated_principal",
 ]

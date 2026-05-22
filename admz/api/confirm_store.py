@@ -45,33 +45,15 @@ _DEFAULT_CONFIRMATION_LEVELS: Dict[str, str] = {
 
 VALID_CONFIRMATION_LEVELS = {"url_and_password", "url_only", "llm_confirm", "none"}
 
-# Fleet-setting keys that are protected from MCP writes.
-PROTECTED_SETTING_KEYS = {
-    "confirm_level_dangerous",
-    "confirm_level_service-affecting",
-    "confirm_level_normal",
-    "confirm_level_read-only",
-    "confirm_password_hash",
-    "tool_get_credentials_enabled",
-    # Chatbot provider API key. Set only via /settings/chat admin page;
-    # MCP set_fleet_setting must never read or change it. See ADR-0025.
-    "gemini_api_key",
-    "gemini_default_model",
-    # Plaintext-credential access gates. The LLM tool gate is separate
-    # from the web-UI reveal gate so operators can keep the LLM strict
-    # while still using the Reveal button + REST endpoint themselves.
-    "web_reveal_credentials_enabled",
-    # Device health monitor: opt-in background poller. Protected
-    # because letting the LLM toggle a background loop that contacts
-    # devices would be a sneak path around the safety gates.
-    "health_monitor_enabled",
-    "health_check_interval_seconds",
-    "health_check_timeout_seconds",
-    # Daily per-principal token budget (Phase 5D). Letting MCP rewrite
-    # the budget through chat-driven tool calls would defeat the
-    # purpose. Set only via the web UI.
-    "chat_daily_token_budget",
-}
+# Fleet-setting keys that are protected from anonymous / MCP writes.
+# CR-3: relocated to admz/fleet_settings.py so the concept lives next
+# to the rest of fleet-settings policy. Kept as a re-export here for
+# back-compat with the many callers that still do
+# ``from admz.api.confirm_store import PROTECTED_SETTING_KEYS``.
+from admz.fleet_settings import (  # noqa: E402,F401
+    PROTECTED_SETTING_KEYS,
+    is_protected_setting,
+)
 
 
 class ConfirmStatus(str, Enum):
