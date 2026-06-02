@@ -29,6 +29,31 @@
     return;
   }
 
+  // Keyboard UX: Enter submits, Shift+Enter inserts a newline.
+  // Matches the convention every modern chat UI follows. Alt+Enter
+  // is treated as a newline too (some users have muscle memory for
+  // it). Plain Enter triggers requestSubmit() which fires the
+  // existing submit handler below, including its no-op return for
+  // empty messages.
+  const messageInput = document.getElementById("message");
+  if (messageInput) {
+    messageInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+        // Suppress the default newline insertion and submit instead.
+        e.preventDefault();
+        if (typeof form.requestSubmit === "function") {
+          form.requestSubmit();
+        } else {
+          // Older browsers — fall back to clicking the submit button,
+          // which triggers the form's submit event.
+          sendBtn.click();
+        }
+      }
+      // Shift+Enter / Alt+Enter fall through to the textarea's
+      // default behavior (insert a literal newline).
+    });
+  }
+
   form.addEventListener("submit", function (e) {
     e.preventDefault();
     const messageEl = document.getElementById("message");
