@@ -17,8 +17,10 @@ consumes them via ``fetch()`` + a ``ReadableStream`` reader.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
@@ -70,6 +72,75 @@ def _sessions():
     return _sessions_module.chat_sessions
 
 logger = logging.getLogger(__name__)
+
+
+def _chat_event_timeout_seconds() -> float:
+    """How long to wait between SSE events before surfacing a stall as
+    an error to the user. Belt-and-braces against the MCP-pool
+    cleanup bug (audit HIGH-12): when a pooled subprocess dies in a
+    way the self-heal can't fully recover from, the chat stream can
+    silently stop emitting events and the browser shows an infinite
+    spinner. With this timeout, the stall becomes a clear error the
+    user can act on (retry, reload, switch model).
+
+    Default: 120s. Override via ADMZ_CHAT_EVENT_TIMEOUT_SECONDS.
+    Set to 0 to disable (legacy behavior — chat hangs forever).
+    """
+    raw = os.getenv("ADMZ_CHAT_EVENT_TIMEOUT_SECONDS", "")
+    if not raw:
+        return 120.0
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "ADMZ_CHAT_EVENT_TIMEOUT_SECONDS=%r is not a number; "
+            "using 120s default", raw,
+        )
+        return 120.0
+    return value
+
+
+async def _with_per_event_timeout(aiter, timeout_seconds: float):
+    """Wrap an async iterator so each ``__anext__`` is bounded.
+
+    On timeout, yields a synthetic ``error`` ChatEvent and stops. The
+    underlying iterator is abandoned (its remaining work is dropped) —
+    this is the right behavior because by the time we time out the
+    SSE consumer has already given up waiting too.
+
+    When ``timeout_seconds <= 0`` the wrapper is bypassed entirely
+    (legacy behavior).
+    """
+    if timeout_seconds <= 0:
+        async for ev in aiter:
+            yield ev
+        return
+
+    iterator = aiter.__aiter__()
+    while True:
+        try:
+            ev = await asyncio.wait_for(
+                iterator.__anext__(),
+                timeout=timeout_seconds,
+            )
+        except StopAsyncIteration:
+            return
+        except asyncio.TimeoutError:
+            logger.warning(
+                "chat stream stalled for %.0fs without an event — "
+                "yielding error and aborting turn. Likely culprit: "
+                "MCP pooled subprocess died and self-heal couldn't "
+                "recover (audit HIGH-12).",
+                timeout_seconds,
+            )
+            yield event_error(
+                f"Chat stream stalled for {int(timeout_seconds)}s — the "
+                "device-tool subprocess may have crashed. Please retry "
+                "(the underlying snapshot/command may have completed "
+                "successfully on the device side)."
+            )
+            return
+        yield ev
 
 
 router = APIRouter()
@@ -347,20 +418,28 @@ async def _run_chat_turn(
     )
 
     text_parts: list = []
+    # Wrap the stream with a per-event timeout. If the MCP subprocess
+    # dies in a way self-heal can't recover from, the underlying
+    # iterator will stop emitting events; this surfaces it as an
+    # error event after `ADMZ_CHAT_EVENT_TIMEOUT_SECONDS` (default
+    # 120s) instead of hanging forever.
+    raw_stream = stream_turn(
+        user_message=message,
+        api_key=config.api_key,
+        model=chosen_model,
+        system_prompt=system_prompt,
+        previous_interaction_id=prev_id,
+        history=history,
+        # CR-4: pass the full Principal so its name, source, and
+        # groups can be forwarded to the MCP subprocess via env
+        # vars and surface in every audit-log row the subprocess
+        # writes. The pool keys on principal.name internally.
+        principal=principal,
+        use_tools=use_tools,
+    )
     try:
-        async for chat_event in stream_turn(
-            user_message=message,
-            api_key=config.api_key,
-            model=chosen_model,
-            system_prompt=system_prompt,
-            previous_interaction_id=prev_id,
-            history=history,
-            # CR-4: pass the full Principal so its name, source, and
-            # groups can be forwarded to the MCP subprocess via env
-            # vars and surface in every audit-log row the subprocess
-            # writes. The pool keys on principal.name internally.
-            principal=principal,
-            use_tools=use_tools,
+        async for chat_event in _with_per_event_timeout(
+            raw_stream, _chat_event_timeout_seconds(),
         ):
             if chat_event.type == ChatEventType.DONE:
                 summary.interaction_id = chat_event.payload.get("interaction_id")
