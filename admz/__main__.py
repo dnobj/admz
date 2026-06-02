@@ -5,9 +5,9 @@ ADMZ CLI entry point.
 Supports both FastAPI server and MCP server modes.
 
 Usage:
-    python -m admz api [--host 0.0.0.0] [--port 8000]  # Start FastAPI server
-    python -m admz mcp                                  # Start MCP server
-    python -m admz --help                               # Show help
+    python -m admz api [--host 127.0.0.1] [--port 4242]  # Start FastAPI server
+    python -m admz mcp                                    # Start MCP server
+    python -m admz --help                                 # Show help
 """
 
 import argparse
@@ -36,16 +36,19 @@ def main():
         help=(
             "Host to bind to (default: 127.0.0.1 — localhost only). "
             "Pass 0.0.0.0 explicitly to expose on all interfaces. "
-            "There is no authentication on the web/REST surface as of this "
-            "release; only bind to non-localhost behind a reverse proxy "
-            "with its own auth, or on a trusted private network."
+            "Phase 4 added auth (see ADMZ_AUTH_BACKEND): under the "
+            "default 'none' backend, every request is anonymous and "
+            "five destructive endpoints refuse it; under 'windows' or "
+            "'composite' the startup bind-safety check refuses to bind "
+            "to anything other than localhost without a trusted reverse "
+            "proxy in front. Override via ADMZ_AUTH_INSECURE_BIND_OK=true."
         ),
     )
     api_parser.add_argument(
         "--port",
         type=int,
-        default=8000,
-        help="Port to bind to (default: 8000)",
+        default=4242,
+        help="Port to bind to (default: 4242)",
     )
     api_parser.add_argument(
         "--reload",
@@ -359,6 +362,17 @@ def run_api_server(args):
     configure_logging()
 
     _check_bind_safety(args.host)
+
+    # Propagate the live bind address to the MCP subprocess so the
+    # capture/confirm URLs the LLM hands the user point at the actual
+    # running server. Without this, the MCP-side default of
+    # http://localhost:4242 is used — which is right for the common
+    # case but wrong if the operator binds to a non-default port.
+    # Only set when not already configured (operator-supplied
+    # ADMZ_BASE_URL — e.g. the public IIS URL — wins).
+    if not os.getenv("ADMZ_BASE_URL"):
+        host_for_url = "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host
+        os.environ["ADMZ_BASE_URL"] = f"http://{host_for_url}:{args.port}"
 
     try:
         import uvicorn

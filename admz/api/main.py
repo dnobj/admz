@@ -122,14 +122,13 @@ app = FastAPI(
 )
 
 # CORS — driven by the ADMZ_ALLOWED_ORIGINS env var (comma-separated list).
-# Defaults to localhost-only on both ports we typically use (4242 dev, 8000
-# legacy). Wildcard "*" is still supported but explicitly opt-in — never the
-# default. Setting allow_credentials=True with "*" is rejected by browsers
-# per the CORS spec anyway.
-_default_origins = (
-    "http://localhost:4242,http://127.0.0.1:4242,"
-    "http://localhost:8000,http://127.0.0.1:8000"
-)
+# Defaults to the documented localhost port (4242). The 8000 entries that
+# used to be here as a "legacy" fallback have been removed since the CLI
+# now defaults to 4242 too; operators on a non-default port should set
+# ADMZ_ALLOWED_ORIGINS to match. Wildcard "*" is still supported but
+# explicitly opt-in — never the default. Setting allow_credentials=True
+# with "*" is rejected by browsers per the CORS spec anyway.
+_default_origins = "http://localhost:4242,http://127.0.0.1:4242"
 _origins_raw = os.getenv("ADMZ_ALLOWED_ORIGINS", _default_origins)
 _origins = [o.strip() for o in _origins_raw.split(",") if o.strip()]
 _allow_credentials = "*" not in _origins  # browser rejects wildcard + creds

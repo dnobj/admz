@@ -111,7 +111,7 @@ def _warn_base_url_mismatch() -> None:
     backend = (os.getenv("ADMZ_AUTH_BACKEND", "none") or "none").lower()
     if backend not in ("windows", "composite"):
         return
-    base_url = os.getenv("ADMZ_BASE_URL", "http://localhost:8000")
+    base_url = os.getenv("ADMZ_BASE_URL", "http://localhost:4242")
     if "localhost" in base_url or "127.0.0.1" in base_url:
         logger.warning(
             "ADMZ_AUTH_BACKEND=%s with ADMZ_BASE_URL=%r — capture/confirm "
@@ -600,7 +600,7 @@ class ADMZMCPServer:
                         "credentials in their browser, OUTSIDE the chat context. "
                         "Credentials entered via this URL never appear in the LLM context. "
                         "Present the returned URL to the user as a clickable link. "
-                        "The ADMZ web server must be running (default: http://localhost:8000). "
+                        "The ADMZ web server must be running (default: http://localhost:4242). "
                         "Supports batch mode: pass device_ids to save the same credentials "
                         "to multiple devices with a single form submission."
                     ),
@@ -637,7 +637,7 @@ class ADMZMCPServer:
                             "base_url": {
                                 "type": "string",
                                 "description": "Base URL of the ADMZ web server",
-                                "default": "http://localhost:8000",
+                                "default": "http://localhost:4242",
                             },
                         },
                         "required": [],
@@ -1749,7 +1749,7 @@ class ADMZMCPServer:
         account_id = arguments.get("account_id", "default")
         account_type = arguments.get("account_type", "service")
         purpose = arguments.get("purpose", "")
-        base_url = arguments.get("base_url", "http://localhost:8000")
+        base_url = arguments.get("base_url", "http://localhost:4242")
 
         # Build the full list of target devices
         if device_ids:
@@ -2729,7 +2729,7 @@ class ADMZMCPServer:
 
         # No value provided for a password key → generate capture URL
         if value is None and "password" in key.lower():
-            base_url = os.getenv("ADMZ_BASE_URL", "http://localhost:8000")
+            base_url = os.getenv("ADMZ_BASE_URL", "http://localhost:4242")
             session = capture_store.create_fleet_session(
                 setting_key=key,
                 label="Fleet default password for device provisioning",
