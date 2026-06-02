@@ -54,6 +54,7 @@ What the system must do, per capability area. Each file has Functional Requireme
 - [Web API](requirements/web-api.md) — REST surface
 - [Web UI](requirements/web-ui.md)
 - [Web chatbot](requirements/web-chatbot.md) 🚧 — bundled Gemini-powered chat client (Phase 5)
+- [Organization hierarchy](requirements/hierarchy.md) 📋 — Org → Site → Group → Device (draft skeleton)
 
 ### Cross-cutting requirements
 
