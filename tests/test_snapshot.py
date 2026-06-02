@@ -414,6 +414,122 @@ class TestAutoPush:
 
 
 # ---------------------------------------------------------------------------
+# Test git subprocess hardening (Hotfix #38)
+# ---------------------------------------------------------------------------
+#
+# Background: subprocess.run on git calls without stdin=DEVNULL,
+# timeout, or CREATE_NO_WINDOW (Windows) can hang for minutes when
+# invoked from inside an MCP subprocess. The homelab snapshot hung
+# on `git status --porcelain` — a local read-only op that should
+# take ~100ms. GitRepo._run_git now defaults to a 30s local timeout
+# and explicit stdin=DEVNULL.
+
+
+class TestGitSubprocessHardening:
+    def test_local_default_timeout_env_var(self, monkeypatch):
+        from admz.snapshot.git_repo import _resolve_local_timeout
+        monkeypatch.delenv("ADMZ_GIT_LOCAL_TIMEOUT_SECONDS", raising=False)
+        assert _resolve_local_timeout() == 30.0
+        monkeypatch.setenv("ADMZ_GIT_LOCAL_TIMEOUT_SECONDS", "10")
+        assert _resolve_local_timeout() == 10.0
+        monkeypatch.setenv("ADMZ_GIT_LOCAL_TIMEOUT_SECONDS", "abc")
+        assert _resolve_local_timeout() == 30.0   # falls back
+
+    def test_network_default_timeout_env_var(self, monkeypatch):
+        from admz.snapshot.git_repo import _resolve_network_timeout
+        monkeypatch.delenv("ADMZ_GIT_NETWORK_TIMEOUT_SECONDS", raising=False)
+        assert _resolve_network_timeout() == 60.0
+        monkeypatch.setenv("ADMZ_GIT_NETWORK_TIMEOUT_SECONDS", "120")
+        assert _resolve_network_timeout() == 120.0
+
+    def test_normal_git_call_succeeds(self, tmp_repo, camera_device_info):
+        # Sanity: the new stdin/timeout/flags don't break normal calls.
+        tmp_repo.write_device_yaml("cam-01", camera_device_info)
+        sha = tmp_repo.commit_snapshot("cam-01")
+        assert sha is not None
+
+    def test_status_runs_with_devnull_stdin(self, tmp_repo):
+        # `has_changes` is what hung on the homelab. Verify it works
+        # with the hardened invocation (stdin=DEVNULL is implicit
+        # because _run_git always sets it now).
+        assert tmp_repo.has_changes() is False
+        tmp_repo.write_facet("cam-01", "image", {"a": "1"})
+        assert tmp_repo.has_changes() is True
+
+    def test_timeout_kwarg_propagates(self, tmp_repo, monkeypatch):
+        # _run_git's timeout kwarg should be passed through to
+        # subprocess.run. Inject a probe that captures the call.
+        captured = {}
+        real_run = subprocess.run
+
+        def fake_run(*args, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+            captured["stdin"] = kwargs.get("stdin")
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        tmp_repo._run_git("status", "--porcelain", check=False, timeout=5.0)
+        assert captured["timeout"] == 5.0
+        assert captured["stdin"] == subprocess.DEVNULL
+
+    def test_push_uses_network_timeout(
+        self, tmp_repo, bare_origin, camera_device_info, monkeypatch
+    ):
+        # auto-push should pass the network timeout (default 60s,
+        # or whatever ADMZ_GIT_NETWORK_TIMEOUT_SECONDS overrides to).
+        monkeypatch.delenv("ADMZ_AUTO_PUSH", raising=False)
+        monkeypatch.setenv("ADMZ_GIT_NETWORK_TIMEOUT_SECONDS", "45")
+        _set_origin(tmp_repo, str(bare_origin))
+
+        timeouts_seen: list = []
+        real_run = subprocess.run
+
+        def fake_run(*args, **kwargs):
+            if args and isinstance(args[0], list) and len(args[0]) > 1 and args[0][1] == "push":
+                timeouts_seen.append(kwargs.get("timeout"))
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        tmp_repo.write_device_yaml("cam-01", camera_device_info)
+        tmp_repo.commit_snapshot("cam-01")
+        # At least one push happened; it should have used the 45s
+        # network timeout, not the 30s local default.
+        assert any(t == 45.0 for t in timeouts_seen), (
+            f"expected push with timeout=45.0, got {timeouts_seen}"
+        )
+
+    def test_push_timeout_is_non_fatal(
+        self, tmp_repo, bare_origin, camera_device_info, monkeypatch, caplog
+    ):
+        # If push times out, the local commit must still succeed +
+        # return its SHA. The WARNING is logged.
+        _set_origin(tmp_repo, str(bare_origin))
+
+        real_run = subprocess.run
+
+        def fake_run(*args, **kwargs):
+            if args and isinstance(args[0], list) and len(args[0]) > 1 and args[0][1] == "push":
+                # Simulate a push that hangs past the timeout.
+                raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout", 0))
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.delenv("ADMZ_AUTO_PUSH", raising=False)
+        tmp_repo.write_device_yaml("cam-01", camera_device_info)
+        with caplog.at_level(logging.WARNING):
+            sha = tmp_repo.commit_snapshot("cam-01")
+        assert sha is not None   # local commit preserved
+        assert any(
+            "auto-push timed out" in r.message for r in caplog.records
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test RestoreBuilder
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
 # Test RestoreBuilder
 # ---------------------------------------------------------------------------
 
