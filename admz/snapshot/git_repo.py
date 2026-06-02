@@ -1,4 +1,5 @@
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -6,6 +7,16 @@ from typing import Dict, List, Optional
 import yaml
 
 logger = logging.getLogger(__name__)
+
+
+def _auto_push_enabled() -> bool:
+    """Read ADMZ_AUTO_PUSH env var. Default ON when an origin remote
+    is configured (the GitRepo asks separately). Operators can flip
+    this OFF via ``ADMZ_AUTO_PUSH=false`` for air-gapped deployments
+    or to defer pushes.
+    """
+    raw = (os.getenv("ADMZ_AUTO_PUSH", "") or "").strip().lower()
+    return raw not in ("false", "0", "no", "off")
 
 
 class GitRepo:
@@ -62,7 +73,9 @@ class GitRepo:
         msg = message or f"Snapshot {device_id}"
         self._run_git("commit", "-m", msg)
         result = self._run_git("rev-parse", "HEAD")
-        return result.stdout.strip()
+        sha = result.stdout.strip()
+        self._maybe_push()
+        return sha
 
     def commit_fleet_snapshot(
         self,
@@ -75,7 +88,52 @@ class GitRepo:
         msg = message or f"Fleet snapshot: {', '.join(device_ids)}"
         self._run_git("commit", "-m", msg)
         result = self._run_git("rev-parse", "HEAD")
-        return result.stdout.strip()
+        sha = result.stdout.strip()
+        self._maybe_push()
+        return sha
+
+    def _maybe_push(self) -> None:
+        """Best-effort push to ``origin`` after a successful commit.
+
+        Enabled by default whenever an ``origin`` remote is configured
+        (operator set it via ``git remote add origin <url>`` manually,
+        or — once Slice 1 of the hierarchy lands — via the Org's
+        ``repo_remote_url``). Set ``ADMZ_AUTO_PUSH=false`` to disable
+        for air-gapped deployments or to defer pushes.
+
+        Failures are logged at WARNING and swallowed — the local commit
+        is the source of truth, the remote is a mirror that catches up
+        on the next successful push. A transient network blip, expired
+        token, or non-fast-forward must not break the snapshot path.
+        """
+        if not _auto_push_enabled():
+            return
+        # Origin configured?
+        remote_check = self._run_git("remote", "get-url", "origin", check=False)
+        if remote_check.returncode != 0:
+            return  # no origin → nothing to push to
+        # Resolve current branch. Detached HEAD shouldn't happen in
+        # normal ADMZ operation but degrade gracefully if it does.
+        branch_check = self._run_git(
+            "symbolic-ref", "--short", "HEAD", check=False,
+        )
+        if branch_check.returncode != 0:
+            logger.warning(
+                "auto-push skipped: HEAD is detached or current branch "
+                "could not be resolved"
+            )
+            return
+        branch = branch_check.stdout.strip()
+        push_result = self._run_git(
+            "push", "origin", branch, check=False,
+        )
+        if push_result.returncode != 0:
+            logger.warning(
+                "auto-push to origin/%s failed (local commit preserved): %s",
+                branch, (push_result.stderr or "").strip(),
+            )
+        else:
+            logger.info("auto-pushed snapshot to origin/%s", branch)
 
     def write_device_yaml(self, device_id: str, device_info: Dict) -> Path:
         device_dir = self.device_path(device_id)

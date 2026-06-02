@@ -1,5 +1,6 @@
 """Tests for the snapshot/restore/drift system."""
 
+import logging
 import os
 import shutil
 import subprocess
@@ -304,6 +305,112 @@ class TestGitRepo:
         history = tmp_repo.log()
         assert "cam-01" in history[0]["message"]
         assert "cam-02" in history[0]["message"]
+
+
+# ---------------------------------------------------------------------------
+# Test auto-push (snapshot → origin)
+# ---------------------------------------------------------------------------
+#
+# Auto-push hooks the commit paths so a configured `origin` remote
+# stays in sync without manual intervention. Tests use a second
+# tmp git repo (bare) as the origin so we never hit the network.
+
+
+@pytest.fixture
+def bare_origin(tmp_path):
+    """A bare git repo we can push to, used as `origin` for tmp_repo."""
+    bare = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(bare)], check=True,
+        capture_output=True,
+    )
+    return bare
+
+
+def _set_origin(repo: GitRepo, url: str) -> None:
+    subprocess.run(
+        ["git", "remote", "add", "origin", url],
+        cwd=repo.repo_path, check=True, capture_output=True,
+    )
+
+
+class TestAutoPush:
+    def test_no_origin_skips_push_silently(
+        self, tmp_repo, camera_device_info, monkeypatch
+    ):
+        # ADMZ_AUTO_PUSH defaults to ON; without origin configured
+        # the push is silently skipped. The snapshot still commits.
+        monkeypatch.delenv("ADMZ_AUTO_PUSH", raising=False)
+        tmp_repo.write_device_yaml("cam-01", camera_device_info)
+        sha = tmp_repo.commit_snapshot("cam-01")
+        assert sha is not None  # commit succeeded
+
+    def test_origin_set_pushes_after_commit(
+        self, tmp_repo, bare_origin, camera_device_info, monkeypatch
+    ):
+        monkeypatch.delenv("ADMZ_AUTO_PUSH", raising=False)
+        _set_origin(tmp_repo, str(bare_origin))
+        tmp_repo.write_device_yaml("cam-01", camera_device_info)
+        sha = tmp_repo.commit_snapshot("cam-01")
+        assert sha is not None
+
+        # The bare origin should now have HEAD pointing at our SHA.
+        # `git rev-parse HEAD` is cheaper than `ls-remote`.
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=bare_origin, capture_output=True, text=True, check=True,
+        )
+        assert result.stdout.strip() == sha
+
+    def test_env_var_false_disables_push(
+        self, tmp_repo, bare_origin, camera_device_info, monkeypatch
+    ):
+        monkeypatch.setenv("ADMZ_AUTO_PUSH", "false")
+        _set_origin(tmp_repo, str(bare_origin))
+        tmp_repo.write_device_yaml("cam-01", camera_device_info)
+        sha = tmp_repo.commit_snapshot("cam-01")
+        assert sha is not None
+
+        # The bare origin should NOT have the commit yet.
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=bare_origin, capture_output=True, text=True, check=False,
+        )
+        # Bare repo with no commits has no HEAD ref.
+        assert result.returncode != 0 or result.stdout.strip() != sha
+
+    def test_push_failure_is_non_fatal(
+        self, tmp_repo, tmp_path, camera_device_info, monkeypatch, caplog
+    ):
+        # Point origin at a path that doesn't exist; push will fail
+        # but the local commit must still succeed + return its SHA.
+        monkeypatch.delenv("ADMZ_AUTO_PUSH", raising=False)
+        _set_origin(tmp_repo, str(tmp_path / "does-not-exist.git"))
+        tmp_repo.write_device_yaml("cam-01", camera_device_info)
+        with caplog.at_level(logging.WARNING):
+            sha = tmp_repo.commit_snapshot("cam-01")
+        assert sha is not None  # local commit preserved
+        # And a WARNING was logged
+        assert any(
+            "auto-push" in rec.message and "failed" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_fleet_commit_also_pushes(
+        self, tmp_repo, bare_origin, monkeypatch
+    ):
+        monkeypatch.delenv("ADMZ_AUTO_PUSH", raising=False)
+        _set_origin(tmp_repo, str(bare_origin))
+        tmp_repo.write_facet("cam-01", "image", {"a": "1"})
+        tmp_repo.write_facet("cam-02", "image", {"b": "2"})
+        sha = tmp_repo.commit_fleet_snapshot(["cam-01", "cam-02"])
+        assert sha is not None
+        # Verify it landed on origin
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=bare_origin, capture_output=True, text=True, check=True,
+        )
+        assert result.stdout.strip() == sha
 
 
 # ---------------------------------------------------------------------------
