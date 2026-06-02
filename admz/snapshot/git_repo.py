@@ -1,12 +1,55 @@
 import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import yaml
 
 logger = logging.getLogger(__name__)
+
+
+# Default timeouts in seconds for git subprocess invocations. Local
+# read-only ops (status, log, show, diff) and small writes (add,
+# commit) should complete in well under a second on a healthy repo;
+# 30s is a generous cap that flags real problems (filesystem locks,
+# antivirus interference, FSMonitor misbehavior) without false
+# positives. Network ops (push/fetch) get a longer budget for slow
+# remotes and slow auth handshakes.
+_DEFAULT_LOCAL_TIMEOUT = 30.0
+_DEFAULT_NETWORK_TIMEOUT = 60.0
+
+
+def _resolve_local_timeout() -> float:
+    raw = (os.getenv("ADMZ_GIT_LOCAL_TIMEOUT_SECONDS", "") or "").strip()
+    if not raw:
+        return _DEFAULT_LOCAL_TIMEOUT
+    try:
+        v = float(raw)
+        return v if v > 0 else _DEFAULT_LOCAL_TIMEOUT
+    except ValueError:
+        return _DEFAULT_LOCAL_TIMEOUT
+
+
+def _resolve_network_timeout() -> float:
+    raw = (os.getenv("ADMZ_GIT_NETWORK_TIMEOUT_SECONDS", "") or "").strip()
+    if not raw:
+        return _DEFAULT_NETWORK_TIMEOUT
+    try:
+        v = float(raw)
+        return v if v > 0 else _DEFAULT_NETWORK_TIMEOUT
+    except ValueError:
+        return _DEFAULT_NETWORK_TIMEOUT
+
+
+# On Windows, CREATE_NO_WINDOW prevents the spawned process from
+# attaching to / opening a console window. Without it, git.exe
+# launched from a python.exe child of a console-less FastAPI server
+# can hang trying to attach a console for credential prompts or
+# other interactive output. The flag is Windows-only; on POSIX it's
+# unused (None passed to creationflags).
+_CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 
 def _auto_push_enabled() -> bool:
@@ -34,14 +77,56 @@ class GitRepo:
             if self.remote_url:
                 self._run_git("remote", "add", "origin", self.remote_url)
 
-    def _run_git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-        result = subprocess.run(
-            ["git"] + list(args),
-            cwd=self.repo_path,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+    def _run_git(
+        self,
+        *args: str,
+        check: bool = True,
+        timeout: Optional[float] = None,
+    ) -> subprocess.CompletedProcess:
+        """Invoke ``git`` as a subprocess with hardening for the
+        chat-tool / FastAPI background-process context.
+
+        * ``stdin=DEVNULL`` — git inherits no stdin, so it can't
+          accidentally block trying to read from one. This was the
+          root cause of the homelab snapshot hang: when the MCP
+          subprocess invoked ``git status --porcelain`` with default
+          stdin handling on Windows, it occasionally blocked for
+          minutes despite the operation being read-only and local.
+        * ``creationflags=CREATE_NO_WINDOW`` on Windows — keeps git
+          from trying to attach to / open a console window for any
+          would-be interactive prompts (credential helper popups,
+          etc.). Equivalent to running git "headless."
+        * ``timeout`` — hard cap on subprocess wall time. Default
+          30s for local ops, override via ``timeout=`` kwarg (push
+          uses 60s by default — see _maybe_push). Operators can
+          tune the global defaults via env vars
+          ``ADMZ_GIT_LOCAL_TIMEOUT_SECONDS`` /
+          ``ADMZ_GIT_NETWORK_TIMEOUT_SECONDS``.
+
+        On timeout we raise ``TimeoutExpired``; callers that want
+        best-effort behavior (auto-push) catch + log + continue.
+        """
+        if timeout is None:
+            timeout = _resolve_local_timeout()
+        try:
+            result = subprocess.run(
+                ["git"] + list(args),
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                check=False,
+                stdin=subprocess.DEVNULL,
+                timeout=timeout,
+                creationflags=_CREATE_NO_WINDOW,
+            )
+        except subprocess.TimeoutExpired:
+            logger.error(
+                "git %s timed out after %.0fs (cwd=%s) — possible "
+                "filesystem lock, FSMonitor misbehavior, or hung "
+                "credential helper",
+                " ".join(args), timeout, self.repo_path,
+            )
+            raise
         if check and result.returncode != 0:
             logger.error("git %s failed: %s", " ".join(args), result.stderr)
             raise subprocess.CalledProcessError(
@@ -108,25 +193,41 @@ class GitRepo:
         """
         if not _auto_push_enabled():
             return
-        # Origin configured?
-        remote_check = self._run_git("remote", "get-url", "origin", check=False)
-        if remote_check.returncode != 0:
-            return  # no origin → nothing to push to
-        # Resolve current branch. Detached HEAD shouldn't happen in
-        # normal ADMZ operation but degrade gracefully if it does.
-        branch_check = self._run_git(
-            "symbolic-ref", "--short", "HEAD", check=False,
-        )
-        if branch_check.returncode != 0:
+        try:
+            # Origin configured?
+            remote_check = self._run_git(
+                "remote", "get-url", "origin", check=False,
+            )
+            if remote_check.returncode != 0:
+                return  # no origin → nothing to push to
+            # Resolve current branch. Detached HEAD shouldn't happen in
+            # normal ADMZ operation but degrade gracefully if it does.
+            branch_check = self._run_git(
+                "symbolic-ref", "--short", "HEAD", check=False,
+            )
+            if branch_check.returncode != 0:
+                logger.warning(
+                    "auto-push skipped: HEAD is detached or current branch "
+                    "could not be resolved"
+                )
+                return
+            branch = branch_check.stdout.strip()
+            # Push gets a longer timeout — slow remotes, slow auth
+            # handshakes (especially when credential helper has to
+            # talk to Windows Credential Manager) can legitimately
+            # take many seconds.
+            push_result = self._run_git(
+                "push", "origin", branch,
+                check=False, timeout=_resolve_network_timeout(),
+            )
+        except subprocess.TimeoutExpired:
             logger.warning(
-                "auto-push skipped: HEAD is detached or current branch "
-                "could not be resolved"
+                "auto-push timed out (local commit preserved). The "
+                "remote may catch up on the next snapshot; if pushes "
+                "keep timing out, check your credential helper or "
+                "consider setting ADMZ_AUTO_PUSH=false."
             )
             return
-        branch = branch_check.stdout.strip()
-        push_result = self._run_git(
-            "push", "origin", branch, check=False,
-        )
         if push_result.returncode != 0:
             logger.warning(
                 "auto-push to origin/%s failed (local commit preserved): %s",
