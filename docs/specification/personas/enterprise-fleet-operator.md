@@ -34,7 +34,8 @@
 - [Device onboarding](../user-stories/device-onboarding.md) — discovery + bulk provision.
 - [Credential management](../user-stories/credential-management.md) — Vault-backed storage, rotation.
 - [Snapshot and restore](../user-stories/snapshot-and-restore.md) — nightly snapshot at fleet scale.
-- [Drift and monitoring](../user-stories/drift-and-monitoring.md) — scheduled drift checks.
+- [Drift and monitoring](../user-stories/drift-and-monitoring.md) — scheduled + just-in-time configuration audits.
+- [Scheduled operations](../user-stories/scheduled-operations.md) — recurring snapshots + configuration audits on one job scheduler.
 - [Firmware operations](../user-stories/firmware-operations.md) — fleet-wide firmware upgrade with LTS-aware path.
 - [Network discovery](../user-stories/network-discovery.md) — find new devices on production subnets.
 
@@ -46,7 +47,7 @@
 - **Audit trail.** Git history of the config repo is the canonical record of *what* changed. An audit log of credential access and operation execution is a known gap that must be addressed.
 - **Scaling.** Plan engine parallelizes across devices. Discovery handles subnet-scale. Snapshot of 1000 devices completes in minutes, not hours.
 - **CI hooks.** The config repo is a real git repo with branches, PRs, schemas, and CI on every PR.
-- **Configuration drift detection.** Scheduled drift checks across the fleet with summary reports.
+- **Configuration audit at scale.** Scheduled, unattended configuration audits (drift checks) across the fleet — scopeable by tag or by Org/Site/Group — with summary reports and change-only alerting, run on the unified job scheduler with no LLM in the loop. Plus just-in-time audits on demand for incident response.
 
 ## What ADMZ doesn't owe this persona (current limits — see known gaps in capability requirements)
 

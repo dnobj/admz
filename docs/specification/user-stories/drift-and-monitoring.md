@@ -2,6 +2,25 @@
 
 Detecting and reconciling unauthorized changes to device configurations — somebody logged into a camera's own web UI and changed something, a firmware update changed defaults silently, an integration partner pushed a config without going through ADMZ.
 
+## Terminology: "configuration audit" vs "audit log"
+
+A **configuration audit** is the operator-facing name for *comparing a
+device's current configuration against its known-good baseline and
+reporting what changed* — the user-facing framing of **drift
+detection**. It runs in two modes:
+
+- **Just-in-time audit** — operator- or LLM-initiated, on demand
+  (US-DM-001, US-DM-002, US-DM-007). Goes through the chatbot / MCP /
+  REST surface.
+- **Scheduled audit** — recurring, unattended, no LLM (US-DM-003). Runs
+  on ADMZ's [scheduled-operations](scheduled-operations.md) framework.
+
+Do **not** confuse this with the **audit log** (`admz/audit.py`), which
+records *who-did-what to ADMZ* (credential reveals, dangerous-op
+confirmations, API-key events). The configuration audit is about *device
+config*; the audit log is about *operator actions*. The two intersect
+only in US-DM-006 (attribution).
+
 ## US-DM-001 — Single-device drift check
 
 **As an** operator suspicious that `camera-lobby-01` isn't behaving like it used to, **I want to** check what's different from the last committed snapshot.
@@ -27,18 +46,22 @@ Detecting and reconciling unauthorized changes to device configurations — some
 
 **Related requirements:** [drift-detection](../requirements/drift-detection.md), [performance](../requirements/performance.md).
 
-## US-DM-003 — Scheduled drift sweep
+## US-DM-003 — Scheduled configuration audit
 
-**As an** operator who wants visibility without remembering to check, **I want** ADMZ to run a drift sweep automatically every hour.
+**As an** operator who wants visibility without remembering to check, **I want** ADMZ to audit configuration automatically every hour and tell me what changed.
 
-**Acceptance criteria:** 📋 (planned — see Known limitations below).
+**Acceptance criteria:** 📋 (planned — runs on the unified scheduler).
 
-The current snapshot scheduler runs snapshots on a recurring interval. A drift scheduler — recurring `check_drift` with results written somewhere queryable — is a natural follow-on. For v1, operators script this externally via `python -m admz` or REST calls.
+This is a **scheduled audit**: recurring, unattended, no LLM. Rather than a bespoke "drift scheduler," it rides the general [scheduled-operations](scheduled-operations.md) framework as the `drift_audit` job type (US-SCHED-007).
 
 When implemented:
-1. `create_drift_schedule(schedule_id, interval, tag_filter)` persists alongside snapshot schedules.
-2. Each run writes results to a queryable table (or extends the audit log).
-3. The operator can configure alerting per their stack (Slack webhook, email, syslog).
+1. A job with `job_type="drift_audit"`, an interval, and a `scope` runs `check_fleet_drift(scope)` on its cadence — directly, with no Gemini call or MCP subprocess (US-SCHED-003).
+2. Each run persists results (which devices drifted, which fields) to a queryable store; a clean run is recorded too, so "nothing drifted" is a positive signal rather than silence.
+3. Reuses the existing `drift_alerts` transition logic (`appeared` / `changed` / `cleared`) so the schedule surfaces *changes*, not the same standing drift every hour.
+4. `scope` accepts `org_id` / `site_id` / `group_id` (hierarchy-aware) alongside the existing `tag_filter` / `device_ids` (US-SCHED-006).
+5. Alerting hooks (webhook / email / syslog) are a follow-on layer on the persisted transitions.
+
+**Related requirements:** [scheduling](../requirements/scheduling.md), [drift-detection](../requirements/drift-detection.md).
 
 ## US-DM-004 — Reconcile detected drift
 
@@ -73,10 +96,23 @@ Once the chatbot exists:
 
 **Related requirements:** [security](../requirements/security.md) FR-AUTH-011 + 012.
 
+## US-DM-007 — Just-in-time configuration audit
+
+**As an** Experience Center operator about to start a customer demo, **I want to** ask the chatbot "audit the lobby cameras — is anything different from the last known-good?" and get an immediate clean pass/fail before the visitor walks in.
+
+**Acceptance criteria:**
+1. A natural-language audit request resolves to `check_drift` on the chosen scope — one device, a tag, or (hierarchy-aware) a Group / Site — through the MCP / chatbot surface.
+2. The result distinguishes three outcomes clearly: **clean** (no drift), **drifted** (with the per-field diff), and **no baseline** (device never snapshotted — so the honest answer is "I can't audit this yet," not "clean").
+3. The audit is pure-read — it never modifies the device or the repo (same guarantee as US-DM-001).
+4. When drift is found, the operator can pivot in the same conversation to reconcile it (US-DM-004) — accept-as-baseline or revert — without leaving chat.
+5. This is the **just-in-time** counterpart to US-DM-003's scheduled audit: same `DriftDetector` engine, operator-initiated and LLM-mediated rather than timer-driven.
+
+**Related requirements:** [drift-detection](../requirements/drift-detection.md), [web-chatbot](../requirements/web-chatbot.md).
+
 ## Known limitations
 
-- 📋 **No scheduled drift sweeps.** Snapshot schedules exist; drift schedules don't yet. Scripting drift checks externally works for now.
-- 📋 **No drift-history table.** Each `check_drift` call is independent; results aren't recorded persistently. A future "drift events" table would enable trend analysis.
+- 📋 **No scheduled configuration audits.** The scheduler is snapshot-only today (`_execute_schedule` hardcodes `snapshot_fleet`). Scheduled audits depend on generalizing it to a `drift_audit` job type — see [scheduled-operations](scheduled-operations.md) US-SCHED-007. Scripting drift checks externally (cron + REST) works in the meantime.
+- 📋 **No drift-history table.** A standalone `check_drift` call is independent and not persisted. The `drift_alerts` store *does* persist per-device drift signatures + transitions, but there's no general "drift events over time" table for trend analysis ("device X drifted 3× this week"), and no REST/MCP endpoint surfaces the alert history yet.
 - ⚠️ **Drift detection requires the device to have been snapshotted at least once.** A device that was never snapshotted has no baseline to compare against; the report is empty (not "everything's drifted").
 - ⚠️ **Drift is whole-facet, not field-level granularity.** If a facet has any committed state, every field is compared. There's no way to mark "ignore this field on this device" today.
 - ⚠️ **Live-state-read uses the same VAPIX surface as device control.** If a device is offline or its API is unreachable, drift detection fails the same way any read fails — degrades gracefully but doesn't surface "device unreachable" as a distinct state from "no drift."

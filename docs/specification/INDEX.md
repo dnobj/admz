@@ -30,7 +30,8 @@ Workflows the system must support. Grouped by area.
 - [Chatbot-driven workflows](user-stories/chatbot-driven-workflows.md) 📋 — what the bundled chat client will deliver
 - [Network discovery](user-stories/network-discovery.md) — finding devices on the local network
 - [Demo workflows](user-stories/demo-workflows.md) — Experience Center-specific demo/tag/restore patterns
-- [Drift and monitoring](user-stories/drift-and-monitoring.md) — detecting and reconciling unauthorized changes
+- [Drift and monitoring](user-stories/drift-and-monitoring.md) — configuration audits (just-in-time + scheduled), detecting and reconciling unauthorized changes
+- [Scheduled operations](user-stories/scheduled-operations.md) 📋 — recurring unattended jobs (snapshots, configuration audits) on one scheduler
 - [Firmware operations](user-stories/firmware-operations.md) — fetch, plan upgrades, apply
 
 ## Requirements
