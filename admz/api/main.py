@@ -43,10 +43,43 @@ from admz.factory import create_device_registry
 registry = None
 
 
+def _warn_anonymous_auth_backend() -> None:
+    """Emit a one-time WARNING when ``ADMZ_AUTH_BACKEND=none`` is active.
+
+    CR-3: under the default backend every request is mapped to the
+    synthetic ``anonymous`` principal. That's intentional for local
+    dev (and the localhost-only ``--host 127.0.0.1`` default bounds
+    exposure) but operators should know that every mutation will be
+    attributed to ``anonymous`` in the audit log, and that the most
+    destructive endpoints (mint API key, write protected fleet
+    settings, delete device, restore device, execute plan) refuse
+    the anonymous principal — they require switching the backend
+    to ``api-key``, ``windows``, or ``composite``.
+    """
+    import logging
+
+    backend = (os.getenv("ADMZ_AUTH_BACKEND", "none") or "none").strip().lower()
+    if backend != "none":
+        return
+    logger = logging.getLogger("admz.security")
+    logger.warning(
+        "ADMZ_AUTH_BACKEND=none — anonymous principal has read + "
+        "low-risk-write access to every endpoint. Five destructive "
+        "endpoints (mint API key, write protected fleet settings, "
+        "delete device, restore device, execute plan) refuse "
+        "anonymous and require an API key or Windows IWA. Every "
+        "mutation is audit-logged as 'anonymous'. To unblock the "
+        "destructive endpoints set ADMZ_AUTH_BACKEND=api-key (and "
+        "mint a key) or ADMZ_AUTH_BACKEND=composite (and stand up "
+        "Windows IWA behind a reverse proxy)."
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize context + start scheduler on startup; clean up on shutdown."""
     global registry
+    _warn_anonymous_auth_backend()
     registry = create_device_registry()
     ctx = init_context(registry)
     await ctx.scheduler.start()
@@ -89,14 +122,13 @@ app = FastAPI(
 )
 
 # CORS — driven by the ADMZ_ALLOWED_ORIGINS env var (comma-separated list).
-# Defaults to localhost-only on both ports we typically use (4242 dev, 8000
-# legacy). Wildcard "*" is still supported but explicitly opt-in — never the
-# default. Setting allow_credentials=True with "*" is rejected by browsers
-# per the CORS spec anyway.
-_default_origins = (
-    "http://localhost:4242,http://127.0.0.1:4242,"
-    "http://localhost:8000,http://127.0.0.1:8000"
-)
+# Defaults to the documented localhost port (4242). The 8000 entries that
+# used to be here as a "legacy" fallback have been removed since the CLI
+# now defaults to 4242 too; operators on a non-default port should set
+# ADMZ_ALLOWED_ORIGINS to match. Wildcard "*" is still supported but
+# explicitly opt-in — never the default. Setting allow_credentials=True
+# with "*" is rejected by browsers per the CORS spec anyway.
+_default_origins = "http://localhost:4242,http://127.0.0.1:4242"
 _origins_raw = os.getenv("ADMZ_ALLOWED_ORIGINS", _default_origins)
 _origins = [o.strip() for o in _origins_raw.split(",") if o.strip()]
 _allow_credentials = "*" not in _origins  # browser rejects wildcard + creds

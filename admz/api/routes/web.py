@@ -512,7 +512,21 @@ async def confirm_settings_save(
     new_password: Optional[str] = Form(None),
     confirm_new_password: Optional[str] = Form(None),
 ):
-    """Save confirmation settings."""
+    """Save confirmation settings.
+
+    CR-3: every branch of this handler writes to a key in
+    ``PROTECTED_SETTING_KEYS`` (confirmation levels, the confirm-password
+    hash, the credential-reveal flags). Anonymous callers must not be
+    able to relax these gates from the network, so the whole handler
+    requires an authenticated principal. Every write is audited.
+    """
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+
     if action == "levels":
         mapping = {
             "dangerous": level_dangerous,
@@ -520,11 +534,18 @@ async def confirm_settings_save(
             "normal": level_normal,
             "read-only": level_read_only,
         }
+        applied = {}
         for risk, level in mapping.items():
             key = f"confirm_level_{risk}"
             if level and level in VALID_CONFIRMATION_LEVELS:
                 fleet_settings.set(key, level)
+                applied[key] = level
 
+        record_event(
+            principal, "fleet_setting.write",
+            resource="confirm_settings:levels",
+            details={"applied": applied},
+        )
         return templates.TemplateResponse(
             "confirm_settings.html",
             _build_confirm_settings_context(
@@ -536,6 +557,11 @@ async def confirm_settings_save(
         # Empty password → remove
         if not new_password:
             fleet_settings.delete("confirm_password_hash")
+            record_event(
+                principal, "fleet_setting.write",
+                resource="confirm_settings:password",
+                details={"op": "remove"},
+            )
             return templates.TemplateResponse(
                 "confirm_settings.html",
                 _build_confirm_settings_context(
@@ -544,6 +570,11 @@ async def confirm_settings_save(
             )
 
         if new_password != confirm_new_password:
+            record_event(
+                principal, "fleet_setting.write",
+                resource="confirm_settings:password",
+                success=False, error_message="passwords-do-not-match",
+            )
             return templates.TemplateResponse(
                 "confirm_settings.html",
                 _build_confirm_settings_context(
@@ -553,6 +584,11 @@ async def confirm_settings_save(
 
         hashed = hash_confirm_password(new_password)
         fleet_settings.set("confirm_password_hash", hashed)
+        record_event(
+            principal, "fleet_setting.write",
+            resource="confirm_settings:password",
+            details={"op": "set"},
+        )
         return templates.TemplateResponse(
             "confirm_settings.html",
             _build_confirm_settings_context(
@@ -572,6 +608,11 @@ async def confirm_settings_save(
             fleet_settings.set("web_reveal_credentials_enabled", "true")
         else:
             fleet_settings.delete("web_reveal_credentials_enabled")
+        record_event(
+            principal, "fleet_setting.write",
+            resource="confirm_settings:tool_toggle",
+            details={"llm_enabled": llm_enabled, "web_enabled": web_enabled},
+        )
         return templates.TemplateResponse(
             "confirm_settings.html",
             _build_confirm_settings_context(
@@ -579,6 +620,11 @@ async def confirm_settings_save(
             ),
         )
 
+    record_event(
+        principal, "fleet_setting.write",
+        resource="confirm_settings:unknown",
+        success=False, error_message=f"unknown-action:{action}",
+    )
     return templates.TemplateResponse(
         "confirm_settings.html",
         _build_confirm_settings_context(request, error="Unknown action."),

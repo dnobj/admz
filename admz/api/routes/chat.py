@@ -355,7 +355,11 @@ async def _run_chat_turn(
             system_prompt=system_prompt,
             previous_interaction_id=prev_id,
             history=history,
-            principal=principal.name,
+            # CR-4: pass the full Principal so its name, source, and
+            # groups can be forwarded to the MCP subprocess via env
+            # vars and surface in every audit-log row the subprocess
+            # writes. The pool keys on principal.name internally.
+            principal=principal,
             use_tools=use_tools,
         ):
             if chat_event.type == ChatEventType.DONE:

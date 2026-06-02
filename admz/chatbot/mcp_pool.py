@@ -71,6 +71,58 @@ _DEFAULT_IDLE_SECONDS = 300.0  # 5 minutes
 _REAPER_INTERVAL_SECONDS = 60.0
 
 
+def _principal_to_env(principal: Any) -> Dict[str, str]:
+    """Build the env-var dict the MCP subprocess reads at startup.
+
+    CR-4: the spawned ``python -m admz mcp`` process needs to know
+    *who* it's serving so it can stamp every audit row with the
+    correct ``requester``. Pass the principal's fields as env vars;
+    the MCP server reconstructs a :class:`Principal` on the other
+    side and uses it in ``call_tool``'s audit wrapper.
+
+    Accepts either a :class:`Principal` (full info passed) or a bare
+    string (legacy callers that only know the name). Returns the
+    empty dict if neither is usable — the subprocess will fall back
+    to a synthetic ``mcp-standalone`` identity in that case.
+    """
+    if principal is None:
+        return {}
+    # Avoid an import-time cycle by accepting any object that has
+    # the Principal shape.
+    name = getattr(principal, "name", None)
+    if name is None:
+        # Bare string fallback.
+        if isinstance(principal, str):
+            return {"ADMZ_PRINCIPAL_NAME": principal}
+        return {}
+    env = {"ADMZ_PRINCIPAL_NAME": str(name)}
+    display = getattr(principal, "display_name", None)
+    if display:
+        env["ADMZ_PRINCIPAL_DISPLAY_NAME"] = str(display)
+    domain = getattr(principal, "domain", None)
+    if domain:
+        env["ADMZ_PRINCIPAL_DOMAIN"] = str(domain)
+    source = getattr(principal, "source", None)
+    if source:
+        env["ADMZ_PRINCIPAL_SOURCE"] = str(source)
+    groups = getattr(principal, "groups", None)
+    if groups:
+        # Comma-separated; matches the shape ReverseProxyAuth produces
+        # via LDAP enrichment.
+        env["ADMZ_PRINCIPAL_GROUPS"] = ",".join(str(g) for g in groups)
+    return env
+
+
+def _principal_key(principal: Any) -> str:
+    """Extract the pool key from either a Principal or a bare string."""
+    if principal is None:
+        return "anonymous"
+    name = getattr(principal, "name", None)
+    if name is not None:
+        return str(name)
+    return str(principal)
+
+
 def _resolve_idle_seconds() -> float:
     """Resolve the idle-timeout from env, with a sane default + log on
     bad input."""
@@ -162,23 +214,29 @@ class McpSessionPool:
     # ------------------------------------------------------------------
 
     @asynccontextmanager
-    async def acquire(self, principal: str) -> AsyncIterator[Any]:
+    async def acquire(self, principal: Any) -> AsyncIterator[Any]:
         """Yield a live MCP session for ``principal``.
+
+        ``principal`` may be either a bare string (legacy / test
+        callers — name only, no env vars passed to the subprocess)
+        or a :class:`admz.auth.Principal` (full info — passed to
+        the subprocess via ``ADMZ_PRINCIPAL_*`` env vars so the MCP
+        server can audit-log every tool call with the correct
+        requester).
 
         Reuses an existing pooled subprocess when possible; opens a
         fresh one otherwise. Yields ``None`` (and logs a warning)
         when the bridge is unavailable (mcp SDK not installed,
-        subprocess spawn failed). Callers should match the
-        existing chatbot-client semantics: ``None`` means "no
-        tools available, degrade gracefully".
+        subprocess spawn failed).
         """
+        key = _principal_key(principal)
         entry: Optional[PoolEntry] = None
         try:
-            entry = await self._get_or_create(principal)
+            entry = await self._get_or_create(key, principal)
         except (McpBridgeMissing, McpBridgeError) as exc:
             logger.warning(
                 "MCP pool: bridge unavailable for %s, yielding None: %s",
-                principal,
+                key,
                 exc,
             )
             yield None
@@ -199,12 +257,25 @@ class McpSessionPool:
     # Internals
     # ------------------------------------------------------------------
 
-    async def _get_or_create(self, principal: str) -> Optional[PoolEntry]:
+    async def _get_or_create(
+        self, key: str, principal: Any = None
+    ) -> Optional[PoolEntry]:
         # First, fast path: existing entry.
         async with self._entries_lock:
-            existing = self._entries.get(principal)
+            existing = self._entries.get(key)
             if existing is not None:
                 return existing
+
+        # Build env vars from the full Principal (CR-4) so the
+        # spawned MCP subprocess knows who it's serving. When the
+        # caller passed just a string (legacy/test path) we only
+        # have a name — skip the kwarg entirely so test doubles
+        # that mock open_mcp_session with a narrower signature
+        # still work.
+        extra_env = _principal_to_env(principal)
+        spawn_kwargs: Dict[str, Any] = {}
+        if extra_env:
+            spawn_kwargs["extra_env"] = extra_env
 
         # Open a fresh session outside the entries lock so two
         # different principals can spin up concurrently. Re-enter
@@ -212,7 +283,9 @@ class McpSessionPool:
         # task created the entry while we were spawning.
         stack = AsyncExitStack()
         try:
-            session = await stack.enter_async_context(open_mcp_session())
+            session = await stack.enter_async_context(
+                open_mcp_session(**spawn_kwargs)
+            )
         except (McpBridgeMissing, McpBridgeError):
             await stack.aclose()
             raise
@@ -225,21 +298,21 @@ class McpSessionPool:
         async with self._entries_lock:
             # Race: another task created an entry while we were
             # opening ours. Discard ours, use theirs.
-            existing = self._entries.get(principal)
+            existing = self._entries.get(key)
             if existing is not None:
                 # Close the duplicate quietly.
                 asyncio.create_task(stack.aclose())
                 return existing
 
             entry = PoolEntry(
-                principal=principal,
+                principal=key,
                 session=session,
                 stack=stack,
             )
-            self._entries[principal] = entry
+            self._entries[key] = entry
             logger.debug(
                 "MCP pool: created entry for %s (pool size=%d)",
-                principal,
+                key,
                 len(self._entries),
             )
             return entry
@@ -255,8 +328,10 @@ class McpSessionPool:
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("MCP pool reaper crashed: %s", exc)
 
-    async def evict(self, principal: str) -> bool:
+    async def evict(self, principal: Any) -> bool:
         """Drop ``principal``'s pool entry and close its subprocess.
+
+        Accepts either a string name or a :class:`Principal`.
 
         Used when the caller detects the session is dead (typically
         anyio.ClosedResourceError raised by the SDK trying to use a
@@ -268,13 +343,14 @@ class McpSessionPool:
         the lookup, and closing the subprocess happens outside the
         lock so other principals' acquires aren't blocked.
         """
+        key = _principal_key(principal)
         async with self._entries_lock:
-            entry = self._entries.pop(principal, None)
+            entry = self._entries.pop(key, None)
         if entry is None:
             return False
         logger.info(
             "MCP pool: explicitly evicting %s (pool size now=%d)",
-            principal,
+            key,
             len(self._entries),
         )
         await entry.close()

@@ -111,7 +111,7 @@ def _warn_base_url_mismatch() -> None:
     backend = (os.getenv("ADMZ_AUTH_BACKEND", "none") or "none").lower()
     if backend not in ("windows", "composite"):
         return
-    base_url = os.getenv("ADMZ_BASE_URL", "http://localhost:8000")
+    base_url = os.getenv("ADMZ_BASE_URL", "http://localhost:4242")
     if "localhost" in base_url or "127.0.0.1" in base_url:
         logger.warning(
             "ADMZ_AUTH_BACKEND=%s with ADMZ_BASE_URL=%r — capture/confirm "
@@ -123,6 +123,112 @@ def _warn_base_url_mismatch() -> None:
 
 
 _warn_base_url_mismatch()
+
+
+# ---------------------------------------------------------------------------
+# CR-4: MCP-side audit helpers
+# ---------------------------------------------------------------------------
+
+
+# Field-name substrings whose values must NEVER be written to the audit
+# log. We log the keys (so an operator can tell that an arg was present)
+# but mask the value. Defensive even though CR-1/CR-2 removed the two
+# tools that took plaintext passwords as args — future tools should not
+# accidentally re-introduce a leak via the audit trail.
+_AUDIT_SENSITIVE_KEY_PARTS = ("password", "secret", "token", "api_key", "passwd")
+
+
+def _sanitize_tool_args(arguments: Any) -> Any:
+    """Return a copy of ``arguments`` safe to record in the audit log.
+
+    For dict-shaped arguments, any key matching :data:`_AUDIT_SENSITIVE_KEY_PARTS`
+    has its value replaced with ``"***"``. Non-dict inputs are returned
+    as-is (the audit details column also length-limits via json.dumps).
+    """
+    if not isinstance(arguments, dict):
+        return arguments
+    out: Dict[str, Any] = {}
+    for k, v in arguments.items():
+        if any(part in k.lower() for part in _AUDIT_SENSITIVE_KEY_PARTS):
+            out[k] = "***"
+        elif isinstance(v, dict):
+            out[k] = _sanitize_tool_args(v)
+        else:
+            out[k] = v
+    return out
+
+
+def _validate_tool_args(name: str, arguments: Any) -> Optional[str]:
+    """CR-5: validate identifier-shaped args against an allow-list.
+
+    Returns None on success, or an error message string on failure.
+    The dispatcher converts the message into an ``{"error":
+    "InvalidInput", ...}`` envelope that matches the existing error
+    shape (DeviceNotFound / PermissionDenied / BackendError).
+
+    Validates: ``device_id``, ``device_ids`` (list), ``account_id``,
+    ``facet_name``, ``facets`` (list), ``ref``, ``ref_a``, ``ref_b``.
+    Other arguments pass through unexamined.
+    """
+    if not isinstance(arguments, dict):
+        return None
+    from admz.validators import validate_identifier, validate_git_ref
+
+    ident_keys = ("device_id", "account_id", "facet_name")
+    list_ident_keys = ("device_ids", "facets")
+    ref_keys = ("ref", "ref_a", "ref_b")
+
+    for k in ident_keys:
+        v = arguments.get(k)
+        if v is None or v == "":
+            continue
+        try:
+            validate_identifier(v, k)
+        except ValueError as e:
+            return str(e)
+
+    for k in list_ident_keys:
+        v = arguments.get(k)
+        if v is None:
+            continue
+        if not isinstance(v, list):
+            return f"{k} must be a list"
+        kind = "device_id" if k == "device_ids" else "facet_name"
+        for item in v:
+            try:
+                validate_identifier(item, kind)
+            except ValueError as e:
+                return str(e)
+
+    for k in ref_keys:
+        v = arguments.get(k)
+        if v is None or v == "":
+            continue
+        try:
+            validate_git_ref(v)
+        except ValueError as e:
+            return str(e)
+
+    return None
+
+
+def _tool_resource(name: str, arguments: Any) -> str:
+    """Build a short ``resource`` string for the audit row.
+
+    Many MCP tools take a ``device_id`` / ``account_id``; surface that
+    so the audit log groups by device. For tools without identifiers
+    we fall back to the bare tool name.
+    """
+    if not isinstance(arguments, dict):
+        return f"mcp:{name}"
+    parts = [f"mcp:{name}"]
+    device_id = arguments.get("device_id")
+    if device_id:
+        parts.append(f"device:{device_id}")
+    account_id = arguments.get("account_id")
+    if account_id:
+        parts.append(f"account:{account_id}")
+    return "/".join(parts)
 
 
 class ADMZMCPServer:
@@ -190,12 +296,54 @@ class ADMZMCPServer:
         # Temporary credential manager
         self.temp_creds = TempCredentialManager()
 
+        # CR-4: reconstruct the calling principal from env vars the
+        # MCP pool sets when it spawns this subprocess. When the MCP
+        # server runs standalone (e.g. `python -m admz mcp` for an
+        # external client) the env vars aren't set and we fall back
+        # to a synthetic "mcp-standalone" identity that audit-log
+        # rows attribute to ``mcp-standalone``. Either way, every
+        # call_tool dispatch can produce an audit row with a
+        # meaningful requester.
+        self.principal = self._build_principal_from_env()
+
         # Register tool handlers
         self._register_handlers()
 
-    def _is_get_credentials_enabled(self) -> bool:
-        """Check if the get_credentials tool is enabled via fleet setting."""
-        return fleet_settings.get("tool_get_credentials_enabled") == "true"
+    @staticmethod
+    def _build_principal_from_env():
+        """Read ADMZ_PRINCIPAL_* env vars into a :class:`Principal`.
+
+        Returns a fresh Principal regardless of input shape — when
+        no env vars are set, we return a synthetic ``mcp-standalone``
+        principal so audit rows are still meaningful. The shape
+        matches what :func:`admz.chatbot.mcp_pool._principal_to_env`
+        emits on the calling side.
+        """
+        import os
+
+        from admz.auth import Principal
+
+        name = os.getenv("ADMZ_PRINCIPAL_NAME")
+        if not name:
+            return Principal(
+                name="mcp-standalone",
+                display_name="mcp-standalone",
+                source="mcp-standalone",
+                is_anonymous=False,
+            )
+        display = os.getenv("ADMZ_PRINCIPAL_DISPLAY_NAME") or name
+        domain = os.getenv("ADMZ_PRINCIPAL_DOMAIN") or None
+        source = os.getenv("ADMZ_PRINCIPAL_SOURCE") or "none"
+        groups_raw = os.getenv("ADMZ_PRINCIPAL_GROUPS") or ""
+        groups = [g.strip() for g in groups_raw.split(",") if g.strip()]
+        return Principal(
+            name=name,
+            display_name=display,
+            domain=domain,
+            groups=groups,
+            source=source,
+            is_anonymous=(name == "anonymous" or source == "none"),
+        )
 
     def _register_handlers(self):
         """Register MCP tool handlers."""
@@ -325,33 +473,17 @@ class ADMZMCPServer:
                         "required": ["device_id"],
                     },
                 ),
-                Tool(
-                    name="get_credentials",
-                    description=(
-                        "Get credentials for a specific device and account. "
-                        "Returns username, password, and other authentication details. "
-                        "Use with caution - this retrieves sensitive information."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "device_id": {
-                                "type": "string",
-                                "description": "Device ID",
-                            },
-                            "account_id": {
-                                "type": "string",
-                                "description": "Account ID (default: 'default')",
-                                "default": "default",
-                            },
-                            "requester": {
-                                "type": "string",
-                                "description": "Identifier of who is requesting access (for audit)",
-                            },
-                        },
-                        "required": ["device_id"],
-                    },
-                ),
+                # NOTE: a `get_credentials` MCP tool used to live here.
+                # It was removed (CR-1) because returning plaintext
+                # passwords into LLM context violated the project's
+                # stated invariant. The LLM should call
+                # ``create_temp_credentials`` when it needs to authenticate
+                # to a device on the user's behalf; that returns a
+                # short-lived, scoped account on the device itself rather
+                # than leaking the long-lived admin password into the
+                # model's context window. The REST endpoint
+                # ``GET /api/devices/{id}/credentials`` remains, gated by
+                # the group-membership Reveal check + audit log.
                 Tool(
                     name="register_device",
                     description=(
@@ -468,7 +600,7 @@ class ADMZMCPServer:
                         "credentials in their browser, OUTSIDE the chat context. "
                         "Credentials entered via this URL never appear in the LLM context. "
                         "Present the returned URL to the user as a clickable link. "
-                        "The ADMZ web server must be running (default: http://localhost:8000). "
+                        "The ADMZ web server must be running (default: http://localhost:4242). "
                         "Supports batch mode: pass device_ids to save the same credentials "
                         "to multiple devices with a single form submission."
                     ),
@@ -505,7 +637,7 @@ class ADMZMCPServer:
                             "base_url": {
                                 "type": "string",
                                 "description": "Base URL of the ADMZ web server",
-                                "default": "http://localhost:8000",
+                                "default": "http://localhost:4242",
                             },
                         },
                         "required": [],
@@ -925,11 +1057,16 @@ class ADMZMCPServer:
                 Tool(
                     name="test_device_credentials",
                     description=(
-                        "Test credentials against a device by probing its VAPIX "
-                        "basicdeviceinfo endpoint. Tries no-auth (factory default), "
-                        "legacy defaults (root/pass), and optionally user-supplied "
-                        "credentials. Returns status without exposing passwords. "
-                        "If store=true and credentials work, saves them to the registry."
+                        "Probe a device with the credentials we already have stored "
+                        "for it, falling back to no-auth (factory default) and the "
+                        "well-known legacy defaults built into the probe. Returns "
+                        "status without exposing passwords. "
+                        "NOTE: this tool does NOT accept user-supplied passwords as "
+                        "arguments — that would put plaintext into the LLM context. "
+                        "If credentials need to be set, drive the operator to the "
+                        "out-of-band capture form via the capture_credentials tool. "
+                        "If store=true and a factory-default probe succeeds, the "
+                        "device's working creds (root/blank or similar) are saved."
                     ),
                     inputSchema={
                         "type": "object",
@@ -941,28 +1078,24 @@ class ADMZMCPServer:
                             "device_id": {
                                 "type": "string",
                                 "description": (
-                                    "Resolve host from registry if host not provided"
+                                    "Resolve host from registry if host not provided. "
+                                    "If device_id is supplied, any stored credentials "
+                                    "for the device are also tried."
                                 ),
                             },
-                            "username": {
+                            "account_id": {
                                 "type": "string",
-                                "description": "Single username to try",
-                            },
-                            "password": {
-                                "type": "string",
-                                "description": "Single password to try",
-                            },
-                            "passwords": {
-                                "type": "array",
-                                "items": {"type": "string"},
                                 "description": (
-                                    "List of passwords to try with 'root' username (max 5)"
+                                    "Which stored account to probe with "
+                                    "(default: 'default'). Ignored if no device_id."
                                 ),
+                                "default": "default",
                             },
                             "store": {
                                 "type": "boolean",
                                 "description": (
-                                    "If true and credentials work, save to registry"
+                                    "If true and a factory-default probe succeeds, "
+                                    "save the working creds to the registry."
                                 ),
                                 "default": False,
                             },
@@ -1123,15 +1256,55 @@ class ADMZMCPServer:
                 *MIGRATED_TOOLS,
             ]
 
-            # Filter out get_credentials when disabled
-            if not self._is_get_credentials_enabled():
-                tools = [t for t in tools if t.name != "get_credentials"]
-
             return tools
 
         @self.server.call_tool()
         async def call_tool(name: str, arguments: Any) -> List[TextContent]:
-            """Handle tool calls."""
+            """Handle tool calls.
+
+            CR-4: every dispatch produces exactly one audit-log row.
+            ``audit_success`` is set to True right before the success
+            return; each except clause sets ``audit_error`` to a short
+            tag identifying the failure type. The ``finally`` block
+            records the outcome with the principal reconstructed from
+            ADMZ_PRINCIPAL_* env vars at startup. Password-shaped
+            argument fields are stripped from ``details`` so the audit
+            log doesn't itself become a credential leak.
+
+            CR-5: identifier-shaped arguments (device_id, account_id,
+            facet_name, ref) are validated up-front against an
+            allow-list so a malicious value can't slip through to
+            filesystem-touching code (git_repo.device_path etc.).
+            """
+            args_sanitized = _sanitize_tool_args(arguments)
+            audit_success = False
+            audit_error = ""
+
+            # CR-5: validate identifier-shaped args before dispatch.
+            validation_error = _validate_tool_args(name, arguments)
+            if validation_error is not None:
+                audit_error = f"InvalidInput: {validation_error}"
+                err_envelope = {
+                    "error": "InvalidInput",
+                    "message": validation_error,
+                }
+                try:
+                    return [TextContent(
+                        type="text",
+                        text=json.dumps(err_envelope, indent=2),
+                    )]
+                finally:
+                    from admz.audit import audit_log
+                    audit_log.record(
+                        requester=self.principal.name,
+                        auth_source=self.principal.source,
+                        action=f"mcp.{name}",
+                        resource=_tool_resource(name, arguments),
+                        details={"args": args_sanitized},
+                        success=False,
+                        error_message=audit_error,
+                    )
+
             try:
                 # Route to appropriate handler
                 if name == "list_devices":
@@ -1146,22 +1319,6 @@ class ADMZMCPServer:
                     result = await self._search_devices(arguments)
                 elif name == "list_accounts":
                     result = await self._list_accounts(arguments["device_id"])
-                elif name == "get_credentials":
-                    if not self._is_get_credentials_enabled():
-                        result = {
-                            "error": "ToolDisabled",
-                            "message": (
-                                "get_credentials is disabled. An admin can enable it "
-                                "in the web UI at /confirm-settings. Consider using "
-                                "create_temp_credentials instead."
-                            ),
-                        }
-                    else:
-                        result = await self._get_credentials(
-                            arguments["device_id"],
-                            arguments.get("account_id", "default"),
-                            arguments.get("requester"),
-                        )
                 elif name == "register_device":
                     result = await self._register_device(
                         arguments["device_id"],
@@ -1321,30 +1478,53 @@ class ADMZMCPServer:
                 else:
                     raise ValueError(f"Unknown tool: {name}")
 
+                audit_success = True
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
             except DeviceNotFoundError as e:
+                audit_error = f"DeviceNotFound: {e}"
                 error = {"error": "DeviceNotFound", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
             except AccountNotFoundError as e:
+                audit_error = f"AccountNotFound: {e}"
                 error = {"error": "AccountNotFound", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
             except PermissionDeniedError as e:
+                audit_error = f"PermissionDenied: {e}"
                 error = {"error": "PermissionDenied", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
             except NotImplementedError as e:
+                audit_error = f"NotImplemented: {e}"
                 error = {"error": "NotImplemented", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
             except BackendError as e:
+                audit_error = f"BackendError: {e}"
                 error = {"error": "BackendError", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
             except ADMZError as e:
+                audit_error = f"ADMZError: {e}"
                 error = {"error": "ADMZError", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
             except Exception as e:
+                audit_error = f"InternalError: {e}"
                 logger.exception(f"Unexpected error in {name}")
                 error = {"error": "InternalError", "message": str(e)}
                 return [TextContent(type="text", text=json.dumps(error, indent=2))]
+            finally:
+                # CR-4: single point of audit for every MCP tool call.
+                # `audit_log.record` is best-effort and swallows DB
+                # errors internally, so an audit failure can't break
+                # the tool surface.
+                from admz.audit import audit_log
+                audit_log.record(
+                    requester=self.principal.name,
+                    auth_source=self.principal.source,
+                    action=f"mcp.{name}",
+                    resource=_tool_resource(name, arguments),
+                    details={"args": args_sanitized},
+                    success=audit_success,
+                    error_message=audit_error,
+                )
 
     async def _list_devices(self) -> Dict[str, Any]:
         """List all devices."""
@@ -1481,24 +1661,14 @@ class ADMZMCPServer:
             "accounts": accounts,
         }
 
-    async def _get_credentials(
-        self,
-        device_id: str,
-        account_id: str,
-        requester: Optional[str],
-    ) -> Dict[str, Any]:
-        """Get credentials for a device account."""
-        credentials = self.registry.get_credentials(
-            device_id,
-            account_id,
-            requester,
-        )
-        return {
-            "success": True,
-            "device_id": device_id,
-            "account_id": account_id,
-            "credentials": credentials,
-        }
+    # NOTE: _get_credentials() was deleted (CR-1). The LLM-facing
+    # tool that returned plaintext credentials into context was a
+    # direct violation of the "no plaintext passwords in LLM context"
+    # invariant. Use create_temp_credentials (returns a short-lived
+    # account on the device) instead. Internal callers that need the
+    # admin password to perform a VAPIX request still go through
+    # self.registry.get_credentials() directly — those values never
+    # cross the MCP wire format.
 
     async def _register_device(
         self,
@@ -1579,7 +1749,7 @@ class ADMZMCPServer:
         account_id = arguments.get("account_id", "default")
         account_type = arguments.get("account_type", "service")
         purpose = arguments.get("purpose", "")
-        base_url = arguments.get("base_url", "http://localhost:8000")
+        base_url = arguments.get("base_url", "http://localhost:4242")
 
         # Build the full list of target devices
         if device_ids:
@@ -2273,9 +2443,24 @@ class ADMZMCPServer:
     # ------------------------------------------------------------------
 
     async def _test_credentials(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Probe a device with no-auth, legacy defaults, and/or user creds."""
+        """Probe a device with stored credentials + factory/legacy defaults.
+
+        CR-2: this handler no longer accepts user-supplied passwords as
+        tool arguments. The LLM had been able to put plaintext into
+        ``arguments["password"]`` / ``["passwords"]``, which violated
+        the "no plaintext passwords in LLM context" invariant. The new
+        flow:
+
+        * If ``device_id`` is provided AND a stored account exists for
+          it, that account's credentials are added to the probe list —
+          read from the registry server-side, never crossing the LLM
+          boundary.
+        * The probe always falls through to no-auth (factory default)
+          + the built-in legacy-defaults list inside ``probe_credentials``.
+        """
         host = arguments.get("host")
         device_id = arguments.get("device_id")
+        account_id = arguments.get("account_id", "default")
 
         if not host:
             if not device_id:
@@ -2293,15 +2478,26 @@ class ADMZMCPServer:
                     "error": f"Device '{device_id}' has no host/IP address",
                 }
 
-        credentials_list = []
-        username = arguments.get("username")
-        password = arguments.get("password")
-        if username and password:
-            credentials_list.append((username, password))
-
-        passwords = arguments.get("passwords") or []
-        for pw in passwords[:5]:
-            credentials_list.append(("root", pw))
+        # Build the credentials list from stored creds only. The probe
+        # always tries factory-default no-auth + legacy defaults
+        # regardless; this just adds the registered account if one
+        # exists, so a probe with device_id verifies "do our stored
+        # creds still work?"
+        credentials_list: List[tuple] = []
+        if device_id and self.registry.device_exists(device_id):
+            if self.registry.account_exists(device_id, account_id):
+                try:
+                    creds = self.registry.get_credentials(
+                        device_id, account_id, requester="mcp:test_credentials",
+                    )
+                    if creds.get("username") and creds.get("password"):
+                        credentials_list.append(
+                            (creds["username"], creds["password"])
+                        )
+                except Exception:
+                    # Stored-creds lookup failure is non-fatal — the
+                    # probe still tries factory defaults.
+                    pass
 
         result = await probe_credentials(
             host,
@@ -2533,7 +2729,7 @@ class ADMZMCPServer:
 
         # No value provided for a password key → generate capture URL
         if value is None and "password" in key.lower():
-            base_url = os.getenv("ADMZ_BASE_URL", "http://localhost:8000")
+            base_url = os.getenv("ADMZ_BASE_URL", "http://localhost:4242")
             session = capture_store.create_fleet_session(
                 setting_key=key,
                 label="Fleet default password for device provisioning",

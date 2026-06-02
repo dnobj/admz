@@ -46,7 +46,10 @@ def _fake_open_factory():
     closures: list = []
 
     @asynccontextmanager
-    async def cm():
+    async def cm(**kwargs):
+        # Accept and ignore extra_env / python_executable so the
+        # fake stays compatible with the real open_mcp_session
+        # signature as it grows (CR-4 added extra_env=).
         _FakeSession._counter += 1
         sess = _FakeSession(f"s-{_FakeSession._counter}")
         try:

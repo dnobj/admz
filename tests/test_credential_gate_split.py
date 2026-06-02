@@ -1,5 +1,11 @@
 """Tests for the split plaintext-credential gates.
 
+NOTE (CR-3): POST /confirm-settings now requires an authenticated
+principal — the handler writes to keys in PROTECTED_SETTING_KEYS.
+The helper ``_with_admin`` below installs a Windows-IWA-like
+principal for the duration of a test so the gate is satisfied.
+
+
 Background: a single ``tool_get_credentials_enabled`` flag used to
 gate both the MCP ``get_credentials`` tool AND the REST endpoint
 the web Reveal button hits. Operators who wanted to use Reveal had
@@ -22,7 +28,42 @@ This file pins:
 """
 
 import pytest
+from contextlib import contextmanager
 from fastapi.testclient import TestClient
+
+
+@contextmanager
+def _with_admin():
+    """Install a Windows-IWA-like authenticated principal for the
+    duration of the ``with`` block. Restores NoAuth on exit.
+
+    Used by tests that POST to /confirm-settings — that handler
+    now requires an authenticated principal because every branch
+    writes to a key in PROTECTED_SETTING_KEYS (CR-3).
+    """
+    from admz.auth import (
+        AuthBackend, NoAuth, Principal, set_active_backend,
+    )
+
+    class _StubBackend(AuthBackend):
+        def __init__(self, p):
+            self.p = p
+
+        async def authenticate(self, request):
+            return self.p
+
+    admin = Principal(
+        name="AXIS\\admin",
+        display_name="admin",
+        source="windows",
+        groups=["Administrators"],
+        is_anonymous=False,
+    )
+    set_active_backend(_StubBackend(admin))
+    try:
+        yield admin
+    finally:
+        set_active_backend(NoAuth())
 
 
 @pytest.fixture
@@ -126,24 +167,57 @@ class TestRestCredentialsGate:
 
 
 # ---------------------------------------------------------------------------
-# MCP get_credentials tool gate is NOT affected by the web flag
+# MCP get_credentials tool has been removed entirely (CR-1)
 # ---------------------------------------------------------------------------
 
 
-class TestMcpToolGateIsolated:
-    def test_web_flag_does_not_enable_mcp_tool(self, client):
-        """The whole point of the split: turning on Reveal must NOT
-        also expose get_credentials to LLMs."""
+class TestMcpGetCredentialsRemoved:
+    """The whole point of the original split-flag was to keep
+    plaintext credentials out of LLM context even when the web Reveal
+    flag was on. CR-1 went further and removed the MCP tool entirely
+    — the LLM uses ``create_temp_credentials`` when it needs to act
+    on behalf of the user. The internal callers that still need the
+    admin password (executor, plan engine) go through
+    ``registry.get_credentials`` directly; those values never cross
+    the MCP wire format."""
+
+    def test_get_credentials_tool_not_registered(self):
+        """Source-level check: the MCP server should no longer have
+        a ``_get_credentials`` handler and the legacy gate function
+        should be gone."""
+        from admz.mcp import server as mcp_server_module
+
+        # The handler method was deleted.
+        assert not hasattr(
+            mcp_server_module.ADMZMCPServer, "_get_credentials"
+        ), "MCP _get_credentials handler should have been removed (CR-1)"
+
+        # The gate function was deleted.
+        assert not hasattr(
+            mcp_server_module.ADMZMCPServer, "_is_get_credentials_enabled"
+        ), "MCP _is_get_credentials_enabled gate should have been removed (CR-1)"
+
+    def test_get_credentials_tool_name_absent_from_source(self):
+        """Belt-and-braces: grep the server module's source for the
+        tool name. The only allowed mentions are the comments
+        explaining the removal."""
+        import inspect
+        from admz.mcp import server as mcp_server_module
+
+        source = inspect.getsource(mcp_server_module)
+        # name="get_credentials" was the Tool registration; that string
+        # MUST NOT appear anywhere now.
+        assert 'name="get_credentials"' not in source
+
+    def test_web_flag_does_not_affect_mcp_anymore(self, client):
+        """The web flag still exists for the REST Reveal endpoint
+        fallback. Turning it on must not be observable on the MCP
+        surface (the tool isn't there to be turned on or off)."""
         from admz.fleet_settings import fleet_settings
         fleet_settings.set("web_reveal_credentials_enabled", "true")
         fleet_settings.delete("tool_get_credentials_enabled")
-
-        # The MCP server's list_tools filters out get_credentials when
-        # the LLM flag is off. We import and check directly.
-        from admz.mcp.server import ADMZMCPServer
-        server = ADMZMCPServer.__new__(ADMZMCPServer)
-        # _is_get_credentials_enabled is the gate the MCP server uses.
-        assert server._is_get_credentials_enabled() is False
+        # Nothing to assert on the MCP side — the absence above is
+        # the assertion. This test exists to document the invariant.
 
 
 # ---------------------------------------------------------------------------
@@ -158,29 +232,32 @@ class TestSettingsPageRoundtrip:
         fleet_settings.delete("tool_get_credentials_enabled")
         fleet_settings.delete("web_reveal_credentials_enabled")
 
-        # POST with only the web checkbox ticked
-        r = client.post(
-            "/confirm-settings",
-            data={
-                "action": "tool_toggle",
-                "web_reveal_credentials_enabled": "1",
-                # get_credentials_enabled not sent → unchecked
-            },
-        )
+        # POST with only the web checkbox ticked. CR-3 requires an
+        # authenticated principal for any /confirm-settings write.
+        with _with_admin():
+            r = client.post(
+                "/confirm-settings",
+                data={
+                    "action": "tool_toggle",
+                    "web_reveal_credentials_enabled": "1",
+                    # get_credentials_enabled not sent → unchecked
+                },
+            )
         assert r.status_code == 200
         assert fleet_settings.get("web_reveal_credentials_enabled") == "true"
         assert fleet_settings.get("tool_get_credentials_enabled") is None
 
     def test_save_both_flags(self, client):
         from admz.fleet_settings import fleet_settings
-        r = client.post(
-            "/confirm-settings",
-            data={
-                "action": "tool_toggle",
-                "web_reveal_credentials_enabled": "1",
-                "get_credentials_enabled": "1",
-            },
-        )
+        with _with_admin():
+            r = client.post(
+                "/confirm-settings",
+                data={
+                    "action": "tool_toggle",
+                    "web_reveal_credentials_enabled": "1",
+                    "get_credentials_enabled": "1",
+                },
+            )
         assert r.status_code == 200
         assert fleet_settings.get("web_reveal_credentials_enabled") == "true"
         assert fleet_settings.get("tool_get_credentials_enabled") == "true"
@@ -191,10 +268,11 @@ class TestSettingsPageRoundtrip:
         fleet_settings.set("tool_get_credentials_enabled", "true")
 
         # Submit with neither checkbox ticked
-        r = client.post(
-            "/confirm-settings",
-            data={"action": "tool_toggle"},
-        )
+        with _with_admin():
+            r = client.post(
+                "/confirm-settings",
+                data={"action": "tool_toggle"},
+            )
         assert r.status_code == 200
         assert fleet_settings.get("web_reveal_credentials_enabled") is None
         assert fleet_settings.get("tool_get_credentials_enabled") is None

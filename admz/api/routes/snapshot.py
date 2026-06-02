@@ -2,11 +2,12 @@
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, field_validator
 
 from admz.api.context import AppContext, get_context
 from admz.exceptions import DeviceNotFoundError
+from admz.validators import validate_git_ref, validate_identifier
 
 router = APIRouter()
 
@@ -14,6 +15,11 @@ router = APIRouter()
 class SnapshotDeviceRequest(BaseModel):
     device_id: str
     message: Optional[str] = None
+
+    @field_validator("device_id")
+    @classmethod
+    def _check_device_id(cls, v: str) -> str:
+        return validate_identifier(v, "device_id")
 
 
 class SnapshotFleetRequest(BaseModel):
@@ -26,26 +32,66 @@ class RestoreRequest(BaseModel):
     ref: str = "HEAD"
     facets: Optional[List[str]] = None
 
+    @field_validator("device_id")
+    @classmethod
+    def _check_device_id(cls, v: str) -> str:
+        return validate_identifier(v, "device_id")
+
+    @field_validator("ref")
+    @classmethod
+    def _check_ref(cls, v: str) -> str:
+        return validate_git_ref(v)
+
+    @field_validator("facets")
+    @classmethod
+    def _check_facets(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return v
+        for f in v:
+            validate_identifier(f, "facet_name")
+        return v
+
 
 @router.post("/snapshot/device")
 async def snapshot_device(
-    req: SnapshotDeviceRequest, ctx: AppContext = Depends(get_context)
+    request: Request,
+    req: SnapshotDeviceRequest,
+    ctx: AppContext = Depends(get_context),
 ):
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+
+    principal = await get_current_principal(request)
+    resource = f"device:{req.device_id}"
+
     if not ctx.registry.device_exists(req.device_id):
+        record_event(principal, "snapshot.device", resource=resource,
+                     success=False, error_message="not-found")
         raise HTTPException(status_code=404, detail=f"Device not found: {req.device_id}")
     snapshot = await ctx.snapshot_engine.snapshot_device(
         req.device_id, message=req.message
     )
+    record_event(principal, "snapshot.device", resource=resource,
+                 details={"has_message": bool(req.message)})
     return snapshot.to_summary()
 
 
 @router.post("/snapshot/fleet")
 async def snapshot_fleet(
-    req: SnapshotFleetRequest, ctx: AppContext = Depends(get_context)
+    request: Request,
+    req: SnapshotFleetRequest,
+    ctx: AppContext = Depends(get_context),
 ):
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+
+    principal = await get_current_principal(request)
     snapshots = await ctx.snapshot_engine.snapshot_fleet(
         tag_filter=req.tag_filter, message=req.message
     )
+    record_event(principal, "snapshot.fleet",
+                 details={"tag_filter": req.tag_filter,
+                          "count": len(snapshots)})
     return {
         "count": len(snapshots),
         "results": [s.to_summary() for s in snapshots],
@@ -54,15 +100,33 @@ async def snapshot_fleet(
 
 @router.post("/snapshot/restore")
 async def restore_device(
-    req: RestoreRequest, ctx: AppContext = Depends(get_context)
+    request: Request,
+    req: RestoreRequest,
+    ctx: AppContext = Depends(get_context),
 ):
+    """CR-3: requires an authenticated principal. Restore is a
+    data-loss operation — it rewrites a live device's config from
+    a historical commit. Anonymous restores from the network would
+    be a recipe for catastrophic mishaps."""
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+    resource = f"device:{req.device_id}"
+
     if not ctx.registry.device_exists(req.device_id):
+        record_event(principal, "snapshot.restore", resource=resource,
+                     success=False, error_message="not-found")
         raise HTTPException(status_code=404, detail=f"Device not found: {req.device_id}")
 
     plan_spec = ctx.restore_builder.build_restore_plan(
         req.device_id, ref=req.ref, facet_names=req.facets
     )
     if not plan_spec["steps"]:
+        record_event(principal, "snapshot.restore", resource=resource,
+                     details={"ref": req.ref, "outcome": "no-steps"})
         return {
             "message": f"No config found for {req.device_id} at {req.ref}",
             "warnings": plan_spec.get("warnings", []),
@@ -74,8 +138,13 @@ async def restore_device(
             on_failure=plan_spec["on_failure"],
         )
     except ValueError as e:
+        record_event(principal, "snapshot.restore", resource=resource,
+                     success=False, error_message=str(e))
         raise HTTPException(status_code=400, detail=str(e))
 
+    record_event(principal, "snapshot.restore", resource=resource,
+                 details={"ref": req.ref, "plan_id": plan.plan_id,
+                          "step_count": len(plan_spec["steps"])})
     return {
         "warnings": plan_spec.get("warnings", []),
         "source_ref": plan_spec.get("source_ref", req.ref),

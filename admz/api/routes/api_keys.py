@@ -99,8 +99,18 @@ async def create_api_key(
     req: CreateApiKeyRequest,
     principal: Principal = Depends(get_current_principal),
 ) -> CreatedApiKeyResponse:
-    """Mint a new API key. The plaintext is returned exactly once."""
+    """Mint a new API key. The plaintext is returned exactly once.
+
+    CR-3: this endpoint refuses anonymous callers. Letting the
+    synthetic `anonymous` principal (ADMZ_AUTH_BACKEND=none default)
+    mint long-lived keys defeats the entire point of API keys —
+    anyone reachable on the bind port could otherwise mint themselves
+    persistent credentials.
+    """
     from admz.audit import record_event
+    from admz.authz import require_authenticated_principal
+
+    require_authenticated_principal(principal)
 
     try:
         # Inherit the creator's groups so the key has equivalent

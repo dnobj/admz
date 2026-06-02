@@ -147,9 +147,21 @@ class AuthBackend(ABC):
 class NoAuth(AuthBackend):
     """Returns a synthetic ``anonymous`` principal for every request.
 
-    Default in dev/test. Never selected for production deployments;
-    the startup-safety check (Phase 4C) refuses to bind to non-localhost
-    when this backend is in use combined with a wider bind address.
+    Default in dev/test. The startup-safety check in
+    :func:`admz.__main__._check_bind_safety` refuses to bind to
+    non-localhost when ``ADMZ_AUTH_BACKEND in (windows, composite)`` —
+    i.e. when reverse-proxy auth would otherwise be trusting a header
+    that could be spoofed.
+
+    Under ``NoAuth`` itself, the localhost-bind default
+    (``--host 127.0.0.1``) is what bounds the exposure. The lifespan
+    in :mod:`admz.api.main` emits a one-time WARNING when this
+    backend is active so operators are reminded that the
+    anonymous principal has full write access (and audit rows
+    will attribute every mutation to ``anonymous``). The five most
+    destructive endpoints (mint API key, write protected fleet
+    settings, delete device, restore device, execute plan) refuse
+    the anonymous principal via :func:`admz.authz.require_authenticated_principal`.
     """
 
     async def authenticate(self, request: Request) -> Principal:

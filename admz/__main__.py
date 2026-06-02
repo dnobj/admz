@@ -5,9 +5,9 @@ ADMZ CLI entry point.
 Supports both FastAPI server and MCP server modes.
 
 Usage:
-    python -m admz api [--host 0.0.0.0] [--port 8000]  # Start FastAPI server
-    python -m admz mcp                                  # Start MCP server
-    python -m admz --help                               # Show help
+    python -m admz api [--host 127.0.0.1] [--port 4242]  # Start FastAPI server
+    python -m admz mcp                                    # Start MCP server
+    python -m admz --help                                 # Show help
 """
 
 import argparse
@@ -36,16 +36,19 @@ def main():
         help=(
             "Host to bind to (default: 127.0.0.1 — localhost only). "
             "Pass 0.0.0.0 explicitly to expose on all interfaces. "
-            "There is no authentication on the web/REST surface as of this "
-            "release; only bind to non-localhost behind a reverse proxy "
-            "with its own auth, or on a trusted private network."
+            "Phase 4 added auth (see ADMZ_AUTH_BACKEND): under the "
+            "default 'none' backend, every request is anonymous and "
+            "five destructive endpoints refuse it; under 'windows' or "
+            "'composite' the startup bind-safety check refuses to bind "
+            "to anything other than localhost without a trusted reverse "
+            "proxy in front. Override via ADMZ_AUTH_INSECURE_BIND_OK=true."
         ),
     )
     api_parser.add_argument(
         "--port",
         type=int,
-        default=8000,
-        help="Port to bind to (default: 8000)",
+        default=4242,
+        help="Port to bind to (default: 4242)",
     )
     api_parser.add_argument(
         "--reload",
@@ -179,6 +182,22 @@ def main():
         help="Slower but tighter pack (--aggressive). Run weekly at most.",
     )
     maint_gc.add_argument(
+        "--json", action="store_true", help="Output as JSON",
+    )
+    maint_migrate = maint_sub.add_parser(
+        "migrate",
+        help=(
+            "Backfill the Slice-1 hierarchy on existing devices: "
+            "assigns every device lacking org_id/site_id to the default "
+            "Org/Site and adds it to the 'ungrouped' device group as "
+            "the primary. Idempotent — safe to re-run."
+        ),
+    )
+    maint_migrate.add_argument(
+        "--dry-run", action="store_true",
+        help="Print what would change without writing.",
+    )
+    maint_migrate.add_argument(
         "--json", action="store_true", help="Output as JSON",
     )
 
@@ -360,6 +379,17 @@ def run_api_server(args):
 
     _check_bind_safety(args.host)
 
+    # Propagate the live bind address to the MCP subprocess so the
+    # capture/confirm URLs the LLM hands the user point at the actual
+    # running server. Without this, the MCP-side default of
+    # http://localhost:4242 is used — which is right for the common
+    # case but wrong if the operator binds to a non-default port.
+    # Only set when not already configured (operator-supplied
+    # ADMZ_BASE_URL — e.g. the public IIS URL — wins).
+    if not os.getenv("ADMZ_BASE_URL"):
+        host_for_url = "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host
+        os.environ["ADMZ_BASE_URL"] = f"http://{host_for_url}:{args.port}"
+
     try:
         import uvicorn
         from admz.api.main import app
@@ -467,8 +497,40 @@ def run_maintenance(args):
             sys.exit(1)
         return
 
+    if args.maint_command == "migrate":
+        from admz.migrations import migrate_hierarchy_backfill
+        from admz.factory import create_device_registry
+
+        registry = create_device_registry()
+        # Ensure the default Org/Site/Group rows exist before
+        # backfilling devices into them.
+        from admz.components import _bootstrap_default_hierarchy
+        _bootstrap_default_hierarchy(
+            registry,
+            os.getenv(
+                "ADMZ_CONFIG_REPO_PATH",
+                str(os.path.join(os.path.expanduser("~"), ".admz", "config-repo")),
+            ),
+        )
+
+        result = migrate_hierarchy_backfill(
+            registry, dry_run=args.dry_run,
+        )
+
+        if args.json:
+            import json as _json
+            print(_json.dumps(result, indent=2))
+        else:
+            mode = "DRY-RUN — no changes" if args.dry_run else "applied"
+            print(f"Hierarchy backfill ({mode}):")
+            print(f"  devices total:          {result['devices_total']}")
+            print(f"  already migrated:       {result['already_migrated']}")
+            print(f"  backfilled:             {result['backfilled']}")
+            print(f"  primary-group assigned: {result['primary_assigned']}")
+        return
+
     print(
-        "Unknown maintenance subcommand. Try 'stats' or 'gc'.",
+        "Unknown maintenance subcommand. Try 'stats', 'gc', or 'migrate'.",
         file=sys.stderr,
     )
     sys.exit(1)

@@ -29,6 +29,59 @@ def is_sensitive_setting_key(key: str) -> bool:
     return "password" in key.lower()
 
 
+# ---------------------------------------------------------------------------
+# Protected setting keys (CR-3)
+# ---------------------------------------------------------------------------
+
+
+# Fleet-setting keys that are protected from anonymous / MCP writes.
+# Originally lived in admz/api/confirm_store.py — relocated here so the
+# concept of "this is a sensitive fleet setting" lives next to the rest
+# of fleet-settings policy. The confirm_store module re-exports the set
+# under its original name for backward compatibility.
+#
+# Writes from MCP tools and from unauthenticated REST callers must
+# refuse keys in this set. Writes from an authenticated principal
+# (Windows IWA / API-key) are allowed — those callers are accountable
+# via audit log.
+PROTECTED_SETTING_KEYS = {
+    "confirm_level_dangerous",
+    "confirm_level_service-affecting",
+    "confirm_level_normal",
+    "confirm_level_read-only",
+    "confirm_password_hash",
+    "tool_get_credentials_enabled",
+    # Chatbot provider API key. Set only via /settings/chat admin page;
+    # MCP set_fleet_setting must never read or change it. See ADR-0025.
+    "gemini_api_key",
+    "gemini_default_model",
+    # Plaintext-credential access gates. The LLM tool gate is separate
+    # from the web-UI reveal gate so operators can keep the LLM strict
+    # while still using the Reveal button + REST endpoint themselves.
+    "web_reveal_credentials_enabled",
+    # Device health monitor: opt-in background poller. Protected
+    # because letting the LLM toggle a background loop that contacts
+    # devices would be a sneak path around the safety gates.
+    "health_monitor_enabled",
+    "health_check_interval_seconds",
+    "health_check_timeout_seconds",
+    # Daily per-principal token budget (Phase 5D). Letting MCP rewrite
+    # the budget through chat-driven tool calls would defeat the
+    # purpose. Set only via the web UI.
+    "chat_daily_token_budget",
+}
+
+
+def is_protected_setting(key: str) -> bool:
+    """Return True if ``key`` is in :data:`PROTECTED_SETTING_KEYS`.
+
+    Used by REST handlers and the MCP ``set_fleet_setting`` tool to
+    refuse writes to security-sensitive keys from low-privilege
+    callers.
+    """
+    return key in PROTECTED_SETTING_KEYS
+
+
 def mask_setting_value(value: str) -> str:
     """Return a display-safe placeholder for a sensitive setting value.
 

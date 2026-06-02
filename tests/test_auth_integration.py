@@ -233,10 +233,34 @@ class TestCompositeAuthIntegration:
 
 
 class TestApiKeyCrudEndpoints:
-    """The minting / listing / revoking endpoints themselves require
-    auth, so we run these tests in NoAuth mode (where the principal is
-    'anonymous') to verify the routes work without dragging the auth
-    test setup into every assertion."""
+    """CR-3: POST /api/api-keys now requires an authenticated principal
+    (anonymous can no longer mint long-lived credentials). The tests
+    that need to mint install a stub authenticated principal via
+    ``set_active_backend``; the read/list tests still run as anonymous
+    (those routes are unaffected).
+    """
+
+    @staticmethod
+    def _install_admin():
+        from admz.auth import (
+            AuthBackend, Principal, set_active_backend,
+        )
+
+        class _Stub(AuthBackend):
+            async def authenticate(self, request):
+                return Principal(
+                    name="anonymous-but-authenticated",
+                    display_name="anonymous-but-authenticated",
+                    source="windows",
+                    is_anonymous=False,
+                )
+
+        set_active_backend(_Stub())
+
+    @staticmethod
+    def _restore_noauth():
+        from admz.auth import NoAuth, set_active_backend
+        set_active_backend(NoAuth())
 
     def test_list_empty(self, monkeypatch, tmp_path):
         client = _make_client(monkeypatch, "none")
@@ -248,16 +272,21 @@ class TestApiKeyCrudEndpoints:
     def test_create_returns_plaintext_once(self, monkeypatch, tmp_path):
         client = _make_client(monkeypatch, "none")
         with client:
-            r = client.post(
-                "/api/api-keys",
-                json={"display_name": "nightly-bot"},
-            )
-            assert r.status_code == 201
-            body = r.json()
-            assert body["display_name"] == "nightly-bot"
-            assert body["plaintext"].startswith("admz_")
-            assert body["created_by"] == "anonymous"
-            assert body["revoked"] is False
+            self._install_admin()
+            try:
+                r = client.post(
+                    "/api/api-keys",
+                    json={"display_name": "nightly-bot"},
+                )
+                assert r.status_code == 201
+                body = r.json()
+                assert body["display_name"] == "nightly-bot"
+                assert body["plaintext"].startswith("admz_")
+                # created_by reflects the stub principal's name.
+                assert "anonymous" in body["created_by"]
+                assert body["revoked"] is False
+            finally:
+                self._restore_noauth()
 
     def test_create_empty_display_name_returns_400(
         self, monkeypatch, tmp_path
@@ -271,8 +300,12 @@ class TestApiKeyCrudEndpoints:
     def test_create_then_list(self, monkeypatch, tmp_path):
         client = _make_client(monkeypatch, "none")
         with client:
-            client.post("/api/api-keys", json={"display_name": "bot-1"})
-            client.post("/api/api-keys", json={"display_name": "bot-2"})
+            self._install_admin()
+            try:
+                client.post("/api/api-keys", json={"display_name": "bot-1"})
+                client.post("/api/api-keys", json={"display_name": "bot-2"})
+            finally:
+                self._restore_noauth()
             r = client.get("/api/api-keys")
             assert r.status_code == 200
             names = {k["display_name"] for k in r.json()}
@@ -285,8 +318,12 @@ class TestApiKeyCrudEndpoints:
     ):
         client = _make_client(monkeypatch, "none")
         with client:
-            r = client.post("/api/api-keys", json={"display_name": "doomed"})
-            new_id = r.json()["id"]
+            self._install_admin()
+            try:
+                r = client.post("/api/api-keys", json={"display_name": "doomed"})
+                new_id = r.json()["id"]
+            finally:
+                self._restore_noauth()
             r = client.delete(f"/api/api-keys/{new_id}")
             assert r.status_code == 204
             r = client.get("/api/api-keys")

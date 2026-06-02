@@ -29,6 +29,31 @@
     return;
   }
 
+  // Keyboard UX: Enter submits, Shift+Enter inserts a newline.
+  // Matches the convention every modern chat UI follows. Alt+Enter
+  // is treated as a newline too (some users have muscle memory for
+  // it). Plain Enter triggers requestSubmit() which fires the
+  // existing submit handler below, including its no-op return for
+  // empty messages.
+  const messageInput = document.getElementById("message");
+  if (messageInput) {
+    messageInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+        // Suppress the default newline insertion and submit instead.
+        e.preventDefault();
+        if (typeof form.requestSubmit === "function") {
+          form.requestSubmit();
+        } else {
+          // Older browsers — fall back to clicking the submit button,
+          // which triggers the form's submit event.
+          sendBtn.click();
+        }
+      }
+      // Shift+Enter / Alt+Enter fall through to the textarea's
+      // default behavior (insert a literal newline).
+    });
+  }
+
   form.addEventListener("submit", function (e) {
     e.preventDefault();
     const messageEl = document.getElementById("message");
@@ -109,6 +134,15 @@
             break;
           case "tool_result":
             updateToolCard(lastToolCard, parsed.data);
+            // tool_result payloads from capture_credentials /
+            // confirm-emitting tools may carry the URL in a structured
+            // field. Scan the serialized payload so we don't miss a
+            // token that the assistant hasn't yet echoed in its prose.
+            try {
+              const serialized = JSON.stringify(parsed.data || {});
+              scanForTokens(serialized, CONFIRM_URL_RE, "confirm");
+              scanForTokens(serialized, CAPTURE_URL_RE, "capture");
+            } catch (_) { /* ignore */ }
             break;
           case "done":
             renderUsageFooter(assistantBubble, parsed.data);
@@ -167,27 +201,39 @@
   }
 
   // Token format: secrets.token_urlsafe(32) → base64url, 43 chars.
-  // Match /confirm/{token} anywhere in text. The token alphabet
-  // (a-z A-Z 0-9 - _) excludes everything outside that, so the
-  // boundary character class catches the end naturally.
+  // Match /confirm/{token} or /capture/{token} anywhere in text. The
+  // token alphabet (a-z A-Z 0-9 - _) excludes everything outside
+  // that, so the boundary character class catches the end naturally.
   const CONFIRM_URL_RE = /\/confirm\/([A-Za-z0-9_-]{20,})/g;
+  const CAPTURE_URL_RE = /\/capture\/([A-Za-z0-9_-]{20,})/g;
   const seenTokens = new Set();
 
   function appendText(bubble, chunk) {
     const textEl = bubble.querySelector(".chat-text");
     textEl.textContent += chunk;
     // After accumulating, scan the WHOLE assistant text for new
-    // confirmation URLs. Scanning the buffer rather than each
-    // chunk is robust to token URLs that arrive split across
+    // confirmation / capture URLs. Scanning the buffer rather than
+    // each chunk is robust to token URLs that arrive split across
     // chunk boundaries.
     const buffer = textEl.textContent;
+    scanForTokens(buffer, CONFIRM_URL_RE, "confirm");
+    scanForTokens(buffer, CAPTURE_URL_RE, "capture");
+  }
+
+  function scanForTokens(buffer, re, kind) {
+    re.lastIndex = 0;
     let m;
-    CONFIRM_URL_RE.lastIndex = 0;
-    while ((m = CONFIRM_URL_RE.exec(buffer)) !== null) {
+    while ((m = re.exec(buffer)) !== null) {
       const token = m[1];
-      if (!seenTokens.has(token)) {
-        seenTokens.add(token);
+      const key = kind + ":" + token;
+      if (seenTokens.has(key)) continue;
+      seenTokens.add(key);
+      if (kind === "confirm") {
         renderApprovalCard(token);
+        addPinnedAction("confirm", token);
+      } else if (kind === "capture") {
+        renderCaptureCard(token);
+        addPinnedAction("capture", token);
       }
     }
   }
@@ -451,5 +497,214 @@
     } else {
       transcript.appendChild(err);
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Inline capture cards (mirrors the /confirm/ inline approval pattern)
+  // ---------------------------------------------------------------------
+  //
+  // The capture form itself is multi-step (credentials, optional batch
+  // device selection, optional saved-account choices) and lives at
+  // /capture/{token}.html — we don't try to render that whole form
+  // inline. The card just surfaces enough info for the user to know
+  // what's pending and a clear "Open form" button that opens the
+  // actual capture page in a new tab.
+
+  function renderCaptureCard(token) {
+    const card = document.createElement("div");
+    card.style.cssText =
+      "background:#eff6ff;border:1px solid #93c5fd;padding:12px;" +
+      "border-radius:6px;margin:8px 0;color:#1e3a8a;";
+    card.dataset.captureToken = token;
+    card.innerHTML =
+      '<div style="font-size:12px;font-weight:600;color:#1e40af;margin-bottom:4px;">' +
+      "Credential capture pending</div>" +
+      '<div class="capture-body" style="font-size:13px;">Loading…</div>';
+    transcript.appendChild(card);
+
+    fetch("/api/capture/" + encodeURIComponent(token) + "/status")
+      .then(function (r) {
+        return r.json().then(function (body) {
+          return { ok: r.ok, body: body };
+        });
+      })
+      .then(function (resp) {
+        if (!resp.ok || !resp.body) {
+          renderCaptureDone(card, "error", "Could not load capture details.");
+          return;
+        }
+        if (resp.body.status === "expired_or_not_found") {
+          renderCaptureDone(card, "error", "This capture link has expired.");
+          removePinnedAction("capture", token);
+          return;
+        }
+        if (resp.body.status === "completed") {
+          renderCaptureDone(card, "ok", "Credentials already captured.");
+          removePinnedAction("capture", token);
+          return;
+        }
+        populateCaptureCard(card, token, resp.body);
+      })
+      .catch(function (err) {
+        renderCaptureDone(card, "error", String(err));
+      });
+  }
+
+  function populateCaptureCard(card, token, details) {
+    const body = card.querySelector(".capture-body");
+    const deviceLine = details.device_id
+      ? '<div style="margin-bottom:6px;">for <code>' +
+        escapeHtml(details.device_id) +
+        "</code>" +
+        (details.account_id
+          ? " · account <code>" + escapeHtml(details.account_id) + "</code>"
+          : "") +
+        "</div>"
+      : "";
+
+    body.innerHTML =
+      deviceLine +
+      '<div style="font-size:12px;color:#1e40af;margin-bottom:8px;">' +
+      "Open the form in a new tab to enter credentials. The form " +
+      "is single-use and tied to this token.</div>" +
+      '<div style="display:flex;gap:8px;">' +
+      '<a class="open-form-btn" href="/capture/' +
+      encodeURIComponent(token) +
+      '" target="_blank" rel="noopener" ' +
+      'style="padding:6px 14px;background:#2563eb;color:white;text-decoration:none;border-radius:4px;font-size:13px;font-weight:600;">' +
+      "Open capture form ↗</a>" +
+      '<button class="dismiss-btn" style="padding:6px 14px;background:transparent;color:#1e3a8a;border:1px solid #93c5fd;border-radius:4px;font-size:13px;cursor:pointer;">Dismiss</button>' +
+      "</div>";
+
+    body.querySelector(".dismiss-btn").addEventListener("click", function () {
+      card.remove();
+      removePinnedAction("capture", token);
+    });
+  }
+
+  function renderCaptureDone(card, kind, message) {
+    const color = kind === "ok" ? "#166534" : "#991b1b";
+    const bg = kind === "ok" ? "#f0fdf4" : "#fef2f2";
+    card.style.background = bg;
+    card.style.color = color;
+    const body = card.querySelector(".capture-body");
+    body.innerHTML = "";
+    body.textContent = message;
+  }
+
+  // ---------------------------------------------------------------------
+  // Pinned-action widget (above the chat input)
+  // ---------------------------------------------------------------------
+  //
+  // Distinct from the transcript: lets the user see pending capture /
+  // confirm tokens even after the conversation scrolls. The widget
+  // mirrors the inline cards' lifecycle — adding when a URL is
+  // detected, removing on dismiss/complete/expiry. The inline card
+  // is still the canonical UI for *acting* on the token; the pinned
+  // entry is a persistent signpost. For an external MCP client (no
+  // chat.js), the URLs in the assistant's text are still the way to
+  // reach the form — see chat.html's inline URLs in scrollback.
+
+  const actionsContainer = document.getElementById("chat-actions");
+  const actionsList = document.getElementById("chat-actions-list");
+  const pinnedActions = new Map(); // key = "kind:token" → row element
+
+  function actionKey(kind, token) {
+    return kind + ":" + token;
+  }
+
+  function showActionsContainer() {
+    if (actionsContainer) actionsContainer.style.display = "";
+  }
+
+  function hideActionsContainerIfEmpty() {
+    if (actionsContainer && pinnedActions.size === 0) {
+      actionsContainer.style.display = "none";
+    }
+  }
+
+  function addPinnedAction(kind, token) {
+    if (!actionsList) return;
+    const key = actionKey(kind, token);
+    if (pinnedActions.has(key)) return;
+
+    const row = document.createElement("div");
+    row.style.cssText =
+      "display:flex;align-items:center;gap:8px;padding:6px 4px;" +
+      "font-size:13px;color:#78350f;";
+
+    const label = document.createElement("span");
+    label.style.flex = "1";
+    if (kind === "capture") {
+      label.innerHTML =
+        '<span style="font-weight:600;">📝 Capture credentials</span>';
+    } else {
+      label.innerHTML =
+        '<span style="font-weight:600;">🚨 Approve dangerous op</span>';
+    }
+    row.appendChild(label);
+
+    const action = document.createElement("a");
+    action.href =
+      kind === "capture"
+        ? "/capture/" + encodeURIComponent(token)
+        : "#card-confirm-" + token;
+    if (kind === "capture") {
+      action.target = "_blank";
+      action.rel = "noopener";
+      action.textContent = "Open form ↗";
+    } else {
+      action.textContent = "Jump to approval ↓";
+      action.addEventListener("click", function (e) {
+        // Find the inline approval card by walking the transcript;
+        // the existing renderApprovalCard creates an .approval-body
+        // child but no token ID on the wrapper, so we look for cards
+        // whose fetch URL referenced this token. Cheaper: just scroll
+        // to the bottom — the latest card is what the user wants.
+        e.preventDefault();
+        const cards = transcript.querySelectorAll(".approval-body");
+        if (cards.length) {
+          cards[cards.length - 1].scrollIntoView({
+            behavior: "smooth",
+            block: "center",
+          });
+        }
+      });
+    }
+    action.style.cssText =
+      "padding:4px 10px;background:#f59e0b;color:white;text-decoration:none;" +
+      "border-radius:4px;font-size:12px;font-weight:600;";
+    row.appendChild(action);
+
+    const dismiss = document.createElement("button");
+    dismiss.textContent = "✕";
+    dismiss.title = "Dismiss";
+    dismiss.style.cssText =
+      "background:transparent;border:none;color:#92400e;font-size:14px;" +
+      "cursor:pointer;padding:2px 6px;";
+    dismiss.addEventListener("click", function () {
+      removePinnedAction(kind, token);
+    });
+    row.appendChild(dismiss);
+
+    actionsList.appendChild(row);
+    pinnedActions.set(key, row);
+    showActionsContainer();
+
+    // Auto-clear after 5 min (token TTL). Belt + braces so the
+    // widget can't get stale if the user never dismisses it and
+    // never opens the form.
+    setTimeout(function () {
+      removePinnedAction(kind, token);
+    }, 5 * 60 * 1000);
+  }
+
+  function removePinnedAction(kind, token) {
+    const key = actionKey(kind, token);
+    const row = pinnedActions.get(key);
+    if (!row) return;
+    row.remove();
+    pinnedActions.delete(key);
+    hideActionsContainerIfEmpty();
   }
 })();

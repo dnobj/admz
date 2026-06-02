@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from admz.api.context import AppContext, get_context
@@ -61,8 +61,16 @@ async def query_catalog(
 
 @router.post("/catalog/execute")
 async def execute_operation(
-    req: ExecuteRequest, ctx: AppContext = Depends(get_context)
+    request: Request,
+    req: ExecuteRequest,
+    ctx: AppContext = Depends(get_context),
 ):
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+
+    principal = await get_current_principal(request)
+    resource = f"device:{req.device_id}/op:{req.operation_id}"
+
     risk = ctx.catalog.get_risk_level(req.family, req.operation_id)
     if risk == "dangerous":
         op = ctx.catalog.get_operation(req.family, req.operation_id)
@@ -76,6 +84,9 @@ async def execute_operation(
             danger_description=(op.danger_description if op else ""),
             ttl=CONFIRM_TOKEN_TTL_SECONDS,
         )
+        record_event(principal, "catalog.execute", resource=resource,
+                     details={"risk": risk, "blocked": True,
+                              "confirm_token": session.token})
         return {
             "blocked": True,
             "risk_level": "dangerous",
@@ -125,21 +136,37 @@ async def execute_operation(
     if result.warnings:
         response["warnings"] = result.warnings
 
+    record_event(principal, "catalog.execute", resource=resource,
+                 success=bool(result.success),
+                 error_message="" if result.success else str(result.error or ""),
+                 details={"risk": risk, "status_code": result.status_code})
     return response
 
 
 @router.post("/catalog/confirm")
 async def confirm_dangerous(
-    req: ConfirmRequest, ctx: AppContext = Depends(get_context)
+    request: Request,
+    req: ConfirmRequest,
+    ctx: AppContext = Depends(get_context),
 ):
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+
+    principal = await get_current_principal(request)
+    resource = f"confirm_token:{req.confirm_token[:8]}..."
+
     session = confirm_store.get_session(req.confirm_token)
     if session is None or session.effective_status != ConfirmStatus.PENDING:
+        record_event(principal, "catalog.confirm", resource=resource,
+                     success=False, error_message="invalid-or-expired-token")
         raise HTTPException(
             status_code=400, detail="Invalid or expired confirmation token"
         )
 
     if not confirm_store.complete_session(req.confirm_token, confirmed_by="rest"):
         # Lost the race with another consumer (MCP or web UI).
+        record_event(principal, "catalog.confirm", resource=resource,
+                     success=False, error_message="token-already-used")
         raise HTTPException(
             status_code=409,
             detail="Confirmation token already used or expired before this request completed.",
@@ -173,4 +200,12 @@ async def confirm_dangerous(
         response["data"] = result.parsed_data
     else:
         response["error"] = result.error
+
+    record_event(
+        principal, "catalog.confirm",
+        resource=f"device:{session.device_id}/op:{session.operation_id}",
+        success=bool(result.success),
+        error_message="" if result.success else str(result.error or ""),
+        details={"status_code": result.status_code},
+    )
     return response

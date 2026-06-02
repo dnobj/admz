@@ -14,9 +14,14 @@ temp-credentials on top — those are MCP-specific concerns that aren't
 currently exposed via the REST API.
 """
 
+import logging
 import os
+import subprocess
 from dataclasses import dataclass
 from typing import Dict, Optional
+
+
+logger = logging.getLogger(__name__)
 
 from admz.catalog.loader import CatalogLoader
 from admz.catalog.resolver import CatalogResolver
@@ -71,6 +76,114 @@ def _default_schedule_path() -> str:
     )
 
 
+def _default_repo_path_root() -> str:
+    """Parent dir under which new Org repos auto-create.
+
+    Each Org's actual repo lives at ``{root}/{org_id}/``. Operators
+    override via ``ADMZ_REPO_PATH_ROOT``. The default keeps everything
+    under the existing ~/.admz/ family.
+    """
+    return os.getenv(
+        "ADMZ_REPO_PATH_ROOT",
+        os.path.join(os.path.expanduser("~"), ".admz", "repos"),
+    )
+
+
+def _detect_existing_origin(repo_path: str) -> str:
+    """If ``repo_path`` is a git repo with an ``origin`` remote
+    configured, return the URL. Otherwise return empty string.
+
+    Used by the default-Org bootstrap to adopt any remote the
+    operator manually set on the legacy ~/.admz/config-repo/ before
+    Slice 1 landed (e.g. the homelab user pointing the legacy repo
+    at github.com/.../admz-config-homelab.git).
+    """
+    if not os.path.isdir(os.path.join(repo_path, ".git")):
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=repo_path, capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except OSError:
+        pass
+    return ""
+
+
+def _bootstrap_default_hierarchy(
+    registry,
+    legacy_config_repo_path: str,
+) -> None:
+    """Idempotently create the default Org/Site/Group rows on first run.
+
+    Behavior:
+      * Default Org's ``repo_path`` adopts the legacy ~/.admz/config-repo/
+        when it exists on disk (so existing installs keep using their
+        same git tree). Otherwise points at ``$ADMZ_REPO_PATH_ROOT/default/``.
+      * Default Org's ``repo_remote_url`` is seeded from the legacy
+        repo's ``origin`` remote (if any) so any prior ``git remote add``
+        the operator did manually is preserved.
+      * Re-running this function is a no-op when the rows already exist
+        (catches BackendError on duplicate-PK INSERTs and proceeds).
+
+    Skips silently if the registry doesn't support organizations
+    (e.g. Vault backend) — the hierarchy is a SQLite-only concept
+    in v1.
+    """
+    # Probe support — if the backend doesn't implement add_organization,
+    # bail without raising. Operators on Vault keep the flat model.
+    try:
+        existing_orgs = registry.list_organizations()
+    except NotImplementedError:
+        return
+
+    if any(o["org_id"] == "default" for o in existing_orgs):
+        return  # Already bootstrapped
+
+    # Pick the default Org's repo path: adopt the legacy location if
+    # it exists, else use the new ADMZ_REPO_PATH_ROOT default.
+    if os.path.isdir(legacy_config_repo_path):
+        default_repo_path = legacy_config_repo_path
+    else:
+        default_repo_path = os.path.join(
+            _default_repo_path_root(), "default"
+        )
+
+    default_remote = _detect_existing_origin(default_repo_path)
+
+    try:
+        registry.add_organization(
+            org_id="default",
+            name="Default Organization",
+            repo_path=default_repo_path,
+            repo_remote_url=default_remote,
+        )
+        registry.add_site(
+            site_id="default",
+            org_id="default",
+            name="Default Site",
+        )
+        registry.add_device_group(
+            group_id="ungrouped",
+            site_id="default",
+            name="Ungrouped",
+            purpose="Devices without an assigned group",
+        )
+        logger.info(
+            "Bootstrapped default Org/Site/Group: repo_path=%s remote=%r",
+            default_repo_path,
+            default_remote or "(none)",
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "Default-hierarchy bootstrap raised %s — proceeding (rows may "
+            "have been partially created): %s",
+            type(exc).__name__, exc,
+        )
+
+
 def build_components(
     registry: DeviceRegistry,
     *,
@@ -90,6 +203,13 @@ def build_components(
     if config_repo_remote is None:
         config_repo_remote = os.getenv("ADMZ_CONFIG_REPO_REMOTE")
     schedule_path = schedule_path or _default_schedule_path()
+
+    # Slice 1: ensure the default Org/Site/Group rows exist. Idempotent
+    # — re-runs are no-ops. Skipped for backends that don't support
+    # organizations (e.g. Vault). Done BEFORE constructing GitRepo so
+    # the legacy config-repo's existing origin remote can be detected
+    # and adopted as the default Org's repo_remote_url.
+    _bootstrap_default_hierarchy(registry, config_repo_path)
 
     catalog = CatalogLoader(catalog_path)
     resolver = CatalogResolver(catalog)
