@@ -184,6 +184,22 @@ def main():
     maint_gc.add_argument(
         "--json", action="store_true", help="Output as JSON",
     )
+    maint_migrate = maint_sub.add_parser(
+        "migrate",
+        help=(
+            "Backfill the Slice-1 hierarchy on existing devices: "
+            "assigns every device lacking org_id/site_id to the default "
+            "Org/Site and adds it to the 'ungrouped' device group as "
+            "the primary. Idempotent — safe to re-run."
+        ),
+    )
+    maint_migrate.add_argument(
+        "--dry-run", action="store_true",
+        help="Print what would change without writing.",
+    )
+    maint_migrate.add_argument(
+        "--json", action="store_true", help="Output as JSON",
+    )
 
     args = parser.parse_args()
 
@@ -481,8 +497,40 @@ def run_maintenance(args):
             sys.exit(1)
         return
 
+    if args.maint_command == "migrate":
+        from admz.migrations import migrate_hierarchy_backfill
+        from admz.factory import create_device_registry
+
+        registry = create_device_registry()
+        # Ensure the default Org/Site/Group rows exist before
+        # backfilling devices into them.
+        from admz.components import _bootstrap_default_hierarchy
+        _bootstrap_default_hierarchy(
+            registry,
+            os.getenv(
+                "ADMZ_CONFIG_REPO_PATH",
+                str(os.path.join(os.path.expanduser("~"), ".admz", "config-repo")),
+            ),
+        )
+
+        result = migrate_hierarchy_backfill(
+            registry, dry_run=args.dry_run,
+        )
+
+        if args.json:
+            import json as _json
+            print(_json.dumps(result, indent=2))
+        else:
+            mode = "DRY-RUN — no changes" if args.dry_run else "applied"
+            print(f"Hierarchy backfill ({mode}):")
+            print(f"  devices total:          {result['devices_total']}")
+            print(f"  already migrated:       {result['already_migrated']}")
+            print(f"  backfilled:             {result['backfilled']}")
+            print(f"  primary-group assigned: {result['primary_assigned']}")
+        return
+
     print(
-        "Unknown maintenance subcommand. Try 'stats' or 'gc'.",
+        "Unknown maintenance subcommand. Try 'stats', 'gc', or 'migrate'.",
         file=sys.stderr,
     )
     sys.exit(1)
