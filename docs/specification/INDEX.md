@@ -117,6 +117,7 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 
 - [0012 — Snapshot/restore implemented on top of the plan engine](decisions/0012-snapshot-on-plans.md)
 - [0013 — Hybrid YAML + raw artifact format](decisions/0013-hybrid-yaml-and-raw.md)
+- [0026 — Unified job scheduler](decisions/0026-unified-job-scheduler.md) 📋 (proposed) — generalize the snapshot-only scheduler to job types; enables scheduled configuration audits
 
 ### Discovery
 

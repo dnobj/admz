@@ -58,13 +58,40 @@ with stored baselines. This lets operators roll out drift checks
 incrementally as new facet adapters land.
 
 ### FR-DRF-008 — Drift exposed via MCP and REST ✅
-- MCP: `check_device_drift(device_id, ref?)`,
-  `check_fleet_drift(device_ids?, ref?)`
-- REST: `GET /api/v2/devices/{id}/drift?ref=...`,
-  `GET /api/v2/fleet/drift?ref=...`
+Actual surface (corrected — earlier revisions cited a `/api/v2/...`
+surface and `check_device_drift` tool that never shipped):
+- MCP: `check_drift(device_id?, tag_filter?)` — one tool covers both
+  single-device and fleet (omit `device_id` for a fleet sweep); plus
+  `diff_device(device_id, ref_a, ref_b)` for historical snapshot-to-
+  snapshot diffs.
+- REST: `GET /api/snapshot/drift?device_id=&tag_filter=`,
+  `GET /api/snapshot/diff/{device_id}?ref_a=&ref_b=`.
 
 Both surface the DriftReport JSON; agents typically narrow the
 result to `fields` matching a particular path before acting.
+
+### FR-DRF-009 — Scheduled configuration audit 📋
+A recurring, unattended configuration audit — the operator-facing
+framing of a scheduled fleet drift sweep. Rather than a bespoke drift
+scheduler, it rides the unified job scheduler as `job_type="drift_audit"`
+(see [scheduling](scheduling.md) FR-SCH-010/011, ADR-0026):
+1. Runs `check_fleet_drift(scope)` on its interval — no LLM, no MCP
+   subprocess (attributed to the `scheduler` principal, FR-SCH-013).
+2. Persists per-device results (including clean runs, so "nothing
+   drifted" is a recorded positive, not silence).
+3. Reuses the `drift_alerts` transition logic (`appeared` / `changed` /
+   `cleared`) so each run emits *changes*, not the standing drift set.
+4. `scope` is hierarchy-aware (`org_id`/`site_id`/`group_id`) alongside
+   `tag_filter` / `device_ids`.
+
+### FR-DRF-010 — Drift-alert history is queryable via API 📋
+`DriftAlertStore.list_alerts(...)` already persists transitions
+(KL-DRF-004) but **no REST/MCP endpoint surfaces it** — the audit trail
+is invisible to operators today. Expose it:
+- MCP: `get_drift_alerts(device_id?, since?, transitions?, limit?)`
+- REST: `GET /api/drift/alerts?device_id=&since=&transition=&limit=`
+This is the read side of US-SCHED-005 (observable outcomes) and closes
+the "no drift-history surface" gap.
 
 ## Non-functional requirements
 
@@ -125,7 +152,8 @@ next layer up — not in Phase 8.
 
 ## References
 
-- ADRs: [0012](../decisions/0012-snapshot-on-plans.md), [0014](../decisions/0014-config-in-git-creds-in-db.md), [0015](../decisions/0015-pluggable-facets.md)
+- ADRs: [0012](../decisions/0012-snapshot-on-plans.md), [0014](../decisions/0014-config-in-git-creds-in-db.md), [0015](../decisions/0015-pluggable-facets.md), [0026](../decisions/0026-unified-job-scheduler.md)
+- User stories: [drift-and-monitoring](../user-stories/drift-and-monitoring.md), [scheduled-operations](../user-stories/scheduled-operations.md)
 - Cross-cutting: [observability.md](observability.md), [performance.md](performance.md)
 - Sibling: [snapshot-restore.md](snapshot-restore.md), [scheduling.md](scheduling.md)
-- Code: `admz/snapshot/drift.py`
+- Code: `admz/snapshot/drift.py`, `admz/snapshot/drift_alerts.py`
