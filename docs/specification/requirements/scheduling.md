@@ -82,20 +82,26 @@ Actual surface (corrected):
 
 ## Unified job scheduler (planned — ADR-0026)
 
-### FR-SCH-010 — Job type + handler registry 📋
-Generalize `SnapshotScheduler` → `JobScheduler`. A `ScheduledJob`
-carries a `job_type` (`snapshot` | `drift_audit` | …) plus job-specific
-`params`; a registry maps each `job_type` to an async handler
-`(job, components) -> result_summary`. `_execute_schedule()` dispatches
-by `job_type`. The loop, persistence, `run_now`, and enable/disable
-machinery (FR-SCH-002…008) are reused unchanged. Mirrors the pluggable
-pattern of facets (ADR-0015) / executors / discovery protocols.
+### FR-SCH-010 — Job type + handler registry ✅
+`SnapshotScheduler` now dispatches via a `(job_type → async handler)`
+registry. `ScheduledJob` (alias of `SnapshotSchedule` for back-compat)
+carries `job_type` (`"snapshot"` | `"drift_audit"` | …) plus
+job-specific `params`. Handlers receive a `JobContext` bundle of
+deps. Registered at module import via `@register_job_handler(...)`
+on `admz/snapshot/scheduler.py`. Existing `schedules.json` rows
+without a `job_type` field load as `"snapshot"` so no operator
+action is required (migration per ADR-0026). The loop, persistence,
+`run_now`, and enable/disable machinery (FR-SCH-002…008) are reused
+unchanged.
 
-### FR-SCH-011 — `drift_audit` is the first new job type 📋
-A `drift_audit` job runs `DriftDetector.check_fleet_drift(scope)` on its
-interval, persists per-device results (including clean runs), and reuses
-the `drift_alerts` transition logic so the schedule surfaces *changes*,
-not standing drift. See [drift-detection](drift-detection.md) FR-DRF-009.
+### FR-SCH-011 — `drift_audit` is the first new job type ✅
+A `drift_audit` job runs `DriftDetector.check_fleet_drift(scope)` on
+its interval and feeds each report through
+`DriftAlertStore.process_report` so only *transitions* (appeared /
+changed / cleared) emit alert rows — standing drift is suppressed
+(KL-DRF-004). `last_result` summarises checked count, drifted vs
+clean, and the transition tally. The history is queryable via
+the FR-DRF-010 surface that landed earlier.
 
 ### FR-SCH-012 — Hierarchy-aware scope 📋
 A job's `scope` accepts `org_id` / `site_id` / `group_id` alongside
@@ -103,12 +109,14 @@ A job's `scope` accepts `org_id` / `site_id` / `group_id` alongside
 dynamic Group membership is honored. A scheduled snapshot for a Site
 commits into that Site's Org repo (per the per-Org-repo hierarchy).
 
-### FR-SCH-013 — Scheduled runs attributed to a `scheduler` principal 📋
-A scheduled job executes through ADMZ's own engines — no LLM, no MCP
-subprocess — and is recorded in the audit log as a synthetic
-`scheduler` principal, distinct from `anonymous` and from named
-operators, so automated runs are distinguishable in the who-did-what
-trail.
+### FR-SCH-013 — Scheduled runs attributed to a `scheduler` principal ✅
+Every scheduled-job execution writes one audit row with
+`requester="scheduler"`, `auth_source="scheduler"`, action
+`scheduler.run.<job_type>`, resource `schedule:<id>`. Failures are
+audited too (`success=false` + `error_message`). Operator-driven
+`run_now` invocations through the REST/MCP surface continue to be
+attributed to the calling principal — only the in-process loop is
+the scheduler principal.
 
 ### FR-SCH-014 — Generalized management surface 📋
 `list` / `create` / `update` / `delete` / `run-now` / enable-disable
@@ -153,13 +161,12 @@ Schedules are interval-based ("every 4h"), not cron-based ("every
 day at 02:00 UTC"). "At a specific wall-clock time" requires
 external scheduling or a planned `cron_expression` field.
 
-### KL-SCH-005 — `run_now` can race the interval loop ⚠️
-`run_now(schedule_id)` calls `_execute_schedule` directly while the
-per-schedule loop may already be inside `_execute_schedule` for the
-same job — no per-job lock today. For snapshots this can produce
-back-to-back commits; for any future stateful job it's a correctness
-risk. The unified-scheduler work (ADR-0026) should land a per-job lock
-at the same time.
+### KL-SCH-005 — `run_now` can race the interval loop ✅ (resolved)
+Resolved as part of the unified-scheduler work (#22 Slice A).
+`_execute_schedule` now acquires a per-job `asyncio.Lock` before
+dispatching to the handler, so `run_now` and the interval loop
+serialize for the same `schedule_id`. Different schedules continue
+to run in parallel (the lock is per-job, not global).
 
 ## References
 
