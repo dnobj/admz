@@ -70,19 +70,23 @@ surface and `check_device_drift` tool that never shipped):
 Both surface the DriftReport JSON; agents typically narrow the
 result to `fields` matching a particular path before acting.
 
-### FR-DRF-009 — Scheduled configuration audit 📋
+### FR-DRF-009 — Scheduled configuration audit 🚧
 A recurring, unattended configuration audit — the operator-facing
 framing of a scheduled fleet drift sweep. Rather than a bespoke drift
 scheduler, it rides the unified job scheduler as `job_type="drift_audit"`
 (see [scheduling](scheduling.md) FR-SCH-010/011, ADR-0026):
-1. Runs `check_fleet_drift(scope)` on its interval — no LLM, no MCP
+1. ✅ Runs `check_fleet_drift(scope)` on its interval — no LLM, no MCP
    subprocess (attributed to the `scheduler` principal, FR-SCH-013).
-2. Persists per-device results (including clean runs, so "nothing
-   drifted" is a recorded positive, not silence).
-3. Reuses the `drift_alerts` transition logic (`appeared` / `changed` /
+2. 📋 Persists per-device results (including clean runs, so "nothing
+   drifted" is a recorded positive, not silence). Today only
+   *transitions* are persisted (in `drift_alerts`); clean-run
+   evidence is not yet recorded — deferred follow-up.
+3. ✅ Reuses the `drift_alerts` transition logic (`appeared` / `changed` /
    `cleared`) so each run emits *changes*, not the standing drift set.
-4. `scope` is hierarchy-aware (`org_id`/`site_id`/`group_id`) alongside
-   `tag_filter` / `device_ids`.
+4. 📋 `scope` is hierarchy-aware (`org_id`/`site_id`/`group_id`) alongside
+   `tag_filter` / `device_ids`. Today scope is `tag_filter` + `device_ids`
+   only; hierarchy fields land with FR-SCH-012 when Org/Site/Group
+   Slice 2 lands.
 
 ### FR-DRF-010 — Drift-alert history is queryable via API ✅
 `DriftAlertStore.list_alerts(...)` already persists transitions
