@@ -1601,6 +1601,7 @@ class ADMZMCPServer:
                         arguments["interval"],
                         arguments.get("tag_filter"),
                         arguments.get("device_ids"),
+                        arguments.get("job_type") or "snapshot",
                     )
                 elif name == "list_snapshot_schedules":
                     result = await self._list_snapshot_schedules()
@@ -2848,7 +2849,22 @@ class ADMZMCPServer:
         interval: str,
         tag_filter: Optional[str],
         device_ids: Optional[List[str]],
+        job_type: str = "snapshot",
     ) -> Dict[str, Any]:
+        """FR-SCH-014 — accepts ``job_type`` so the LLM can schedule
+        any registered job (snapshot, drift_audit, …) through the
+        same tool. Defaults to 'snapshot' for back-compat with the
+        original tool contract."""
+        from admz.snapshot.scheduler import list_job_types
+
+        if job_type not in list_job_types():
+            return {
+                "success": False,
+                "error": (
+                    f"Unknown job_type {job_type!r}. "
+                    f"Registered: {list_job_types()}."
+                ),
+            }
         try:
             interval_seconds = parse_interval(interval)
         except ValueError as e:
@@ -2860,13 +2876,14 @@ class ADMZMCPServer:
             interval_seconds=interval_seconds,
             tag_filter=tag_filter,
             device_ids=device_ids,
+            job_type=job_type,
         )
         self.scheduler.add_schedule(schedule)
 
         return {
             "success": True,
             "message": (
-                f"Schedule '{schedule_id}' created — snapshots every "
+                f"Schedule '{schedule_id}' created — {job_type} every "
                 f"{schedule.interval_human}"
             ),
             "schedule": schedule.to_dict(),

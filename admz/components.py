@@ -246,6 +246,10 @@ def build_components(
     scheduler = SnapshotScheduler(
         snapshot_engine=snapshot_engine,
         schedule_path=schedule_path,
+        # ADR-0026: pass the drift detector so the unified scheduler's
+        # drift_audit handler can call check_fleet_drift without
+        # reaching for a global.
+        drift_detector=drift_detector,
     )
 
     # Health monitor: background poller that maintains the

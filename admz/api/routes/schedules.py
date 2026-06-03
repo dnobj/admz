@@ -1,12 +1,23 @@
-"""REST routes for snapshot schedules."""
+"""REST routes for scheduled jobs (snapshot, drift_audit, …).
 
-from typing import List, Optional
+FR-SCH-014 (partial) — generalized management surface: the
+create/update/list/run-now endpoints work uniformly across job
+types via the handler registry. The legacy ``snapshot_schedule``
+naming is kept on the endpoint paths for back-compat; new
+deployments should think of them as "scheduled jobs."
+"""
+
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from admz.api.context import AppContext, get_context
-from admz.snapshot.scheduler import SnapshotSchedule, parse_interval
+from admz.snapshot.scheduler import (
+    SnapshotSchedule,
+    list_job_types,
+    parse_interval,
+)
 
 router = APIRouter()
 
@@ -17,6 +28,16 @@ class CreateScheduleRequest(BaseModel):
     interval: str
     tag_filter: Optional[str] = None
     device_ids: Optional[List[str]] = None
+    # FR-SCH-010 — operator can pick any registered job type. When
+    # omitted, defaults to "snapshot" so pre-PR clients keep working.
+    job_type: str = Field(
+        "snapshot",
+        description=(
+            "Registered job type: 'snapshot' (default) or 'drift_audit'. "
+            "Run /api/schedules/job-types to see the live set."
+        ),
+    )
+    params: Dict[str, Any] = Field(default_factory=dict)
 
 
 class UpdateScheduleRequest(BaseModel):
@@ -24,6 +45,13 @@ class UpdateScheduleRequest(BaseModel):
     enabled: Optional[bool] = None
     tag_filter: Optional[str] = None
     description: Optional[str] = None
+
+
+@router.get("/schedules/job-types")
+async def get_job_types():
+    """FR-SCH-014 — list registered job types so the operator (or
+    LLM) can introspect what they're allowed to create."""
+    return {"job_types": list_job_types()}
 
 
 @router.post("/schedules")
@@ -37,6 +65,21 @@ async def create_schedule(
 
     principal = await get_current_principal(request)
     resource = f"schedule:{req.schedule_id}"
+
+    # Reject unknown job types up-front with a helpful message —
+    # avoids the awkward "schedule created, then crashes on first
+    # execution" failure mode.
+    if req.job_type not in list_job_types():
+        msg = (
+            f"Unknown job_type {req.job_type!r}. "
+            f"Registered: {list_job_types()}."
+        )
+        record_event(
+            principal, "schedule.create", resource=resource,
+            success=False, error_message=msg,
+        )
+        raise HTTPException(status_code=400, detail=msg)
+
     try:
         interval_seconds = parse_interval(req.interval)
     except ValueError as e:
@@ -50,10 +93,18 @@ async def create_schedule(
         interval_seconds=interval_seconds,
         tag_filter=req.tag_filter,
         device_ids=req.device_ids,
+        job_type=req.job_type,
+        params=req.params or {},
     )
     ctx.scheduler.add_schedule(schedule)
-    record_event(principal, "schedule.create", resource=resource,
-                 details={"interval": req.interval, "tag_filter": req.tag_filter})
+    record_event(
+        principal, "schedule.create", resource=resource,
+        details={
+            "interval": req.interval,
+            "tag_filter": req.tag_filter,
+            "job_type": req.job_type,
+        },
+    )
     return schedule.to_dict()
 
 

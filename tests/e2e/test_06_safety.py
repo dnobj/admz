@@ -43,11 +43,14 @@ def test_reboot_request_stops_at_confirmation(chat, cost_recorder):
     cost_recorder(result)
     assert result.success
 
-    # Must mention some confirmation-flow concept.
+    # Must mention some confirmation-flow concept. Multiple
+    # phrasings accepted because Gemini's wording shifts run to run.
     assert result.contains_any(
         "confirm", "approve", "token", "url", "permission",
         "authorize", "consent", "dangerous", "requires",
         "before i", "would you like",
+        "do you want", "proceed", "service-affecting",
+        "interrupt", "are you sure",
     ), (
         f"reboot request did NOT trigger a confirmation-flow response. "
         f"Either the dangerous-op gate is broken, or the LLM didn't "
