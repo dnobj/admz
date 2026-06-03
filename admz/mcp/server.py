@@ -212,6 +212,30 @@ def _validate_tool_args(name: str, arguments: Any) -> Optional[str]:
     return None
 
 
+# Task #41: MCP-side parity with the CR-3 REST gate. The REST routes
+# DELETE /api/devices/{id}, POST /api/snapshot/restore, and
+# POST /api/plans/{id}/execute require_authenticated_principal — but
+# their MCP equivalents (delete_device, restore_device, execute_plan)
+# had no such gate. Discovered live during the E2E suite's dogfooding:
+# the LLM, given an anonymous-principal chat session, called
+# delete_device on a real device and the registry actually dropped
+# it. This gate closes that asymmetry.
+#
+# The check is at the dispatcher level (not per-handler) so the
+# allow/deny decision is in one place — easy to audit, easy to extend.
+#
+# Note: set_fleet_setting against PROTECTED_SETTING_KEYS already
+# enforces its own anonymous-block inside the handler, so it isn't
+# duplicated here. delete_account is intentionally NOT in this set —
+# the REST equivalent isn't in CR-3's destructive list either
+# (it's audited but not gated; accounts are re-addable).
+_DESTRUCTIVE_MCP_TOOLS = frozenset({
+    "delete_device",
+    "restore_device",
+    "execute_plan",
+})
+
+
 def _annotate_snapshot_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
     """Add an unambiguous ``committed`` flag + human-readable ``message``
     to a SnapshotResult.to_summary() dict.
@@ -1325,6 +1349,49 @@ class ADMZMCPServer:
                 err_envelope = {
                     "error": "InvalidInput",
                     "message": validation_error,
+                }
+                try:
+                    return [TextContent(
+                        type="text",
+                        text=json.dumps(err_envelope, indent=2),
+                    )]
+                finally:
+                    from admz.audit import audit_log
+                    audit_log.record(
+                        requester=self.principal.name,
+                        auth_source=self.principal.source,
+                        action=f"mcp.{name}",
+                        resource=_tool_resource(name, arguments),
+                        details={"args": args_sanitized},
+                        success=False,
+                        error_message=audit_error,
+                    )
+
+            # Task #41: MCP-side parity with the CR-3 REST gate.
+            # Anonymous principals (the default ADMZ_AUTH_BACKEND=none
+            # mapping for unauth'd chat) refuse the destructive tools.
+            # See _DESTRUCTIVE_MCP_TOOLS at module top for the list +
+            # rationale.
+            if (
+                name in _DESTRUCTIVE_MCP_TOOLS
+                and getattr(self.principal, "is_anonymous", False)
+            ):
+                audit_error = "PermissionDenied: anonymous-blocked"
+                err_envelope = {
+                    "error": "PermissionDenied",
+                    "message": (
+                        f"The '{name}' tool requires an authenticated "
+                        "principal. The default ADMZ_AUTH_BACKEND=none "
+                        "maps every caller to the anonymous principal, "
+                        "which can read fleet state and perform low-risk "
+                        "writes but cannot perform destructive operations. "
+                        "To unblock: mint an API key "
+                        "(ADMZ_AUTH_BACKEND=api-key) and authenticate to "
+                        "the web/REST surface, or stand up Windows IWA "
+                        "(ADMZ_AUTH_BACKEND=composite). The MCP "
+                        "subprocess inherits the chat user's identity "
+                        "via the principal-passing mechanism added in CR-4."
+                    ),
                 }
                 try:
                     return [TextContent(
