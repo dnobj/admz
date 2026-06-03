@@ -5,6 +5,7 @@ Complete table of contents for the ADMZ specification.
 ## Entry points
 
 - **[README.md](README.md)** — what this directory is and how to read it
+- **[process.md](process.md)** — how the spec and GitHub issues work together (requirements as source of truth, issues as the work queue); the two-loop async workflow
 - **[00-overview.md](00-overview.md)** — mission, scope, non-goals
 - **[glossary.md](glossary.md)** — terms and abbreviations
 
@@ -127,6 +128,8 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 ## Reading paths by role
 
 - **"I'm onboarding to ADMZ"** → README → overview → personas → user-stories → glossary.
+- **"I'm running the requirements / implementation loops"** → [process](process.md) → the spec area you're working in.
+- **"I'm implementing a GitHub issue"** → [process](process.md) → the requirement/story IDs the issue references → related decisions.
 - **"I'm adding a feature"** → overview → relevant capability requirement → related decisions.
 - **"I'm adding a catalog operation"** → catalog requirement → decisions 0001–0004 → existing YAML in `catalog/vapix/`.
 - **"I'm adding a new device family"** → extensibility requirement → decisions 0011, 0015.
