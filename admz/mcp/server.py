@@ -212,6 +212,40 @@ def _validate_tool_args(name: str, arguments: Any) -> Optional[str]:
     return None
 
 
+def _annotate_snapshot_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
+    """Add an unambiguous ``committed`` flag + human-readable ``message``
+    to a SnapshotResult.to_summary() dict.
+
+    The underlying snapshot engine returns ``git_sha: null`` when the
+    captured config is identical to the working tree — a legitimate
+    "nothing changed" outcome rather than a failure. The LLM was
+    interpreting the null SHA as failure and telling users "I
+    couldn't retrieve the commit SHA", which was both inaccurate and
+    confusing. This wrapper makes the two cases distinguishable:
+
+      * ``committed=true, git_sha=<sha>, message="Snapshot committed..."``
+      * ``committed=false, git_sha=null, message="Device configuration
+         unchanged since last snapshot — nothing to commit."``
+    """
+    sha = summary.get("git_sha")
+    out = dict(summary)
+    if sha:
+        out["committed"] = True
+        out["message"] = (
+            f"Snapshot committed as {sha[:12]}. "
+            f"{summary.get('facets_succeeded', 0)} facet(s) captured."
+        )
+    else:
+        out["committed"] = False
+        out["message"] = (
+            "Device configuration unchanged since the last snapshot — "
+            "nothing to commit. This is a successful no-op; the device "
+            "was probed and its config matches what's already in the "
+            "archive at HEAD."
+        )
+    return out
+
+
 def _tool_resource(name: str, arguments: Any) -> str:
     """Build a short ``resource`` string for the audit row.
 
@@ -900,9 +934,13 @@ class ADMZMCPServer:
                         "to the config git repository. Reads all applicable "
                         "facets (image, network, time, events, etc.) and writes "
                         "normalized YAML + raw responses. Returns a summary "
-                        "of what was captured. Just call this with device_id — "
-                        "the optional git commit message defaults to a sensible "
-                        "value; do not prompt the user for it."
+                        "with `committed` (bool) + `message` (string). When "
+                        "`committed=false` the device's config was unchanged "
+                        "since the last snapshot — this is a SUCCESS, not a "
+                        "failure; tell the user 'no changes since last snapshot' "
+                        "rather than 'I couldn't take the snapshot'. Just call "
+                        "with device_id; the optional git commit message defaults "
+                        "to a sensible value — do not prompt the user for it."
                     ),
                     inputSchema={
                         "type": "object",
@@ -2343,7 +2381,7 @@ class ADMZMCPServer:
         )
         return {
             "success": True,
-            **snapshot.to_summary(),
+            **_annotate_snapshot_summary(snapshot.to_summary()),
         }
 
     async def _snapshot_fleet(
@@ -2352,10 +2390,16 @@ class ADMZMCPServer:
         snapshots = await self.snapshot_engine.snapshot_fleet(
             tag_filter=tag_filter, message=message
         )
+        results = [
+            _annotate_snapshot_summary(s.to_summary()) for s in snapshots
+        ]
+        committed = sum(1 for r in results if r["committed"])
         return {
             "success": True,
             "count": len(snapshots),
-            "results": [s.to_summary() for s in snapshots],
+            "committed_count": committed,
+            "unchanged_count": len(results) - committed,
+            "results": results,
         }
 
     async def _restore_device(
