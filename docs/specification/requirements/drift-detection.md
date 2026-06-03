@@ -84,14 +84,18 @@ scheduler, it rides the unified job scheduler as `job_type="drift_audit"`
 4. `scope` is hierarchy-aware (`org_id`/`site_id`/`group_id`) alongside
    `tag_filter` / `device_ids`.
 
-### FR-DRF-010 — Drift-alert history is queryable via API 📋
+### FR-DRF-010 — Drift-alert history is queryable via API ✅
 `DriftAlertStore.list_alerts(...)` already persists transitions
-(KL-DRF-004) but **no REST/MCP endpoint surfaces it** — the audit trail
-is invisible to operators today. Expose it:
+(KL-DRF-004) and is now surfaced via:
 - MCP: `get_drift_alerts(device_id?, since?, transitions?, limit?)`
 - REST: `GET /api/drift/alerts?device_id=&since=&transition=&limit=`
-This is the read side of US-SCHED-005 (observable outcomes) and closes
-the "no drift-history surface" gap.
+Both are read-only, anonymous-allowed + audited; `device_id` flows
+through `validate_identifier` (CR-5); `transition` is validated
+against the {appeared, changed, cleared} allow-list; `since`
+accepts ISO-8601 or unix timestamps; `limit` caps at 1000.
+Implemented in `admz/api/routes/drift.py` and
+`admz.mcp.server._get_drift_alerts`. This is the read side of
+US-SCHED-005 (observable outcomes).
 
 ## Non-functional requirements
 
