@@ -1115,6 +1115,63 @@ class ADMZMCPServer:
                         "required": [],
                     },
                 ),
+                # --- FR-DRF-010: drift-alert history (read-only) ---
+                Tool(
+                    name="get_drift_alerts",
+                    description=(
+                        "Read the drift-alert history that check_drift "
+                        "writes as a side effect of every run. Each row "
+                        "records a transition for a device: "
+                        "'appeared' (drift detected for the first time), "
+                        "'changed' (drift field-count changed since last "
+                        "check), 'cleared' (device is back in sync). "
+                        "Use this to answer 'what drift have we seen in "
+                        "the last 24h?' / 'show me every alert for "
+                        "device X' without re-running expensive probes. "
+                        "Read-only: no device traffic, no commits."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": (
+                                    "Filter to one device. Omit for all."
+                                ),
+                            },
+                            "since": {
+                                "type": "string",
+                                "description": (
+                                    "Lower bound on alert timestamp. "
+                                    "Accepts ISO-8601 (e.g. "
+                                    "'2026-06-03T04:14:43Z') or a unix "
+                                    "timestamp. Omit for no lower bound."
+                                ),
+                            },
+                            "transitions": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "enum": ["appeared", "changed", "cleared"],
+                                },
+                                "description": (
+                                    "Filter to specific transition types. "
+                                    "Omit for all."
+                                ),
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 1000,
+                                "default": 100,
+                                "description": (
+                                    "Max alerts to return (newest first)."
+                                ),
+                            },
+                        },
+                        "required": [],
+                    },
+                ),
                 # --- Credential probe tool ---
                 Tool(
                     name="test_device_credentials",
@@ -1526,6 +1583,8 @@ class ADMZMCPServer:
                         arguments.get("device_id"),
                         arguments.get("tag_filter"),
                     )
+                elif name == "get_drift_alerts":
+                    result = await self._get_drift_alerts(arguments)
                 # --- Credential probe ---
                 elif name == "test_device_credentials":
                     result = await self._test_credentials(arguments)
@@ -2548,6 +2607,66 @@ class ADMZMCPServer:
                 "drifted": sum(1 for r in reports if r.has_drift),
                 "reports": [r.to_summary() for r in reports],
             }
+
+    async def _get_drift_alerts(
+        self, arguments: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """FR-DRF-010 — return rows from the drift_alerts table.
+
+        Same shape as ``DriftAlertStore.list_alerts``; argument
+        validation lives at the dispatcher layer (CR-5 device_id
+        check, transitions whitelist) so this just unpacks.
+        """
+        from admz.snapshot import drift_alerts as _da_mod
+
+        device_id = arguments.get("device_id") or None
+        since = arguments.get("since")
+        transitions = arguments.get("transitions") or None
+        limit = int(arguments.get("limit") or 100)
+
+        # Reuse the REST handler's parser so a unix-timestamp /
+        # ISO-8601 string Just Works the same way through both
+        # surfaces. Single source of truth for the parsing rule.
+        if since is not None and since != "":
+            from admz.api.routes.drift import _parse_since
+            try:
+                since_ts = _parse_since(str(since))
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": "InvalidInput",
+                    "message": f"could not parse since={since!r}: {e}",
+                }
+        else:
+            since_ts = None
+
+        # Validate transition strings (the REST layer rejects typos
+        # with 400; the MCP layer returns an InvalidInput envelope
+        # for consistency with other tools).
+        valid_transitions = {"appeared", "changed", "cleared"}
+        if transitions:
+            bad = [t for t in transitions if t not in valid_transitions]
+            if bad:
+                return {
+                    "success": False,
+                    "error": "InvalidInput",
+                    "message": (
+                        f"Unknown transition(s): {bad}. "
+                        f"Valid: {sorted(valid_transitions)}."
+                    ),
+                }
+
+        alerts = _da_mod.drift_alerts.list_alerts(
+            since=since_ts,
+            device_id=device_id,
+            transitions=list(transitions) if transitions else None,
+            limit=limit,
+        )
+        return {
+            "success": True,
+            "count": len(alerts),
+            "alerts": [a.to_dict() for a in alerts],
+        }
 
     # ------------------------------------------------------------------
     # Credential probe handler
