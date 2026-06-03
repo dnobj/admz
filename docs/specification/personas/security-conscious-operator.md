@@ -16,6 +16,7 @@
 - **Keep credentials out of LLM context.** Never let a plaintext password flow into a model.
 - **Encrypt credentials at rest.** Default storage encryption with documented key handling.
 - **Audit access to credentials and execution of operations.** Who got what credential when, what plan ran when, what changed when.
+- **Audit device configuration on a schedule.** Detect unauthorized or out-of-band config changes (someone logged into a device's own web UI, an integration partner pushed a config) without relying on anyone remembering to look — a recurring, unattended configuration audit that runs with no LLM in the loop.
 - **Block writes to security-critical fleet settings from anywhere but the web UI.** The LLM cannot loosen its own guardrails.
 - **Verify device identity** before trusting it — confirm certificates, MAC OUI, serial.
 - **Defend against typical web vulnerabilities** — CSRF, XSS, open CORS, weak TLS.
@@ -35,6 +36,8 @@
 
 - [LLM-driven configuration](../user-stories/llm-driven-configuration.md) — the gating points.
 - [Credential management](../user-stories/credential-management.md) — OOB capture, temp creds, rotation.
+- [Drift and monitoring](../user-stories/drift-and-monitoring.md) — configuration audits (just-in-time + scheduled) as a detective control.
+- [Scheduled operations](../user-stories/scheduled-operations.md) — the unattended-job framework scheduled audits run on (no LLM in the loop).
 - This persona is also the *author* of the security and reliability requirements files.
 
 ## What ADMZ owes this persona

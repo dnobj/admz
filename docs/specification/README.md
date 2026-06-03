@@ -15,6 +15,8 @@ It is the answer to questions like: *what is this project supposed to do, for wh
 
 Start with **[INDEX.md](INDEX.md)** for the full table of contents.
 
+If you're *contributing* — refining requirements or implementing them — read **[process.md](process.md)** for how this spec and the project's GitHub issues fit together as two asynchronous loops (spec = source of truth, issues = work queue).
+
 If you're new to ADMZ:
 
 1. Read **[00-overview.md](00-overview.md)** for mission, scope, and non-goals.

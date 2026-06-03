@@ -5,6 +5,7 @@ Complete table of contents for the ADMZ specification.
 ## Entry points
 
 - **[README.md](README.md)** — what this directory is and how to read it
+- **[process.md](process.md)** — how the spec and GitHub issues work together (requirements as source of truth, issues as the work queue); the two-loop async workflow
 - **[00-overview.md](00-overview.md)** — mission, scope, non-goals
 - **[glossary.md](glossary.md)** — terms and abbreviations
 
@@ -30,7 +31,8 @@ Workflows the system must support. Grouped by area.
 - [Chatbot-driven workflows](user-stories/chatbot-driven-workflows.md) 📋 — what the bundled chat client will deliver
 - [Network discovery](user-stories/network-discovery.md) — finding devices on the local network
 - [Demo workflows](user-stories/demo-workflows.md) — Experience Center-specific demo/tag/restore patterns
-- [Drift and monitoring](user-stories/drift-and-monitoring.md) — detecting and reconciling unauthorized changes
+- [Drift and monitoring](user-stories/drift-and-monitoring.md) — configuration audits (just-in-time + scheduled), detecting and reconciling unauthorized changes
+- [Scheduled operations](user-stories/scheduled-operations.md) 📋 — recurring unattended jobs (snapshots, configuration audits) on one scheduler
 - [Firmware operations](user-stories/firmware-operations.md) — fetch, plan upgrades, apply
 
 ## Requirements
@@ -54,6 +56,7 @@ What the system must do, per capability area. Each file has Functional Requireme
 - [Web API](requirements/web-api.md) — REST surface
 - [Web UI](requirements/web-ui.md)
 - [Web chatbot](requirements/web-chatbot.md) 🚧 — bundled Gemini-powered chat client (Phase 5)
+- [Organization hierarchy](requirements/hierarchy.md) 📋 — Org → Site → Group → Device (draft skeleton)
 
 ### Cross-cutting requirements
 
@@ -115,6 +118,7 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 
 - [0012 — Snapshot/restore implemented on top of the plan engine](decisions/0012-snapshot-on-plans.md)
 - [0013 — Hybrid YAML + raw artifact format](decisions/0013-hybrid-yaml-and-raw.md)
+- [0026 — Unified job scheduler](decisions/0026-unified-job-scheduler.md) 📋 (proposed) — generalize the snapshot-only scheduler to job types; enables scheduled configuration audits
 
 ### Discovery
 
@@ -124,6 +128,8 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 ## Reading paths by role
 
 - **"I'm onboarding to ADMZ"** → README → overview → personas → user-stories → glossary.
+- **"I'm running the requirements / implementation loops"** → [process](process.md) → the spec area you're working in.
+- **"I'm implementing a GitHub issue"** → [process](process.md) → the requirement/story IDs the issue references → related decisions.
 - **"I'm adding a feature"** → overview → relevant capability requirement → related decisions.
 - **"I'm adding a catalog operation"** → catalog requirement → decisions 0001–0004 → existing YAML in `catalog/vapix/`.
 - **"I'm adding a new device family"** → extensibility requirement → decisions 0011, 0015.

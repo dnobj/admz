@@ -1,8 +1,19 @@
 # Requirements: scheduling
 
-In-process scheduler for recurring snapshots and drift checks.
-Survives restart, supports per-tag and per-device-list filters,
+In-process scheduler for recurring jobs. **Today it runs snapshots
+only.** The design (ADR-0026) generalizes it into a job-type +
+handler-registry scheduler whose first new job type is the scheduled
+**configuration audit** (`drift_audit`). Survives restart, supports
+per-tag and per-device-list filters (and, planned, per-Org/Site/Group),
 human-readable intervals.
+
+> **Accuracy note (2026-05-21):** earlier revisions of this file marked
+> drift scheduling and a `/api/v2/...` surface as ✅. Neither shipped —
+> `_execute_schedule()` hardcodes `snapshot_fleet()`, there are no
+> `register_drift_schedule` / `set_schedule_enabled` symbols, and the
+> REST surface is `/api/schedules`, not `/api/v2/...`. The statuses
+> below have been corrected against the code, and the planned
+> generalization is captured as ADR-0026.
 
 ## Status legend
 ✅ implemented · 🚧 partial · ⚠️ known limitation · 📋 planned
@@ -36,15 +47,13 @@ Each tick checks every enabled schedule's `next_run` and fires
 ready jobs. One scheduler instance per process — enforced by the
 components builder (FR-CORE-006).
 
-### FR-SCH-005 — Two job types: snapshot, drift ✅
-A schedule's job type is implicit in the engine reference:
-- Schedules calling `snapshot_engine.snapshot_fleet` are snapshot
-  schedules
-- Schedules calling `drift_detector.check_fleet_drift` are drift
-  schedules
-
-The factory functions `register_snapshot_schedule(...)` and
-`register_drift_schedule(...)` wire the right callable.
+### FR-SCH-005 — Snapshot is the only job type today 🚧
+`_execute_schedule()` calls `engine.snapshot_fleet(...)` directly;
+`SnapshotSchedule` carries only snapshot params. There is **no** drift
+job type and **no** `register_drift_schedule` / `register_snapshot_schedule`
+factory in the code. Generalizing to multiple job types — starting with
+`drift_audit` — is planned via the unified job scheduler (FR-SCH-010,
+ADR-0026).
 
 ### FR-SCH-006 — Bounded concurrency via shared semaphore ✅
 Both snapshot and drift jobs go through `snapshot_engine` which
@@ -63,9 +72,49 @@ maintenance windows. Toggling re-computes `next_run` from now +
 interval.
 
 ### FR-SCH-009 — Schedules exposed via MCP and REST ✅
-- MCP: `list_schedules`, `create_schedule`, `delete_schedule`,
-  `set_schedule_enabled`
-- REST: `GET/POST /api/v2/schedules`, `DELETE /api/v2/schedules/{id}`
+Actual surface (corrected):
+- MCP: `list_snapshot_schedules`, `create_snapshot_schedule`,
+  `update_snapshot_schedule`, `delete_snapshot_schedule`,
+  `run_snapshot_schedule`
+- REST: `GET/POST /api/schedules`, `PATCH/DELETE /api/schedules/{id}`,
+  `POST /api/schedules/{id}/run`. Writes follow the post-CR-3 pattern
+  (`require_authenticated_principal` + audited).
+
+## Unified job scheduler (planned — ADR-0026)
+
+### FR-SCH-010 — Job type + handler registry 📋
+Generalize `SnapshotScheduler` → `JobScheduler`. A `ScheduledJob`
+carries a `job_type` (`snapshot` | `drift_audit` | …) plus job-specific
+`params`; a registry maps each `job_type` to an async handler
+`(job, components) -> result_summary`. `_execute_schedule()` dispatches
+by `job_type`. The loop, persistence, `run_now`, and enable/disable
+machinery (FR-SCH-002…008) are reused unchanged. Mirrors the pluggable
+pattern of facets (ADR-0015) / executors / discovery protocols.
+
+### FR-SCH-011 — `drift_audit` is the first new job type 📋
+A `drift_audit` job runs `DriftDetector.check_fleet_drift(scope)` on its
+interval, persists per-device results (including clean runs), and reuses
+the `drift_alerts` transition logic so the schedule surfaces *changes*,
+not standing drift. See [drift-detection](drift-detection.md) FR-DRF-009.
+
+### FR-SCH-012 — Hierarchy-aware scope 📋
+A job's `scope` accepts `org_id` / `site_id` / `group_id` alongside
+`tag_filter` / `device_ids`, resolved to a device set at run time so
+dynamic Group membership is honored. A scheduled snapshot for a Site
+commits into that Site's Org repo (per the per-Org-repo hierarchy).
+
+### FR-SCH-013 — Scheduled runs attributed to a `scheduler` principal 📋
+A scheduled job executes through ADMZ's own engines — no LLM, no MCP
+subprocess — and is recorded in the audit log as a synthetic
+`scheduler` principal, distinct from `anonymous` and from named
+operators, so automated runs are distinguishable in the who-did-what
+trail.
+
+### FR-SCH-014 — Generalized management surface 📋
+`list` / `create` / `update` / `delete` / `run-now` / enable-disable
+work uniformly across all job types (the snapshot-specific MCP/REST
+names generalize). A web-UI schedules dashboard (cadence, last outcome,
+drill-in) is the operator-facing view — currently there is none.
 
 ## Non-functional requirements
 
@@ -104,9 +153,18 @@ Schedules are interval-based ("every 4h"), not cron-based ("every
 day at 02:00 UTC"). "At a specific wall-clock time" requires
 external scheduling or a planned `cron_expression` field.
 
+### KL-SCH-005 — `run_now` can race the interval loop ⚠️
+`run_now(schedule_id)` calls `_execute_schedule` directly while the
+per-schedule loop may already be inside `_execute_schedule` for the
+same job — no per-job lock today. For snapshots this can produce
+back-to-back commits; for any future stateful job it's a correctness
+risk. The unified-scheduler work (ADR-0026) should land a per-job lock
+at the same time.
+
 ## References
 
-- ADRs: [0008](../decisions/0008-mcp-and-rest-surfaces.md), [0012](../decisions/0012-snapshot-on-plans.md)
+- ADRs: [0008](../decisions/0008-mcp-and-rest-surfaces.md), [0012](../decisions/0012-snapshot-on-plans.md), [0026](../decisions/0026-unified-job-scheduler.md)
+- User stories: [scheduled-operations](../user-stories/scheduled-operations.md), [drift-and-monitoring](../user-stories/drift-and-monitoring.md)
 - Cross-cutting: [reliability.md](reliability.md), [observability.md](observability.md), [performance.md](performance.md)
 - Sibling: [snapshot-restore.md](snapshot-restore.md), [drift-detection.md](drift-detection.md)
 - Code: `admz/snapshot/scheduler.py`

@@ -19,6 +19,7 @@
 - **Tag a configuration** before a customer visit ("pre-Acme-visit-2026-05-12") so it's trivially restorable.
 - **See history** for blame/audit purposes — who changed bitrate on camera-conference-03 last Tuesday?
 - **Roll back drift** when someone logs into a device's own web UI mid-demo and changes things.
+- **Audit a setup before a customer visit** — a just-in-time configuration audit ("are the lobby cameras still exactly how I left them?") so surprises surface *before* the visitor arrives, not during the demo.
 - **Tell visitors "here's how this was configured"** with receipts (the git commit + the diff).
 
 ## Pains today (without ADMZ)
