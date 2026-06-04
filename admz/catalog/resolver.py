@@ -30,7 +30,11 @@ _INTENT_SYNONYMS: Dict[str, List[str]] = {
     "flip": ["rotate-image"],
     "mirror": ["rotate-image"],
     "stream profile": ["configure-stream-profile"],
-    "stream": ["configure-stream-profile"],
+    # A bare "stream" is ambiguous between *configuring* a profile and asking
+    # for live *status*. Surface both so the LLM can disambiguate by intent
+    # ("active/who's watching" -> status, "configure/profile" -> profile);
+    # otherwise the greedy substring match on "stream" buried streamstatus.cgi.
+    "stream": ["configure-stream-profile", "stream-status"],
     "hostname": ["set-hostname"],
     "host name": ["set-hostname"],
     "network": ["configure-network"],
@@ -109,6 +113,14 @@ _INTENT_SYNONYMS: Dict[str, List[str]] = {
     "health check": ["check-heartbeat"],
     "stream status": ["stream-status"],
     "active streams": ["stream-status"],
+    "active video streams": ["stream-status"],
+    "video streams": ["stream-status"],
+    "live streams": ["stream-status"],
+    "current streams": ["stream-status"],
+    "list streams": ["stream-status"],
+    "stream sessions": ["stream-status"],
+    "connected viewers": ["stream-status"],
+    "who is connected": ["stream-status"],
     "viewers": ["stream-status"],
     "who is watching": ["stream-status"],
     "overlay modifiers": ["check-overlay-modifiers"],

@@ -171,6 +171,59 @@ class TestFlashResolvesToSirenAndLight:
         ]
 
 
+class TestStreamStatusVsProfile:
+    """Regression — backward-discoverability probe (the catalog QA sweep).
+
+    Asking "list the currently active video streams" surfaced only
+    ``streamprofile.cgi`` (stream *configuration*), never
+    ``streamstatus.cgi:getAllStreams`` (the live-stream *status* API). Root
+    cause: the greedy bare synonym ``"stream" -> configure-stream-profile``
+    substring-matched any query containing "stream", while the stream-status
+    synonyms ("stream status", "active streams") didn't match "active *video*
+    streams" because "video" is interleaved. Fix: natural-language stream
+    phrasings map to stream-status, and a bare "stream" now surfaces BOTH
+    tasks so the LLM can disambiguate.
+    """
+
+    def _resolver(self):
+        from admz.catalog.loader import CatalogLoader
+        from admz.catalog.resolver import CatalogResolver
+        return CatalogResolver(CatalogLoader(str(PROJECT_ROOT / "catalog")))
+
+    def test_active_video_streams_maps_to_stream_status(self):
+        from admz.catalog.resolver import _INTENT_SYNONYMS
+        assert "active video streams" in _INTENT_SYNONYMS
+        assert _INTENT_SYNONYMS["active video streams"] == ["stream-status"]
+        # A bare "stream" must surface stream-status as a co-candidate.
+        assert "stream-status" in _INTENT_SYNONYMS["stream"]
+        assert "configure-stream-profile" in _INTENT_SYNONYMS["stream"]
+
+    def test_match_intent_surfaces_stream_status(self):
+        r = self._resolver()
+        for intent in (
+            "list the currently active video streams",
+            "active video streams",
+            "stream status",
+            "who is connected to the stream",
+        ):
+            keys = r._match_intent(intent, "vapix")
+            assert "stream-status" in keys, (
+                f"intent {intent!r} should surface stream-status, got {keys}"
+            )
+
+    def test_resolve_surfaces_streamstatus_getallstreams(self):
+        r = self._resolver()
+        res = r.resolve(
+            device_id="B8A44FD0257C",
+            intent="list the currently active video streams",
+            family="vapix",
+        )
+        op_ids = [o.get("id") for o in res.operations]
+        assert "streamstatus.cgi:getAllStreams" in op_ids, (
+            f"streamstatus.cgi:getAllStreams missing from candidates: {op_ids}"
+        )
+
+
 class TestParseHelpers:
     def test_extract_synonym_targets_finds_known_entries(self):
         targets = _extract_synonym_targets()
