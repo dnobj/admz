@@ -62,6 +62,13 @@ A Site belongs to exactly one Organization. Fields: `site_id`,
 maps to the Org.
 <!-- TODO: can a site move between orgs? default = no -->
 
+> **Multi-ACS note:** A single Site may contain **multiple Axis Camera Station
+> Pro servers** (e.g. a large facility with separate ACS instances per building
+> wing). ACS server records are site-scoped targets — `site_id` is a required
+> field on every ACS record. The data model must support N ACS servers per Site
+> from the start; a 1:1 assumption would require a breaking migration later.
+> See [multi-target-support.md](multi-target-support.md) FR-MT-009.
+
 ### FR-HIER-003 — Group entity 📋
 A Group belongs to exactly one Site. Fields: `group_id`, `site_id`
 (FK), `name`, `purpose` (short description, e.g. "vendor demo"),
