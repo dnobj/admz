@@ -1,0 +1,30 @@
+id: siren_and_light.cgi:removeProfile
+cgi: siren_and_light.cgi
+
+method: POST
+min_api_version: "1.0"
+
+request:
+  content_type: application/json
+  body:
+    apiVersion: "1.0"
+    method: removeProfile
+    params:
+      name: "{name}"
+
+response:
+  format: json
+  data_path: data
+
+risk_level: normal
+
+requires:
+  auth_level: operator
+
+params_doc:
+  params:
+    name: 'Required. Name of the profile to remove.'
+
+notes: >
+  Removes a saved siren/light profile by name. Call getProfiles first to
+  confirm the exact name.

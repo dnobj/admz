@@ -215,7 +215,24 @@ _INTENT_SYNONYMS: Dict[str, List[str]] = {
     "siren": ["control-siren"],
     "alarm siren": ["control-siren"],
     "strobe": ["control-siren"],
+    "strobe light": ["control-siren"],
     "alarm light": ["control-siren"],
+    # "flash" is genuinely ambiguous, so surface every candidate and
+    # let the LLM pick by device type:
+    #   * a strobe-siren (e.g. D4200-VE) flashes via siren_and_light.cgi
+    #     -> control-siren
+    #   * a camera with a white-light illuminator flashes via
+    #     lightcontrol.cgi -> control-lights
+    #   * "flash to locate this unit" is findmydevice.cgi -> find-device
+    # Before this entry, "flash white" matched no synonym and the bare
+    # word "device" in "flash the device" fell through to find-device
+    # only, so a D4200-VE strobe siren never saw siren_and_light.
+    "flash": ["control-siren", "control-lights", "find-device"],
+    "flashing": ["control-siren", "control-lights"],
+    "flash light": ["control-siren", "control-lights"],
+    "flashing light": ["control-siren", "control-lights"],
+    "flash white": ["control-siren", "control-lights"],
+    "blink": ["find-device", "control-siren"],
     "wiper": ["control-wiper"],
     "washer": ["control-wiper"],
     "clear view": ["control-wiper"],

@@ -4,13 +4,18 @@ cgi: siren_and_light.cgi
 method: POST
 min_api_version: "1.0"
 
+# Stop the whole or parts of a running siren/light. Use exactly ONE
+# of: all / sirenId+lightId / profile. Unsupplied placeholders drop out.
 request:
   content_type: application/json
   body:
     apiVersion: "1.0"
     method: stop
     params:
-      id: "{id}"
+      all: "{all:array}"
+      sirenId: "{sirenId:int}"
+      lightId: "{lightId:int}"
+      profile: "{profile}"
 
 response:
   format: json
@@ -20,3 +25,18 @@ risk_level: normal
 
 requires:
   auth_level: operator
+
+params_doc:
+  description: >
+    Cancel running siren/light operations. Use exactly ONE form.
+  params:
+    all: 'Array of services to stop, e.g. ["siren","light"]. Stops everything.'
+    sirenId: 'Integer siren handle (returned by a prior start) to stop just that siren.'
+    lightId: 'Integer light handle (returned by a prior start) to stop just that light.'
+    profile: 'Name of a profile to stop operations started by that profile.'
+
+notes: >
+  Cancels running siren/light operations on a strobe-siren device. Pass
+  ONE of: all=["siren","light"] to stop everything; sirenId and/or
+  lightId (handles returned by start) to stop a specific operation; or
+  profile (name) to stop operations started by that profile.

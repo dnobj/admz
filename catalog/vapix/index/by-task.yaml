@@ -436,8 +436,11 @@ manage-firewall:
 control-siren:
   - cgi/siren_and_light.cgi/1.0/getCapabilities.yaml
   - cgi/siren_and_light.cgi/1.0/getStatus.yaml
+  - cgi/siren_and_light.cgi/1.0/getProfiles.yaml
   - cgi/siren_and_light.cgi/1.0/start.yaml
   - cgi/siren_and_light.cgi/1.0/stop.yaml
+  - cgi/siren_and_light.cgi/1.0/addProfile.yaml
+  - cgi/siren_and_light.cgi/1.0/removeProfile.yaml
 
 control-wiper:
   - cgi/clearviewcontrol.cgi/1.0/getServiceInfo.yaml

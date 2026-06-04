@@ -51,6 +51,10 @@ The summary at the end of the run lists per-test cost + tokens.
 | `test_06_safety.py` | Dangerous operations trip the confirmation gate before any side effect. |
 | `test_07_capture.py` | Asking to provision credentials produces a `/capture/<token>` URL. |
 | `test_08_multi_turn.py` | Conversation context carries between turns (the LLM remembers what we just talked about). |
+| `test_09_drift_history.py` | Drift-alert history is queryable through chat (`get_drift_alerts`). |
+| `test_10_scheduling.py` | Unified scheduler — chatbot lists job types + creates a `drift_audit` schedule. |
+| `test_11_specialized_hardware.py` | The LLM picks the *right* API for the device: "flash white" on a D4200-VE strobe siren resolves to `siren_and_light.cgi`, not `findmydevice.cgi`. Regression for the resolver "flash" synonym gap. |
+| `test_12_device_resolution.py` | The agent resolves a device referenced by model name ("the D4200") to its device_id via `search_devices`/`list_devices` instead of asking the user for the MAC. Regression for the "I need the device_id, please provide it" stall. |
 
 ## What it does NOT cover
 

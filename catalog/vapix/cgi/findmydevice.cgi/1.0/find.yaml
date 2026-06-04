@@ -19,6 +19,11 @@ response:
 risk_level: normal
 notes: >
   Duration in seconds (0-3600). May interrupt audio playback.
+  Scope: this only flashes the device's status LED and/or sounds a
+  locator beep to help physically find the unit in an installation. It
+  CANNOT set a light color or run a signalling/deterrent pattern. For a
+  colored strobe or alarm light on a strobe siren (e.g. D42xx), use
+  siren_and_light.cgi:start instead.
 
 requires:
   auth_level: admin
