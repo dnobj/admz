@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block nav_active %}settings{% endblock %}
+{% block title %}Settings{% endblock %}
+{% block crumb_tail %}Settings{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="pt">
+    <h1 class="page-title">Settings</h1>
+    <p class="page-sub">Fleet configuration and the safety policy that gates every operation.</p>
+  </div>
+</div>
+
+<div class="stack" style="max-width:880px">
+
+  <!-- Safety policy -->
+  <div class="card">
+    <div class="card-header"><i data-lucide="shield-check"></i><span class="title">Safety policy</span></div>
+    <div class="card-body flush">
+      <div class="setting-row">
+        <div class="sr-text"><div class="sr-label">Gate 1 · plain-language review</div>
+          <div class="sr-desc">Every operation is described in plain language before it runs.</div></div>
+        <div class="sr-control"><span class="locked-pill"><i data-lucide="lock"></i> enforced</span></div>
+      </div>
+      <div class="setting-row">
+        <div class="sr-text"><div class="sr-label">Gate 2 · risk check</div>
+          <div class="sr-desc">Risk is classified; dangerous ops require explicit approval. Non-negotiable.</div></div>
+        <div class="sr-control"><span class="locked-pill"><i data-lucide="lock"></i> enforced</span></div>
+      </div>
+      <div class="setting-row">
+        <div class="sr-text"><div class="sr-label">Out-of-band confirmation scope</div>
+          <div class="sr-desc">Confirmation level per risk class.</div></div>
+        <div class="sr-control flex items-center gap-8">
+          {% for risk, level in levels.items() %}
+          <span class="badge {{ risk|risk_sem }} mono" title="{{ level }}">{{ risk|risk_short }}: {{ level }}</span>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="sr-text"><div class="sr-label">AI agent may execute dangerous ops</div>
+          <div class="sr-desc">A human always holds the final gate. Off by default.</div></div>
+        <div class="sr-control"><span class="toggle" title="Off — human approval required"><span class="knob"></span></span></div>
+      </div>
+      <div class="setting-row">
+        <div class="sr-text"><div class="sr-label">Confirmation password</div>
+          <div class="sr-desc">{{ 'A confirmation password is set.' if has_password else 'No confirmation password set.' }}</div></div>
+        <div class="sr-control"><a href="/confirm-settings" class="btn ghost sm"><i data-lucide="pencil"></i> Manage levels & password</a></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Credentials & secrets -->
+  <div class="card">
+    <div class="card-header"><i data-lucide="key"></i><span class="title">Credentials & secrets</span></div>
+    <div class="card-body flush">
+      <div class="setting-row">
+        <div class="sr-text"><div class="sr-label">Credentials never passed to AI context</div>
+          <div class="sr-desc">Passwords are read from the secrets backend only at execution time — never shown to the model.</div></div>
+        <div class="sr-control"><span class="locked-pill"><i data-lucide="lock"></i> enforced</span></div>
+      </div>
+      <div class="setting-row">
+        <div class="sr-text"><div class="sr-label">Web "Reveal" button</div>
+          <div class="sr-desc">Allow operators (group-gated) to reveal a stored plaintext credential in the web UI.</div></div>
+        <div class="sr-control flex items-center gap-8">
+          <span class="toggle {{ 'on' if web_reveal_enabled }}"><span class="knob"></span></span>
+          <a href="/confirm-settings" class="btn ghost sm">Change</a>
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="sr-text"><div class="sr-label">Out-of-band credential capture</div>
+          <div class="sr-desc">New credentials are captured via a single-use link, never typed into chat.</div></div>
+        <div class="sr-control"><span class="locked-pill"><i data-lucide="lock"></i> enforced</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Network discovery -->
+  <div class="card">
+    <div class="card-header"><i data-lucide="radar"></i><span class="title">Network discovery</span></div>
+    <div class="card-body flush">
+      <div class="setting-row">
+        <div class="sr-text"><div class="sr-label">Discovery protocols</div>
+          <div class="sr-desc">7-protocol scan: ARP, mDNS, ONVIF, SSDP, SNMP, HTTP, ping.</div></div>
+        <div class="sr-control"><a href="/api/docs" class="btn ghost sm">Run discovery</a></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Configuration repository -->
+  <div class="card">
+    <div class="card-header"><i data-lucide="git-branch"></i><span class="title">Configuration repository</span></div>
+    <div class="card-body flush">
+      <div class="setting-row">
+        <div class="sr-text"><div class="sr-label">Git-backed config snapshots</div>
+          <div class="sr-desc">Every device's config is versioned, diffable, and restorable from git.</div></div>
+        <div class="sr-control"><a href="/configuration" class="btn ghost sm">View configuration</a></div>
+      </div>
+      {% if all_settings.get('config_repo_remote') %}
+      <div class="setting-row">
+        <div class="sr-text"><div class="sr-label">Remote</div>
+          <div class="sr-desc mono">{{ all_settings.get('config_repo_remote') }}</div></div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Health monitoring -->
+  <div class="card">
+    <div class="card-header"><i data-lucide="activity"></i><span class="title">Health monitoring</span></div>
+    <div class="card-body flush">
+      <div class="setting-row">
+        <div class="sr-text"><div class="sr-label">Background health poller</div>
+          <div class="sr-desc">Periodically probes device reachability; surfaced as health dots across the fleet.</div></div>
+        <div class="sr-control"><a href="/fleet-settings" class="btn ghost sm">Fleet settings</a></div>
+      </div>
+      <div class="setting-row">
+        <div class="sr-text"><div class="sr-label">Chat / model configuration</div>
+          <div class="sr-desc">Gemini API key and selectable models for the Console.</div></div>
+        <div class="sr-control"><a href="/settings/chat" class="btn ghost sm">Chat settings</a></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

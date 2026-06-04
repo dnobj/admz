@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block nav_active %}schedules{% endblock %}
+{% block title %}Schedules{% endblock %}
+{% block crumb_tail %}Schedules{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="pt">
+    <h1 class="page-title">Schedules</h1>
+    <p class="page-sub">Recurring jobs — snapshots, drift audits, firmware checks, restores.</p>
+  </div>
+  <div class="page-actions"><a href="/api/docs" class="btn primary"><i data-lucide="plus"></i> New schedule</a></div>
+</div>
+
+<div class="note-band" style="margin-bottom:16px">
+  <i data-lucide="shield"></i>
+  <span>Dangerous scheduled operations never auto-run silently — each occurrence still requires an out-of-band confirmation.</span>
+</div>
+
+{% set risk_for = {'snapshot':'read-only','drift_audit':'read-only','firmware_check':'read-only','restore':'service-affecting','reboot':'dangerous'} %}
+{% if schedules %}
+<table class="data-table">
+  <thead><tr><th>On</th><th>Job</th><th>Risk</th><th>Target</th><th>Cadence</th><th>Next run</th><th>Last run</th></tr></thead>
+  <tbody>
+    {% for s in schedules %}
+    {% set jt = s.job_type|default('snapshot') %}
+    {% set rk = risk_for.get(jt, 'normal') %}
+    <tr>
+      <td><span class="toggle {{ 'on' if s.enabled }}" title="{{ 'Enabled' if s.enabled else 'Disabled' }}"><span class="knob"></span></span></td>
+      <td>
+        <div class="device-name-cell">
+          <span class="type-tile"><i data-lucide="{{ 'camera' if jt=='snapshot' else 'layers' if jt=='drift_audit' else 'rotate-ccw' if jt=='restore' else 'clock' }}"></i></span>
+          <div><div class="nm" style="font-family:var(--sans);font-weight:600">{{ s.description or s.id }}</div><div class="sub mono">{{ jt }}</div></div>
+        </div>
+      </td>
+      <td><span class="risk-badge {{ rk|risk_sem }}">{% if rk == 'dangerous' %}<i data-lucide="alert-triangle"></i>{% endif %}{{ rk|risk_short }}</span></td>
+      <td>{{ ('tag: ' + s.tag_filter) if s.tag_filter else 'all devices' }}</td>
+      <td><span class="mono">every {{ s.interval_seconds }}s</span></td>
+      <td class="mono">{{ s.next_run or '—' }}</td>
+      <td class="mono">{{ s.last_run or '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty-state"><i data-lucide="clock"></i><div style="margin-top:10px">No schedules configured. Create one via the <a href="/api/docs">scheduling API</a> or the Console.</div></div>
+{% endif %}
+{% endblock %}

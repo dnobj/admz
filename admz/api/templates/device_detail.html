@@ -1,121 +1,191 @@
 {% extends "base.html" %}
+{% block nav_active %}fleet{% endblock %}
+{% block title %}{{ device.nickname or device.device_id }}{% endblock %}
+{% block crumb_tail %}{{ device.nickname or device.device_id }}{% endblock %}
 
 {% block content %}
+<div class="breadcrumb">
+  <a href="/devices">Fleet</a>
+  {% if primary_group %}<span class="sep"><i data-lucide="chevron-right"></i></span><a href="/devices">{{ primary_group }}</a>{% endif %}
+  <span class="sep"><i data-lucide="chevron-right"></i></span>
+  <span class="last">{{ device.nickname or device.device_id }}</span>
+</div>
+
 <div class="page-header">
-    <h1>{{ device.nickname|default(device.device_id) }}</h1>
-    <div class="actions">
-        <a href="/device/{{ device.device_id }}/edit" class="button">Edit</a>
-        <a href="/device/{{ device.device_id }}/add-account" class="button">Add Account</a>
+  <div class="pt" style="display:flex;align-items:center;gap:14px">
+    <span class="type-tile" style="width:40px;height:40px"><i data-lucide="video"></i></span>
+    <div>
+      <h1 class="page-title" style="display:flex;align-items:center;gap:10px">
+        {{ device.nickname or device.device_id }}
+        <span class="health-cell" data-health-cell="{{ device.device_id }}" style="font-size:13px;font-weight:500">
+          <span class="status-dot sem-grey"><span class="core"></span></span><span class="health-label">Unknown</span>
+        </span>
+      </h1>
+      <p class="page-sub">{{ device.model or 'Axis device' }}{% if device.device_type %} · {{ device.device_type }}{% endif %}</p>
     </div>
+  </div>
+  <div class="page-actions">
+    <a href="/device/{{ device.device_id }}/edit" class="btn ghost"><i data-lucide="pencil"></i> Edit</a>
+    <a href="/chat" class="btn ghost"><i data-lucide="camera"></i> Snapshot</a>
+    <a href="/configuration" class="btn ghost"><i data-lucide="shield"></i> Audit</a>
+  </div>
 </div>
 
-<div class="device-info">
-    <h2>Device Information</h2>
-    <table>
-        <tr>
-            <th>Device ID</th>
-            <td>{{ device.device_id }}</td>
-        </tr>
-        {% if device.nickname %}
-        <tr>
-            <th>Nickname</th>
-            <td>{{ device.nickname }}</td>
-        </tr>
-        {% endif %}
-        <tr>
-            <th>Host</th>
-            <td>{{ device.host }}</td>
-        </tr>
-        {% if device.ip_address %}
-        <tr>
-            <th>IP Address</th>
-            <td>{{ device.ip_address }}</td>
-        </tr>
-        {% endif %}
-        {% if device.serial_number %}
-        <tr>
-            <th>Serial Number</th>
-            <td>{{ device.serial_number }}</td>
-        </tr>
-        {% endif %}
-        {% if device.mac_address %}
-        <tr>
-            <th>MAC Address</th>
-            <td>{{ device.mac_address }}</td>
-        </tr>
-        {% endif %}
-        {% if device.model %}
-        <tr>
-            <th>Model</th>
-            <td>{{ device.model }}</td>
-        </tr>
-        {% endif %}
-        {% if device.firmware_version %}
-        <tr>
-            <th>Firmware Version</th>
-            <td>{{ device.firmware_version }}</td>
-        </tr>
-        {% endif %}
-        {% if device.location %}
-        <tr>
-            <th>Location</th>
-            <td>{{ device.location }}</td>
-        </tr>
-        {% endif %}
-        {% if device.warranty_expiration %}
-        <tr>
-            <th>Warranty Expiration</th>
-            <td>{{ device.warranty_expiration }}</td>
-        </tr>
-        {% endif %}
+<div class="two-col">
+  <!-- Left column -->
+  <div class="stack">
+
+    <!-- Identity: slot / unit split -->
+    <div class="card">
+      <div class="card-header"><i data-lucide="fingerprint"></i><span class="title">Identity</span></div>
+      <div class="card-body">
+        <div class="flex items-center gap-8" style="margin-bottom:10px">
+          <span class="section-label">Device · ADMZ slot</span>
+          <span class="badge green"><span class="dot"></span>stable</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px">
+          <div class="keyval"><span class="k">Device ID</span><span class="v mono">{{ device.device_id }}</span></div>
+          <div class="keyval"><span class="k">Name</span><span class="v">{{ device.nickname or '—' }}</span></div>
+          <div class="keyval"><span class="k">Site</span><span class="v">{{ site_name or '—' }}</span></div>
+          <div class="keyval"><span class="k">Group</span><span class="v">{{ primary_group or 'Ungrouped' }}</span></div>
+        </div>
+
+        <div class="nav-divider"></div>
+
+        <div class="flex items-center gap-8" style="margin-bottom:10px">
+          <span class="section-label">Installed hardware · unit</span>
+          <span class="badge grey">replaceable</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px">
+          <div class="keyval"><span class="k">Model</span><span class="v">{{ device.model or '—' }}</span></div>
+          <div class="keyval"><span class="k">Serial</span><span class="v mono">{{ device.serial_number or '—' }}</span></div>
+          <div class="keyval"><span class="k">MAC</span><span class="v mono">{{ device.mac_address or device.device_id }}</span></div>
+          <div class="keyval"><span class="k">IP / host</span><span class="v mono">{{ device.host or device.ip_address or '—' }}</span></div>
+          <div class="keyval"><span class="k">Firmware</span><span class="v mono">{{ device.firmware_version or device.firmware or '—' }}</span></div>
+          {% if device.warranty_expiration %}<div class="keyval"><span class="k">Warranty</span><span class="v">{{ device.warranty_expiration }}</span></div>{% endif %}
+        </div>
+        <div style="margin-top:14px">
+          <button class="btn subtle sm" type="button" title="Re-bind a replacement unit to this slot (coming soon)" disabled><i data-lucide="repeat"></i> Replace hardware</button>
+        </div>
         {% if device.tags %}
-        <tr>
-            <th>Tags</th>
-            <td>
-                <div class="tags">
-                    {% for tag in device.tags %}
-                    <span class="tag">{{ tag }}</span>
-                    {% endfor %}
-                </div>
-            </td>
-        </tr>
+        <div style="margin-top:14px" class="flex items-center gap-8">
+          <span class="section-label">Tags</span>
+          {% for tag in device.tags %}<span class="tag">{{ tag }}</span>{% endfor %}
+        </div>
         {% endif %}
-    </table>
-</div>
+      </div>
+    </div>
 
-<div class="accounts-section">
-    <h2>Accounts</h2>
-    {% if accounts %}
-        <table class="accounts-table">
-            <thead>
-                <tr>
-                    <th>Account ID</th>
-                    <th>Username</th>
-                    <th>Type</th>
-                    <th>Purpose</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for account in accounts %}
-                <tr>
-                    <td>{{ account.account_id }}</td>
-                    <td>{{ account.username }}</td>
-                    <td>{{ account.account_type|default("N/A") }}</td>
-                    <td>{{ account.purpose|default("N/A") }}</td>
-                    <td>
-                        <a href="/device/{{ device.device_id }}/account/{{ account.account_id }}" class="button-small">View</a>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
+    <!-- Credential accounts -->
+    <div class="card">
+      <div class="card-header"><i data-lucide="key"></i><span class="title">Credential accounts</span>
+        <a href="/device/{{ device.device_id }}/add-account" class="btn ghost sm ml-auto"><i data-lucide="plus"></i> Add account</a>
+      </div>
+      <div class="card-body flush">
+        {% if accounts %}
+        <table class="data-table" style="border:none;border-radius:0">
+          <thead><tr><th>Account</th><th>Username</th><th>Type</th><th>Purpose</th><th></th></tr></thead>
+          <tbody>
+            {% for account in accounts %}
+            <tr onclick="window.location='/device/{{ device.device_id }}/account/{{ account.account_id }}'">
+              <td class="mono">{{ account.account_id }}</td>
+              <td>{{ account.username }}</td>
+              <td><span class="badge grey">{{ account.account_type|default('admin') }}</span></td>
+              <td style="color:var(--text-muted)">{{ account.purpose|default('—') }}</td>
+              <td style="text-align:right;color:var(--text-faint)"><i data-lucide="chevron-right"></i></td>
+            </tr>
+            {% endfor %}
+          </tbody>
         </table>
-    {% else %}
-        <p class="no-accounts">No accounts found for this device.</p>
-    {% endif %}
-</div>
+        <div class="setting-row"><div class="sr-text"><div class="sr-desc"><i data-lucide="info" style="width:13px;height:13px;vertical-align:-2px"></i> Passwords are captured out-of-band via a single-use link and never shown to the AI.</div></div></div>
+        {% else %}
+        <div class="empty-state" style="padding:28px 0"><i data-lucide="key-round"></i><div style="margin-top:8px">No accounts yet. <a href="/device/{{ device.device_id }}/add-account">Add one</a>.</div></div>
+        {% endif %}
+      </div>
+    </div>
 
-<div class="actions-footer">
-    <a href="/" class="button">Back to Devices</a>
+    <!-- Snapshot history -->
+    <div class="card">
+      <div class="card-header"><i data-lucide="git-commit-horizontal"></i><span class="title">Snapshot history</span></div>
+      <div class="card-body">
+        <p class="page-sub" style="margin:0">Configuration is snapshotted to git — versioned, diffable, restorable. View the per-facet diff and baselines on the <a href="/configuration">Configuration</a> screen.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right column -->
+  <div class="stack">
+
+    <!-- Live health -->
+    <div class="card">
+      <div class="card-header"><i data-lucide="activity"></i><span class="title">Live health</span></div>
+      <div class="card-body" id="device-health-detail">
+        <div class="keyval"><span class="k">Status</span>
+          <span class="v"><span class="health-cell" data-health-cell="{{ device.device_id }}">
+            <span class="status-dot sem-grey"><span class="core"></span></span><span class="health-label">Unknown</span></span></span></div>
+      </div>
+    </div>
+
+    <!-- Configuration drift -->
+    <div class="card">
+      <div class="card-header"><i data-lucide="layers"></i><span class="title">Configuration drift</span></div>
+      <div class="card-body">
+        <span class="drift-cell fg-grey"><span class="dot sem-grey"></span>No baseline yet</span>
+        <p class="page-sub" style="margin:8px 0 0">Snapshot this device to establish a baseline, then audit it for drift.</p>
+      </div>
+    </div>
+
+    <!-- Operations -->
+    <div class="card">
+      <div class="card-header"><i data-lucide="terminal"></i><span class="title">Operations</span></div>
+      <div class="card-body flush">
+        {% set ops = [('Snapshot config','read-only'),('Audit drift','read-only'),('Restore baseline','service-affecting'),('Reboot device','dangerous')] %}
+        {% for name, risk in ops %}
+        <div class="setting-row">
+          <div class="sr-text"><div class="sr-label">{{ name }}</div></div>
+          <div class="sr-control flex items-center gap-8">
+            <span class="risk-badge {{ risk|risk_sem }}">{% if risk == 'dangerous' %}<i data-lucide="alert-triangle"></i>{% endif %}{{ risk|risk_short }}</span>
+            <a class="btn ghost sm" href="/chat">Run in Console</a>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- Branch panel (quiet, collapsible) -->
+    <div class="branch-panel">
+      <div class="bp-head" data-collapse-toggle="branch-body">
+        <i data-lucide="git-branch"></i><span class="t">Configuration branches</span>
+        <span class="sub">on main · none saved</span>
+      </div>
+      <div id="branch-body" class="hidden">
+        <div class="branch-row"><span class="bn">main</span><span class="page-sub" style="margin:0">everyday baseline · active</span><span class="ml-auto badge green"><span class="dot"></span>active</span></div>
+        <div class="setting-row"><div class="sr-text"><div class="sr-desc">Branches are saved alternate configs (overlays on main) you can apply to this slot. None exist yet — create one from the Configuration screen.</div></div></div>
+      </div>
+    </div>
+  </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const HEALTH = {
+  online:{sem:'green',label:'Online'}, unreachable:{sem:'red',label:'Unreachable'},
+  auth_failed:{sem:'amber',label:'Auth failed'}, unknown:{sem:'grey',label:'Unknown'},
+};
+(async () => {
+  try {
+    const resp = await fetch('/api/fleet/health'); if (!resp.ok) return;
+    const data = await resp.json();
+    const byId = {}; (data.devices||[]).forEach(d=>{byId[d.device_id]=d;});
+    document.querySelectorAll('[data-health-cell]').forEach(cell => {
+      const rec = byId[cell.getAttribute('data-health-cell')];
+      const status = (rec && rec.status) || 'unknown';
+      const h = HEALTH[status] || HEALTH.unknown;
+      cell.querySelector('.status-dot').className = 'status-dot sem-'+h.sem+(status==='online'?' pulse':'');
+      cell.querySelector('.health-label').textContent = h.label + (rec && rec.latency_ms!=null ? ' · '+rec.latency_ms+'ms' : '');
+    });
+  } catch(_) {}
+})();
+</script>
 {% endblock %}

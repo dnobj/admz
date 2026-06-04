@@ -24,6 +24,8 @@ router = APIRouter()
 
 template_dir = Path(__file__).parent.parent / "templates"
 templates = Jinja2Templates(directory=str(template_dir))
+from admz.api.templating import configure as _configure_templates  # noqa: E402
+_configure_templates(templates)
 
 
 def get_registry() -> DeviceRegistry:

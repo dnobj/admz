@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block nav_active %}auditlog{% endblock %}
+{% block title %}Audit log{% endblock %}
+{% block crumb_tail %}Audit log{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="pt">
+    <h1 class="page-title">Audit log</h1>
+    <p class="page-sub">Who did what, when — across people, the ADMZ agent, and system jobs.</p>
+  </div>
+  <div class="page-actions"><a href="/api/audit" class="btn ghost"><i data-lucide="download"></i> Export (JSON)</a></div>
+</div>
+
+<div class="stat-strip">
+  <div class="stat"><div class="sl"><i data-lucide="eye"></i> People</div><div class="sv">{{ counts.human }}</div></div>
+  <div class="stat"><div class="sl"><i data-lucide="sparkles"></i> ADMZ agent</div><div class="sv">{{ counts.agent }}</div></div>
+  <div class="stat"><div class="sl"><i data-lucide="clock"></i> System</div><div class="sv">{{ counts.system }}</div></div>
+  <div class="stat"><div class="sl"><span class="status-dot sem-red"><span class="core"></span></span> Blocked/denied</div><div class="sv">{{ counts.blocked }}</div></div>
+</div>
+
+<div class="filter-bar">
+  <button class="chip active" data-kind="all"><i data-lucide="filter"></i> All</button>
+  <button class="chip" data-kind="human">People</button>
+  <button class="chip" data-kind="agent">ADMZ agent</button>
+  <button class="chip" data-kind="system">System</button>
+  <button class="chip" data-kind="blocked">Blocked/denied</button>
+  <div class="right"><span class="shown-count">{{ total }} entries</span></div>
+</div>
+
+{% if days %}
+<div class="card"><div class="card-body">
+  {% for day, rows in days %}
+  <div class="audit-day">{{ day }}</div>
+  {% for r in rows %}
+  <div class="audit-row" data-kind="{{ r.kind }}" data-result="{{ r.result }}">
+    <span class="at">{{ r.time }}</span>
+    <span class="ak {{ r.kind }}"><i data-lucide="{{ 'sparkles' if r.kind == 'agent' else 'clock' if r.kind == 'system' else 'eye' }}"></i></span>
+    <div class="ab">
+      <div class="aline">
+        <span class="actor">{{ r.actor }}</span>
+        <span class="mono ink">{{ r.op }}</span>
+        <span style="color:var(--text-faint)">→</span>
+        <span class="mono">{{ r.target }}</span>
+      </div>
+      {% if r.note %}<span class="anote">{{ r.note }}</span>{% endif %}
+    </div>
+    <span class="aright">
+      <span class="risk-badge {{ r.risk|risk_sem }} sm">{% if r.risk == 'dangerous' %}<i data-lucide="alert-triangle"></i>{% endif %}{{ r.risk|risk_short }}</span>
+      <span class="badge {{ 'green' if r.result == 'ok' else 'red' }} mono">{{ r.result }}</span>
+    </span>
+  </div>
+  {% endfor %}
+  {% endfor %}
+</div></div>
+{% else %}
+<div class="empty-state"><i data-lucide="shield"></i><div style="margin-top:10px">No audit entries yet.</div></div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.querySelectorAll('.chip[data-kind]').forEach(chip => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('.chip[data-kind]').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    const want = chip.getAttribute('data-kind');
+    document.querySelectorAll('.audit-row').forEach(row => {
+      const vis = want === 'all'
+        || (want === 'blocked' ? row.getAttribute('data-result') !== 'ok' : row.getAttribute('data-kind') === want);
+      row.style.display = vis ? '' : 'none';
+    });
+  });
+});
+</script>
+{% endblock %}

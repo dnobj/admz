@@ -1,0 +1,112 @@
+{# Shared ADMZ Console panel. Rendered full-screen (inside base.html) and
+   embedded (inside console_base.html, in the right-hand dock iframe).
+   Preserves the element IDs that static/chat.js drives:
+   chat-form, chat-transcript, chat-send, message, model,
+   chat-actions, chat-actions-list. #}
+<script>window.ADMZ_INITIALS = "{{ (nav.principal.initials if nav else 'EC')|e }}";</script>
+<div class="console {{ 'embed' if embed else '' }}">
+
+  <div class="console-head">
+    <span class="spark"><i data-lucide="sparkles"></i></span>
+    <div style="min-width:0">
+      <div class="ch-title">ADMZ Console</div>
+      {% if not embed %}<div class="ch-sub">Agentic control · credentials never enter the conversation</div>{% endif %}
+    </div>
+    <span class="spacer"></span>
+    {% if not embed %}<span class="badge green"><span class="dot"></span>Connected</span>{% endif %}
+    {% if embed %}
+    <button class="icon-btn sm" type="button" title="Expand to full" onclick="parent.location='/chat'"><i data-lucide="external-link"></i></button>
+    <button class="icon-btn sm" type="button" title="Close console" onclick="if(parent.admzCloseDock)parent.admzCloseDock()"><i data-lucide="x"></i></button>
+    {% endif %}
+  </div>
+
+  {% if not configured %}
+  <div style="padding:14px 24px 0"><div class="console-col" style="padding:0">
+    <div class="note-band"><i data-lucide="alert-triangle"></i>
+      <span>Chatbot is not configured. Ask an administrator to set the Gemini API key on the
+      <a href="/settings/chat">Chat Settings page</a>.</span>
+    </div>
+  </div></div>
+  {% endif %}
+
+  <div class="console-scroll">
+    <div class="console-col">
+
+      {% if not user_message and not answer %}
+      <div id="chat-empty" class="console-empty">
+        <span class="big-spark"><i data-lucide="sparkles"></i></span>
+        <div>
+          <h2>Operate the fleet by conversation</h2>
+          <p>Snapshot, audit, restore, or reconfigure devices. Anything risky pauses for your approval.</p>
+        </div>
+        <div class="suggestions">
+          <button type="button" class="suggest-btn"><i data-lucide="sparkles"></i><span style="flex:1">List the cameras at this site and show their current firmware versions.</span><i data-lucide="arrow-right" class="arr"></i></button>
+          <button type="button" class="suggest-btn"><i data-lucide="sparkles"></i><span style="flex:1">Snapshot the lobby cameras, then tell me if any have drifted from their baseline.</span><i data-lucide="arrow-right" class="arr"></i></button>
+        </div>
+      </div>
+      {% endif %}
+
+      {# Server-rendered fallback turn (no-JS path) — JS hides #chat-transcript-fallback once it streams. #}
+      {% if user_message %}
+      <div class="turn">
+        <div class="user-bubble"><div class="ub">{{ user_message }}</div><span class="avatar">{{ nav.principal.initials if nav else 'EC' }}</span></div>
+        {% if answer %}
+        <div class="assistant-turn">
+          <span class="sp"><i data-lucide="sparkles"></i></span>
+          <div class="at-body">
+            <div class="assistant-text">{{ answer }}</div>
+            {% if usage and (usage.input_tokens or usage.output_tokens) %}
+            <div class="chat-footer">tokens: in={{ usage.input_tokens or "?" }} · out={{ usage.output_tokens or "?" }} · model={{ last_model }}</div>
+            {% endif %}
+          </div>
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      {% if error %}
+      <div class="result-row red"><i data-lucide="x-circle"></i><span>{{ error }}</span></div>
+      {% endif %}
+
+      <!-- Live transcript: populated by the streaming client. -->
+      <div id="chat-transcript"></div>
+    </div>
+  </div>
+
+  <div class="console-composer">
+    <div class="console-col">
+
+      <!-- Pinned action widget (capture / confirm tokens). Hidden when empty. -->
+      <div id="chat-actions" class="pending-widget" style="display:none">
+        <div class="pw-head"><i data-lucide="clock"></i><span class="t">Pending actions</span>
+          <span class="r">out-of-band · time-limited</span></div>
+        <div id="chat-actions-list"></div>
+      </div>
+
+      <form id="chat-form" method="POST" action="/chat">
+        <div class="composer-box">
+          <textarea id="message" name="message" rows="1" required
+            placeholder="Tell ADMZ what to do…  (Enter to send)"></textarea>
+          <button id="chat-send" type="submit" class="btn primary" title="Send"
+            {% if not configured %}disabled{% endif %}><i data-lucide="send-horizontal"></i></button>
+        </div>
+        <div class="composer-foot">
+          {% if not embed %}
+          <span class="safety"><i data-lucide="shield"></i>
+            Dangerous operations always require explicit approval — the two-gate model applies to AI and humans alike.</span>
+          {% else %}<span style="flex:1"></span>{% endif %}
+          <label for="model" style="font-size:12px">Model</label>
+          <select id="model" name="model">
+            {% for m in selectable_models %}
+            <option value="{{ m }}" {% if m == last_model %}selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </form>
+
+      <form method="POST" action="/chat/clear">
+        <button type="submit" class="btn subtle sm">Clear chat history</button>
+      </form>
+    </div>
+  </div>
+</div>

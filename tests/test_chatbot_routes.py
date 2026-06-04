@@ -106,7 +106,8 @@ class TestChatPage:
         r = client.get("/chat")
         assert r.status_code == 200
         body = r.text
-        assert "Chat" in body
+        # The chat surface was renamed to "Console" in the Axis Signal redesign.
+        assert "Console" in body
         # No "not configured" warning now.
         assert "not configured" not in body.lower()
         # Model selector populated.
