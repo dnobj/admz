@@ -149,6 +149,8 @@ router = APIRouter()
 # Template configuration mirrors admz.api.routes.web.
 _template_dir = Path(__file__).parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_template_dir))
+from admz.api.templating import configure as _configure_templates  # noqa: E402
+_configure_templates(templates)
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +188,8 @@ async def chat_page(
             "user_message": None,
             "error": None,
             "usage": None,
+            # embed=1 renders the dockable Console without the app chrome.
+            "embed": request.query_params.get("embed") == "1",
         },
     )
 

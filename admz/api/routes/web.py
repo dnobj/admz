@@ -28,6 +28,8 @@ router = APIRouter()
 # Setup templates
 template_dir = Path(__file__).parent.parent / "templates"
 templates = Jinja2Templates(directory=str(template_dir))
+from admz.api.templating import configure as _configure_templates  # noqa: E402
+_configure_templates(templates)
 
 
 def get_registry() -> DeviceRegistry:
@@ -48,26 +50,95 @@ async def home_redirect():
     return RedirectResponse(url="/chat", status_code=302)
 
 
+@router.get("/ui/site/{site_id}")
+async def set_active_site(site_id: str, request: Request):
+    """Persist the active site in a cookie + bounce back to the fleet.
+
+    The site switcher in the top bar links here. We store the choice in a
+    cookie (read by ``admz.api.templating.build_nav``) so the selection
+    survives navigation across the server-rendered pages.
+    """
+    referer = request.headers.get("referer", "")
+    target = "/devices"
+    resp = RedirectResponse(url=target, status_code=303)
+    # Basic validation: only set the cookie if the site actually exists.
+    resp.set_cookie(
+        "admz_site", site_id, max_age=60 * 60 * 24 * 365, samesite="lax", httponly=False
+    )
+    return resp
+
+
 @router.get("/devices", response_class=HTMLResponse)
 async def devices_page(
     request: Request,
     registry: DeviceRegistry = Depends(get_registry),
 ):
     """
-    Device list page — the pre-chatbot home page, now at /devices.
+    Fleet dashboard — health, model, IP, group, drift, tags for the
+    active site. Hierarchy-aware: filters to the cookie-selected site and
+    (optionally) a ?group= filter, mirroring the sidebar group list.
     """
     try:
         devices = registry.list_devices()
+        devices.sort(key=lambda d: d.get("nickname") or d.get("device_id", ""))
 
-        # Sort devices by device_id
-        devices.sort(key=lambda d: d.get("device_id", ""))
+        # ── Hierarchy scoping (defensive: backend may not support it) ──
+        active_site = request.cookies.get("admz_site")
+        group_filter = request.query_params.get("group")
+        hierarchy = True
+        try:
+            sites = registry.list_sites()
+        except Exception:
+            hierarchy = False
+            sites = []
+
+        site_obj = None
+        if hierarchy:
+            if not active_site or not any(s.get("site_id") == active_site for s in sites):
+                active_site = sites[0]["site_id"] if sites else None
+            site_obj = next((s for s in sites if s.get("site_id") == active_site), None)
+
+            scoped = []
+            for d in devices:
+                did = d.get("device_id")
+                # site membership
+                try:
+                    os_ = registry.get_device_org_site(did) or {}
+                except Exception:
+                    os_ = {}
+                if active_site and os_.get("site_id") and os_.get("site_id") != active_site:
+                    continue
+                # group memberships + primary group label
+                try:
+                    memberships = registry.list_groups_for_device(did)
+                except Exception:
+                    memberships = []
+                gids = [m.get("group_id") for m in memberships]
+                primary = next((m for m in memberships if m.get("is_primary")), None)
+                d["_groups"] = gids
+                d["_primary_group"] = (primary or (memberships[0] if memberships else {})).get("name") if memberships else None
+                if group_filter and group_filter not in gids:
+                    continue
+                scoped.append(d)
+            devices = scoped
+
+        group_name = None
+        if group_filter and hierarchy:
+            try:
+                g = registry.get_device_group(group_filter)
+                group_name = g.get("name") if g else group_filter
+            except Exception:
+                group_name = group_filter
 
         return templates.TemplateResponse(
             "index.html",
             {
                 "request": request,
                 "devices": devices,
-                "title": "ADMZ - Device List",
+                "site": site_obj,
+                "group_filter": group_filter,
+                "group_name": group_name,
+                "title": "Fleet",
             },
         )
 
@@ -103,13 +174,32 @@ async def device_detail(
         except Exception:
             accounts = []
 
+        # Hierarchy context for the slot identity card (defensive).
+        site_name = None
+        group_names = []
+        primary_group = None
+        try:
+            os_ = registry.get_device_org_site(device_id) or {}
+            if os_.get("site_id"):
+                site = registry.get_site(os_["site_id"])
+                site_name = site.get("name") if site else os_["site_id"]
+            memberships = registry.list_groups_for_device(device_id)
+            group_names = [m.get("name") for m in memberships]
+            primary = next((m for m in memberships if m.get("is_primary")), None)
+            primary_group = (primary or (memberships[0] if memberships else {})).get("name")
+        except Exception:
+            pass
+
         return templates.TemplateResponse(
             "device_detail.html",
             {
                 "request": request,
                 "device": device,
                 "accounts": accounts,
-                "title": f"Device: {device.get('nickname', device_id)}",
+                "site_name": site_name,
+                "group_names": group_names,
+                "primary_group": primary_group,
+                "title": device.get("nickname", device_id),
             },
         )
 
@@ -445,6 +535,135 @@ async def search_devices(
             },
             status_code=500,
         )
+
+
+@router.get("/settings", response_class=HTMLResponse)
+async def settings_overview(request: Request):
+    """Unified Settings screen — safety policy + fleet config (Axis Signal).
+
+    Surfaces the real fleet/confirm settings as the design's stacked cards.
+    The two confirmation gates are shown as enforced; the toggles that map
+    to real settings link to the existing forms that persist them.
+    """
+    levels = {
+        r: get_confirmation_level(r)
+        for r in ["dangerous", "service-affecting", "normal", "read-only"]
+    }
+    has_password = bool(fleet_settings.get("confirm_password_hash"))
+    get_creds_enabled = fleet_settings.get("tool_get_credentials_enabled") == "true"
+    web_reveal_enabled = fleet_settings.get("web_reveal_credentials_enabled") == "true"
+    return templates.TemplateResponse(
+        "settings.html",
+        {
+            "request": request,
+            "title": "Settings",
+            "levels": levels,
+            "has_password": has_password,
+            "get_creds_enabled": get_creds_enabled,
+            "web_reveal_enabled": web_reveal_enabled,
+            "all_settings": fleet_settings.list_all(),
+        },
+    )
+
+
+@router.get("/audit-log", response_class=HTMLResponse)
+async def audit_log_page(request: Request):
+    """Audit log — who/what/when across humans, the agent, and system jobs."""
+    from admz.audit import audit_log
+    import time as _time
+
+    try:
+        entries = audit_log.list_recent(limit=200)
+    except Exception:
+        entries = []
+
+    _DANGER = ("reboot", "restore", "factory", "reset", "delete", "remove", "firmware")
+    _agent_hints = ("mcp", "agent", "gemini", "admz-bot", "console")
+
+    def _kind(e):
+        req = (e.requester or "").lower()
+        src = (e.auth_source or "").lower()
+        if any(h in req for h in _agent_hints) or src == "api-key":
+            return "agent"
+        if req in ("system", "scheduler", "") or src == "system":
+            return "system"
+        return "human"
+
+    rows = []
+    for e in entries:
+        action = e.action or ""
+        risk = "dangerous" if any(d in action.lower() for d in _DANGER) else (
+            "read-only" if action.startswith(("list", "get", "read", "audit")) else "normal"
+        )
+        result = "ok" if e.success else "blocked"
+        rows.append({
+            "ts": e.timestamp,
+            "day": _time.strftime("%Y-%m-%d", _time.localtime(e.timestamp)),
+            "time": _time.strftime("%H:%M:%S", _time.localtime(e.timestamp)),
+            "kind": _kind(e),
+            "actor": e.requester or "unknown",
+            "op": action,
+            "target": e.resource or "—",
+            "note": e.error_message or "",
+            "risk": risk,
+            "result": result,
+        })
+
+    # Group by day (preserving the recency order from list_recent).
+    days = []
+    counts = {"human": 0, "agent": 0, "system": 0, "blocked": 0}
+    for r in rows:
+        counts[r["kind"]] = counts.get(r["kind"], 0) + 1
+        if r["result"] in ("blocked", "denied"):
+            counts["blocked"] += 1
+        if not days or days[-1][0] != r["day"]:
+            days.append((r["day"], []))
+        days[-1][1].append(r)
+
+    return templates.TemplateResponse(
+        "audit_log.html",
+        {"request": request, "title": "Audit log", "days": days, "counts": counts,
+         "total": len(rows)},
+    )
+
+
+@router.get("/schedules", response_class=HTMLResponse)
+async def schedules_page(request: Request):
+    """Schedules — recurring snapshot/audit/firmware/restore jobs."""
+    from admz.api.context import get_context
+
+    schedules = []
+    try:
+        ctx = get_context()
+        schedules = [s.to_dict() for s in ctx.scheduler.list_schedules()]
+    except Exception:
+        schedules = []
+    return templates.TemplateResponse(
+        "schedules.html",
+        {"request": request, "title": "Schedules", "schedules": schedules},
+    )
+
+
+@router.get("/configuration", response_class=HTMLResponse)
+async def configuration_page(
+    request: Request,
+    registry: DeviceRegistry = Depends(get_registry),
+):
+    """Configuration / drift — per-device baseline + branch state.
+
+    v1 surfaces the active-branch indicator and a per-device drift roster.
+    The per-facet ConfigDiff + reconcile/rebase flow attaches here once a
+    device has a baseline (see the architecture note).
+    """
+    try:
+        devices = registry.list_devices()
+        devices.sort(key=lambda d: d.get("nickname") or d.get("device_id", ""))
+    except Exception:
+        devices = []
+    return templates.TemplateResponse(
+        "configuration.html",
+        {"request": request, "title": "Configuration", "devices": devices},
+    )
 
 
 @router.get("/fleet-settings", response_class=HTMLResponse)

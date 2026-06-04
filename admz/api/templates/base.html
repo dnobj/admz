@@ -1,41 +1,151 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}{{ title|default("ADMZ") }}{% endblock %}</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <title>{% block title %}{{ title|default("ADMZ") }}{% endblock %} · ADMZ</title>
+    <link rel="stylesheet" href="/static/css/admz.css">
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
     {% block extra_css %}{% endblock %}
 </head>
 <body>
-    <nav class="navbar">
-        <div class="container">
-            <div class="navbar-brand">
-                <a href="/" class="navbar-item">ADMZ</a>
-            </div>
-            <div class="navbar-menu">
-                <a href="/chat" class="navbar-item">Chat</a>
-                <a href="/devices" class="navbar-item">Devices</a>
-                <a href="/search" class="navbar-item">Search</a>
-                <a href="/add-device" class="navbar-item">Add Device</a>
-                <a href="/fleet-settings" class="navbar-item">Fleet Settings</a>
-                <a href="/confirm-settings" class="navbar-item">Confirmation Settings</a>
-                <a href="/settings/chat" class="navbar-item">Chat Settings</a>
-                <a href="/api/docs" class="navbar-item">API Docs</a>
-            </div>
-        </div>
-    </nav>
+{% set nav = admz_nav(request) %}
+{# Capture the child's nav key once (defines the block so it never renders inline). #}
+{% set active_nav %}{% block nav_active %}{% endblock %}{% endset %}
+{% set active = active_nav|trim %}
+<div class="admz-app">
 
-    <main class="container">
+  <!-- ── Top bar ──────────────────────────────────────────────────── -->
+  <header class="topbar">
+    <a href="/chat" class="wordmark" style="text-decoration:none">
+      <span class="mark"><span>A</span></span>
+      <span class="word">ADMZ</span>
+    </a>
+    <span class="vsep"></span>
+
+    <div class="crumbs">
+      <span class="org">{{ nav.org_name }}</span>
+      {% if nav.active_site %}
+      <span class="sep"><i data-lucide="chevron-right"></i></span>
+      <div class="dropdown">
+        <button class="site-switcher-btn" id="site-switcher-btn" type="button">
+          <span class="pin"><i data-lucide="map-pin"></i></span>
+          <span class="nm">{{ nav.active_site.name }}</span>
+          <span class="chev"><i data-lucide="chevron-down"></i></span>
+        </button>
+        <template id="site-switcher-menu">
+          <div class="dropdown-menu">
+            <div class="dh"><span class="section-label">{{ nav.org_name }} · {{ nav.sites|length }} site{{ '' if nav.sites|length == 1 else 's' }}</span></div>
+            {% for s in nav.sites %}
+            <a class="dropdown-item {{ 'active' if s.id == nav.active_site.id }}" href="/ui/site/{{ s.id }}">
+              <span class="di-ico"><i data-lucide="map-pin"></i></span>
+              <span style="flex:1;min-width:0">
+                <span class="di-name">{{ s.name }}</span>
+                <span class="di-meta">
+                  <span class="mono">{{ s.count }} device{{ '' if s.count == 1 else 's' }}</span>
+                  {% if s.issues %}<span class="status-dot sem-amber" style="width:6px;height:6px"><span class="core"></span></span><span style="font-size:11px;color:var(--text-faint)">{{ s.issues }}</span>{% endif %}
+                </span>
+              </span>
+              {% if s.id == nav.active_site.id %}<i data-lucide="check" style="width:15px;height:15px;color:var(--accent-ink)"></i>{% endif %}
+            </a>
+            {% endfor %}
+          </div>
+        </template>
+      </div>
+      {% endif %}
+      {% set tail %}{% block crumb_tail %}{% endblock %}{% endset %}
+      {% if tail|trim %}
+      <span class="sep"><i data-lucide="chevron-right"></i></span>
+      <span class="tail">{{ tail|trim }}</span>
+      {% endif %}
+    </div>
+
+    <span class="spacer"></span>
+
+    <form class="search-input" action="/search" method="get" style="width:250px">
+      <i data-lucide="search"></i>
+      <input id="topbar-search" name="query" placeholder="Search devices, ops, sites…" autocomplete="off">
+      <span class="kbd">/</span>
+    </form>
+
+    <button class="btn accent sm" id="console-toggle" type="button" title="Toggle Console dock">
+      <i data-lucide="sparkles"></i> Console
+    </button>
+    <button class="icon-btn" id="theme-toggle" type="button" title="Toggle theme">
+      <i data-lucide="sun" data-theme-icon></i>
+    </button>
+    <button class="icon-btn" type="button" title="Notifications"><i data-lucide="bell"></i></button>
+    <span class="avatar" title="{{ nav.principal.name or 'ADMZ operator' }}">{{ nav.principal.initials }}</span>
+  </header>
+
+  <!-- ── Body: sidebar + main + console dock ──────────────────────── -->
+  <div class="layout">
+
+    {% block sidebar %}
+    <aside class="sidebar">
+      <a class="nav-item accent {{ 'active' if active == 'console' }}" href="/chat">
+        <span class="ico"><i data-lucide="sparkles"></i></span>
+        <span class="label">Console</span>
+        <span class="badge-mini">⌘K</span>
+      </a>
+      <div style="height:6px"></div>
+      <a class="nav-item {{ 'active' if active == 'fleet' }}" href="/devices">
+        <span class="ico"><i data-lucide="layout-grid"></i></span>
+        <span class="label">Fleet</span>
+        {% if nav.active_site %}<span class="badge-mini">{{ nav.active_site.count }}</span>{% endif %}
+      </a>
+      <a class="nav-item {{ 'active' if active == 'configuration' }}" href="/configuration">
+        <span class="ico"><i data-lucide="layers"></i></span>
+        <span class="label">Configuration</span>
+      </a>
+      <a class="nav-item {{ 'active' if active == 'schedules' }}" href="/schedules">
+        <span class="ico"><i data-lucide="clock"></i></span>
+        <span class="label">Schedules</span>
+      </a>
+      <a class="nav-item {{ 'active' if active == 'auditlog' }}" href="/audit-log">
+        <span class="ico"><i data-lucide="shield"></i></span>
+        <span class="label">Audit log</span>
+      </a>
+      <a class="nav-item {{ 'active' if active == 'settings' }}" href="/settings">
+        <span class="ico"><i data-lucide="settings"></i></span>
+        <span class="label">Settings</span>
+      </a>
+
+      {% if nav.active_site %}
+      <div class="nav-divider"></div>
+      <div class="nav-group-head">
+        <span class="section-label">Groups</span>
+        <span class="right">{{ nav.active_site.short }}</span>
+      </div>
+      <a class="group-row {{ 'active' if active == 'fleet' and not nav.active_group }}" href="/devices">
+        <span class="ico"><i data-lucide="hash"></i></span>
+        <span class="label">All groups</span>
+        <span class="count">{{ nav.active_site.count }}</span>
+      </a>
+      {% for g in nav.groups %}
+      <a class="group-row {{ 'active' if active == 'fleet' and nav.active_group == g.id }}" href="/devices?group={{ g.id }}">
+        <span class="ico"><i data-lucide="hash"></i></span>
+        <span class="label">{{ g.name }}</span>
+        <span class="count">{{ g.count }}</span>
+      </a>
+      {% endfor %}
+      {% endif %}
+    </aside>
+    {% endblock %}
+
+    {% block main %}
+    <main class="main" id="admz-main">
+      <div class="main-inner">
         {% block content %}{% endblock %}
+      </div>
     </main>
+    {% endblock %}
 
-    <footer class="footer">
-        <div class="container">
-            <p>ADMZ - Axis Device Management Zone v1.0.0</p>
-        </div>
-    </footer>
+    <div class="console-dock" id="console-dock"></div>
+  </div>
+</div>
 
-    {% block extra_js %}{% endblock %}
+<script src="/static/admz.js" defer></script>
+{% block extra_js %}{% endblock %}
 </body>
 </html>

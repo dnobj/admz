@@ -155,6 +155,8 @@ static_dir = Path(__file__).parent / "static"
 template_dir.mkdir(exist_ok=True)
 static_dir.mkdir(exist_ok=True)
 templates = Jinja2Templates(directory=str(template_dir))
+from admz.api.templating import configure as _configure_templates  # noqa: E402
+_configure_templates(templates)
 if static_dir.exists():
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 

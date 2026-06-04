@@ -1,86 +1,142 @@
 {% extends "base.html" %}
+{% block nav_active %}fleet{% endblock %}
+{% block title %}Fleet{% endblock %}
+{% block crumb_tail %}{{ group_name or 'Fleet' }}{% endblock %}
 
 {% block content %}
 <div class="page-header">
-    <h1>Device List</h1>
-    <a href="/add-device" class="button">Add Device</a>
+  <div class="pt">
+    <h1 class="page-title">{{ group_name or 'Fleet' }}</h1>
+    <p class="page-sub">
+      {% if site %}{{ site.name }} · {% endif %}{{ devices|length }} device{{ '' if devices|length == 1 else 's' }}
+      {% if group_filter %}· filtered to group{% endif %}
+    </p>
+  </div>
+  <div class="page-actions">
+    <a href="/configuration" class="btn ghost"><i data-lucide="shield"></i> Audit all</a>
+    <a href="/add-device" class="btn primary"><i data-lucide="plus"></i> Add device</a>
+  </div>
 </div>
 
-<div class="devices-grid">
-    {% if devices %}
-        {% for device in devices %}
-        <div class="device-card">
-            <h3>
-                <span class="health-dot" data-device-id="{{ device.device_id }}"
-                      title="Health status (loading…)"
-                      style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#9ca3af;margin-right:6px;vertical-align:middle;"></span>
-                <a href="/device/{{ device.device_id }}">
-                    {{ device.nickname|default(device.device_id) }}
-                </a>
-            </h3>
-            <p><strong>ID:</strong> {{ device.device_id }}</p>
-            <p><strong>Host:</strong> {{ device.host }}</p>
-            {% if device.location %}
-            <p><strong>Location:</strong> {{ device.location }}</p>
-            {% endif %}
-            {% if device.model %}
-            <p><strong>Model:</strong> {{ device.model }}</p>
-            {% endif %}
-            {% if device.tags %}
-            <div class="tags">
-                {% for tag in device.tags %}
-                <span class="tag">{{ tag }}</span>
-                {% endfor %}
-            </div>
-            {% endif %}
-        </div>
-        {% endfor %}
-    {% else %}
-        <p class="no-devices">No devices found. <a href="/add-device">Add a device</a> to get started.</p>
-    {% endif %}
+<!-- Stat strip (numbers filled client-side from /api/fleet/health) -->
+<div class="stat-strip">
+  <div class="stat"><div class="sl">Devices</div><div class="sv">{{ devices|length }}</div></div>
+  <div class="stat"><div class="sl"><span class="status-dot sem-green"><span class="core"></span></span> Online</div><div class="sv" id="stat-online">—</div></div>
+  <div class="stat"><div class="sl"><span class="status-dot sem-amber"><span class="core"></span></span> Needs attention</div><div class="sv" id="stat-attention">—</div></div>
+  <div class="stat"><div class="sl"><span class="status-dot sem-red"><span class="core"></span></span> Drifted</div><div class="sv" id="stat-drifted">0</div></div>
 </div>
+
+<!-- Filter bar -->
+<div class="filter-bar">
+  <button class="chip active" data-health="all"><i data-lucide="filter"></i> All health</button>
+  <button class="chip" data-health="online">Online</button>
+  <button class="chip" data-health="attention">Needs attention</button>
+  {% if group_filter %}
+  <a class="chip active" href="/devices"><i data-lucide="hash"></i> Group: {{ group_name }} <i data-lucide="x"></i></a>
+  {% endif %}
+  <div class="right">
+    <span class="shown-count" id="shown-count">{{ devices|length }} shown</span>
+  </div>
+</div>
+
+{% if devices %}
+<table class="data-table" id="fleet-table">
+  <thead>
+    <tr>
+      <th>Health</th><th>Device</th><th>IP</th><th>Firmware</th><th>Group</th><th>Drift</th><th>Tags</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for device in devices %}
+    <tr data-device-id="{{ device.device_id }}" data-health="unknown"
+        onclick="window.location='/device/{{ device.device_id }}'">
+      <td>
+        <span class="health-cell" data-health-cell="{{ device.device_id }}">
+          <span class="status-dot sem-grey"><span class="core"></span></span>
+          <span class="health-label">Unknown</span>
+        </span>
+      </td>
+      <td>
+        <div class="device-name-cell">
+          <span class="type-tile"><i data-lucide="{{ 'video' if 'camera' in (device.device_type|default('')|lower) or device.model else 'box' }}"></i></span>
+          <div>
+            <div class="nm">{{ device.nickname or device.device_id }}</div>
+            <div class="sub">{{ device.model or device.device_type or '—' }}</div>
+          </div>
+        </div>
+      </td>
+      <td class="mono">{{ device.host or '—' }}</td>
+      <td class="mono">{{ device.firmware_version or device.firmware or '—' }}</td>
+      <td>{{ device._primary_group or '—' }}</td>
+      <td>
+        <span class="drift-cell fg-grey"><span class="dot sem-grey"></span>No baseline</span>
+      </td>
+      <td>
+        {% for tag in device.tags|default([]) %}<span class="tag">{{ tag }}</span> {% endfor %}
+      </td>
+      <td style="text-align:right;color:var(--text-faint)"><i data-lucide="chevron-right"></i></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty-state">
+  <i data-lucide="inbox"></i>
+  <div style="margin-top:10px">No devices in this view. <a href="/add-device">Add a device</a> to get started.</div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block extra_js %}
 <script>
-// Paint health dots from the cached health table. Single fetch
-// per page load; no auto-refresh (keeping the page lightweight).
-// Colors: green=online, red=unreachable, amber=auth_failed, grey=unknown.
-const HEALTH_COLORS = {
-    online: '#16a34a',
-    unreachable: '#dc2626',
-    auth_failed: '#f59e0b',
-    unknown: '#9ca3af',
-};
-const HEALTH_LABELS = {
-    online: 'Online',
-    unreachable: 'Unreachable',
-    auth_failed: 'Auth failed',
-    unknown: 'Unknown (monitor disabled or not yet checked)',
+// Health cells + stat strip from the cached health table.
+const HEALTH = {
+  online:      { sem: 'green', label: 'Online', bucket: 'online' },
+  unreachable: { sem: 'red',   label: 'Unreachable', bucket: 'attention' },
+  auth_failed: { sem: 'amber', label: 'Auth failed', bucket: 'attention' },
+  unknown:     { sem: 'grey',  label: 'Unknown', bucket: 'unknown' },
 };
 (async () => {
-    try {
-        const resp = await fetch('/api/fleet/health');
-        if (!resp.ok) return;
-        const data = await resp.json();
-        const byId = {};
-        for (const d of (data.devices || [])) {
-            byId[d.device_id] = d;
-        }
-        for (const dot of document.querySelectorAll('.health-dot')) {
-            const did = dot.getAttribute('data-device-id');
-            const rec = byId[did];
-            const status = rec ? rec.status : 'unknown';
-            dot.style.background = HEALTH_COLORS[status] || HEALTH_COLORS.unknown;
-            let title = HEALTH_LABELS[status] || status;
-            if (rec && rec.latency_ms != null) title += ` (${rec.latency_ms}ms)`;
-            if (rec && rec.last_check) {
-                const ago = Math.round((Date.now() / 1000) - rec.last_check);
-                title += `, checked ${ago}s ago`;
-            }
-            dot.setAttribute('title', title);
-        }
-    } catch (_) { /* silent — dots stay grey */ }
+  try {
+    const resp = await fetch('/api/fleet/health');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const byId = {};
+    (data.devices || []).forEach(d => { byId[d.device_id] = d; });
+    let online = 0, attention = 0;
+    document.querySelectorAll('[data-health-cell]').forEach(cell => {
+      const did = cell.getAttribute('data-health-cell');
+      const rec = byId[did];
+      const status = (rec && rec.status) || 'unknown';
+      const h = HEALTH[status] || HEALTH.unknown;
+      const dot = cell.querySelector('.status-dot');
+      dot.className = 'status-dot sem-' + h.sem + (status === 'online' ? ' pulse' : '');
+      cell.querySelector('.health-label').textContent = h.label;
+      const row = cell.closest('tr');
+      if (row) row.setAttribute('data-health', h.bucket);
+      if (h.bucket === 'online') online++;
+      if (h.bucket === 'attention') attention++;
+    });
+    const so = document.getElementById('stat-online'); if (so) so.textContent = online;
+    const sa = document.getElementById('stat-attention'); if (sa) sa.textContent = attention;
+  } catch (_) {}
 })();
+
+// Health chip filter.
+document.querySelectorAll('.chip[data-health]').forEach(chip => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('.chip[data-health]').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    const want = chip.getAttribute('data-health');
+    let shown = 0;
+    document.querySelectorAll('#fleet-table tbody tr').forEach(row => {
+      const b = row.getAttribute('data-health');
+      const vis = want === 'all' || b === want || (want === 'online' && b === 'online') || (want === 'attention' && b === 'attention');
+      row.style.display = vis ? '' : 'none';
+      if (vis) shown++;
+    });
+    const sc = document.getElementById('shown-count'); if (sc) sc.textContent = shown + ' shown';
+  });
+});
 </script>
 {% endblock %}
