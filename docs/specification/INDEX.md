@@ -57,6 +57,7 @@ What the system must do, per capability area. Each file has Functional Requireme
 - [Web UI](requirements/web-ui.md)
 - [Web chatbot](requirements/web-chatbot.md) 🚧 — bundled Gemini-powered chat client (Phase 5)
 - [Organization hierarchy](requirements/hierarchy.md) 📋 — Org → Site → Group → Device (draft skeleton)
+- [Multi-target support](requirements/multi-target-support.md) 📋 — 2N intercoms, ACS Pro VMS, typed target taxonomy, ConfigCollector / Actuator split
 
 ### Cross-cutting requirements
 
@@ -113,12 +114,17 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 
 - [0011 — Pluggable registry backends (SQLite default, Vault optional)](decisions/0011-pluggable-backends.md)
 - [0015 — Pluggable snapshot facets](decisions/0015-pluggable-facets.md)
+- [0027 — Pluggable control families and ConfigCollector / Actuator split](decisions/0027-pluggable-control-families-and-config-collectors.md) 📋 — 2N intercom and ACS Pro support; typed target taxonomy; multi-family snapshot pipeline
 
 ### Snapshot/restore
 
 - [0012 — Snapshot/restore implemented on top of the plan engine](decisions/0012-snapshot-on-plans.md)
 - [0013 — Hybrid YAML + raw artifact format](decisions/0013-hybrid-yaml-and-raw.md)
 - [0026 — Unified job scheduler](decisions/0026-unified-job-scheduler.md) 📋 (proposed) — generalize the snapshot-only scheduler to job types; enables scheduled configuration audits
+
+### Activity tracking & monitoring
+
+- [0028 — Demo / activity tracking as a bounded module on ADMZ's shared substrate](decisions/0028-demo-activity-tracking-shared-substrate.md) 📋 — AEC demo-session detection and reporting; reuses ACS layer, inventory, and UI chrome; runs as a separate, independently-deployable module
 
 ### Discovery
 
@@ -132,5 +138,6 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 - **"I'm implementing a GitHub issue"** → [process](process.md) → the requirement/story IDs the issue references → related decisions.
 - **"I'm adding a feature"** → overview → relevant capability requirement → related decisions.
 - **"I'm adding a catalog operation"** → catalog requirement → decisions 0001–0004 → existing YAML in `catalog/vapix/`.
-- **"I'm adding a new device family"** → extensibility requirement → decisions 0011, 0015.
+- **"I'm adding a new device family"** → extensibility requirement → decisions 0011, 0015, 0027 → multi-target-support requirement.
+- **"I'm building demo / activity tracking or monitoring/reporting"** → ADR-0028 → multi-target-support (FR-MT-013 spike) → personas/experience-center-operator → observability requirement → hierarchy requirement.
 - **"I'm hardening security"** → security requirement → decisions 0005, 0006, 0009, 0010, 0014, 0020.
