@@ -241,19 +241,29 @@ class VapixExecutor(BaseExecutor):
     _PLACEHOLDER_RE = re.compile(r"\{(\w+)(?::(\w+))?\}")
 
     @staticmethod
-    def _coerce_value(value: str, type_hint: str) -> Any:
-        """Coerce a string value to the type specified by a placeholder hint.
+    def _coerce_value(value: Any, type_hint: str) -> Any:
+        """Coerce a value to the type specified by a placeholder hint.
 
         Supports: int, float, bool, array, object.  Default is str.
+
+        Values arrive either as strings (legacy query params) OR as native
+        JSON types — the LLM passes real ints / lists / bools straight
+        through the ``execute_operation`` params object. Be tolerant of
+        both so a placeholder like ``{colors:array}`` works whether the
+        caller sent ``["white"]`` or the string ``'["white"]'``.
         """
         if type_hint == "int":
             return int(value)
         elif type_hint == "float":
             return float(value)
         elif type_hint == "bool":
-            return value.lower() in ("true", "1", "yes")
+            if isinstance(value, bool):
+                return value
+            return str(value).lower() in ("true", "1", "yes")
         elif type_hint in ("array", "object"):
-            return json_module.loads(value)
+            if isinstance(value, str):
+                return json_module.loads(value)
+            return value  # already a parsed list/dict
         return value  # "str" or default
 
     def _resolve_template(

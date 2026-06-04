@@ -103,6 +103,74 @@ class TestSynonymTargetsResolveToIndexKeys:
         assert "restart-device" in _INTENT_SYNONYMS["restart"]
 
 
+class TestFlashResolvesToSirenAndLight:
+    """Regression — live testing on a D4200-VE strobe siren.
+
+    Chat user asked "lets make the D4200 flash white for 30 seconds".
+    The LLM picked ``findmydevice.cgi:find`` (locate-this-unit) instead
+    of ``siren_and_light.cgi:start`` (the strobe-siren API). Root cause:
+    the word "flash" had no synonym, and the bare word "device" in
+    "flash the device" fell through to the ``*-device`` task keys
+    (find-device among them) — so the siren_and_light API was never a
+    candidate. These tests pin "flash"-family intents to the
+    control-siren task so a strobe siren always sees siren_and_light.
+    """
+
+    def _resolver(self):
+        from admz.catalog.loader import CatalogLoader
+        from admz.catalog.resolver import CatalogResolver
+        return CatalogResolver(CatalogLoader(str(PROJECT_ROOT / "catalog")))
+
+    def test_flash_synonyms_include_control_siren(self):
+        from admz.catalog.resolver import _INTENT_SYNONYMS
+        for key in ("flash", "flash white", "flashing", "strobe light"):
+            assert key in _INTENT_SYNONYMS, f"missing synonym key: {key!r}"
+            assert "control-siren" in _INTENT_SYNONYMS[key], (
+                f"{key!r} should map to control-siren, got "
+                f"{_INTENT_SYNONYMS[key]}"
+            )
+
+    def test_match_intent_flash_white_surfaces_siren(self):
+        r = self._resolver()
+        for intent in (
+            "flash white",
+            "flash white for 30 seconds",
+            "make the D4200 flash white",
+            "flash the device",
+        ):
+            keys = r._match_intent(intent, "vapix")
+            assert "control-siren" in keys, (
+                f"intent {intent!r} should surface control-siren, "
+                f"got {keys}"
+            )
+
+    def test_resolve_surfaces_siren_and_light_start(self):
+        """The full resolve() must include siren_and_light.cgi:start
+        among the candidate operations for a flash intent — that's the
+        operation the LLM needs to actually drive a strobe siren."""
+        r = self._resolver()
+        res = r.resolve(
+            device_id="B8A44FFC2B16",
+            intent="flash white for 30 seconds",
+            family="vapix",
+        )
+        op_ids = [o.get("id") for o in res.operations]
+        assert "siren_and_light.cgi:start" in op_ids, (
+            f"siren_and_light.cgi:start missing from candidates: {op_ids}"
+        )
+
+    def test_flash_firmware_still_maps_to_upgrade(self):
+        """Guard the disambiguation: adding the bare "flash" synonym
+        must not steal the exact phrase "flash firmware" away from the
+        firmware-upgrade task."""
+        from admz.catalog.resolver import _INTENT_SYNONYMS
+        assert _INTENT_SYNONYMS["flash firmware"] == ["upgrade-firmware"]
+        r = self._resolver()
+        assert r._match_intent("flash firmware", "vapix") == [
+            "upgrade-firmware"
+        ]
+
+
 class TestParseHelpers:
     def test_extract_synonym_targets_finds_known_entries(self):
         targets = _extract_synonym_targets()

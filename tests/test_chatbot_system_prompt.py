@@ -129,3 +129,23 @@ class TestBuildSystemPrompt:
         # Mentions both tool names
         assert "query_catalog" in prompt
         assert "execute_operation" in prompt
+
+    def test_resolve_device_id_yourself_guidance(self):
+        """Live bug: user said "make the D4200 flash white" and the LLM
+        replied "I need the device_id (MAC address) for the D4200 ...
+        can you please provide it" — stalling instead of resolving the
+        model reference itself. The prompt must tell the LLM to resolve
+        device_ids via search_devices/list_devices and NOT ask the user
+        for the MAC."""
+        prompt = build_system_prompt("alice").lower()
+        # Names the resolution tool(s).
+        assert "search_devices" in prompt
+        assert "list_devices" in prompt
+        # Frames resolution as the LLM's own job ("resolve it yourself").
+        assert "resolve it yourself" in prompt or "your job" in prompt
+        # Explicitly forbids asking the user for the device_id / MAC.
+        assert (
+            "never ask the user to give you the device_id" in prompt
+            or "never ask the user for the device_id" in prompt
+            or ("never ask the user" in prompt and "mac address" in prompt)
+        )

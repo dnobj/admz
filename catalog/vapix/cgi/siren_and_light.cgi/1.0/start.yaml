@@ -4,15 +4,39 @@ cgi: siren_and_light.cgi
 method: POST
 min_api_version: "1.0"
 
+# There are TWO mutually-exclusive ways to start (per the VAPIX
+# Siren-and-light spec):
+#   (A) Instantaneous / ad-hoc ("do this now"): supply siren and/or
+#       light pattern blocks directly. Nothing needs to be pre-configured
+#       on the device.
+#   (B) Saved profile: supply only `profile` (a name created with
+#       addProfile / listed by getProfiles). Do NOT combine `profile`
+#       with siren_*/light_*.
+# Unsupplied placeholders are dropped from the body, so a light-only
+# flash sends just the light block; the siren block and profile vanish.
 request:
   content_type: application/json
   body:
     apiVersion: "1.0"
     method: start
     params:
-      id: "{id}"
       profile: "{profile}"
-      duration: "{duration:int}"
+      siren:
+        pattern: "{siren_pattern}"
+        intensity: "{siren_intensity:int}"
+        duration:
+          unit: "{siren_duration_unit}"
+          value: "{siren_duration_value:int}"
+        priority: "{siren_priority:int}"
+      light:
+        pattern: "{light_pattern}"
+        speed: "{light_speed:int}"
+        colors: "{light_colors:array}"
+        intensity: "{light_intensity:int}"
+        duration:
+          unit: "{light_duration_unit}"
+          value: "{light_duration_value:int}"
+        priority: "{light_priority:int}"
 
 response:
   format: json
@@ -22,3 +46,63 @@ risk_level: normal
 
 requires:
   auth_level: operator
+
+# Documentation only (surfaced to the LLM via query_catalog; ignored by
+# the executor). Enumerates the flat param names that fill the nested
+# body template above.
+params_doc:
+  forms:
+    - name: instantaneous
+      description: >
+        Activate a siren and/or light pattern right now with no
+        pre-configured profile. Supply siren_* and/or light_* params.
+        This is the form to use for "flash white for 30 seconds".
+      example:
+        light_pattern: Steady
+        light_colors: ["white"]
+        light_intensity: 1
+        light_duration_unit: seconds
+        light_duration_value: 30
+    - name: profile
+      description: >
+        Activate a saved profile by name (created with addProfile).
+        Supply ONLY `profile`; never combine it with siren_*/light_*.
+      example:
+        profile: Trespassing
+  params:
+    profile: 'Saved profile name. Mutually exclusive with siren_*/light_*.'
+    siren_pattern: "Siren pattern name (from getCapabilities, e.g. 'Alarm: Horror')."
+    siren_intensity: 'Siren intensity level, integer (e.g. 1-5).'
+    siren_duration_unit: "'seconds' or 'repetitions'."
+    siren_duration_value: 'Integer duration value.'
+    siren_priority: 'Integer priority 1-10 (optional).'
+    light_pattern: "Light pattern name (from getCapabilities). 'Steady' = solid single color; 'Alternate' = 2-4 colors."
+    light_speed: 'Integer speed (optional, pattern-dependent).'
+    light_colors: 'Array of color names, e.g. ["white"]. Allowed (device-dependent): red, green, blue, amber, white.'
+    light_intensity: 'Light intensity level, integer (e.g. 1-5).'
+    light_duration_unit: "'seconds' or 'repetitions'."
+    light_duration_value: 'Integer duration value.'
+    light_priority: 'Integer priority 1-10 (optional).'
+
+notes: >
+  Activates the siren and/or strobe light on a strobe-siren device
+  (e.g. D42xx). TWO mutually-exclusive forms.
+  (A) Instantaneous "do this now": pass light_* and/or siren_* pattern
+  params directly — nothing needs pre-configuring. To flash WHITE for
+  30 seconds: light_pattern="Steady", light_colors=["white"],
+  light_intensity=1, light_duration_unit="seconds",
+  light_duration_value=30.
+  (B) Saved profile: pass ONLY `profile` (a name from getProfiles /
+  addProfile); do not combine with siren_*/light_*.
+  Call getCapabilities first to learn the exact pattern names, colors,
+  and intensity ranges THIS device supports — they can differ from the
+  examples. Values are typed as the spec examples show: intensity and
+  duration.value are integers, colors is an array of strings, and
+  duration is the object {unit,value} (NOT a flat int). If the device
+  rejects a value (error codes 2200-2212, e.g. "Requested light
+  intensity is invalid" / "Requested light pattern is invalid"), that
+  means the pattern/intensity/color isn't supported on this model — call
+  getCapabilities to read the supported values and retry with a valid
+  one. Do NOT reinterpret an "invalid value" error as a type/string
+  problem. start returns sirenId/lightId handles; use
+  siren_and_light.cgi:stop to end early.
