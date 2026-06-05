@@ -1,8 +1,0 @@
-endpoint: /axis-cgi/auditlog.cgi
-generation: legacy-cgi
-min_firmware: "11.0"
-api_id: audit-log
-description: >
-  Audit log retrieval. Returns security-relevant audit trail entries
-  including authentication events, configuration changes, and
-  firmware management actions.

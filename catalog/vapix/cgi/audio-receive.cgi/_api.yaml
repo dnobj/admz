@@ -1,8 +1,0 @@
-endpoint: /axis-cgi/audio/receive.cgi
-generation: legacy-cgi
-min_firmware: "5.00"
-description: >
-  Audio receive/stream. Request an audio stream from the
-  device microphone or line input. Returns raw audio data
-  in the specified codec format.
-  Requires Properties.Audio.Audio=yes.

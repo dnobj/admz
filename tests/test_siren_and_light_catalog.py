@@ -23,11 +23,13 @@ from pathlib import Path
 
 import pytest
 
-from admz.catalog.loader import CatalogLoader
+import axis_api_atlas
+from axis_api_atlas.catalog.loader import CatalogLoader
 from admz.executor.vapix import VapixExecutor
 
 
-CATALOG = str(Path(__file__).resolve().parent.parent / "catalog")
+# Catalog data now ships with the axis-api-atlas package (ADR-0029).
+CATALOG = axis_api_atlas.default_data_path()
 
 
 @pytest.fixture(scope="module")

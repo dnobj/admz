@@ -1,7 +1,0 @@
-endpoint: /config/rest/snmp/v1
-generation: config-rest
-min_firmware: "11.8"
-api_id: snmp
-description: >
-  SNMP configuration. Configure SNMP v1/v2c/v3 settings,
-  community strings, trap destinations, and transport protocol.

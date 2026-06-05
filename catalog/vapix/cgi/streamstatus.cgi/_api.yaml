@@ -1,7 +1,0 @@
-endpoint: /axis-cgi/streamstatus.cgi
-generation: json-rpc
-min_firmware: "9.80"
-api_id: streamstatus
-description: >
-  Stream status monitoring. List all active video/audio streams
-  with details about protocol, destination, state, and encoding.

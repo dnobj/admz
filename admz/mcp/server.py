@@ -51,12 +51,12 @@ from admz.api.confirm_store import (
 )
 from admz.discovery.credential_probe import probe_credentials, ProbeStatus
 from admz.fleet_settings import fleet_settings
-from admz.catalog.loader import CatalogLoader
-from admz.catalog.resolver import CatalogResolver
-from admz.knowledge.loader import KnowledgeLoader
-from admz.knowledge.resolver import KnowledgeResolver
-from admz.capabilities.loader import CapabilitiesLoader
-from admz.capabilities.resolver import CapabilitiesResolver
+from axis_api_atlas.catalog.loader import CatalogLoader
+from axis_api_atlas.catalog.resolver import CatalogResolver
+from axis_api_atlas.knowledge.loader import KnowledgeLoader
+from axis_api_atlas.knowledge.resolver import KnowledgeResolver
+from axis_api_atlas.capabilities.loader import CapabilitiesLoader
+from axis_api_atlas.capabilities.resolver import CapabilitiesResolver
 from admz.executor.vapix import VapixExecutor
 from admz.firmware.downloader import (
     download_firmware as fetch_firmware,

@@ -1,7 +1,0 @@
-endpoint: /axis-cgi/lightcontrol.cgi
-generation: json-rpc
-min_firmware: "7.40"
-api_id: light-control
-description: >
-  IR and white light control. Activate/deactivate lights, set intensity,
-  angle of illumination, day-night sync, and IR wavelength.

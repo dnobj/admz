@@ -1,7 +1,0 @@
-endpoint: /axis-cgi/viewarea/info.cgi
-generation: json-rpc
-min_firmware: "7.10"
-api_id: view-area
-description: >
-  View area information. List configured view areas with their
-  geometry, canvas size, and configurable ranges.

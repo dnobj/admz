@@ -1,8 +1,0 @@
-endpoint: /axis-cgi/network_settings.cgi
-generation: json-rpc
-min_firmware: "9.80"
-api_id: network-settings
-description: >
-  Network configuration API. Configure IPv4/IPv6 addresses, DNS,
-  hostname, proxy, 802.1X, VLAN, and wireless settings. Replaces
-  legacy param.cgi network parameters.

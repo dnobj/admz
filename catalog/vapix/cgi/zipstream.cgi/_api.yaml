@@ -1,8 +1,0 @@
-endpoint: /axis-cgi/zipstream/getstatus.cgi
-generation: legacy-cgi
-min_firmware: "5.80"
-description: >
-  Zipstream bandwidth optimization. Configure Zipstream
-  compression strength, GOP mode, FPS mode, and profiles
-  to reduce bandwidth while maintaining forensic quality.
-  Requires Properties.ZipStream.ZipStream=yes.

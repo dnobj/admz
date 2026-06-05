@@ -1,8 +1,0 @@
-endpoint: /axis-cgi/opticscontrol.cgi
-generation: json-rpc
-min_firmware: "7.30"
-api_id: optics-control
-description: >
-  Optics control for motorized lenses. Control focus, zoom
-  (magnification), autofocus, IR cut filter, and temperature
-  compensation. Supports multi-optics devices.

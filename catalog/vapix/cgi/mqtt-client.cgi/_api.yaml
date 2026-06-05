@@ -1,8 +1,0 @@
-endpoint: /axis-cgi/mqtt/client.cgi
-generation: json-rpc
-min_firmware: "9.80"
-api_id: mqtt-client
-description: >
-  MQTT client configuration. Configure broker connection settings,
-  authentication, TLS/SSL, last will testament, and connect/disconnect
-  messages. Activate and deactivate the MQTT client.

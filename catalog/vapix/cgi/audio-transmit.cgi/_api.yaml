@@ -1,7 +1,0 @@
-endpoint: /axis-cgi/audio/transmit.cgi
-generation: legacy-cgi
-min_firmware: "5.00"
-description: >
-  Audio transmit. Send audio data to the device speaker
-  or line output. POST raw audio data in the specified
-  codec format. Requires Properties.Audio.Audio=yes.

@@ -7,13 +7,13 @@ import tempfile
 import pytest
 import yaml
 
-from admz.capabilities.models import (
+from axis_api_atlas.capabilities.models import (
     FirmwareSnapshot,
     ModelCapabilities,
     CapabilityLookupResult,
 )
-from admz.capabilities.loader import CapabilitiesLoader
-from admz.capabilities.resolver import CapabilitiesResolver
+from axis_api_atlas.capabilities.loader import CapabilitiesLoader
+from axis_api_atlas.capabilities.resolver import CapabilitiesResolver
 
 
 # ------------------------------------------------------------------

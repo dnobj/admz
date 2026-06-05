@@ -1,8 +1,0 @@
-endpoint: /axis-cgi/ntp.cgi
-generation: json-rpc
-min_firmware: "9.80"
-api_id: ntp
-description: >
-  NTP client configuration. Query NTP synchronization status and
-  configure NTP servers, polling intervals, and NTS (Network Time
-  Security) settings.

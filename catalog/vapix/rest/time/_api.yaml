@@ -1,8 +1,0 @@
-endpoint: /config/rest/time/v2
-generation: config-rest
-min_firmware: "11.8"
-api_id: time
-description: >
-  Modern time configuration. Get and set device date/time,
-  timezone (IANA or POSIX), and DHCP time settings. Replaces
-  legacy param.cgi time parameters.

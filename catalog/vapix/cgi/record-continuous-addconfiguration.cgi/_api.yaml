@@ -1,6 +1,0 @@
-endpoint: /axis-cgi/record/continuous/addconfiguration.cgi
-generation: legacy-cgi
-min_firmware: null
-description: >
-  Configure continuous recording to a specified disk. Supports
-  resolution options and event-driven recording parameters.

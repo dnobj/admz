@@ -2,12 +2,14 @@
 
 import os
 import pytest
+import axis_api_atlas
 
-from admz.knowledge.loader import KnowledgeLoader, normalize_model, derive_series
-from admz.knowledge.resolver import KnowledgeResolver
-from admz.knowledge.models import Hint, ProductKnowledge, KnowledgeResult
+from axis_api_atlas.knowledge.loader import KnowledgeLoader, normalize_model, derive_series
+from axis_api_atlas.knowledge.resolver import KnowledgeResolver
+from axis_api_atlas.knowledge.models import Hint, ProductKnowledge, KnowledgeResult
 
-CATALOG_PATH = os.path.join(os.path.dirname(__file__), "..", "catalog")
+# Knowledge data now ships with the axis-api-atlas package (ADR-0029).
+CATALOG_PATH = axis_api_atlas.default_data_path()
 
 
 @pytest.fixture

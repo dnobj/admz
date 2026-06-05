@@ -7,6 +7,14 @@ python-multipart>=0.0.6
 mcp>=0.9.0
 pyyaml>=6.0
 
+# Axis API knowledge base — the executable catalog + intent resolver +
+# (model,firmware) capability matrix, now the single source of truth
+# (ADR-0029). Canonical source:
+#   axis-api-atlas @ git+https://github.com/mrdnlabs/axis-api-atlas.git
+# For local dev, install the sibling clone editable:
+#   pip install -e ../axis-api-atlas
+axis-api-atlas>=0.1.0
+
 # LDAP (optional — only used when ADMZ_LDAP_ENABLED=true for Windows
 # IWA group enrichment). Pure-Python so no native deps.
 ldap3>=2.9.1

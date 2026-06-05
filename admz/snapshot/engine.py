@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from admz.catalog.loader import CatalogLoader
+from axis_api_atlas.catalog.loader import CatalogLoader
 from admz.device_registry import DeviceRegistry
 from admz.executor.base import BaseExecutor
 from admz.snapshot.facets import get_facets_for_device

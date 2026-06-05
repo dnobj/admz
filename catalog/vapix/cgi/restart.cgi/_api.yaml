@@ -1,5 +1,0 @@
-endpoint: /axis-cgi/restart.cgi
-generation: legacy-cgi
-min_firmware: null
-description: >
-  Device restart. Triggers a graceful reboot of the device.

@@ -1,8 +1,0 @@
-endpoint: /config/rest/firewall/v1
-generation: config-rest
-min_firmware: "11.8"
-api_id: firewall
-description: >
-  Firewall configuration. Manage IP/MAC filter rules, rate
-  limiting, and default policies. Rules are staged as pending
-  and must be confirmed within a timeout or auto-revert.

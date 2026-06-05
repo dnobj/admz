@@ -1,6 +1,0 @@
-endpoint: /axis-cgi/record/list.cgi
-generation: legacy-cgi
-min_firmware: null
-description: >
-  List recordings by time period and event ID. Returns recording IDs,
-  start/stop times, and video/audio track information.

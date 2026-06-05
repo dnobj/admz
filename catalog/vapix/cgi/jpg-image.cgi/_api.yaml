@@ -1,7 +1,0 @@
-endpoint: /axis-cgi/jpg/image.cgi
-generation: legacy-cgi
-min_firmware: "5.00"
-description: >
-  JPEG snapshot. Returns a single JPEG frame from the camera.
-  Supports resolution, compression, rotation, and text overlay
-  parameters. The simplest way to grab a still image.

@@ -1,9 +1,0 @@
-endpoint: /axis-cgi/pencil.cgi
-generation: json-rpc
-min_firmware: "11.0"
-api_id: pencil-privacy-filter
-description: >
-  Privacy filter management. Configure and select privacy
-  filters that mask areas of the video stream to protect
-  privacy. Supports multiple filter types with configurable
-  parameters.

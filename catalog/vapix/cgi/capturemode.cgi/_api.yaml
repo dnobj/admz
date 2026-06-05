@@ -1,8 +1,0 @@
-endpoint: /axis-cgi/capturemode.cgi
-generation: json-rpc
-min_firmware: "8.50"
-api_id: capture-mode
-description: >
-  Capture mode configuration. Query available capture modes per channel
-  and set the active mode (resolution, frame rate). Requires reboot
-  after mode change.

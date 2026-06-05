@@ -42,7 +42,7 @@ from admz.firmware.upgrade_path import (
     format_upgrade_path,
     LTS_MILESTONES,
 )
-from admz.catalog.resolver import _INTENT_SYNONYMS
+from axis_api_atlas.catalog.resolver import _INTENT_SYNONYMS
 
 
 def _run(coro):

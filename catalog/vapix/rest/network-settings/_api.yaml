@@ -1,8 +1,0 @@
-endpoint: /config/rest/network-settings/v1
-generation: config-rest
-min_firmware: "11.8"
-api_id: network-settings
-description: >
-  Network configuration via config-rest API. Get current network
-  configuration, set DNS servers, and configure IPv4 addresses.
-  Complements the older network_settings.cgi JSON-RPC API.

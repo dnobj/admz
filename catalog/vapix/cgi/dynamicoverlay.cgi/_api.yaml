@@ -1,8 +1,0 @@
-endpoint: /axis-cgi/dynamicoverlay/dynamicoverlay.cgi
-generation: json-rpc
-min_firmware: "5.00"
-api_id: dynamicoverlay
-description: >
-  Dynamic overlay management. Add, update, remove, and list text and
-  image overlays on video channels. Supports positioning, colors,
-  font sizes, and scale-to-resolution for image overlays.

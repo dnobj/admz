@@ -1,6 +1,0 @@
-endpoint: /axis-cgi/applications/list.cgi
-generation: legacy-cgi
-min_firmware: "5.00"
-description: >
-  List installed ACAP applications with name, version, status,
-  license state, and SDK type.

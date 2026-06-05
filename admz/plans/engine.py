@@ -8,7 +8,7 @@ import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
-from admz.catalog.loader import CatalogLoader
+from axis_api_atlas.catalog.loader import CatalogLoader
 from admz.executor.base import BaseExecutor
 from admz.executor.models import StepResult
 from admz.device_registry import DeviceRegistry

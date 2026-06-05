@@ -1,7 +1,0 @@
-endpoint: /axis-cgi/disks/gethealth.cgi
-generation: legacy-cgi
-min_firmware: "5.00"
-description: >
-  Disk health status. Query SMART health data including
-  wear level, temperature, and overall health for SD cards
-  and other storage devices.
