@@ -1,6 +1,0 @@
-endpoint: /axis-cgi/disks/repair.cgi
-generation: legacy-cgi
-min_firmware: "5.00"
-description: >
-  Disk filesystem repair. Attempts to repair filesystem errors
-  on the specified storage device.

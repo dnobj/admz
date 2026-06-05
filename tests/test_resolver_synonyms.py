@@ -18,12 +18,15 @@ from pathlib import Path
 
 import pytest
 import yaml
+import axis_api_atlas
+import axis_api_atlas.catalog.resolver as _atlas_resolver
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-RESOLVER_PATH = PROJECT_ROOT / "admz" / "catalog" / "resolver.py"
+# Resolver + catalog data now live in the axis-api-atlas package (ADR-0029);
+# this test parses the resolver source + by-task index from there.
+RESOLVER_PATH = Path(_atlas_resolver.__file__)
 BY_TASK_INDEX = (
-    PROJECT_ROOT / "catalog" / "vapix" / "index" / "by-task.yaml"
+    Path(axis_api_atlas.default_data_path()) / "vapix" / "index" / "by-task.yaml"
 )
 
 
@@ -98,7 +101,7 @@ class TestSynonymTargetsResolveToIndexKeys:
         """Regression — this is the specific bug found in live testing."""
         # Re-import resolver lazily so the test sees the live module
         # (handy when running this file standalone in dev).
-        from admz.catalog.resolver import _INTENT_SYNONYMS
+        from axis_api_atlas.catalog.resolver import _INTENT_SYNONYMS
         assert "restart-device" in _INTENT_SYNONYMS["reboot"]
         assert "restart-device" in _INTENT_SYNONYMS["restart"]
 
@@ -117,12 +120,12 @@ class TestFlashResolvesToSirenAndLight:
     """
 
     def _resolver(self):
-        from admz.catalog.loader import CatalogLoader
-        from admz.catalog.resolver import CatalogResolver
-        return CatalogResolver(CatalogLoader(str(PROJECT_ROOT / "catalog")))
+        from axis_api_atlas.catalog.loader import CatalogLoader
+        from axis_api_atlas.catalog.resolver import CatalogResolver
+        return CatalogResolver(CatalogLoader(axis_api_atlas.default_data_path()))
 
     def test_flash_synonyms_include_control_siren(self):
-        from admz.catalog.resolver import _INTENT_SYNONYMS
+        from axis_api_atlas.catalog.resolver import _INTENT_SYNONYMS
         for key in ("flash", "flash white", "flashing", "strobe light"):
             assert key in _INTENT_SYNONYMS, f"missing synonym key: {key!r}"
             assert "control-siren" in _INTENT_SYNONYMS[key], (
@@ -163,7 +166,7 @@ class TestFlashResolvesToSirenAndLight:
         """Guard the disambiguation: adding the bare "flash" synonym
         must not steal the exact phrase "flash firmware" away from the
         firmware-upgrade task."""
-        from admz.catalog.resolver import _INTENT_SYNONYMS
+        from axis_api_atlas.catalog.resolver import _INTENT_SYNONYMS
         assert _INTENT_SYNONYMS["flash firmware"] == ["upgrade-firmware"]
         r = self._resolver()
         assert r._match_intent("flash firmware", "vapix") == [
@@ -186,12 +189,12 @@ class TestStreamStatusVsProfile:
     """
 
     def _resolver(self):
-        from admz.catalog.loader import CatalogLoader
-        from admz.catalog.resolver import CatalogResolver
-        return CatalogResolver(CatalogLoader(str(PROJECT_ROOT / "catalog")))
+        from axis_api_atlas.catalog.loader import CatalogLoader
+        from axis_api_atlas.catalog.resolver import CatalogResolver
+        return CatalogResolver(CatalogLoader(axis_api_atlas.default_data_path()))
 
     def test_active_video_streams_maps_to_stream_status(self):
-        from admz.catalog.resolver import _INTENT_SYNONYMS
+        from axis_api_atlas.catalog.resolver import _INTENT_SYNONYMS
         assert "active video streams" in _INTENT_SYNONYMS
         assert _INTENT_SYNONYMS["active video streams"] == ["stream-status"]
         # A bare "stream" must surface stream-status as a co-candidate.

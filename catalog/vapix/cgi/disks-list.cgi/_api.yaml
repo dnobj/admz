@@ -1,7 +1,0 @@
-endpoint: /axis-cgi/disks/list.cgi
-generation: legacy-cgi
-min_firmware: null
-description: >
-  List disk and storage information. Returns disk IDs, total size,
-  free space, cleanup levels, and mounted status for SD cards and
-  network shares.

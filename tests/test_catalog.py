@@ -2,12 +2,14 @@
 
 import os
 import pytest
+import axis_api_atlas
 
-from admz.catalog.loader import CatalogLoader
-from admz.catalog.resolver import CatalogResolver
-from admz.catalog.models import Operation, ParameterGroup
+from axis_api_atlas.catalog.loader import CatalogLoader
+from axis_api_atlas.catalog.resolver import CatalogResolver
+from axis_api_atlas.catalog.models import Operation, ParameterGroup
 
-CATALOG_PATH = os.path.join(os.path.dirname(__file__), "..", "catalog")
+# Catalog data now ships with the axis-api-atlas package (ADR-0029).
+CATALOG_PATH = axis_api_atlas.default_data_path()
 
 
 @pytest.fixture

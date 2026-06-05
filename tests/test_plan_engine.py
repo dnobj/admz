@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from admz.catalog.models import Operation
+from axis_api_atlas.catalog.models import Operation
 from admz.executor.base import BaseExecutor
 from admz.executor.models import StepResult
 from admz.plans.engine import PlanEngine

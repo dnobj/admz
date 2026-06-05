@@ -1,8 +1,0 @@
-endpoint: /axis-cgi/systemready.cgi
-generation: json-rpc
-min_firmware: "9.50"
-api_id: systemready
-description: >
-  System readiness check. Query whether the device has completed
-  booting and is ready to accept configuration. Works without
-  authentication on factory-default devices.

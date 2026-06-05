@@ -1,7 +1,0 @@
-endpoint: /axis-cgi/hardfactorydefault.cgi
-generation: legacy-cgi
-min_firmware: null
-description: >
-  Hard factory default. Resets the device to factory defaults including
-  network settings (unlike factorydefault.cgi which preserves them).
-  Device will need to be rediscovered after reset.

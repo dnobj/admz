@@ -7,19 +7,15 @@ and the resolver can find them for the canonical task slugs.
 
 import pytest
 
-from admz.catalog.loader import CatalogLoader
-from admz.catalog.resolver import CatalogResolver
+from axis_api_atlas.catalog.loader import CatalogLoader
+from axis_api_atlas.catalog.resolver import CatalogResolver
 
 
 @pytest.fixture(scope="module")
 def loader():
-    # The real catalog path inside the repo
-    import os
-    repo_catalog = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "catalog",
-    )
-    return CatalogLoader(repo_catalog)
+    # Catalog data now ships with the axis-api-atlas package (ADR-0029).
+    import axis_api_atlas
+    return CatalogLoader(axis_api_atlas.default_data_path())
 
 
 @pytest.fixture(scope="module")

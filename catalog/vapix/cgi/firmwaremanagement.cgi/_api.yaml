@@ -1,7 +1,0 @@
-endpoint: /axis-cgi/firmwaremanagement.cgi
-generation: json-rpc
-min_firmware: "9.80"
-api_id: firmware-manager
-description: >
-  Firmware management. Check current firmware status, available
-  updates, and perform firmware upgrades.

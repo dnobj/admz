@@ -1,8 +1,0 @@
-endpoint: /axis-cgi/basicdeviceinfo.cgi
-generation: json-rpc
-min_firmware: "6.50"
-api_id: basic-device-info
-description: >
-  Device identity information (model, serial, firmware, SoC).
-  JSON-RPC interface. The getAllUnrestrictedProperties method
-  works without authentication on factory-default devices.

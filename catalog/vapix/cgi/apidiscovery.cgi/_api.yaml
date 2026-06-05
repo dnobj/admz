@@ -1,8 +1,0 @@
-endpoint: /axis-cgi/apidiscovery.cgi
-generation: json-rpc
-min_firmware: "8.50"
-api_id: api-discovery
-description: >
-  Enumerates all APIs available on the device, with their version
-  numbers. Used for capability discovery — tells you what the
-  device can do before you try to call anything.

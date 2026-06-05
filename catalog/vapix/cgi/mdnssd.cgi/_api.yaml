@@ -1,8 +1,0 @@
-endpoint: /axis-cgi/mdnssd.cgi
-generation: json-rpc
-min_firmware: "9.80"
-api_id: mdnssd
-description: >
-  mDNS-SD (multicast DNS Service Discovery) configuration.
-  Enable or disable mDNS-SD, set the friendly name, and
-  discover other devices on the local network.

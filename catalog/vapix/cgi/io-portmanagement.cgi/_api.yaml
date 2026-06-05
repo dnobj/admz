@@ -1,8 +1,0 @@
-endpoint: /axis-cgi/io/portmanagement.cgi
-generation: json-rpc
-min_firmware: "7.10"
-api_id: io-port-management
-description: >
-  Digital I/O port management. Query and configure port direction,
-  state, name, and normal state. Supports state sequences for
-  output ports with timed transitions.

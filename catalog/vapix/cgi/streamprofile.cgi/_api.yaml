@@ -1,8 +1,0 @@
-endpoint: /axis-cgi/streamprofile.cgi
-generation: json-rpc
-min_firmware: "7.10"
-api_id: stream-profiles
-description: >
-  Stream profile management. List, create, update, and remove
-  stream profiles that define video encoding settings (codec,
-  resolution, compression, frame rate).

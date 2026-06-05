@@ -1,7 +1,0 @@
-endpoint: /axis-cgi/temperaturecontrol.cgi
-generation: legacy-cgi
-min_firmware: "5.50"
-description: >
-  Temperature monitoring and control. Read temperature sensors,
-  control heaters and fans on devices with built-in climate
-  management. Requires Properties.TemperatureSensor.TemperatureControl=yes.

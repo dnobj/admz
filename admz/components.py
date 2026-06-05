@@ -23,8 +23,9 @@ from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-from admz.catalog.loader import CatalogLoader
-from admz.catalog.resolver import CatalogResolver
+import axis_api_atlas
+from axis_api_atlas.catalog.loader import CatalogLoader
+from axis_api_atlas.catalog.resolver import CatalogResolver
 from admz.device_registry import DeviceRegistry
 from admz.executor.base import BaseExecutor
 from admz.executor.vapix import VapixExecutor
@@ -55,12 +56,11 @@ class Components:
 
 
 def _default_catalog_path() -> str:
-    return os.getenv(
-        "ADMZ_CATALOG_PATH",
-        os.path.join(
-            os.path.dirname(__file__), "..", "catalog"
-        ),
-    )
+    # The catalog/knowledge/capabilities data now ships with the
+    # axis-api-atlas package (single source of truth — see ADR-0029).
+    # ADMZ no longer carries an in-tree copy. Still overridable via
+    # ADMZ_CATALOG_PATH for a local/forked atlas data dir.
+    return os.getenv("ADMZ_CATALOG_PATH", axis_api_atlas.default_data_path())
 
 
 def _default_config_repo_path() -> str:
