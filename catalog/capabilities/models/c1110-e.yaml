@@ -58,3 +58,534 @@ snapshots:
     param-cgi: '1.0'
     remoteservice: '1.1'
     ssh: '1.0'
+- firmware: 12.9.57
+  discovered: '2026-06-05'
+  device_id: B8A44FB0BDA1
+  api_count: 72
+  apis:
+    aam-edge-api: '1.4'
+    action-rules: 2.0.0-beta.2
+    api-discovery: '1.1'
+    application: '1.0'
+    audio-analytics: '1.0'
+    audio-device-control: '1.0'
+    audio-mixer: '1.0'
+    audio-multicast-ctrl: 1.0.0-beta.3
+    audio-site-conf: '3.13'
+    audio-streaming-capabilities: '1.0'
+    audit-log: '1.0'
+    axis-audio-manager-edge-api: '1.2'
+    basic-device-info: '1.3'
+    cert: 1.0.3
+    cert-est: 1.0.0-beta.1
+    crypto-policy: 1.0.0-beta.1
+    custom-firmware-certificate: '1.0'
+    customhttpheader: '1.1'
+    device-config: '1.0'
+    device-self-test: '1.0'
+    disk-management: '1.0'
+    disk-network-share: '1.0'
+    disk-properties: '1.1'
+    event-mqtt-bridge: '1.2'
+    event-schedules: 2.0.0-beta.1
+    event-streaming-over-websocket: '1.0'
+    feature-flag: '1.0'
+    findmydevice: '1.1'
+    firewall: 1.1.1
+    fwmgr: '1.8'
+    geolocation: 2.0.0-beta.1
+    io-port-accessory-mode: 0.0.1-beta.4
+    io-port-management: '1.1'
+    lldp: 1.0.2
+    log: 1.0.0-beta.1
+    mdnssd: '1.1'
+    media-cgi: '1.0'
+    mediaclip: '1.0'
+    mqtt-client: '1.6'
+    network-settings: '1.37'
+    network-time-sync: 1.0.0-beta.6
+    ntp: '1.5'
+    oak: '1.0'
+    oauth-ccgrant: 1.0.0-beta.1
+    oidcsetup: 1.0.2
+    onscreencontrols: '1.6'
+    packagemanager: '1.4'
+    param: 2.0.0-beta.1
+    param-cgi: '1.0'
+    recording: '1.0'
+    recording-export: '1.3'
+    recording-group: '1.0'
+    recording-storage-limit: '1.0'
+    remote-object-storage: 1.0.4
+    remote-syslog: '1.2'
+    remoteservice: '1.1'
+    rtsp-over-websocket: '1.0'
+    sip: '2.2'
+    siren-and-light: '1.0'
+    snmp: 1.2.1
+    speakertest: '1.0'
+    ssh: '1.0'
+    stream-profiles: '1.0'
+    streamstatus: '1.0'
+    supervised-io: '2.0'
+    systemready: '1.4'
+    time: 2.0.1
+    time-service: '1.1'
+    unified-proxy-configuration: 1.0.0-beta.1
+    upnp: '1.1'
+    user-management: '1.2'
+    virtualhost: 1.2.0
+  apis_detail:
+    aam-edge-api:
+      legacy:
+        version: '1.4'
+        status: ''
+    action-rules:
+      dca:
+        major: v2
+        version: 2.0.0-beta.2
+        state: beta
+        rest_api: /config/rest/action-rules/v2beta
+        openapi: /config/discover/apis/action-rules/v2/openapi.json
+        all_majors:
+        - v2
+    api-discovery:
+      legacy:
+        version: '1.1'
+        status: official
+    application:
+      legacy:
+        version: '1.0'
+        status: official
+    audio-analytics:
+      legacy:
+        version: '1.0'
+        status: official
+    audio-device-control:
+      legacy:
+        version: '1.0'
+        status: official
+    audio-mixer:
+      legacy:
+        version: '1.0'
+        status: official
+    audio-multicast-ctrl:
+      dca:
+        major: v1
+        version: 1.0.0-beta.3
+        state: beta
+        rest_api: /config/rest/audio-multicast-ctrl/v1beta
+        openapi: /config/discover/apis/audio-multicast-ctrl/v1/openapi.json
+        all_majors:
+        - v1
+    audio-site-conf:
+      legacy:
+        version: '3.13'
+        status: ''
+    audio-streaming-capabilities:
+      legacy:
+        version: '1.0'
+        status: official
+    audit-log:
+      legacy:
+        version: '1.0'
+        status: official
+    axis-audio-manager-edge-api:
+      legacy:
+        version: '1.2'
+        status: ''
+    basic-device-info:
+      legacy:
+        version: '1.3'
+        status: official
+      dca:
+        major: v2
+        version: 2.0.0-beta.2
+        state: beta
+        rest_api: /config/rest/basic-device-info/v2beta
+        openapi: /config/discover/apis/basic-device-info/v2/openapi.json
+        all_majors:
+        - v2
+    cert:
+      dca:
+        major: v1
+        version: 1.0.3
+        state: released
+        rest_api: /config/rest/cert/v1
+        openapi: /config/discover/apis/cert/v1/openapi.json
+        all_majors:
+        - v1
+    cert-est:
+      dca:
+        major: v1
+        version: 1.0.0-beta.1
+        state: beta
+        rest_api: /config/rest/cert-est/v1beta
+        openapi: /config/discover/apis/cert-est/v1/openapi.json
+        all_majors:
+        - v1
+    crypto-policy:
+      dca:
+        major: v1
+        version: 1.0.0-beta.1
+        state: beta
+        rest_api: /config/rest/crypto-policy/v1beta
+        openapi: /config/discover/apis/crypto-policy/v1/openapi.json
+        all_majors:
+        - v1
+    custom-firmware-certificate:
+      legacy:
+        version: '1.0'
+        status: official
+    customhttpheader:
+      legacy:
+        version: '1.1'
+        status: official
+    device-config:
+      legacy:
+        version: '1.0'
+        status: official
+    device-self-test:
+      legacy:
+        version: '1.0'
+        status: official
+    disk-management:
+      legacy:
+        version: '1.0'
+        status: official
+    disk-network-share:
+      legacy:
+        version: '1.0'
+        status: official
+    disk-properties:
+      legacy:
+        version: '1.1'
+        status: official
+    event-mqtt-bridge:
+      legacy:
+        version: '1.2'
+        status: official
+      dca:
+        major: v2
+        version: 2.0.0-beta.2
+        state: beta
+        rest_api: /config/rest/event-mqtt-bridge/v2beta
+        openapi: /config/discover/apis/event-mqtt-bridge/v2/openapi.json
+        all_majors:
+        - v2
+    event-schedules:
+      dca:
+        major: v2
+        version: 2.0.0-beta.1
+        state: beta
+        rest_api: /config/rest/event-schedules/v2beta
+        openapi: /config/discover/apis/event-schedules/v2/openapi.json
+        all_majors:
+        - v2
+    event-streaming-over-websocket:
+      legacy:
+        version: '1.0'
+        status: official
+    feature-flag:
+      legacy:
+        version: '1.0'
+        status: official
+    findmydevice:
+      legacy:
+        version: '1.1'
+        status: official
+    firewall:
+      dca:
+        major: v1
+        version: 1.1.1
+        state: released
+        rest_api: /config/rest/firewall/v1
+        openapi: /config/discover/apis/firewall/v1/openapi.json
+        all_majors:
+        - v1
+    fwmgr:
+      legacy:
+        version: '1.8'
+        status: official
+    geolocation:
+      dca:
+        major: v2
+        version: 2.0.0-beta.1
+        state: beta
+        rest_api: /config/rest/geolocation/v2beta
+        openapi: /config/discover/apis/geolocation/v2/openapi.json
+        all_majors:
+        - v2
+    io-port-accessory-mode:
+      dca:
+        major: v0
+        version: 0.0.1-beta.4
+        state: beta
+        rest_api: /config/rest/io-port-accessory-mode/v0beta
+        openapi: /config/discover/apis/io-port-accessory-mode/v0/openapi.json
+        all_majors:
+        - v0
+    io-port-management:
+      legacy:
+        version: '1.1'
+        status: official
+    lldp:
+      dca:
+        major: v1
+        version: 1.0.2
+        state: released
+        rest_api: /config/rest/lldp/v1
+        openapi: /config/discover/apis/lldp/v1/openapi.json
+        all_majors:
+        - v1
+    log:
+      dca:
+        major: v1
+        version: 1.0.0-beta.1
+        state: beta
+        rest_api: /config/rest/log/v1beta
+        openapi: /config/discover/apis/log/v1/openapi.json
+        all_majors:
+        - v1
+    mdnssd:
+      legacy:
+        version: '1.1'
+        status: official
+      dca:
+        major: v2
+        version: 2.0.0-beta.1
+        state: beta
+        rest_api: /config/rest/mdnssd/v2beta
+        openapi: /config/discover/apis/mdnssd/v2/openapi.json
+        all_majors:
+        - v2
+    media-cgi:
+      legacy:
+        version: '1.0'
+        status: official
+    mediaclip:
+      legacy:
+        version: '1.0'
+        status: official
+    mqtt-client:
+      legacy:
+        version: '1.6'
+        status: official
+    network-settings:
+      legacy:
+        version: '1.37'
+        status: official
+      dca:
+        major: v2
+        version: 2.0.0-beta.4
+        state: beta
+        rest_api: /config/rest/network-settings/v2beta
+        openapi: /config/discover/apis/network-settings/v2/openapi.json
+        all_majors:
+        - v2
+    network-time-sync:
+      dca:
+        major: v1
+        version: 1.0.0-beta.6
+        state: beta
+        rest_api: /config/rest/network-time-sync/v1beta
+        openapi: /config/discover/apis/network-time-sync/v1/openapi.json
+        all_majors:
+        - v1
+    ntp:
+      legacy:
+        version: '1.5'
+        status: official
+    oak:
+      legacy:
+        version: '1.0'
+        status: official
+    oauth-ccgrant:
+      dca:
+        major: v1
+        version: 1.0.0-beta.1
+        state: beta
+        rest_api: /config/rest/oauth-ccgrant/v1beta
+        openapi: /config/discover/apis/oauth-ccgrant/v1/openapi.json
+        all_majors:
+        - v1
+    oidcsetup:
+      dca:
+        major: v1
+        version: 1.0.2
+        state: released
+        rest_api: /config/rest/oidcsetup/v1
+        openapi: /config/discover/apis/oidcsetup/v1/openapi.json
+        all_majors:
+        - v1
+    onscreencontrols:
+      legacy:
+        version: '1.6'
+        status: official
+    packagemanager:
+      legacy:
+        version: '1.4'
+        status: ''
+    param:
+      dca:
+        major: v2
+        version: 2.0.0-beta.1
+        state: beta
+        rest_api: /config/rest/param/v2beta
+        openapi: /config/discover/apis/param/v2/openapi.json
+        all_majors:
+        - v2
+    param-cgi:
+      legacy:
+        version: '1.0'
+        status: official
+    recording:
+      legacy:
+        version: '1.0'
+        status: official
+    recording-export:
+      legacy:
+        version: '1.3'
+        status: official
+    recording-group:
+      legacy:
+        version: '1.0'
+        status: official
+      dca:
+        major: v2
+        version: 2.2.0
+        state: released
+        rest_api: /config/rest/recording-group/v2
+        openapi: /config/discover/apis/recording-group/v2/openapi.json
+        all_majors:
+        - v2
+    recording-storage-limit:
+      legacy:
+        version: '1.0'
+        status: official
+    remote-object-storage:
+      dca:
+        major: v1
+        version: 1.0.4
+        state: released
+        rest_api: /config/rest/remote-object-storage/v1
+        openapi: /config/discover/apis/remote-object-storage/v1/openapi.json
+        all_majors:
+        - v1
+    remote-syslog:
+      legacy:
+        version: '1.2'
+        status: official
+    remoteservice:
+      legacy:
+        version: '1.1'
+        status: official
+    rtsp-over-websocket:
+      legacy:
+        version: '1.0'
+        status: official
+    sip:
+      legacy:
+        version: '2.2'
+        status: official
+    siren-and-light:
+      legacy:
+        version: '1.0'
+        status: official
+      dca:
+        major: v2
+        version: 2.0.0-beta.15
+        state: beta
+        rest_api: /config/rest/siren-and-light/v2beta
+        openapi: /config/discover/apis/siren-and-light/v2/openapi.json
+        all_majors:
+        - v2
+    snmp:
+      dca:
+        major: v1
+        version: 1.2.1
+        state: released
+        rest_api: /config/rest/snmp/v1
+        openapi: /config/discover/apis/snmp/v1/openapi.json
+        all_majors:
+        - v1
+    speakertest:
+      legacy:
+        version: '1.0'
+        status: official
+    ssh:
+      legacy:
+        version: '1.0'
+        status: official
+      dca:
+        major: v2
+        version: 2.0.1
+        state: released
+        rest_api: /config/rest/ssh/v2
+        openapi: /config/discover/apis/ssh/v2/openapi.json
+        all_majors:
+        - v1
+        - v2
+    stream-profiles:
+      legacy:
+        version: '1.0'
+        status: official
+    streamstatus:
+      legacy:
+        version: '1.0'
+        status: official
+    supervised-io:
+      legacy:
+        version: '2.0'
+        status: official
+    systemready:
+      legacy:
+        version: '1.4'
+        status: official
+    time:
+      dca:
+        major: v2
+        version: 2.0.1
+        state: released
+        rest_api: /config/rest/time/v2
+        openapi: /config/discover/apis/time/v2/openapi.json
+        all_majors:
+        - v2
+    time-service:
+      legacy:
+        version: '1.1'
+        status: official
+    unified-proxy-configuration:
+      dca:
+        major: v1
+        version: 1.0.0-beta.1
+        state: beta
+        rest_api: /config/rest/unified-proxy-configuration/v1beta
+        openapi: /config/discover/apis/unified-proxy-configuration/v1/openapi.json
+        all_majors:
+        - v1
+    upnp:
+      legacy:
+        version: '1.1'
+        status: official
+    user-management:
+      legacy:
+        version: '1.2'
+        status: official
+      dca:
+        major: v2
+        version: 2.0.0-beta.1
+        state: beta
+        rest_api: /config/rest/user-management/v2beta
+        openapi: /config/discover/apis/user-management/v2/openapi.json
+        all_majors:
+        - v2
+    virtualhost:
+      dca:
+        major: v1
+        version: 1.2.0
+        state: released
+        rest_api: /config/rest/virtualhost/v1
+        openapi: /config/discover/apis/virtualhost/v1/openapi.json
+        all_majors:
+        - v1

@@ -80,6 +80,7 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 - [0003 — YAML catalog, not generated code](decisions/0003-yaml-not-generated-code.md)
 - [0004 — Tags live only in index files](decisions/0004-tags-in-index.md)
 - [0019 — Inverted index files for routing](decisions/0019-inverted-index-files.md)
+- [0029 — Axis API Atlas as a maintained, reusable asset (DCA-refreshed capability matrix + standalone extraction)](decisions/0029-axis-api-atlas-as-maintained-reusable-asset.md) 📋 — also see the [maintenance runbook](../AXIS_API_ATLAS_MAINTENANCE.md)
 
 ### Safety & gating
 
