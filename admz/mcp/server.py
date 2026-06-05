@@ -795,9 +795,28 @@ class ADMZMCPServer:
                                     "omit this field or pass {} in that case. For "
                                     "param.cgi:update, these are key=value pairs "
                                     "(e.g. {'root.Image.I0.Resolution': '1920x1080'}). "
-                                    "For param.cgi:list, include 'group' key."
+                                    "For param.cgi:list, include 'group' key. "
+                                    "Pass each value in its NATURAL type as the catalog "
+                                    "specifies: integers as numbers (e.g. a duration "
+                                    "value of 30, an intensity of 1), arrays as arrays "
+                                    "(e.g. colors [\"white\"]), booleans as true/false — "
+                                    "NOT as quoted strings."
                                 ),
-                                "additionalProperties": {"type": "string"},
+                                # Values may be any JSON scalar or a string array
+                                # (e.g. siren_and_light needs integer intensity /
+                                # duration and an array of colors). A string-only
+                                # constraint here made Gemini reject numeric params
+                                # ("duration expects a string, not a number") even
+                                # though the executor coerces — so allow native types.
+                                "additionalProperties": {
+                                    "anyOf": [
+                                        {"type": "string"},
+                                        {"type": "integer"},
+                                        {"type": "number"},
+                                        {"type": "boolean"},
+                                        {"type": "array", "items": {"type": "string"}},
+                                    ]
+                                },
                                 "default": {},
                             },
                             "family": {

@@ -55,8 +55,17 @@ params_doc:
     - name: instantaneous
       description: >
         Activate a siren and/or light pattern right now with no
-        pre-configured profile. Supply siren_* and/or light_* params.
-        This is the form to use for "flash white for 30 seconds".
+        pre-configured profile. This is the form for "flash/blink <color>
+        for N seconds". Pass the params FLAT (light_pattern,
+        light_colors, ...), NOT nested under a "light" object — the
+        executor builds the nested body for you. For a colored light you
+        MUST include ALL of: light_pattern, light_colors (a JSON ARRAY
+        even for one color, e.g. ["red"]), light_intensity (integer),
+        light_duration_unit, light_duration_value (integer). Omitting
+        intensity, or passing colors as a bare string, makes the device
+        reject the whole request ("not valid under any of the given
+        schemas"). Call getCapabilities first to read this device's valid
+        pattern names, colors, intensity range and speed.
       example:
         light_pattern: Steady
         light_colors: ["white"]

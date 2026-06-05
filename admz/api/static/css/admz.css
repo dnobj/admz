@@ -633,6 +633,7 @@ label { font-size: 12.5px; color: var(--text-muted); }
 .assistant-turn .sp { width: 28px; height: 28px; border-radius: var(--radius); background: var(--accent-soft); border: 1px solid var(--accent-bd); display: grid; place-items: center; flex: 0 0 auto; color: var(--accent-ink); }
 .assistant-turn .sp svg { width: 14px; height: 14px; }
 .assistant-turn .at-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 11px; padding-top: 3px; }
+.assistant-turn .at-blocks { display: flex; flex-direction: column; gap: 11px; min-width: 0; }
 .assistant-text { font-size: 13.5px; line-height: 1.6; color: var(--text-muted); white-space: pre-wrap; }
 .assistant-text b { color: var(--text); font-weight: 700; }
 .chat-footer { font-size: 11px; color: var(--text-faint); font-family: var(--mono); }

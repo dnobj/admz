@@ -353,31 +353,33 @@ class TestExecuteOperationSchema:
     params with a default of {} so the LLM can omit it.
     """
 
-    def test_params_not_required(self):
-        from admz.mcp.server import ADMZMCPServer
+    @pytest.mark.asyncio
+    async def test_params_not_required(self, tmp_path, monkeypatch):
+        # Inspect the REAL emitted tool schema. (A prior version scanned a
+        # fixed-width window of the source and broke when the params schema
+        # grew — inspect the actual inputSchema instead.)
+        monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
+        monkeypatch.setenv("ADMZ_KEY_PATH", str(tmp_path / "admz.key"))
+        monkeypatch.setenv("ADMZ_CONFIG_REPO_PATH", str(tmp_path / "config-repo"))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
 
-        # Find the execute_operation tool definition by walking the
-        # list_tools output via a fresh server instance.
-        server = ADMZMCPServer.__new__(ADMZMCPServer)
-        # Build just the tools list — we don't need a full server.
-        # The tool defs are constructed in the list_tools handler;
-        # the simplest reach-in is to grep the source directly.
-        import inspect
-        src = inspect.getsource(ADMZMCPServer)
-        # Find the execute_operation block and check its required list.
-        idx = src.find('name="execute_operation"')
-        assert idx > 0, "execute_operation tool not found in server source"
-        # Find the next 'required' line within ~50 lines.
-        block = src[idx : idx + 4000]
-        required_idx = block.find('"required":')
-        assert required_idx > 0, "execute_operation has no required list"
-        required_line = block[required_idx : required_idx + 200].split("]")[0] + "]"
-        assert '"params"' not in required_line, (
-            "execute_operation should not require 'params' — many ops "
-            "take no params. Found:\n  " + required_line
+        from admz.mcp.server import ADMZMCPServer
+        from mcp.types import ListToolsRequest
+
+        server = ADMZMCPServer()
+        handler = server.server.request_handlers.get(ListToolsRequest)
+        result = await handler(ListToolsRequest(method="tools/list"))
+        tool = next(t for t in result.root.tools if t.name == "execute_operation")
+
+        required = tool.inputSchema.get("required", [])
+        assert "params" not in required, (
+            "execute_operation should not require 'params' — many ops take "
+            f"no params. required={required}"
         )
-        assert '"device_id"' in required_line
-        assert '"operation_id"' in required_line
+        assert "device_id" in required
+        assert "operation_id" in required
 
 
 class TestReasonText:
