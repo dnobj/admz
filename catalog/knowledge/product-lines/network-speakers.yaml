@@ -21,3 +21,22 @@ hints:
       Opus), pre-recorded clip management, scheduled announcements,
       and volume control. Audio is managed via the VAPIX Audio API.
     tags: [audio, playback, streaming]
+
+  - id: speakers-locate-vs-signal-light
+    topic: find-device
+    summary: Two distinct light actions — findmydevice (locate) vs an integrated signal light (some speakers)
+    text: >
+      Distinguish two different things on speakers:
+      (1) LOCATE: findmydevice.cgi:find flashes the device's status LED
+      (and optionally a locator beep) so you can physically find the unit
+      — no color, just on/off; findmydevice.cgi:stop ends it early.
+      (2) SIGNAL LIGHT: SOME Axis audio devices have an integrated
+      colored signal/strobe light (for notification or deterrence). Do
+      NOT assume a speaker lacks one — the C1110-E, for example, has a
+      colored light supporting Blink/Pulse/Steady patterns in red, green,
+      blue, yellow, purple, turquoise and white, driven by the
+      siren-and-light API. ALWAYS call the siren-and-light getCapabilities
+      for the specific device before deciding what colors/patterns it can
+      do, rather than guessing from the product type.
+    tags: [led, light, blink, flash, locate, findmydevice, color, red,
+           strobe, siren, signal, indicator, capabilities]

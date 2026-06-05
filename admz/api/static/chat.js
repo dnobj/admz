@@ -94,6 +94,7 @@
         messageEl.value = "";
         messageEl.style.height = "auto";
         messageEl.focus();
+        resolveAllPending(assistantBubble); // backstop if stream ended early
         removeTyping(assistantBubble);
       });
   });
@@ -103,7 +104,6 @@
     var reader = stream.getReader();
     var decoder = new TextDecoder();
     var buffer = "";
-    var lastToolCard = null;
 
     while (true) {
       var res = await reader.read();
@@ -120,16 +120,19 @@
         switch (parsed.event) {
           case "start": break;
           case "text": appendText(assistantBubble, parsed.data.chunk || ""); break;
-          case "tool_call": lastToolCard = renderToolCard(parsed.data); break;
+          case "tool_call": renderToolCard(assistantBubble, parsed.data); break;
           case "tool_result":
-            updateToolCard(lastToolCard, parsed.data);
+            resolveToolResult(assistantBubble, parsed.data);
             try {
               var s = JSON.stringify(parsed.data || {});
               scanForTokens(s, CONFIRM_URL_RE, "confirm");
               scanForTokens(s, CAPTURE_URL_RE, "capture");
             } catch (_) {}
             break;
-          case "done": renderUsageFooter(assistantBubble, parsed.data); break;
+          case "done":
+            renderUsageFooter(assistantBubble, parsed.data);
+            resolveAllPending(assistantBubble); // turn ended → tools finished
+            break;
           case "error": renderError(assistantBubble, parsed.data.message); break;
         }
       }
@@ -170,13 +173,27 @@
     at.innerHTML =
       '<span class="sp">' + ico("sparkles") + "</span>" +
       '<div class="at-body">' +
-      '<div class="assistant-text chat-text"></div>' +
+      '<div class="at-blocks"></div>' +
       '<div class="typing"><span></span><span></span><span></span></div>' +
       '<div class="chat-footer"></div>' +
       "</div>";
+    at._pending = []; // tool cards awaiting resolution
     transcript.appendChild(at);
     icons();
     return at;
+  }
+
+  // The text block to append into: reuse the last block if it's text, else
+  // start a new one — so a tool card rendered between two text runs splits
+  // them and everything stays in arrival order.
+  function currentTextBlock(bubble) {
+    var blocks = bubble.querySelector(".at-blocks");
+    var last = blocks.lastElementChild;
+    if (last && last.classList.contains("assistant-text")) return last;
+    var el = document.createElement("div");
+    el.className = "assistant-text";
+    blocks.appendChild(el);
+    return el;
   }
 
   function removeTyping(bubble) {
@@ -190,9 +207,8 @@
   var seenTokens = new Set();
 
   function appendText(bubble, chunk) {
-    var textEl = bubble.querySelector(".chat-text");
-    textEl.textContent += chunk;
-    var buffer = textEl.textContent;
+    currentTextBlock(bubble).textContent += chunk;
+    var buffer = bubble.querySelector(".at-blocks").textContent;
     scanForTokens(buffer, CONFIRM_URL_RE, "confirm");
     scanForTokens(buffer, CAPTURE_URL_RE, "capture");
   }
@@ -211,9 +227,10 @@
   }
 
   // ── Tool-call card ──────────────────────────────────────────────────────
-  function renderToolCard(data) {
+  function renderToolCard(bubble, data) {
     var card = document.createElement("div");
     card.className = "tool-card";
+    card.dataset.tool = data.name || "tool";
     card.innerHTML =
       '<div class="tc-row">' +
       '<span class="tc-ico tool-status"><span class="spinner"></span></span>' +
@@ -225,8 +242,33 @@
       '<div class="tc-result" style="display:none"></div>';
     card.querySelector(".tool-name").textContent = data.name || "tool";
     card.querySelector(".tool-summary").textContent = data.summary ? "(" + data.summary + ")" : "";
-    transcript.appendChild(card);
+    (bubble ? bubble.querySelector(".at-blocks") : transcript).appendChild(card);
+    if (bubble && bubble._pending) bubble._pending.push(card);
+    icons();
     return card;
+  }
+
+  // Match an incoming tool_result to the right pending card (by name, else
+  // oldest), and resolve it.
+  function resolveToolResult(bubble, data) {
+    if (!bubble || !bubble._pending || !bubble._pending.length) return;
+    var idx = -1;
+    for (var i = 0; i < bubble._pending.length; i++) {
+      if (data.name && bubble._pending[i].dataset.tool === data.name) { idx = i; break; }
+    }
+    if (idx < 0) idx = 0;
+    var card = bubble._pending.splice(idx, 1)[0];
+    updateToolCard(card, data);
+  }
+
+  // The streaming path emits tool_call but (for AFC-executed tools) no
+  // tool_result, so cards would spin forever. When the turn ends, every
+  // still-pending tool has necessarily finished — resolve to a neutral
+  // "done" (we can't claim ok/err without a result event).
+  function resolveAllPending(bubble) {
+    if (!bubble || !bubble._pending) return;
+    bubble._pending.forEach(function (card) { updateToolCard(card, { status: "done" }); });
+    bubble._pending = [];
   }
 
   function updateToolCard(card, data) {
@@ -236,7 +278,7 @@
     var ok = data.status === "ok";
     var err = data.status === "error";
     if (statusEl) {
-      statusEl.innerHTML = ok ? ico("check-circle-2") : err ? ico("x-circle") : ico("circle");
+      statusEl.innerHTML = err ? ico("x-circle") : ico("check-circle-2");
       statusEl.className = "tc-ico tool-status " + (ok ? "fg-green" : err ? "fg-red" : "fg-grey");
     }
     if (badge) {

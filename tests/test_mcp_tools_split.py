@@ -152,3 +152,47 @@ async def test_mcp_server_list_tools_includes_migrated_names(tmp_path, monkeypat
     assert not still_missing, (
         f"non-migrated tools went missing during split: {still_missing}"
     )
+
+
+@pytest.mark.asyncio
+async def test_execute_operation_params_accept_native_types(tmp_path, monkeypatch):
+    """Regression — the D4200 siren "string not integer" bug.
+
+    ``execute_operation`` previously declared its ``params`` object as
+    ``additionalProperties: {"type": "string"}``, forcing EVERY parameter
+    value to a string. The siren_and_light catalog needs integer intensity /
+    duration and an array of colors, so Gemini's function-call validator
+    rejected the numeric values the catalog asks for — surfacing as
+    "the duration parameter expects a string value, not a number" and
+    blocking the command before it ever reached the device. The executor
+    already coerces native types; the tool schema must permit them.
+    """
+    monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
+    monkeypatch.setenv("ADMZ_KEY_PATH", str(tmp_path / "admz.key"))
+    monkeypatch.setenv("ADMZ_CONFIG_REPO_PATH", str(tmp_path / "config-repo"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
+
+    from admz.mcp.server import ADMZMCPServer
+    from mcp.types import ListToolsRequest
+
+    server = ADMZMCPServer()
+    handler = server.server.request_handlers.get(ListToolsRequest)
+    result = await handler(ListToolsRequest(method="tools/list"))
+    tool = next(t for t in result.root.tools if t.name == "execute_operation")
+
+    params = tool.inputSchema["properties"]["params"]
+    ap = params.get("additionalProperties")
+    assert ap is not None, "execute_operation params should declare value types"
+    # Must NOT be the string-only schema that caused the bug.
+    assert ap != {"type": "string"}, (
+        "execute_operation params are string-only again — numeric catalog "
+        "params (siren intensity/duration) will be rejected by Gemini."
+    )
+    # Must explicitly permit numeric values.
+    branches = ap.get("anyOf", [ap])
+    types = {b.get("type") for b in branches if isinstance(b, dict)}
+    assert "integer" in types or "number" in types, (
+        f"execute_operation params must accept numbers; got value types {types}"
+    )
