@@ -17,9 +17,41 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from admz.api.context import AppContext, get_context
 from admz.auth import Principal, get_current_principal
 from admz.fleet_settings import fleet_settings
 from admz.survey import secrets
+
+SURVEY_SCHEDULE_ID = "survey"
+
+
+def _sync_survey_schedule(ctx, *, enabled: bool, schedule_seconds: Optional[str]) -> None:
+    """Create / update / disable the recurring 'survey' schedule from the settings.
+
+    Saved interval only takes effect as an actual scheduled job through here — the
+    setting alone does nothing. Disabling survey mode (or clearing the interval)
+    disables the schedule rather than deleting it, so the cadence is remembered.
+    """
+    scheduler = getattr(ctx, "scheduler", None)
+    if scheduler is None:
+        return
+    try:
+        seconds = int(schedule_seconds) if schedule_seconds and schedule_seconds.strip() else 0
+    except (TypeError, ValueError):
+        seconds = 0
+    existing = scheduler.get_schedule(SURVEY_SCHEDULE_ID)
+    if enabled and seconds > 0:
+        if existing:
+            scheduler.update_schedule(SURVEY_SCHEDULE_ID,
+                                      interval_seconds=seconds, enabled=True)
+        else:
+            from admz.snapshot.scheduler import SnapshotSchedule
+            scheduler.add_schedule(SnapshotSchedule(
+                id=SURVEY_SCHEDULE_ID,
+                description="Survey / contributor discovery run",
+                interval_seconds=seconds, job_type="survey"))
+    elif existing:
+        scheduler.update_schedule(SURVEY_SCHEDULE_ID, enabled=False)
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +108,7 @@ async def survey_settings_action(
     contributor: Optional[str] = Form(None),
     schedule_seconds: Optional[str] = Form(None),
     principal: Principal = Depends(get_current_principal),
+    ctx: AppContext = Depends(get_context),
 ):
     success: Optional[str] = None
     error: Optional[str] = None
@@ -95,6 +128,10 @@ async def survey_settings_action(
                 fleet_settings.set(secrets.KEY_CONTRIBUTOR, contributor.strip())
             if schedule_seconds is not None and schedule_seconds.strip():
                 fleet_settings.set(secrets.KEY_SCHEDULE_SECONDS, schedule_seconds.strip())
+            _sync_survey_schedule(ctx, enabled=bool(enabled),
+                                  schedule_seconds=schedule_seconds
+                                  if schedule_seconds is not None
+                                  else fleet_settings.get(secrets.KEY_SCHEDULE_SECONDS))
             success = "Survey settings saved."
 
         elif action == "set_pat":

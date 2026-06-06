@@ -95,3 +95,40 @@ def test_app_includes_survey_routes():
     from admz.api.main import app
     paths = {r.path for r in app.routes}
     assert "/settings/survey" in paths
+
+
+class _FakeScheduler:
+    def __init__(self):
+        self.schedules = {}
+
+    def get_schedule(self, sid):
+        return self.schedules.get(sid)
+
+    def add_schedule(self, sched):
+        self.schedules[sched.id] = sched
+        return sched
+
+    def update_schedule(self, sid, **kw):
+        s = self.schedules.get(sid)
+        if s:
+            for k, v in kw.items():
+                setattr(s, k, v)
+        return s
+
+
+def test_sync_survey_schedule_create_update_disable():
+    from types import SimpleNamespace
+
+    from admz.api.routes.survey import SURVEY_SCHEDULE_ID, _sync_survey_schedule
+
+    ctx = SimpleNamespace(scheduler=_FakeScheduler())
+    # enabled + interval -> creates a 'survey' job
+    _sync_survey_schedule(ctx, enabled=True, schedule_seconds="3600")
+    s = ctx.scheduler.get_schedule(SURVEY_SCHEDULE_ID)
+    assert s is not None and s.job_type == "survey" and s.interval_seconds == 3600
+    # change interval -> updates in place
+    _sync_survey_schedule(ctx, enabled=True, schedule_seconds="7200")
+    assert ctx.scheduler.get_schedule(SURVEY_SCHEDULE_ID).interval_seconds == 7200
+    # disabling survey mode -> schedule disabled, not deleted
+    _sync_survey_schedule(ctx, enabled=False, schedule_seconds="7200")
+    assert ctx.scheduler.get_schedule(SURVEY_SCHEDULE_ID).enabled is False
