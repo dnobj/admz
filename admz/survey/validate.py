@@ -213,6 +213,42 @@ class ValidationRunner:
         if self.http is None:
             self.http = _default_http(self.user, self.password, self.verify)
 
+    def validate_write_back(self, op: OpSpec) -> Dict[str, Any]:
+        """Tier-1 read-modify-restore via **idempotent write-back**.
+
+        Reads the current value, writes the *same* value back, and confirms it
+        took -- proving the write path works with zero net change. If the read-
+        back differs (shouldn't, since we wrote the original), we attempt to
+        restore and flag a mismatch. config-rest scalar/sub-resource ops only;
+        json-rpc writes are skipped (no generic safe write-back).
+        """
+        if op.generation != "config-rest":
+            return self._result(op, ok=False,
+                                skipped="tier-1 write-back supported for config-rest ops only")
+        url = f"{self.host}{op.base_path}{op.path}"
+        # 1. read current value
+        status, parsed, _ = self.http("GET", url, json=None)
+        if status is None or not (200 <= status < 300) or not isinstance(parsed, dict):
+            return self._result(op, ok=False, http_status=status,
+                                skipped="could not read current value for write-back")
+        original = parsed.get("data") if "data" in parsed else parsed
+        # 2. write the same value back
+        pstatus, _pp, latency = self.http(op.method, url, json=original)
+        patch_ok = pstatus is not None and 200 <= pstatus < 300
+        # 3. read back + compare
+        rstatus, rparsed, _ = self.http("GET", url, json=None)
+        readback = rparsed.get("data") if isinstance(rparsed, dict) and "data" in rparsed else rparsed
+        mismatch = patch_ok and readback != original
+        if mismatch:
+            # best-effort restore (we only ever wrote the original, so this is belt-and-braces)
+            self.http(op.method, url, json=original)
+        return self._result(
+            op, ok=bool(patch_ok and not mismatch), http_status=pstatus,
+            latency_ms=round(latency, 1),
+            error_code="readback-mismatch" if mismatch else None,
+            method=op.method, path=op.base_path + op.path,
+            shape=response_shape(original))
+
     def validate_readonly(self, op: OpSpec) -> Dict[str, Any]:
         built = _build_readonly_request(op, self.host)
         if built is None:
@@ -269,21 +305,22 @@ def run_validation(
     *,
     tier: int = 0,
     lab: bool = False,
-    test_values: Optional[Dict[str, Dict]] = None,
+    write_back_ops: Optional[Sequence[str]] = None,
     pace_seconds: float = 0.0,
 ) -> List[Dict[str, Any]]:
     """Validate ``ops`` at the given tier. Returns one result dict per attempted op.
 
     Tier 0: read-only ops only. Tier 1: + service-affecting ops, but only on a lab
-    device and only when a safe test-value is supplied (else recorded skipped).
-    Dangerous ops are never executed.
+    device AND only for op ids the operator explicitly opted into via
+    ``write_back_ops`` (read-modify-restore by idempotent write-back). Dangerous
+    ops are never executed.
 
     ``pace_seconds`` inserts a delay between executed ops to stay under device auth/
     rate throttling (recommended for live runs against a single device).
     """
     import time
 
-    test_values = test_values or {}
+    opted_in = set(write_back_ops or ())
     results: List[Dict[str, Any]] = []
     for op in ops:
         if op.risk_level in NEVER_RISK:
@@ -295,13 +332,12 @@ def run_validation(
         elif op.risk_level in TIER1_RISK:
             if tier < 1 or not lab:
                 continue  # not eligible; don't even record (keeps Tier-0 bundles read-only)
-            if op.op_id not in test_values:
+            if op.op_id not in opted_in:
                 results.append(ValidationRunner._result(
                     op, ok=False,
-                    skipped="tier-1 write requires an explicit safe test value (read-modify-restore)"))
+                    skipped="tier-1 write not opted in (add op id to write_back_ops to validate via write-back)"))
             else:
-                # Guarded RMR is intentionally not auto-executed yet; record intent.
-                results.append(ValidationRunner._result(
-                    op, ok=False,
-                    skipped="tier-1 read-modify-restore not yet enabled; provided value recorded for review"))
+                if results and pace_seconds:
+                    time.sleep(pace_seconds)
+                results.append(runner.validate_write_back(op))
     return results

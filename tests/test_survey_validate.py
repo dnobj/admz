@@ -66,16 +66,37 @@ def test_run_validation_tier0_only_reads():
     assert ids == {"a:get"}           # writes not eligible at tier 0; dangerous never
 
 
-def test_run_validation_tier1_requires_lab_and_value():
+def test_run_validation_tier1_requires_lab_and_optin():
     writes = OpSpec("a:set", "PATCH", "service-affecting", "config-rest",
                     base_path="/config/rest/a/v1", path="/x")
     r, _ = _runner_with_http({})
     # tier 1 but not lab -> not eligible (skipped silently)
     assert run_validation(r, [writes], tier=1, lab=False) == []
-    # tier 1 + lab, no test value -> recorded skipped, NEVER executed
+    # tier 1 + lab but NOT opted in -> recorded skipped, NEVER executed
     res = run_validation(r, [writes], tier=1, lab=True)
     assert len(res) == 1 and res[0]["skipped"]
     assert res[0]["ok"] is None
+
+
+def test_run_validation_tier1_write_back_opted_in():
+    op = OpSpec("a:set", "PATCH", "service-affecting", "config-rest",
+                base_path="/config/rest/a/v1", path="/x")
+    # GET returns current value; PATCH echoes 200; readback matches -> ok, no net change
+    r, calls = _runner_with_http({"/config/rest/a/v1/x": (200, {"data": True}, 3.0)})
+    res = run_validation(r, [op], tier=1, lab=True, write_back_ops=["a:set"])
+    assert len(res) == 1 and res[0]["ok"] is True
+    assert res[0]["error_code"] is None
+    methods = [c[0] for c in calls]
+    assert methods == ["GET", "PATCH", "GET"]      # read -> write-back -> read-back
+    # the write-back body was the original value, not an injected one
+    assert calls[1][2] is True
+
+
+def test_write_back_skips_jsonrpc():
+    op = OpSpec("x.cgi:set", "POST", "service-affecting", "json-rpc", cgi="x.cgi")
+    r, _ = _runner_with_http({})
+    res = run_validation(r, [op], tier=1, lab=True, write_back_ops=["x.cgi:set"])
+    assert res[0]["skipped"] and "config-rest" in res[0]["skipped"]
 
 
 def test_is_lab_device():

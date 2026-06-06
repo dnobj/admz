@@ -73,6 +73,7 @@ class SurveyCollector:
         validate: bool = False,
         validation_tier: int = 0,
         validation_pace: float = 0.25,
+        write_back_ops: Optional[List[str]] = None,
     ):
         self.registry = registry
         self.index = index or AtlasIndex()
@@ -82,6 +83,7 @@ class SurveyCollector:
         self.validate = validate
         self.validation_tier = validation_tier
         self.validation_pace = validation_pace
+        self.write_back_ops = list(write_back_ops or ())
         self._key = secrets.hmac_key()
 
     # -- single device -------------------------------------------------------
@@ -161,6 +163,7 @@ class SurveyCollector:
                 lab = False
         runner = ValidationRunner(host, user, password, verify=verify)
         raw = run_validation(runner, ops, tier=self.validation_tier, lab=lab,
+                             write_back_ops=self.write_back_ops,
                              pace_seconds=self.validation_pace)
         return [redact_validation_result(r) for r in raw]
 
