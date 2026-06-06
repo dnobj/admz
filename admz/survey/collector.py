@@ -70,12 +70,18 @@ class SurveyCollector:
         snapshot_fn: Optional[SnapshotFn] = None,
         spec_fetcher: Optional[SpecFetcher] = None,
         profile: Optional[str] = None,
+        validate: bool = False,
+        validation_tier: int = 0,
+        validation_pace: float = 0.25,
     ):
         self.registry = registry
         self.index = index or AtlasIndex()
         self.snapshot_fn = snapshot_fn or _default_snapshot_fn()
         self.spec_fetcher = spec_fetcher or _default_spec_fetcher()
         self.profile = profile or secrets.get_redaction_profile()
+        self.validate = validate
+        self.validation_tier = validation_tier
+        self.validation_pace = validation_pace
         self._key = secrets.hmac_key()
 
     # -- single device -------------------------------------------------------
@@ -94,8 +100,13 @@ class SurveyCollector:
             raise ValueError("could not determine model")
 
         delta = diff_snapshot(snapshot, model=model, index=self.index)
-        if delta.is_empty:
-            return None  # nothing new -> no contribution
+
+        # validation (read-only Tier 0; Tier 1 only on lab-tagged devices) over the
+        # device's *cataloged* APIs -- evidence for cataloged-but-untested ops.
+        validation = self._validate(device_id, host, user, password, verify, snapshot)
+
+        if delta.is_empty and not validation:
+            return None  # nothing new and no validation evidence -> no contribution
 
         # fetch OpenAPI specs for uncatalogued REST APIs only (schema docs, never model.json)
         specs: Dict[str, Dict] = {}
@@ -124,7 +135,34 @@ class SurveyCollector:
             new_firmware=delta.new_firmware,
             uncatalogued_apis=delta.uncatalogued_apis,
             openapi_specs=specs,
+            validation=validation,
         )
+
+    def _validate(self, device_id, host, user, password, verify, snapshot) -> list:
+        if not self.validate:
+            return []
+        from admz.survey.redact import redact_validation_result
+        from admz.survey.validate import (
+            ValidationRunner,
+            is_lab_device,
+            load_ops_for_apis,
+            run_validation,
+        )
+
+        api_ids = list(snapshot.get("apis", {}))
+        ops = load_ops_for_apis(api_ids)
+        if not ops:
+            return []
+        lab = False
+        if self.validation_tier >= 1:
+            try:
+                lab = is_lab_device(self.registry.get_device_info(device_id))
+            except Exception:  # noqa: BLE001
+                lab = False
+        runner = ValidationRunner(host, user, password, verify=verify)
+        raw = run_validation(runner, ops, tier=self.validation_tier, lab=lab,
+                             pace_seconds=self.validation_pace)
+        return [redact_validation_result(r) for r in raw]
 
     def _model_from_registry(self, device_id: str) -> str:
         try:

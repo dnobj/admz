@@ -99,16 +99,20 @@ def is_safe_openapi(api_id: str, spec_path: str) -> bool:
 
 def redact_validation_result(result: Dict[str, Any]) -> Dict[str, Any]:
     """Keep op id, status, latency, error code, response *shape* -- never values."""
-    return {
+    out = {
         "op_id": result.get("op_id"),
         "method": result.get("method"),
         "path": result.get("path"),
+        "risk_level": result.get("risk_level"),
         "http_status": result.get("http_status"),
         "ok": result.get("ok"),
         "latency_ms": result.get("latency_ms"),
         "error_code": result.get("error_code"),
         "response_shape": result.get("response_shape"),  # keys/types only, no values
     }
+    if result.get("skipped"):
+        out["skipped"] = result["skipped"]
+    return out
 
 
 def build_preview(redacted_snapshots: List[Dict[str, Any]],

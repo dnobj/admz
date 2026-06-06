@@ -59,6 +59,8 @@ def _collector(registry=None, **kwargs) -> SurveyCollector:
     if registry is None:
         from admz.factory import create_device_registry
         registry = create_device_registry()
+    kwargs.setdefault("validate", True)
+    kwargs.setdefault("validation_tier", secrets.get_validation_tier())
     return SurveyCollector(registry, **kwargs)
 
 
