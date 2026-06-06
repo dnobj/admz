@@ -802,12 +802,18 @@ class ADMZMCPServer:
                                     "(e.g. colors [\"white\"]), booleans as true/false — "
                                     "NOT as quoted strings."
                                 ),
-                                # Values may be any JSON scalar or a string array
-                                # (e.g. siren_and_light needs integer intensity /
-                                # duration and an array of colors). A string-only
-                                # constraint here made Gemini reject numeric params
-                                # ("duration expects a string, not a number") even
-                                # though the executor coerces — so allow native types.
+                                # Values may be any JSON type. VAPIX params include
+                                # scalars (numbers, booleans), arrays of scalars
+                                # (colors), AND nested objects / arrays-of-objects —
+                                # e.g. opticscontrol.cgi:setMagnification takes
+                                # params.optics = [{opticsId, magnification}], which
+                                # the LLM naturally mirrors. A scalar-/string-array-
+                                # only constraint here made the schema validator
+                                # reject those nested params ("… is not of type
+                                # 'string'") before the executor (which coerces +
+                                # flattens nested params) ever ran. Keep this a dict
+                                # (the SDK schema walker calls .items() on it — a
+                                # bare `True` crashes it) but cover every JSON shape.
                                 "additionalProperties": {
                                     "anyOf": [
                                         {"type": "string"},
@@ -815,6 +821,8 @@ class ADMZMCPServer:
                                         {"type": "number"},
                                         {"type": "boolean"},
                                         {"type": "array", "items": {"type": "string"}},
+                                        {"type": "array", "items": {"type": "object"}},
+                                        {"type": "object"},
                                     ]
                                 },
                                 "default": {},
@@ -887,8 +895,22 @@ class ADMZMCPServer:
                                         },
                                         "params": {
                                             "type": "object",
-                                            "description": "Operation parameters",
-                                            "additionalProperties": {"type": "string"},
+                                            "description": (
+                                                "Operation parameters, each in its "
+                                                "natural JSON type (numbers, booleans, "
+                                                "arrays, and nested objects all allowed)."
+                                            ),
+                                            "additionalProperties": {
+                                                "anyOf": [
+                                                    {"type": "string"},
+                                                    {"type": "integer"},
+                                                    {"type": "number"},
+                                                    {"type": "boolean"},
+                                                    {"type": "array", "items": {"type": "string"}},
+                                                    {"type": "array", "items": {"type": "object"}},
+                                                    {"type": "object"},
+                                                ]
+                                            },
                                         },
                                         "description": {
                                             "type": "string",
