@@ -237,8 +237,10 @@ class VapixExecutor(BaseExecutor):
         else:  # "digest" or unknown
             return httpx.DigestAuth(username, password)
 
-    # Matches {name} or {name:type} placeholders in YAML templates
-    _PLACEHOLDER_RE = re.compile(r"\{(\w+)(?::(\w+))?\}")
+    # Matches {name}, {name:type}, {name=default}, or {name:type=default}
+    # placeholders in YAML templates. Group 1 = name, 2 = type hint (optional),
+    # 3 = default literal (optional).
+    _PLACEHOLDER_RE = re.compile(r"\{(\w+)(?::(\w+))?(?:=([^{}]*))?\}")
 
     @staticmethod
     def _coerce_value(value: Any, type_hint: str) -> Any:
@@ -272,24 +274,37 @@ class VapixExecutor(BaseExecutor):
         """Resolve placeholders in a YAML template recursively.
 
         Handles three patterns:
-          - Whole-value: "{name}" or "{name:type}" — resolved + type-coerced
+          - Whole-value: "{name}", "{name:type}", "{name=default}",
+            or "{name:type=default}" — resolved + type-coerced
           - Embedded: "{a},{b}" or "prefix-{x}" — string interpolation
           - Nested dicts/lists: walked recursively
+
+        Default syntax: a placeholder may declare a fallback literal after
+        ``=`` (e.g. ``{opticsId=0}``). When the param is absent the default
+        is used (and type-coerced) instead of omitting the key — so a
+        single-valued device field stays present without the caller having
+        to supply it, while still being overridable.
         """
         if isinstance(template, str):
-            # Case 1: Whole-value placeholder "{name}" or "{name:type}"
-            m = re.fullmatch(r"\{(\w+)(?::(\w+))?\}", template)
+            # Case 1: Whole-value placeholder (optionally typed / defaulted)
+            m = re.fullmatch(r"\{(\w+)(?::(\w+))?(?:=([^{}]*))?\}", template)
             if m:
-                name, type_hint = m.group(1), m.group(2) or "str"
+                name, type_hint, default = m.group(1), m.group(2) or "str", m.group(3)
                 if name in params:
                     return self._coerce_value(params[name], type_hint)
-                return None  # param not provided — omit key
+                if default is not None:
+                    return self._coerce_value(default, type_hint)
+                return None  # param not provided and no default — omit key
 
             # Case 2: Embedded placeholders "{a},{b}" or "prefix-{x}-suffix"
             if "{" in template:
                 def _replace(m: re.Match) -> str:
-                    name = m.group(1)
-                    return params.get(name, m.group(0))
+                    name, default = m.group(1), m.group(3)
+                    if name in params:
+                        return str(params[name])
+                    if default is not None:
+                        return default
+                    return m.group(0)
                 result = self._PLACEHOLDER_RE.sub(_replace, template)
                 if result == template:
                     return template  # nothing resolved
