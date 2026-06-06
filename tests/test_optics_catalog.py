@@ -125,6 +125,32 @@ class TestOpticsControlFamilyDefaultsOpticsId:
         assert entry["zoom"] is True and entry["focus"] is True
 
 
+class TestNestedParamFlattening:
+    """LLMs frequently pass params mirroring the body template's nested shape
+    (params.optics[0].magnification) instead of flat scalars. The executor must
+    lift nested leaves so the value isn't dropped (which caused device 2103/2104).
+    Regression for the live chat bug: 'zoom in halfway' reached execute_operation
+    but the device rejected it because magnification was nested and got dropped."""
+
+    def test_nested_optics_params_preserve_magnification(self, loader, ex):
+        body = _body(loader, ex, "opticscontrol.cgi:setMagnification",
+                     {"optics": [{"opticsId": 0, "magnification": 1.5}]})
+        entry = body["params"]["optics"][0]
+        assert entry.get("magnification") == 1.5, "nested magnification must not be dropped"
+        assert "opticsId" in entry
+
+    def test_flat_params_still_work_unchanged(self, loader, ex):
+        body = _body(loader, ex, "opticscontrol.cgi:setMagnification", {"magnification": 1.5})
+        assert body["params"]["optics"][0] == {"opticsId": "0", "magnification": 1.5}
+
+    def test_flatten_does_not_overwrite_existing_flat_keys(self, ex):
+        flat = ex._flatten_params({"magnification": 9.9, "optics": [{"magnification": 1.0}]})
+        assert flat["magnification"] == 9.9   # top-level wins; never clobbered
+
+    def test_flatten_is_noop_for_plain_flat_params(self, ex):
+        assert ex._flatten_params({"a": 1, "b": "x"}) == {"a": 1, "b": "x"}
+
+
 class TestResolveTemplateDefaults:
     def test_string_default_used_when_absent(self, ex):
         assert ex._resolve_template("{opticsId=0}", {}) == "0"

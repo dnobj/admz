@@ -326,6 +326,42 @@ class VapixExecutor(BaseExecutor):
         # Numbers, booleans from YAML — pass through as-is
         return template
 
+    @staticmethod
+    def _flatten_params(params: Any) -> Any:
+        """Lift nested scalar leaves into the flat param namespace.
+
+        Placeholder resolution looks up names in the *flat* top-level params,
+        but LLMs frequently pass params that mirror the body template's nested
+        shape instead — e.g. for ``opticscontrol.cgi:setMagnification`` the doc
+        shows ``params.optics[0].magnification``, so the model calls
+        ``execute_operation(params={"optics":[{"opticsId":0,"magnification":1.5}]})``
+        instead of the flat ``{"magnification":1.5}``. Without this, the nested
+        ``magnification`` is never found and the device rejects the request
+        (2103 "Required parameter missing" / 2104 "Invalid parameter value").
+
+        We merge nested scalar leaves up by their leaf name. Existing top-level
+        keys always win (never overwritten), so flat calls are unchanged.
+        """
+        if not isinstance(params, dict):
+            return params
+        flat = dict(params)
+
+        def walk(obj: Any) -> None:
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if isinstance(v, (dict, list)):
+                        walk(v)
+                    elif k not in flat:
+                        flat[k] = v
+            elif isinstance(obj, list):
+                for item in obj:
+                    walk(item)
+
+        for v in params.values():
+            if isinstance(v, (dict, list)):
+                walk(v)
+        return flat
+
     def build_request(
         self, operation: Dict[str, Any], params: Dict[str, str]
     ) -> ExecutionRequest:
@@ -335,6 +371,10 @@ class VapixExecutor(BaseExecutor):
         Routes to the correct builder based on content-type first,
         then the operation's generation.
         """
+        # LLMs often pass params in the body's nested shape rather than flat
+        # scalars; lift nested leaves so placeholder resolution finds them.
+        params = self._flatten_params(params)
+
         endpoint = (
             operation.get("_endpoint")
             or operation.get("endpoint", "")

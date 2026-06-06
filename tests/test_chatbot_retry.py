@@ -81,24 +81,30 @@ class TestRetryConfig:
 
 
 class TestThinkingBudget:
-    """Disabling thinking-mode helps with Gemini 2.5's occasional
-    empty-output completions on chat-style prompts."""
+    """Default is dynamic thinking (-1): required for reliable tool use
+    (the model otherwise answers device-operation requests from wrong
+    training priors instead of calling query_catalog/execute_operation)
+    and for the *-pro models. 0 disables; >0 is a fixed budget."""
 
-    def test_default_is_zero_disabled(self, monkeypatch):
+    def test_default_is_dynamic(self, monkeypatch):
         monkeypatch.delenv("ADMZ_GEMINI_THINKING_BUDGET", raising=False)
-        assert client_mod._get_thinking_budget() == 0
+        assert client_mod._get_thinking_budget() == -1
 
     def test_env_override_positive(self, monkeypatch):
         monkeypatch.setenv("ADMZ_GEMINI_THINKING_BUDGET", "5000")
         assert client_mod._get_thinking_budget() == 5000
 
-    def test_invalid_env_falls_back_to_zero(self, monkeypatch):
-        monkeypatch.setenv("ADMZ_GEMINI_THINKING_BUDGET", "lots")
+    def test_env_can_disable_with_zero(self, monkeypatch):
+        monkeypatch.setenv("ADMZ_GEMINI_THINKING_BUDGET", "0")
         assert client_mod._get_thinking_budget() == 0
 
-    def test_negative_clamps_to_zero(self, monkeypatch):
+    def test_invalid_env_falls_back_to_dynamic(self, monkeypatch):
+        monkeypatch.setenv("ADMZ_GEMINI_THINKING_BUDGET", "lots")
+        assert client_mod._get_thinking_budget() == -1
+
+    def test_out_of_range_negative_clamps_to_dynamic(self, monkeypatch):
         monkeypatch.setenv("ADMZ_GEMINI_THINKING_BUDGET", "-100")
-        assert client_mod._get_thinking_budget() == 0
+        assert client_mod._get_thinking_budget() == -1
 
 
 # ---------------------------------------------------------------------------

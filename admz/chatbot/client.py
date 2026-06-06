@@ -62,21 +62,29 @@ def _get_retry_max_attempts() -> int:
 def _get_thinking_budget() -> int:
     """Return the Gemini 'thinking' token budget.
 
-    0 (default) disables thinking — recommended for chat-style use
-    where thinking-only completions show up as empty responses.
-    Set ADMZ_GEMINI_THINKING_BUDGET to a positive integer to enable
-    thinking with that many tokens.
+    Default is **-1 (dynamic)**: the model decides how much to think per
+    turn. This matters a lot for tool use — with thinking disabled (0),
+    gemini-2.5-flash tends to answer device-operation requests from its
+    (wrong) training priors instead of calling `query_catalog`/`execute_operation`
+    (the canonical failure: it told a user `setMagnification` needs "a number
+    between 1 and 9999" and refused, never querying). Dynamic thinking fixes
+    that, and is also required by the *-pro models (which reject a budget of 0
+    with "only works in thinking mode").
+
+    Override with ADMZ_GEMINI_THINKING_BUDGET:
+      -1 = dynamic (default), 0 = disabled, >0 = fixed token budget.
     """
     raw = os.getenv("ADMZ_GEMINI_THINKING_BUDGET")
     if raw is None:
-        return 0
+        return -1
     try:
-        return max(0, int(raw))
+        val = int(raw)
+        return val if val >= -1 else -1
     except ValueError:
         logger.warning(
-            "Invalid ADMZ_GEMINI_THINKING_BUDGET=%r; using default 0", raw
+            "Invalid ADMZ_GEMINI_THINKING_BUDGET=%r; using dynamic (-1)", raw
         )
-        return 0
+        return -1
 
 
 def _get_retry_base_delay() -> float:
@@ -741,13 +749,11 @@ async def _stream_via_models_api(
     # reasoning isn't useful when the answer is "look up the device's
     # IP from history" or "list 8 devices."
     #
-    # Operators who want thinking enabled can set
-    # ADMZ_GEMINI_THINKING_BUDGET > 0 (in tokens). 0 disables.
+    # ADMZ_GEMINI_THINKING_BUDGET: -1 dynamic (default), 0 disables,
+    # >0 fixed token budget. Dynamic is required for reliable tool use
+    # (see _get_thinking_budget) and for the *-pro models.
     thinking_budget = _get_thinking_budget()
-    if thinking_budget == 0:
-        config["thinking_config"] = {"thinking_budget": 0}
-    elif thinking_budget > 0:
-        config["thinking_config"] = {"thinking_budget": thinking_budget}
+    config["thinking_config"] = {"thinking_budget": thinking_budget}
 
     call_kwargs = {
         "model": request_kwargs["model"],
