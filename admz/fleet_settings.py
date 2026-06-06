@@ -26,7 +26,8 @@ def is_sensitive_setting_key(key: str) -> bool:
     the REST ``GET /api/fleet/settings`` endpoint use this. Centralized here
     so both surfaces apply the same rule.
     """
-    return "password" in key.lower()
+    k = key.lower()
+    return "password" in k or "pat" in k or "token" in k or "secret" in k
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +70,16 @@ PROTECTED_SETTING_KEYS = {
     # the budget through chat-driven tool calls would defeat the
     # purpose. Set only via the web UI.
     "chat_daily_token_budget",
+    # Survey / contributor mode (opt-in, default OFF). The PAT is a real
+    # secret stored encrypted; the rest gate a background loop that contacts
+    # devices and opens GitHub PRs. Set only via the web UI, never MCP.
+    "survey_mode_enabled",
+    "survey_github_pat",
+    "survey_repo",
+    "survey_redaction_profile",
+    "survey_validation_tier",
+    "survey_schedule_seconds",
+    "survey_contributor",
 }
 
 

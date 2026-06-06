@@ -32,6 +32,7 @@ from admz.api.routes import (
     plans,
     schedules,
     snapshot,
+    survey as survey_route,
     web,
 )
 from admz import __version__
@@ -178,6 +179,7 @@ app.include_router(health_route.router, tags=["health"])
 app.include_router(capture.router, tags=["capture"])
 app.include_router(confirm.router, tags=["confirm"])
 app.include_router(chat_route.router, tags=["chat"])
+app.include_router(survey_route.router, tags=["survey"])
 app.include_router(web.router, tags=["web"])
 
 
