@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+
+{% block title %}Survey Mode{% endblock %}
+
+{% block content %}
+<div style="max-width:760px;margin:40px auto;">
+  <h1>Survey / Contributor Mode</h1>
+  <p style="color:#666;margin-bottom:16px;">
+    Opt in to help map the long tail of Axis devices. When enabled, ADMZ surveys
+    the devices it can reach (read-only API discovery), redacts everything
+    site-sensitive, and submits new findings to
+    <a href="https://github.com/{{ repo }}">{{ repo }}</a> as a pull request for
+    review. <strong>Off by default.</strong>
+  </p>
+
+  <div style="background:#fffbeb;border:1px solid #fcd34d;padding:14px;border-radius:6px;margin-bottom:20px;color:#854d0e;font-size:14px;">
+    <strong>What is collected and sent</strong>
+    <ul style="margin:8px 0 0 18px;">
+      <li>Device identity: model, firmware, SoC, hardware id, part number.</li>
+      <li>The API surface: API ids/versions and OpenAPI <em>schemas</em>.</li>
+      <li>Serials are <strong>hashed</strong> by default (opt in to send raw).</li>
+    </ul>
+    <strong style="display:block;margin-top:10px;">What is never sent</strong>
+    <ul style="margin:8px 0 0 18px;">
+      <li>Credentials or secrets of any kind.</li>
+      <li>Network/site config (hostname, IP, DNS, NTP, VLAN).</li>
+      <li>Geolocation, privacy-mask coordinates, overlay text, user names, or any
+          live response values.</li>
+    </ul>
+    Use <em>Preview</em> below to see the exact payload before anything leaves the site.
+  </div>
+
+  {% if success %}
+  <div style="background:#f0fdf4;border:1px solid #86efac;padding:12px;border-radius:6px;margin-bottom:16px;color:#166534;">{{ success }}</div>
+  {% endif %}
+  {% if error %}
+  <div style="background:#fef2f2;border:1px solid #fca5a5;padding:12px;border-radius:6px;margin-bottom:16px;color:#991b1b;">{{ error }}</div>
+  {% endif %}
+
+  <!-- Configuration -->
+  <form method="post" action="/settings/survey" style="margin-bottom:28px;">
+    <input type="hidden" name="action" value="save_config" />
+    <h2 style="font-size:18px;">Configuration</h2>
+
+    <label style="display:flex;align-items:center;gap:8px;margin:10px 0;">
+      <input type="checkbox" name="enabled" {% if enabled %}checked{% endif %} />
+      Enable survey mode (allow scheduled background surveys)
+    </label>
+
+    <label style="display:block;margin:10px 0;">Contributor / site label
+      <input type="text" name="contributor" value="{{ contributor }}" placeholder="experience-center-1"
+             style="display:block;width:100%;padding:8px;margin-top:4px;" />
+    </label>
+
+    <label style="display:block;margin:10px 0;">Upstream repo
+      <input type="text" name="repo" value="{{ repo }}"
+             style="display:block;width:100%;padding:8px;margin-top:4px;" />
+    </label>
+
+    <label style="display:block;margin:10px 0;">Redaction profile
+      <select name="redaction_profile" style="display:block;width:100%;padding:8px;margin-top:4px;">
+        <option value="hash-serial" {% if redaction_profile=='hash-serial' %}selected{% endif %}>hash-serial (recommended)</option>
+        <option value="keep-serial" {% if redaction_profile=='keep-serial' %}selected{% endif %}>keep-serial (send raw serials)</option>
+      </select>
+    </label>
+
+    <label style="display:block;margin:10px 0;">Validation tier
+      <select name="validation_tier" style="display:block;width:100%;padding:8px;margin-top:4px;">
+        <option value="0" {% if validation_tier==0 %}selected{% endif %}>Tier 0 — read-only only (recommended)</option>
+        <option value="1" {% if validation_tier==1 %}selected{% endif %}>Tier 1 — lab devices, read-modify-restore</option>
+      </select>
+    </label>
+
+    <label style="display:block;margin:10px 0;">Schedule interval (seconds, blank = manual only)
+      <input type="text" name="schedule_seconds" value="{{ schedule_seconds }}" placeholder="86400"
+             style="display:block;width:100%;padding:8px;margin-top:4px;" />
+    </label>
+
+    <button type="submit" style="padding:10px 18px;">Save settings</button>
+  </form>
+
+  <!-- PAT -->
+  <div style="border-top:1px solid #e5e7eb;padding-top:20px;margin-bottom:28px;">
+    <h2 style="font-size:18px;">GitHub Personal Access Token</h2>
+    <p style="color:#666;font-size:14px;">
+      A fine-grained PAT scoped to <strong>your fork</strong> of {{ repo }}
+      (Contents + Pull requests). Stored encrypted; never shown again.
+      {% if has_pat %}<strong style="color:#166534;">A PAT is currently stored.</strong>{% else %}<strong style="color:#991b1b;">No PAT stored — runs will produce an offline bundle.</strong>{% endif %}
+    </p>
+    <form method="post" action="/settings/survey" style="display:flex;gap:8px;align-items:center;">
+      <input type="hidden" name="action" value="set_pat" />
+      <input type="password" name="github_pat" placeholder="github_pat_…" autocomplete="off"
+             style="flex:1;padding:8px;" />
+      <button type="submit" style="padding:8px 14px;">Save PAT</button>
+    </form>
+    {% if has_pat %}
+    <form method="post" action="/settings/survey" style="margin-top:8px;">
+      <input type="hidden" name="action" value="clear_pat" />
+      <button type="submit" style="padding:6px 12px;color:#991b1b;">Clear PAT</button>
+    </form>
+    {% endif %}
+  </div>
+
+  <!-- Actions -->
+  <div style="border-top:1px solid #e5e7eb;padding-top:20px;">
+    <h2 style="font-size:18px;">Run</h2>
+    <div style="display:flex;gap:10px;">
+      <form method="post" action="/settings/survey">
+        <input type="hidden" name="action" value="preview" />
+        <button type="submit" style="padding:10px 18px;">Preview (send nothing)</button>
+      </form>
+      <form method="post" action="/settings/survey"
+            onsubmit="return confirm('Run a survey now? Read-only discovery; submits a PR if a PAT is set, otherwise writes an offline bundle.');">
+        <input type="hidden" name="action" value="run_now" />
+        <button type="submit" style="padding:10px 18px;background:#1d4ed8;color:#fff;border:none;border-radius:6px;">Run survey now</button>
+      </form>
+    </div>
+  </div>
+
+  {% if preview %}
+  <div style="margin-top:24px;">
+    <h3 style="font-size:16px;">Preview payload</h3>
+    <p style="color:#666;font-size:13px;">{{ preview.note }}</p>
+    <p style="font-size:13px;">Models: <strong>{{ preview.models|join(', ') or 'none new' }}</strong> ·
+       OpenAPI schemas: {{ preview.openapi_specs_included|length }} ·
+       profile: {{ preview.redaction_profile }}</p>
+    <pre style="background:#0f172a;color:#e2e8f0;padding:14px;border-radius:6px;overflow:auto;max-height:400px;font-size:12px;">{{ preview | tojson(indent=2) }}</pre>
+  </div>
+  {% endif %}
+
+  {% if run_report %}
+  <div style="margin-top:24px;">
+    <h3 style="font-size:16px;">Run result</h3>
+    <pre style="background:#0f172a;color:#e2e8f0;padding:14px;border-radius:6px;overflow:auto;max-height:300px;font-size:12px;">{{ run_report | tojson(indent=2) }}</pre>
+    {% if run_report.pr_url %}<p><a href="{{ run_report.pr_url }}">View pull request →</a></p>{% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

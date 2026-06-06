@@ -566,3 +566,27 @@ async def _run_drift_audit_job(
         "transitions": transitions,
         "summary": summary,
     }
+
+
+@register_job_handler("survey")
+async def _run_survey_job(
+    schedule: SnapshotSchedule, ctx: JobContext,
+) -> Dict[str, Any]:
+    """Scheduled survey/contributor run (read-only discovery -> PR / offline bundle).
+
+    Gated by the ``survey_mode_enabled`` fleet setting; ``run_survey`` returns
+    ``status='disabled'`` (a no-op) when the operator has not opted in. The
+    collector is synchronous (wraps the atlas refresh tool), so it runs in a
+    worker thread to avoid blocking the scheduler loop.
+    """
+    import asyncio
+
+    from admz.survey.runner import run_survey
+
+    report = await asyncio.to_thread(
+        run_survey, submit=True, device_ids=schedule.device_ids
+    )
+    d = report.to_dict()
+    d["success"] = report.status not in ("error",)
+    d["summary"] = f"survey: {report.status} — {report.message}"
+    return d
