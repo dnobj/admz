@@ -1,0 +1,111 @@
+"""
+Encrypt/decrypt the GitHub PAT (and any survey secret) at rest.
+
+The PAT is a real secret, so it is **not** stored as plaintext in the fleet-
+settings table. We reuse the same Fernet key the SQLite registry uses for device
+passwords (``ADMZ_KEY_PATH`` / ``~/.admz/admz.key``), so there's a single key to
+protect and rotate. Storage still goes through ``fleet_settings`` — but only the
+ciphertext lands there.
+
+Survey config helpers also live here so routes/scheduler share one source of
+truth for the setting keys.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Optional
+
+from admz.fleet_settings import fleet_settings
+
+# --- fleet-setting keys (also registered PROTECTED in fleet_settings) ---
+KEY_ENABLED = "survey_mode_enabled"
+KEY_PAT = "survey_github_pat"               # stores CIPHERTEXT
+KEY_REPO = "survey_repo"
+KEY_REDACTION = "survey_redaction_profile"  # hash-serial | keep-serial
+KEY_VALIDATION_TIER = "survey_validation_tier"   # "0" | "1"
+KEY_SCHEDULE_SECONDS = "survey_schedule_seconds"
+KEY_CONTRIBUTOR = "survey_contributor"      # opt-in handle / site label
+
+DEFAULT_REPO = "mrdnlabs/axis-api-atlas"
+DEFAULT_REDACTION = "hash-serial"
+
+
+def _key_path() -> Path:
+    return Path(os.getenv("ADMZ_KEY_PATH", str(Path.home() / ".admz" / "admz.key")))
+
+
+def _fernet():
+    # reuse the registry's key helper so there's exactly one key file
+    from admz.backends.sqlite_backend import _build_fernet
+    return _build_fernet(_key_path())
+
+
+def encrypt(plain: str) -> str:
+    return _fernet().encrypt(plain.encode()).decode()
+
+
+def decrypt(token: str) -> str:
+    return _fernet().decrypt(token.encode()).decode()
+
+
+# ---------------------------------------------------------------------------
+# PAT storage
+# ---------------------------------------------------------------------------
+
+
+def set_pat(plain_pat: str) -> None:
+    """Store the PAT encrypted. Empty string clears it."""
+    if not plain_pat:
+        fleet_settings.delete(KEY_PAT)
+        return
+    fleet_settings.set(KEY_PAT, encrypt(plain_pat))
+
+
+def get_pat() -> Optional[str]:
+    """Return the decrypted PAT, or None if unset/undecryptable."""
+    token = fleet_settings.get(KEY_PAT)
+    if not token:
+        return None
+    try:
+        return decrypt(token)
+    except Exception:  # noqa: BLE001 - wrong key / corrupt value
+        return None
+
+
+def has_pat() -> bool:
+    return bool(fleet_settings.get(KEY_PAT))
+
+
+# ---------------------------------------------------------------------------
+# config accessors
+# ---------------------------------------------------------------------------
+
+
+def is_enabled() -> bool:
+    return (fleet_settings.get(KEY_ENABLED) or "").lower() in ("1", "true", "yes", "on")
+
+
+def get_repo() -> str:
+    return fleet_settings.get(KEY_REPO) or DEFAULT_REPO
+
+
+def get_redaction_profile() -> str:
+    return fleet_settings.get(KEY_REDACTION) or DEFAULT_REDACTION
+
+
+def get_validation_tier() -> int:
+    try:
+        return int(fleet_settings.get(KEY_VALIDATION_TIER) or "0")
+    except ValueError:
+        return 0
+
+
+def get_contributor() -> str:
+    return fleet_settings.get(KEY_CONTRIBUTOR) or ""
+
+
+def hmac_key() -> bytes:
+    """A stable per-install key for hashing serials (derived from the Fernet key)."""
+    return _key_path().read_bytes().strip() if _key_path().exists() else b"admz-survey"
