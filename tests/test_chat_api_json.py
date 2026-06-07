@@ -281,12 +281,13 @@ class TestJsonChatEmptyResponseBackstop:
         assert body["success"] is False
         assert "no text" in body["error"].lower()
         assert "gemini-2.5-flash" in body["error"]
-        # The 2.x suggestion is to upgrade to pro.
-        assert "gemini-2.5-pro" in body["error"]
+        # Case A is a neutral thinking-only/safety-filter message: rephrase.
+        assert "rephras" in body["error"].lower()
         assert body["response"] == ""
 
-    def test_3x_zero_output_mentions_2_5_fallback(self, client):
-        """Case A on 3.x — error should point operator at 2.5-flash."""
+    def test_3x_zero_output_neutral_message(self, client):
+        """Case A on 3.x — neutral message (the 3.x tool quirk is fixed by the
+        manual loop, so no model-switch nudge)."""
         _seed_api_key()
         from admz.chatbot.events import event_done
 
@@ -302,24 +303,24 @@ class TestJsonChatEmptyResponseBackstop:
         body = r.json()
         assert body["success"] is False
         assert "gemini-3.5-flash" in body["error"]
-        # Should mention the 3.x tools quirk + 2.5-flash as the reliable alt.
-        assert "2.5-flash" in body["error"]
+        assert "no text" in body["error"].lower()
+        assert "rephras" in body["error"].lower()
 
-    def test_3x_nonzero_tokens_empty_text_surfaced_as_known_bug(self, client):
-        """Case B: the 3.5-flash AFC bug — tokens > 0, response empty.
-        Live: 'what cameras do i have' on gemini-3.5-flash returned
-        7478/10 tokens with no text. Backstop must catch this."""
+    def test_nonzero_tokens_empty_text_neutral_backstop(self, client):
+        """Case B: tokens > 0 but no visible text. The gemini-3.x AFC bug that
+        used to cause this is now handled by the in-ADMZ manual function-calling
+        loop, so this is just a neutral backstop for other causes (mid-stream
+        content filter, malformed final turn) — no AFC/model-switch messaging."""
         _seed_api_key()
         from admz.chatbot.events import event_done
 
-        async def afc_broken_stream(**kwargs):
-            # 10 output tokens but no text events — the 3.x AFC failure mode
+        async def empty_with_tokens(**kwargs):
             yield event_done(
                 interaction_id="x", input_tokens=7000, output_tokens=10
             )
 
         with patch(
-            "admz.api.routes.chat.stream_turn", side_effect=afc_broken_stream
+            "admz.api.routes.chat.stream_turn", side_effect=empty_with_tokens
         ):
             r = client.post(
                 "/api/chat",
@@ -328,12 +329,11 @@ class TestJsonChatEmptyResponseBackstop:
 
         body = r.json()
         assert body["success"] is False
-        # Names the model, the token count, and the recommended fallback.
         assert "gemini-3.5-flash" in body["error"]
         assert "10" in body["error"]  # the output token count
-        assert "AFC continuation" in body["error"] or "tool" in body["error"].lower()
-        assert "2.5-flash" in body["error"]
-        # input_tokens still reported correctly.
+        assert "retry" in body["error"].lower() or "rephras" in body["error"].lower()
+        # neutral — no stale AFC-bug claim
+        assert "AFC" not in body["error"]
         assert body["input_tokens"] == 7000
         assert body["output_tokens"] == 10
 
