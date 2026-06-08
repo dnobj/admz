@@ -491,6 +491,22 @@ label { font-size: 12.5px; color: var(--text-muted); }
 .tool-card .tc-ico { display: flex; }
 .tool-card .tc-ico svg { width: 15px; height: 15px; }
 
+/* expandable details */
+.tool-card .tc-row { cursor: pointer; user-select: none; }
+.tool-card .tc-row:hover { background: var(--panel); }
+.tool-card .tc-row:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
+.tool-card .tc-chev { display: flex; color: var(--text-faint); transition: transform .15s ease; }
+.tool-card .tc-chev svg { width: 14px; height: 14px; }
+.tool-card .tc-chev.open { transform: rotate(90deg); }
+.tool-card .tc-details { padding: 2px 12px 12px 36px; border-top: 1px solid var(--border-subtle); }
+.tool-card .tcd-h { font-size: 11px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--text-faint); margin: 10px 0 4px; }
+.tool-card .tcd-muted { font-size: 12px; color: var(--text-faint); font-style: italic; }
+.tool-card .tcd-pre {
+  margin: 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.5; color: var(--text-muted);
+  white-space: pre-wrap; word-break: break-word; background: var(--panel); border: 1px solid var(--border-subtle);
+  border-radius: 6px; padding: 8px 10px; max-height: 300px; overflow: auto;
+}
+
 .spinner {
   display: inline-block; width: 14px; height: 14px; border: 2px solid var(--blue-bd);
   border-top-color: var(--blue-solid); border-radius: 99px; animation: admz-spin .7s linear infinite;

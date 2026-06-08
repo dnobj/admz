@@ -405,6 +405,7 @@ from admz.chatbot.events import (  # noqa: E402 — kept near its consumer
     event_start,
     event_text,
     event_tool_call,
+    event_tool_result,
 )
 from admz.chatbot.mcp_bridge import (  # noqa: E402
     McpBridgeError,
@@ -822,11 +823,30 @@ async def _stream_via_models_api(
 
 
 class _ToolCallChunk:
-    """Synthetic chunk → TOOL_CALL event (the translator reads step_type+name)."""
+    """Synthetic chunk → TOOL_CALL event (the translator reads step_type+name).
 
-    def __init__(self, name: str):
+    ``args`` (redacted) + ``call_id`` feed the UI's expand pane and let the
+    frontend bind a later tool_result to the exact card (robust when the same
+    tool name is called many times in one turn).
+    """
+
+    def __init__(self, name: str, args=None, call_id=None):
         self.step_type = "function_call"
         self.name = name
+        self.args = args
+        self.call_id = call_id
+
+
+class _ToolResultChunk:
+    """Synthetic chunk → TOOL_RESULT event (per-tool completion, real-time)."""
+
+    def __init__(self, name, status, summary, call_id, result=None):
+        self.step_type = "function_result"
+        self.name = name
+        self.status = status        # "ok" | "error" | "skipped"
+        self.summary = summary      # short, inline (already redacted)
+        self.call_id = call_id
+        self.result = result        # full redacted result dict (expand pane)
 
 
 class _TextChunk:
@@ -958,6 +978,73 @@ async def _call_mcp_tool(mcp_session: Any, name: str, args: Any) -> dict:
     return {"result": str(content)[:2000]}
 
 
+# --- display helpers for the tool-card UI (args/result panes + status) -------
+
+_SENSITIVE_KEY_PARTS = ("password", "passwd", "secret", "token", "api_key", "apikey", "key")
+_MAX_DISPLAY_STR = 300
+_MAX_DISPLAY_LIST = 50
+
+
+def _redact_for_display(obj: Any, depth: int = 0) -> Any:
+    """Make a tool's args/result safe + compact to show in the chat UI.
+
+    Masks values whose key looks like a credential, truncates long strings and
+    lists, and depth-guards. Device/operation IDs pass through (they help the
+    operator read the card). Never sends a raw secret to the browser.
+    """
+    if depth > 6:
+        return "…"
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            kl = str(k).lower()
+            if any(p in kl for p in _SENSITIVE_KEY_PARTS):
+                out[k] = "***"
+            else:
+                out[k] = _redact_for_display(v, depth + 1)
+        return out
+    if isinstance(obj, (list, tuple)):
+        items = [_redact_for_display(v, depth + 1) for v in list(obj)[:_MAX_DISPLAY_LIST]]
+        extra = len(obj) - _MAX_DISPLAY_LIST
+        if extra > 0:
+            items.append(f"… (+{extra} more)")
+        return items
+    if isinstance(obj, str) and len(obj) > _MAX_DISPLAY_STR:
+        return obj[:_MAX_DISPLAY_STR] + f"… ({len(obj)} chars)"
+    return obj
+
+
+def _short(text: Any, limit: int = 120) -> str:
+    s = str(text).replace("\n", " ").strip()
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _classify_tool_result(payload: Any):
+    """Map a tool result dict → (status, short inline summary) for the card.
+
+    status ∈ ok | error | skipped. A confirm-gated result (blocked) is
+    'skipped' (awaiting approval), NOT an error.
+    """
+    if not isinstance(payload, dict):
+        return "ok", _short(payload)
+    if payload.get("blocked"):
+        return "skipped", _short(payload.get("message") or "Awaiting approval")
+    if payload.get("error") or payload.get("success") is False:
+        return "error", _short(payload.get("error") or payload.get("message") or "failed")
+    # normal — prefer a human-readable field, else a compact key=value line
+    for key in ("message", "summary", "status"):
+        if payload.get(key):
+            return "ok", _short(payload[key])
+    scalars = [
+        f"{k}={_short(v, 40)}"
+        for k, v in payload.items()
+        if isinstance(v, (str, int, float, bool))
+    ]
+    if scalars:
+        return "ok", _short(", ".join(scalars[:5]))
+    return "ok", "done"
+
+
 async def _run_manual_tool_loop(models, model, contents, sys_inst, mcp_session):
     """Drive the function-calling loop in ADMZ; yield translator-ready chunks."""
     from google.genai import types  # type: ignore[import-not-found]
@@ -981,6 +1068,7 @@ async def _run_manual_tool_loop(models, model, contents, sys_inst, mcp_session):
     total_in = total_out = 0
     last_interaction_id = None
     max_iter = _get_max_tool_iterations()
+    next_call_id = 0  # unique per executed tool, across iterations
 
     hit_cap = True
     for _ in range(max_iter):
@@ -1006,12 +1094,21 @@ async def _run_manual_tool_loop(models, model, contents, sys_inst, mcp_session):
         if content is not None:
             convo.append(content)
         for fc in calls:
-            yield _ToolCallChunk(getattr(fc, "name", "tool"))
-            payload = await _call_mcp_tool(
-                mcp_session, getattr(fc, "name", ""), getattr(fc, "args", {})
+            call_id = str(next_call_id)
+            next_call_id += 1
+            name = getattr(fc, "name", "") or "tool"
+            raw_args = getattr(fc, "args", {}) or {}
+            yield _ToolCallChunk(
+                name, args=_redact_for_display(dict(raw_args)), call_id=call_id
+            )
+            payload = await _call_mcp_tool(mcp_session, name, raw_args)
+            safe_payload = _redact_for_display(payload)
+            status, summary = _classify_tool_result(safe_payload)
+            yield _ToolResultChunk(
+                name, status, summary, call_id, result=safe_payload
             )
             part = _make_function_response_part(
-                types, getattr(fc, "name", ""), payload, getattr(fc, "id", None)
+                types, name, payload, getattr(fc, "id", None)
             )
             convo.append(types.Content(role="user", parts=[part]))
 
@@ -1201,7 +1298,21 @@ def _translate_stream_chunk(chunk: Any) -> Optional[ChatEvent]:
             or _extract_function_call_from_chunk(chunk)
             or "tool"
         )
-        return event_tool_call(name=name, args_summary=f"{name}(...)")
+        return event_tool_call(
+            name=name,
+            args_summary=f"{name}(...)",
+            call_id=getattr(chunk, "call_id", None),
+            args=getattr(chunk, "args", None),
+        )
+    if step_type == "function_result":
+        name = getattr(chunk, "name", None) or "tool"
+        return event_tool_result(
+            name=name,
+            status=getattr(chunk, "status", "ok"),
+            summary=getattr(chunk, "summary", "") or "",
+            call_id=getattr(chunk, "call_id", None),
+            result=getattr(chunk, "result", None),
+        )
     fc_name = _extract_function_call_from_chunk(chunk)
     if fc_name and not _extract_text_from_chunk(chunk):
         return event_tool_call(name=fc_name, args_summary=f"{fc_name}(...)")

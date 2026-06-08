@@ -231,33 +231,99 @@
     var card = document.createElement("div");
     card.className = "tool-card";
     card.dataset.tool = data.name || "tool";
+    if (data.call_id != null) card.dataset.callId = String(data.call_id);
+    card._args = (data.args !== undefined) ? data.args : null;
+    card._result = null;
     card.innerHTML =
-      '<div class="tc-row">' +
+      '<div class="tc-row" role="button" tabindex="0" aria-expanded="false">' +
+      '<span class="tc-chev"></span>' +
       '<span class="tc-ico tool-status"><span class="spinner"></span></span>' +
       '<span class="tc-label">Calling</span>' +
       '<span class="tc-op tool-name"></span>' +
       '<span class="tc-args tool-summary"></span>' +
       '<span class="tc-status"><span class="badge blue mono">RUNNING</span></span>' +
       "</div>" +
-      '<div class="tc-result" style="display:none"></div>';
+      '<div class="tc-result" style="display:none"></div>' +
+      '<div class="tc-details" style="display:none"></div>';
     card.querySelector(".tool-name").textContent = data.name || "tool";
     card.querySelector(".tool-summary").textContent = data.summary ? "(" + data.summary + ")" : "";
+    card.querySelector(".tc-chev").innerHTML = ico("chevron-right");
+    var row = card.querySelector(".tc-row");
+    row.addEventListener("click", function () { toggleDetails(card); });
+    row.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+        e.preventDefault();
+        toggleDetails(card);
+      }
+    });
     (bubble ? bubble.querySelector(".at-blocks") : transcript).appendChild(card);
     if (bubble && bubble._pending) bubble._pending.push(card);
     icons();
     return card;
   }
 
-  // Match an incoming tool_result to the right pending card (by name, else
-  // oldest), and resolve it.
+  // Toggle a card's expanded detail pane (args + result).
+  function toggleDetails(card) {
+    var pane = card.querySelector(".tc-details");
+    var chev = card.querySelector(".tc-chev");
+    var row = card.querySelector(".tc-row");
+    if (!pane) return;
+    var open = pane.style.display !== "none" && pane.style.display !== "";
+    // Treat empty string (initial) as closed.
+    open = pane.dataset.open === "1";
+    if (open) {
+      pane.style.display = "none";
+      pane.dataset.open = "0";
+      if (chev) chev.classList.remove("open");
+      if (row) row.setAttribute("aria-expanded", "false");
+    } else {
+      renderDetails(card);
+      pane.style.display = "";
+      pane.dataset.open = "1";
+      if (chev) chev.classList.add("open");
+      if (row) row.setAttribute("aria-expanded", "true");
+    }
+  }
+
+  function renderDetails(card) {
+    var pane = card.querySelector(".tc-details");
+    if (!pane) return;
+    function section(label, value) {
+      var body;
+      if (value === undefined || value === null) {
+        body = '<span class="tcd-muted">' + (value === undefined ? "(pending)" : "(none)") + "</span>";
+      } else {
+        var txt;
+        try { txt = JSON.stringify(value, null, 2); } catch (_) { txt = String(value); }
+        if (txt.length > 4000) txt = txt.slice(0, 4000) + "\n… (truncated)";
+        body = '<pre class="tcd-pre">' + escapeHtml(txt) + "</pre>";
+      }
+      return '<div class="tcd-h">' + escapeHtml(label) + "</div>" + body;
+    }
+    // _args === null means the call carried no args field (e.g. AFC path).
+    var argsVal = (card._args === null) ? undefined : card._args;
+    var resVal = (card._result === null) ? undefined : card._result;
+    pane.innerHTML = section("Arguments", argsVal) + section("Result", resVal);
+  }
+
+  // Match an incoming tool_result to the right pending card (by call_id, then
+  // name, else oldest), and resolve it.
   function resolveToolResult(bubble, data) {
     if (!bubble || !bubble._pending || !bubble._pending.length) return;
     var idx = -1;
-    for (var i = 0; i < bubble._pending.length; i++) {
-      if (data.name && bubble._pending[i].dataset.tool === data.name) { idx = i; break; }
+    if (data.call_id != null) {
+      for (var j = 0; j < bubble._pending.length; j++) {
+        if (bubble._pending[j].dataset.callId === String(data.call_id)) { idx = j; break; }
+      }
+    }
+    if (idx < 0) {
+      for (var i = 0; i < bubble._pending.length; i++) {
+        if (data.name && bubble._pending[i].dataset.tool === data.name) { idx = i; break; }
+      }
     }
     if (idx < 0) idx = 0;
     var card = bubble._pending.splice(idx, 1)[0];
+    if (data.result !== undefined) card._result = data.result;
     updateToolCard(card, data);
   }
 
@@ -277,19 +343,27 @@
     var badge = card.querySelector(".tc-status");
     var ok = data.status === "ok";
     var err = data.status === "error";
+    var skipped = data.status === "skipped";
     if (statusEl) {
-      statusEl.innerHTML = err ? ico("x-circle") : ico("check-circle-2");
-      statusEl.className = "tc-ico tool-status " + (ok ? "fg-green" : err ? "fg-red" : "fg-grey");
+      statusEl.innerHTML = err ? ico("x-circle")
+        : skipped ? ico("clock") : ico("check-circle-2");
+      statusEl.className = "tc-ico tool-status " +
+        (ok ? "fg-green" : err ? "fg-red" : skipped ? "fg-amber" : "fg-grey");
     }
     if (badge) {
-      badge.innerHTML = '<span class="badge ' + (ok ? "green" : err ? "red" : "grey") + ' mono">' +
-        (ok ? "COMPLETED" : err ? "BLOCKED" : "DONE") + "</span>";
+      var cls = ok ? "green" : err ? "red" : skipped ? "amber" : "grey";
+      var label = ok ? "COMPLETED" : err ? "BLOCKED"
+        : skipped ? "AWAITING APPROVAL" : "DONE";
+      badge.innerHTML = '<span class="badge ' + cls + ' mono">' + label + "</span>";
     }
     if (data.summary) {
       var r = card.querySelector(".tc-result");
       r.textContent = data.summary;
       r.style.display = "";
     }
+    // If the detail pane is open, re-render now that _result has arrived.
+    var pane = card.querySelector(".tc-details");
+    if (pane && pane.dataset.open === "1") renderDetails(card);
     icons();
   }
 

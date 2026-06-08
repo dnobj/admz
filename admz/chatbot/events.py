@@ -68,17 +68,25 @@ def event_text(chunk: str) -> ChatEvent:
     return ChatEvent(ChatEventType.TEXT, {"chunk": chunk})
 
 
-def event_tool_call(name: str, args_summary: str, call_id: Optional[str] = None) -> ChatEvent:
+def event_tool_call(
+    name: str,
+    args_summary: str,
+    call_id: Optional[str] = None,
+    args: Optional[Any] = None,
+) -> ChatEvent:
     """args_summary is a short, display-friendly rendering — not the raw JSON.
 
-    Raw args are *not* sent to the browser. The LLM may pass
-    credentials, device IDs, or other sensitive values that don't
-    belong in a chat transcript. The summary is something like
-    ``"list_devices"`` or ``"snapshot_device(cam-01)"``.
+    ``args`` (optional) carries the call's full arguments for the UI's
+    expand-on-click pane. It must already be **redacted** by the caller
+    (``client._redact_for_display``): credentials/tokens masked, long values
+    truncated. Device IDs / operation IDs are fine — they help the operator
+    read the card. The always-visible card still shows only ``args_summary``.
     """
     payload: Dict[str, Any] = {"name": name, "summary": args_summary}
     if call_id is not None:
         payload["call_id"] = call_id
+    if args is not None:
+        payload["args"] = args
     return ChatEvent(ChatEventType.TOOL_CALL, payload)
 
 
@@ -87,11 +95,18 @@ def event_tool_result(
     status: str,
     summary: str = "",
     call_id: Optional[str] = None,
+    result: Optional[Any] = None,
 ) -> ChatEvent:
-    """status is one of ``"ok"`` / ``"error"`` / ``"skipped"``."""
+    """status is one of ``"ok"`` / ``"error"`` / ``"skipped"``.
+
+    ``summary`` is the short, always-visible one-liner on the card. ``result``
+    (optional) carries the full **redacted** result dict for the expand pane.
+    """
     payload: Dict[str, Any] = {"name": name, "status": status, "summary": summary}
     if call_id is not None:
         payload["call_id"] = call_id
+    if result is not None:
+        payload["result"] = result
     return ChatEvent(ChatEventType.TOOL_RESULT, payload)
 
 

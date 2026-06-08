@@ -229,3 +229,102 @@ async def test_mcp_declarations_built_from_list_tools():
     assert len(tools) == 1
     decls = tools[0].function_declarations
     assert decls[0].name == "execute_operation"
+
+
+# --- per-tool result emission + expand-pane payloads -----------------------
+
+
+@pytest.mark.asyncio
+async def test_emits_one_tool_result_per_call_with_unique_call_ids():
+    models = _FakeModels([
+        _Resp(function_calls=[_FC("execute_operation", {"n": 1}),
+                              _FC("execute_operation", {"n": 2})],
+              content=object(), usage=(20, 4)),
+        _Resp(function_calls=[_FC("execute_operation", {"n": 3})],
+              content=object(), usage=(10, 2)),
+        _Resp(text="done.", usage=(5, 1)),
+    ])
+    session = _FakeSession([{"success": True}, {"error": "nope"},
+                           {"blocked": True, "message": "approve me"}])
+
+    events = _events(await _run(models, session))
+    results = [e for e in events if e.type == ChatEventType.TOOL_RESULT]
+    assert len(results) == 3
+    # unique call_ids across the whole turn (including across iterations)
+    ids = [e.payload["call_id"] for e in results]
+    assert len(set(ids)) == 3
+    # status mapping: ok / error / skipped (confirm-gated)
+    assert [e.payload["status"] for e in results] == ["ok", "error", "skipped"]
+    for e in results:
+        assert e.payload["summary"]              # non-empty inline summary
+        assert "result" in e.payload             # expand-pane payload present
+    # each tool_call carries a matching call_id + (redacted) args
+    calls = [e for e in events if e.type == ChatEventType.TOOL_CALL]
+    assert len(calls) == 3
+    for e in calls:
+        assert "call_id" in e.payload
+        assert "args" in e.payload
+    assert {c.payload["call_id"] for c in calls} == set(ids)
+
+
+def test_classify_tool_result_maps_status():
+    assert client._classify_tool_result({"blocked": True, "message": "x"})[0] == "skipped"
+    assert client._classify_tool_result({"error": "boom"})[0] == "error"
+    assert client._classify_tool_result({"success": False})[0] == "error"
+    assert client._classify_tool_result({"success": True, "data": {}})[0] == "ok"
+    assert client._classify_tool_result({"message": "set zoom"}) == ("ok", "set zoom")
+
+
+def test_redact_for_display_masks_secrets_keeps_ids():
+    out = client._redact_for_display({
+        "device_id": "ABC123",
+        "operation_id": "setZoom",
+        "password": "hunter2",
+        "api_key": "sk-secret",
+        "nested": {"token": "abc", "value": 5},
+        "long": "x" * 500,
+        "items": list(range(80)),
+    })
+    assert out["device_id"] == "ABC123"
+    assert out["operation_id"] == "setZoom"
+    assert out["password"] == "***"
+    assert out["api_key"] == "***"
+    assert out["nested"]["token"] == "***"
+    assert out["nested"]["value"] == 5
+    assert out["long"].endswith("chars)") and len(out["long"]) < 500
+    assert len(out["items"]) <= 51  # truncated + "+N more" marker
+
+
+@pytest.mark.asyncio
+async def test_no_secret_reaches_event_payloads():
+    models = _FakeModels([
+        _Resp(function_calls=[_FC("execute_operation",
+                                  {"device_id": "Q35", "password": "hunter2"})],
+              content=object(), usage=(10, 2)),
+        _Resp(text="ok.", usage=(2, 1)),
+    ])
+    session = _FakeSession([{"success": True, "token": "leaky-token-value"}])
+    events = _events(await _run(models, session))
+    blob = json.dumps([e.payload for e in events])
+    assert "hunter2" not in blob
+    assert "leaky-token-value" not in blob
+
+
+def test_translate_function_result_chunk():
+    ch = client._ToolResultChunk("execute_operation", "skipped", "approve me",
+                                 "7", result={"blocked": True})
+    ev = client._translate_stream_chunk(ch)
+    assert ev.type == ChatEventType.TOOL_RESULT
+    assert ev.payload["name"] == "execute_operation"
+    assert ev.payload["status"] == "skipped"
+    assert ev.payload["summary"] == "approve me"
+    assert ev.payload["call_id"] == "7"
+    assert ev.payload["result"] == {"blocked": True}
+
+
+def test_translate_function_call_chunk_carries_args_and_call_id():
+    ch = client._ToolCallChunk("execute_operation", args={"device_id": "Q35"}, call_id="3")
+    ev = client._translate_stream_chunk(ch)
+    assert ev.type == ChatEventType.TOOL_CALL
+    assert ev.payload["call_id"] == "3"
+    assert ev.payload["args"] == {"device_id": "Q35"}
