@@ -842,14 +842,24 @@ class ADMZMCPServer:
                 Tool(
                     name="confirm_dangerous_operation",
                     description=(
-                        "Confirm and execute a blocked operation. Despite the name "
-                        "(kept for backward compatibility), this works for ANY "
-                        "operation that was blocked by execute_operation's risk gate "
-                        "with confirmation_level='llm_confirm' — typically "
-                        "service-affecting and dangerous operations. Operations whose "
-                        "configured level is url_only or url_and_password must be "
-                        "confirmed via the web /confirm/{token} URL, not through this "
-                        "tool. Tokens are single-use and expire after 5 minutes."
+                        "Confirm and execute an operation that execute_operation "
+                        "already blocked. Despite the name (kept for backward "
+                        "compatibility), this works for ANY operation blocked by "
+                        "execute_operation's risk gate with "
+                        "confirmation_level='llm_confirm' — typically service-affecting "
+                        "and dangerous operations. "
+                        "PRECONDITION: you must pass a confirm_token that a prior "
+                        "execute_operation call returned in its {blocked: true, "
+                        "confirm_token: ...} response during THIS conversation. That is "
+                        "the ONLY source of a valid token — there is no way to mint one "
+                        "here. Do NOT call this tool to 'request approval' or before "
+                        "you have called execute_operation: to start a write, call "
+                        "execute_operation (it is gated and safe), then call this only "
+                        "if it returns blocked with llm_confirm. "
+                        "Operations whose configured level is url_only or "
+                        "url_and_password must be confirmed via the web "
+                        "/confirm/{token} URL, not through this tool. Tokens are "
+                        "single-use and expire after 5 minutes."
                     ),
                     inputSchema={
                         "type": "object",

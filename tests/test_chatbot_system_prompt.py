@@ -130,6 +130,30 @@ class TestBuildSystemPrompt:
         assert "query_catalog" in prompt
         assert "execute_operation" in prompt
 
+    def test_renders_without_stray_format_placeholders(self):
+        """Regression: the prompt is rendered via str.format(user_line=...),
+        so any literal brace (e.g. the confirm URL '/confirm/{token}') must be
+        escaped as '{{...}}'. An unescaped brace raises KeyError at runtime and
+        the chat stream silently returns empty. Building the prompt must not
+        raise, and the rendered confirm-URL pattern must survive intact."""
+        prompt = build_system_prompt("alice")  # must not raise KeyError
+        assert "/confirm/{token}" in prompt
+
+    def test_execute_operation_before_confirm_guidance(self):
+        """Live bug: the model resolved an op via query_catalog, then asked in
+        text and called confirm_dangerous_operation WITHOUT ever calling
+        execute_operation — so no confirm_token was minted and confirm failed
+        with 'Invalid or expired confirmation token'. The prompt must make
+        execute_operation the first write step (it is gated/safe) and forbid
+        calling the confirm tool without a token from a blocked
+        execute_operation response."""
+        prompt = build_system_prompt("alice").lower()
+        # execute_operation is framed as safe-to-call / the way to request a write
+        assert "safe to call" in prompt or "always safe" in prompt or "is how you request a write" in prompt
+        # Never call the confirm tool without a real token
+        assert "never call" in prompt and "confirm_dangerous_operation" in prompt
+        assert "confirm_token" in prompt
+
     def test_resolve_device_id_yourself_guidance(self):
         """Live bug: user said "make the D4200 flash white" and the LLM
         replied "I need the device_id (MAC address) for the D4200 ...

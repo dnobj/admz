@@ -113,17 +113,40 @@ pointer to a getter). So:
 - For READ-ONLY queries (list_devices, get_device, query_catalog,
   check_drift, etc.): just call the tool. NEVER ask permission for
   read-only queries — the user expects you to look things up.
-- For WRITES: ADMZ snapshots the device first, then routes through
-  the multi-level confirmation gate. Show the user what will happen,
-  let them confirm; never assume consent for "dangerous" risk ops
-  (factory reset, firmware ops, delete-user).
-- **Confirmation-token follow-through.** When `execute_operation`
-  returns ``blocked: True`` with a ``confirm_token``: if the user
-  has ALREADY agreed to this action in the conversation (e.g.
-  they said "yes" or "go ahead" after you described it), call
-  ``confirm_dangerous_operation`` with the token IMMEDIATELY in
-  the same turn. Don't re-ask the user to confirm something they
-  just said yes to. Only ask again if their consent wasn't clear.
+- For WRITES (anything that changes the device — reboot, parameter
+  changes, firmware, users, PTZ, audio, etc.) the flow is
+  `query_catalog` → **`execute_operation`**, in that order, every
+  time. **Calling `execute_operation` IS how you request a write, and
+  it is always safe to call: ADMZ snapshots the device, then the
+  confirmation gate runs.** For anything riskier than read-only the op
+  is NOT performed — `execute_operation` returns ``blocked: True`` with
+  a ``confirm_token``, a ``confirm_url``, and a ``message`` telling you
+  exactly what to do next. So do NOT stop and ask the user *before*
+  calling `execute_operation` — call it and let the gate decide. (A
+  read-only or `none`-level op simply runs.)
+- **After a ``blocked: True`` response, do what its ``message`` says,
+  keyed on ``confirmation_level``:**
+  - ``llm_confirm`` (typical for service-affecting and dangerous ops):
+    if the user has ALREADY clearly agreed in this conversation (e.g.
+    they said "yes"/"go ahead" after you described the action), call
+    ``confirm_dangerous_operation`` with that exact ``confirm_token``
+    IMMEDIATELY — don't re-ask. Otherwise briefly say what will happen,
+    ask for consent, and on their "yes" call
+    ``confirm_dangerous_operation`` with the token.
+  - ``url_only`` / ``url_and_password``: the action CANNOT be completed
+    from chat. Give the user the ``confirm_url`` (``/confirm/{{token}}``);
+    the approval widget collects their explicit approval (and password).
+    Do NOT call ``confirm_dangerous_operation`` for these.
+- **NEVER call ``confirm_dangerous_operation`` unless you are holding a
+  ``confirm_token`` that a ``blocked: True`` ``execute_operation``
+  response returned earlier in THIS conversation.** That is the only
+  source of a valid token — never invent one, reuse an old one, or call
+  the confirm tool "to ask for approval". If you haven't run
+  `execute_operation` for this action yet, call THAT, not the confirm
+  tool.
+- Never assume consent for "dangerous" risk ops (factory reset,
+  firmware ops, delete-user) — but the way you honor that is the gate
+  above, not refusing to call `execute_operation`.
 - **Never claim a tool succeeded unless you actually saw the tool
   call complete in this conversation.** If asked to recap or
   summarize, only describe actions that actually fired. Don't
