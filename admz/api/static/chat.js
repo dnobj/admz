@@ -132,6 +132,17 @@
           case "done":
             renderUsageFooter(assistantBubble, parsed.data);
             resolveAllPending(assistantBubble); // turn ended → tools finished
+            // Scan the *complete* assistant text once, now that streaming is
+            // done. (Scanning incrementally in appendText could match a token
+            // chunk-split mid-stream — a partial id ≥20 chars — and render a
+            // phantom "expired" approval card. The authoritative confirm_url
+            // already came through the tool_result above; this only catches a
+            // URL that appears solely in prose.)
+            try {
+              var fullText = assistantBubble.querySelector(".at-blocks").textContent;
+              scanForTokens(fullText, CONFIRM_URL_RE, "confirm");
+              scanForTokens(fullText, CAPTURE_URL_RE, "capture");
+            } catch (_) {}
             break;
           case "error": renderError(assistantBubble, parsed.data.message); break;
         }
@@ -208,9 +219,11 @@
 
   function appendText(bubble, chunk) {
     currentTextBlock(bubble).textContent += chunk;
-    var buffer = bubble.querySelector(".at-blocks").textContent;
-    scanForTokens(buffer, CONFIRM_URL_RE, "confirm");
-    scanForTokens(buffer, CAPTURE_URL_RE, "capture");
+    // NOTE: do NOT scan for /confirm|/capture tokens here — mid-stream the
+    // text can hold a chunk-split (partial) token that the {20,} regex would
+    // match, rendering a phantom approval card. Tokens are scanned from the
+    // structured tool_result (authoritative) and once more on `done` (the
+    // complete text). See the SSE switch above.
   }
 
   function scanForTokens(buffer, re, kind) {
@@ -361,10 +374,29 @@
       r.textContent = data.summary;
       r.style.display = "";
     }
+    // An AWAITING-APPROVAL card carries a confirm_token — record it so a later
+    // out-of-band approval can find this card and flip it to COMPLETED.
+    if (skipped && card._result && card._result.confirm_token) {
+      card.dataset.confirmToken = card._result.confirm_token;
+    }
     // If the detail pane is open, re-render now that _result has arrived.
     var pane = card.querySelector(".tc-details");
     if (pane && pane.dataset.open === "1") renderDetails(card);
     icons();
+  }
+
+  // Flip an AWAITING-APPROVAL tool card once its confirm token is resolved
+  // out-of-band (the approval widget). status: "ok" (approved+executed) or
+  // "error" (denied / failed). Matched by the confirm_token stashed above.
+  function resolveApprovedToolCard(token, status, summary) {
+    if (!token) return;
+    var sel = '.tool-card[data-confirm-token="' + token + '"]';
+    transcript.querySelectorAll(sel).forEach(function (card) {
+      updateToolCard(card, {
+        status: status || "ok",
+        summary: summary || (status === "error" ? "Denied" : "Approved — executed"),
+      });
+    });
   }
 
   function renderUsageFooter(bubble, data) {
@@ -414,12 +446,23 @@
           renderApprovalDone(card, "error",
             resp.body && resp.body.status === "expired_or_not_found"
               ? "This confirmation link has expired." : "Could not load confirmation details.");
+          // A card that can't load is dead — drop its pinned chip so it
+          // doesn't linger (e.g. a phantom/expired token).
+          removePinnedAction("confirm", token);
           return;
         }
-        if (resp.body.status === "completed") { renderApprovalDone(card, "ok", "Already approved."); return; }
+        if (resp.body.status === "completed") {
+          renderApprovalDone(card, "ok", "Already approved.");
+          removePinnedAction("confirm", token);
+          resolveApprovedToolCard(token);  // flip the in-chat tool card too
+          return;
+        }
         populateApprovalForm(card, token, resp.body);
       })
-      .catch(function (err) { renderApprovalDone(card, "error", String(err)); });
+      .catch(function (err) {
+        renderApprovalDone(card, "error", String(err));
+        removePinnedAction("confirm", token);
+      });
   }
 
   function populateApprovalForm(card, token, details) {
@@ -466,6 +509,7 @@
     body.querySelector(".deny-btn").addEventListener("click", function () {
       renderApprovalDone(card, "grey", details.operation_id + " denied — no change made");
       removePinnedAction("confirm", token);
+      resolveApprovedToolCard(token, "error", "Denied — no change made");
     });
   }
 
@@ -494,6 +538,14 @@
         if (resp.ok && resp.body && resp.body.status === "completed") {
           renderApprovalDone(card, "ok", "Approved — executing");
           removePinnedAction("confirm", token);
+          // Flip the originating in-chat tool card from AWAITING APPROVAL to
+          // COMPLETED (or BLOCKED if the executed op reported failure).
+          var oc = resp.body.outcome;
+          if (oc && oc.success === false) {
+            resolveApprovedToolCard(token, "error", "Approved, but the operation failed");
+          } else {
+            resolveApprovedToolCard(token, "ok", "Approved — executed");
+          }
           return;
         }
         var msg = (resp.body && (resp.body.error || resp.body.status)) || "HTTP " + resp.status;
