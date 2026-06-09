@@ -3,6 +3,12 @@
 **Status:** Accepted, in production.
 **Date:** Original design 2026-02; recorded as ADR 2026-05-18.
 
+> **Update 2026-06-08.** The "shared `admz/tools/` package" anticipated in the
+> Consequences below (to remove cross-surface duplication) is realized as
+> `admz/operations.py` — the single gated-execution core that the MCP server,
+> the REST API, and the plan engine all delegate to for device operations +
+> their confirmation gate. See ADR-0006's 2026-06-08 update.
+
 ## Context
 
 ADMZ needs to be driven both by LLM agents (operating via the Model

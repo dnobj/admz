@@ -1,7 +1,21 @@
 # ADR-0006: Multi-level confirmation by risk class
 
-**Status:** Accepted, partially implemented (WIP), in production for `dangerous`.
+**Status:** Accepted, **fully implemented** across MCP, REST, and plans (2026-06-08).
 **Date:** Original design 2026-04; recorded as ADR 2026-05-18.
+
+> **Update 2026-06-08 (shared gated core).** The policy is now enforced
+> identically on every surface. Previously only the MCP `execute_operation`
+> consulted `get_confirmation_level`; the REST `POST /catalog/execute` hardcoded
+> a dangerous-only check (running service-affecting ops **inline, ungated**) and
+> plans used a separate boolean. All three now delegate to one module,
+> `admz/operations.py` (the shared package ADR-0008 anticipated):
+> `execute_gated_operation` (single ops), `execute_gated_plan` (plans), and
+> `consume_confirmation` / `execute_approved_session` (token consumption). A
+> parity test asserts MCP and REST return byte-identical blocked envelopes for
+> the same op+risk+config. Also closed: a latent gap where `url_only` /
+> `url_and_password` approvals (the default for `dangerous`) completed the token
+> at `/confirm/{token}` but **never executed** the operation — the web-form and
+> in-chat approval paths now run the held op/plan on approval.
 
 ## Context
 

@@ -515,3 +515,47 @@ class TestConfirmTokenUnification:
         )
         assert r2.status_code == 400
         assert "Invalid" in r2.json()["detail"]
+
+
+class TestRestExecuteGate:
+    """The REST /catalog/execute now routes through the shared gated core, so
+    it honors the per-risk confirmation policy exactly like MCP (was: a
+    hardcoded dangerous-only check that ran service-affecting ops inline)."""
+
+    def test_service_affecting_blocks_via_rest(self, client, monkeypatch):
+        from admz import operations
+        monkeypatch.setattr(operations, "resolve_confirmation", lambda r: "llm_confirm")
+        r = client.post(
+            "/api/catalog/execute",
+            json={"device_id": "dev", "operation_id": "restart.cgi:restart", "params": {}},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["blocked"] is True
+        assert body["confirmation_level"] == "llm_confirm"
+        assert body["confirm_url"].startswith("/confirm/")
+        # Old REST-only field is gone; the unified shape is used.
+        assert "confirm_endpoint" not in body
+
+    def test_dangerous_returns_url_and_password(self, client, monkeypatch):
+        from admz import operations
+        monkeypatch.setattr(operations, "resolve_confirmation", lambda r: "url_and_password")
+        r = client.post(
+            "/api/catalog/execute",
+            json={"device_id": "dev", "operation_id": "factorydefault.cgi:reset", "params": {}},
+        )
+        body = r.json()
+        assert body["blocked"] is True
+        assert body["confirmation_level"] == "url_and_password"
+        assert "/confirm/" in body["confirm_url"]
+
+    def test_none_level_reaches_execution(self, client, monkeypatch):
+        from admz import operations
+        monkeypatch.setattr(operations, "resolve_confirmation", lambda r: "none")
+        # A none-level op falls through to the execution tail; an unknown
+        # device/op surfaces as 404 (proving it was NOT blocked).
+        r = client.post(
+            "/api/catalog/execute",
+            json={"device_id": "ghost", "operation_id": "param.cgi:list", "params": {}},
+        )
+        assert r.status_code == 404

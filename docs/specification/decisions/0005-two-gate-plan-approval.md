@@ -4,6 +4,20 @@
 **Date:** Original design 2026-02 (`ARCHITECTURE.md`); plan-level gate added 2026-05-18 (Phase 2D).
 **Supersedes:** none.
 
+> **Update 2026-06-08 (shared gated core).** The plan-level mechanical gate is
+> now the *same configurable per-risk policy* used for single ops, not a
+> dangerous-only boolean. Plan execution computes the strictest confirmation
+> level across its steps (`admz.operations.resolve_plan_confirmation`) and gates
+> accordingly: `none` runs; `llm_confirm` runs when the caller passes
+> `confirm_dangerous=True`; `url_only`/`url_and_password` require deterministic
+> web/widget approval (a blocked envelope with a `confirm_url`) — a boolean is no
+> longer sufficient for those. Under default config a `dangerous` step resolves
+> to `url_and_password`, so a dangerous plan now requires web/widget approval
+> (was: `confirm_dangerous=True` alone). This makes plans and single ops
+> consistent and closes the "route a destructive op through a plan to get a
+> weaker gate" hole. The gate lives in `admz/operations.py::execute_gated_plan`;
+> `PlanEngine.run_plan` is the un-gated executor it calls.
+
 ## Context
 
 ADMZ is designed to be driven by LLM agents. LLMs:

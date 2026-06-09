@@ -24,6 +24,13 @@ class CreatePlanRequest(BaseModel):
     on_failure: str = "stop"
 
 
+class ExecutePlanRequest(BaseModel):
+    # Opt-in for plans whose strictest step resolves to the ``llm_confirm``
+    # tier. Plans at a ``url_*`` tier ignore this and require web/widget
+    # approval (a blocked envelope with a confirm_url is returned).
+    confirm_dangerous: bool = False
+
+
 @router.post("/plans")
 async def create_plan(
     request: Request,
@@ -56,11 +63,19 @@ async def create_plan(
 async def execute_plan(
     request: Request,
     plan_id: str,
+    req: Optional[ExecutePlanRequest] = None,
     ctx: AppContext = Depends(get_context),
 ):
-    """CR-3: requires an authenticated principal. Plan execution
-    drives real VAPIX calls against fleet devices — too destructive
-    to allow from the anonymous default principal."""
+    """Execute an approved plan through the shared per-risk gate.
+
+    CR-3: requires an authenticated principal — plan execution drives real
+    VAPIX calls against fleet devices. ``operations.execute_gated_plan``
+    applies the same configurable per-risk confirmation policy single ops use:
+    a plan whose strictest step resolves above ``none`` returns a blocked
+    envelope (``llm_confirm`` → opt in with ``confirm_dangerous=true``;
+    ``url_*`` → approve at the returned ``confirm_url``) instead of running.
+    """
+    from admz import operations
     from admz.audit import record_event
     from admz.auth import get_current_principal
     from admz.authz import require_authenticated_principal
@@ -68,16 +83,25 @@ async def execute_plan(
     principal = await get_current_principal(request)
     require_authenticated_principal(principal)
     resource = f"plan:{plan_id}"
+    confirm_dangerous = req.confirm_dangerous if req else False
 
     try:
-        plan = await ctx.plan_engine.execute_plan(plan_id)
+        result = await operations.execute_gated_plan(
+            ctx.plan_engine, plan_id, confirm_dangerous=confirm_dangerous
+        )
     except ValueError as e:
         record_event(principal, "plan.execute", resource=resource,
                      success=False, error_message=str(e))
         raise HTTPException(status_code=400, detail=str(e))
 
-    record_event(principal, "plan.execute", resource=resource)
-    return plan.to_results()
+    if result.get("error") and not result.get("blocked"):
+        record_event(principal, "plan.execute", resource=resource,
+                     success=False, error_message=str(result["error"]))
+        raise HTTPException(status_code=404, detail=str(result["error"]))
+
+    record_event(principal, "plan.execute", resource=resource,
+                 details={"blocked": bool(result.get("blocked"))})
+    return result
 
 
 @router.get("/plans/{plan_id}")

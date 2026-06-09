@@ -34,8 +34,6 @@ import secrets
 import time
 from typing import Any, Dict, List, Optional
 
-CONFIRM_TOKEN_TTL_SECONDS = 300  # 5 minutes
-
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -45,9 +43,6 @@ from admz.device_registry import DeviceRegistry
 from admz.api.capture import capture_store
 from admz.api.confirm_store import (
     PROTECTED_SETTING_KEYS,
-    confirm_store,
-    ConfirmStatus,
-    get_confirmation_level,
 )
 from admz.discovery.credential_probe import probe_credentials, ProbeStatus
 from admz.fleet_settings import fleet_settings
@@ -2225,92 +2220,27 @@ class ADMZMCPServer:
           - service-affecting → llm_confirm
           - dangerous         → url_and_password
         """
-        risk = self.catalog.get_risk_level(family, operation_id)
-        confirmation_level = get_confirmation_level(risk)
+        from admz import operations
 
-        if confirmation_level != "none":
-            op = self.catalog.get_operation(family, operation_id)
-            # Pick the most informative description we have for this
-            # risk: danger_description for dangerous ops, service_impact
-            # for service-affecting ops, otherwise a generic stand-in.
-            if op is not None and op.danger_description:
-                reason = op.danger_description
-            elif op is not None and op.service_impact:
-                reason = op.service_impact
-            else:
-                reason = (
-                    f"This operation is classified as '{risk}' "
-                    f"and requires {confirmation_level} confirmation."
-                )
-
-            # Confirmation tokens live in the shared SQLite ConfirmStore
-            # so a token issued here can be consumed via either MCP
-            # (confirm_dangerous_operation) or the web /confirm/{token}
-            # form. The 'dangerous' name on the MCP tool is preserved
-            # for backward compat — internally it works for any risk.
-            session = confirm_store.create_session(
+        try:
+            return await operations.execute_gated_operation(
                 device_id=device_id,
                 operation_id=operation_id,
                 family=family,
-                params=dict(params or {}),
-                risk_level=risk,
-                confirmation_level=confirmation_level,
-                danger_description=reason,
-                ttl=CONFIRM_TOKEN_TTL_SECONDS,
+                params=params or {},
+                catalog=self.catalog,
+                # registry/executors are only used on the execute path; a gated
+                # op returns the blocked envelope before touching them.
+                registry=getattr(self, "registry", None),
+                executors=getattr(self, "executors", None),
             )
-
-            # Per-level next-step hint for the LLM. URL-based levels
-            # need the user to visit the /confirm/{token} page;
-            # llm_confirm lets the LLM proceed via the confirm tool
-            # once the user has agreed in chat.
-            if confirmation_level == "llm_confirm":
-                message = (
-                    f"This operation is classified as '{risk}' and "
-                    f"requires user confirmation. "
-                    f"**If the user has already given clear consent in "
-                    f"this conversation** (e.g. they said 'yes', 'go "
-                    f"ahead', 'proceed', or otherwise agreed when you "
-                    f"described the action), call "
-                    f"confirm_dangerous_operation with this "
-                    f"confirm_token IMMEDIATELY — don't re-ask. "
-                    f"Otherwise, briefly summarize what will happen "
-                    f"and ask for their consent before calling "
-                    f"confirm_dangerous_operation."
-                )
-            else:
-                # url_only or url_and_password
-                message = (
-                    f"This operation is classified as '{risk}' and "
-                    f"requires confirmation via the web UI. Present "
-                    f"the user with the confirmation URL "
-                    f"(/confirm/{session.token}). The page will ask "
-                    f"for "
-                    + ("a password and " if confirmation_level == "url_and_password" else "")
-                    + "explicit approval. The operation cannot be "
-                    f"completed via the chatbot alone."
-                )
-
-            return {
-                "blocked": True,
-                "risk_level": risk,
-                "confirmation_level": confirmation_level,
-                "reason": reason,
-                "confirm_token": session.token,
-                "confirm_tool": "confirm_dangerous_operation",
-                "confirm_url": f"/confirm/{session.token}",
-                "message": message,
-            }
-
-        # Load operation spec
-        operation = self.catalog.get_operation(family, operation_id)
-        if not operation:
-            # Active guidance: when the LLM passes a made-up operation_id,
-            # nudge it to discover the right one via query_catalog rather
-            # than guessing another. We've seen Gemini repeatedly invent
-            # operation IDs like 'system.cgi:restart' or
-            # 'systemready.cgi:restart' that don't exist; this message is
-            # the only thing in the trace that can correct it before it
-            # tells the user "doesn't exist."
+        except operations.OperationNotFoundError:
+            # Active guidance (MCP/LLM-specific): when the LLM passes a made-up
+            # operation_id, nudge it to discover the right one via query_catalog
+            # rather than guessing another. (The REST surface returns a plain
+            # 404 — different audience.) We've seen Gemini repeatedly invent
+            # ids like 'system.cgi:restart' that don't exist; this message is
+            # the only thing in the trace that can correct it.
             return {
                 "success": False,
                 "error": (
@@ -2324,47 +2254,11 @@ class ADMZMCPServer:
                 "operation_id_attempted": operation_id,
                 "next_step": "query_catalog",
             }
-
-        # Get executor
-        executor = self.executors.get(family)
-        if not executor:
+        except operations.NoExecutorError:
             return {
                 "success": False,
                 "error": f"No executor available for API family '{family}'",
             }
-
-        # Get device info and credentials
-        if not self.registry.device_exists(device_id):
-            raise DeviceNotFoundError(f"Device not found: {device_id}")
-
-        device = self.registry.get_device_info(device_id)
-        device["device_id"] = device_id
-        try:
-            credentials = self.registry.get_credentials(device_id)
-        except AccountNotFoundError:
-            credentials = {"username": "", "password": ""}
-
-        op_dict = operation.to_executor_dict()
-
-        result = await executor.execute(op_dict, device, credentials, params)
-
-        response: Dict[str, Any] = {
-            "success": result.success,
-            "operation_id": result.operation_id,
-            "device_id": result.device_id,
-            "status_code": result.status_code,
-            "duration_ms": result.duration_ms,
-        }
-
-        if result.success:
-            response["data"] = result.parsed_data
-        else:
-            response["error"] = result.error
-
-        if result.warnings:
-            response["warnings"] = result.warnings
-
-        return response
 
     async def _confirm_dangerous(self, confirm_token: str) -> Dict[str, Any]:
         """Confirm and execute a blocked operation (any risk class).
@@ -2375,88 +2269,18 @@ class ADMZMCPServer:
         Refuses tokens whose configured confirmation_level requires a URL
         flow (url_only / url_and_password). Those can only be approved
         via the web /confirm/{token} page, since MCP has no way to
-        prompt the user for a password.
+        prompt the user for a password (``enforce_url_flow_block=True``).
         """
-        session = confirm_store.get_session(confirm_token)
-        if session is None or session.effective_status != ConfirmStatus.PENDING:
-            return {
-                "success": False,
-                "error": "Invalid or expired confirmation token.",
-            }
+        from admz import operations
 
-        # Block URL-flow tokens here — MCP can't supply a password, and
-        # silently approving a url_and_password op via MCP would defeat
-        # the gate the operator configured.
-        if session.confirmation_level in ("url_only", "url_and_password"):
-            return {
-                "success": False,
-                "error": (
-                    f"This operation requires '{session.confirmation_level}' "
-                    f"confirmation, which must be completed via the web UI. "
-                    f"Direct the user to /confirm/{confirm_token}."
-                ),
-                "confirm_url": f"/confirm/{confirm_token}",
-                "confirmation_level": session.confirmation_level,
-            }
-
-        # Single-use: atomically mark completed (loses races to other consumers).
-        if not confirm_store.complete_session(confirm_token, confirmed_by="mcp"):
-            return {
-                "success": False,
-                "error": (
-                    "Confirmation token already used or expired before this "
-                    "request completed."
-                ),
-            }
-
-        # Re-run execution, bypassing the risk check
-        operation = self.catalog.get_operation(session.family, session.operation_id)
-        if not operation:
-            return {
-                "success": False,
-                "error": f"Operation '{session.operation_id}' no longer found in catalog",
-            }
-
-        executor = self.executors.get(session.family)
-        if not executor:
-            return {
-                "success": False,
-                "error": f"No executor for family '{session.family}'",
-            }
-
-        device = self.registry.get_device_info(session.device_id)
-        device["device_id"] = session.device_id
-        try:
-            credentials = self.registry.get_credentials(session.device_id)
-        except AccountNotFoundError:
-            credentials = {"username": "", "password": ""}
-
-        op_dict = operation.to_executor_dict()
-
-        result = await executor.execute(
-            op_dict, device, credentials, session.params
+        return await operations.consume_confirmation(
+            confirm_token,
+            catalog=self.catalog,
+            registry=self.registry,
+            executors=self.executors,
+            confirmed_by="mcp",
+            enforce_url_flow_block=True,
         )
-
-        response: Dict[str, Any] = {
-            "success": result.success,
-            # 'confirmed_dangerous' kept for backward compat; the
-            # more accurate fields below describe what was confirmed.
-            "confirmed_dangerous": True,
-            "confirmed": True,
-            "risk_level": session.risk_level,
-            "confirmation_level": session.confirmation_level,
-            "operation_id": result.operation_id,
-            "device_id": result.device_id,
-            "status_code": result.status_code,
-            "duration_ms": result.duration_ms,
-        }
-
-        if result.success:
-            response["data"] = result.parsed_data
-        else:
-            response["error"] = result.error
-
-        return response
 
     # ------------------------------------------------------------------
     # Plan handlers
@@ -2493,33 +2317,28 @@ class ADMZMCPServer:
     async def _execute_plan(
         self, plan_id: str, confirm_dangerous: bool = False
     ) -> Dict[str, Any]:
-        """Execute an approved plan. Plans with dangerous steps require
-        ``confirm_dangerous=True`` — see PlanEngine.execute_plan for the
-        rationale."""
+        """Execute an approved plan through the shared per-risk gate.
+
+        ``operations.execute_gated_plan`` computes the plan's required
+        confirmation level (strictest level across its steps, per the
+        configurable per-risk policy): ``llm_confirm``-tier plans run when
+        ``confirm_dangerous=True`` (else a blocked ``retry_with`` envelope);
+        ``url_*``-tier plans return a blocked envelope with a ``confirm_url``
+        for deterministic web/widget approval.
+        """
+        from admz import operations
+
         try:
-            plan = await self.plan_engine.execute_plan(
-                plan_id, confirm_dangerous=confirm_dangerous
+            return await operations.execute_gated_plan(
+                self.plan_engine,
+                plan_id,
+                confirm_dangerous=confirm_dangerous,
             )
-        except PermissionError as e:
-            # Plan-level dangerous-step gate refused; surface a structured
-            # envelope analogous to execute_operation's blocked response.
-            return {
-                "success": False,
-                "blocked": True,
-                "reason": "plan_contains_dangerous_steps",
-                "error": str(e),
-                "retry_with": {"confirm_dangerous": True},
-            }
         except ValueError as e:
             return {
                 "success": False,
                 "error": str(e),
             }
-
-        return {
-            "success": True,
-            **plan.to_results(),
-        }
 
     async def _get_plan_status(self, plan_id: str) -> Dict[str, Any]:
         """Check plan progress."""

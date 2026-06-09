@@ -18,6 +18,16 @@ class AccountNotFoundError(ADMZError):
     pass
 
 
+class OperationNotFoundError(ADMZError):
+    """Raised when a catalog operation_id is not found for a family."""
+    pass
+
+
+class NoExecutorError(ADMZError):
+    """Raised when no executor is registered for an API family."""
+    pass
+
+
 class PermissionDeniedError(ADMZError):
     """Raised when access to credentials is denied due to access control rules."""
     pass
