@@ -6,17 +6,19 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from admz.api.context import AppContext, get_context
-from admz.api.confirm_store import confirm_store, ConfirmStatus
-from admz.exceptions import DeviceNotFoundError
+from admz.exceptions import (
+    DeviceNotFoundError,
+    NoExecutorError,
+    OperationNotFoundError,
+)
 
 router = APIRouter()
 
 
 # Phase 2E: confirm tokens live in the shared SQLite ConfirmStore so that
-# tokens issued via MCP and via REST are interchangeable. The previous
-# in-memory _confirm_tokens dict + _purge_expired() helper here have been
-# removed — see docs/specification/review-followup.md.
-CONFIRM_TOKEN_TTL_SECONDS = 300
+# tokens issued via MCP and via REST are interchangeable. The gate +
+# execution + token consumption now live in admz.operations, so both
+# surfaces enforce the identical per-risk confirmation policy (ADR-0006/0008).
 
 
 class QueryRequest(BaseModel):
@@ -65,82 +67,63 @@ async def execute_operation(
     req: ExecuteRequest,
     ctx: AppContext = Depends(get_context),
 ):
+    """Execute a single catalog operation through the shared gated core.
+
+    The same ``admz.operations.execute_gated_operation`` the MCP server uses:
+    the operation's ``risk_level`` is mapped to its configured confirmation
+    level and, for anything above ``none``, the op is NOT run — a blocked
+    envelope (``confirm_token`` + ``/confirm/{token}`` URL) is returned. This
+    replaces the old hardcoded ``if risk == "dangerous"`` check so REST honors
+    the per-risk policy (incl. fleet overrides) exactly like MCP.
+    """
+    from admz import operations
     from admz.audit import record_event
     from admz.auth import get_current_principal
 
     principal = await get_current_principal(request)
     resource = f"device:{req.device_id}/op:{req.operation_id}"
 
-    risk = ctx.catalog.get_risk_level(req.family, req.operation_id)
-    if risk == "dangerous":
-        op = ctx.catalog.get_operation(req.family, req.operation_id)
-        session = confirm_store.create_session(
+    try:
+        result = await operations.execute_gated_operation(
             device_id=req.device_id,
             operation_id=req.operation_id,
             family=req.family,
-            params=dict(req.params),
-            risk_level="dangerous",
-            confirmation_level="llm_confirm",
-            danger_description=(op.danger_description if op else ""),
-            ttl=CONFIRM_TOKEN_TTL_SECONDS,
+            params=req.params,
+            catalog=ctx.catalog,
+            registry=ctx.registry,
+            executors=ctx.executors,
         )
-        record_event(principal, "catalog.execute", resource=resource,
-                     details={"risk": risk, "blocked": True,
-                              "confirm_token": session.token})
-        return {
-            "blocked": True,
-            "risk_level": "dangerous",
-            "reason": op.danger_description if op else "Operation classified as dangerous.",
-            "confirm_token": session.token,
-            "confirm_endpoint": "/api/catalog/confirm",
-        }
-
-    operation = ctx.catalog.get_operation(req.family, req.operation_id)
-    if not operation:
+    except OperationNotFoundError:
         raise HTTPException(
             status_code=404,
             detail=f"Operation '{req.operation_id}' not found in {req.family} catalog",
         )
-
-    executor = ctx.executors.get(req.family)
-    if not executor:
+    except NoExecutorError:
         raise HTTPException(
             status_code=400,
             detail=f"No executor available for family '{req.family}'",
         )
-
-    if not ctx.registry.device_exists(req.device_id):
+    except DeviceNotFoundError:
         raise HTTPException(
             status_code=404, detail=f"Device not found: {req.device_id}"
         )
 
-    device = ctx.registry.get_device_info(req.device_id)
-    device["device_id"] = req.device_id
-    credentials = ctx.registry.get_credentials(req.device_id)
-
-    result = await executor.execute(
-        operation.to_executor_dict(), device, credentials, req.params
+    blocked = bool(result.get("blocked"))
+    record_event(
+        principal, "catalog.execute", resource=resource,
+        success=(not blocked and bool(result.get("success"))),
+        error_message=(
+            "" if (blocked or result.get("success"))
+            else str(result.get("error") or "")
+        ),
+        details={
+            "risk": result.get("risk_level"),
+            "blocked": blocked,
+            "confirm_token": result.get("confirm_token"),
+            "status_code": result.get("status_code"),
+        },
     )
-
-    response = {
-        "success": result.success,
-        "operation_id": result.operation_id,
-        "device_id": result.device_id,
-        "status_code": result.status_code,
-        "duration_ms": result.duration_ms,
-    }
-    if result.success:
-        response["data"] = result.parsed_data
-    else:
-        response["error"] = result.error
-    if result.warnings:
-        response["warnings"] = result.warnings
-
-    record_event(principal, "catalog.execute", resource=resource,
-                 success=bool(result.success),
-                 error_message="" if result.success else str(result.error or ""),
-                 details={"risk": risk, "status_code": result.status_code})
-    return response
+    return result
 
 
 @router.post("/catalog/confirm")
@@ -149,63 +132,62 @@ async def confirm_dangerous(
     req: ConfirmRequest,
     ctx: AppContext = Depends(get_context),
 ):
+    """Consume an ``llm_confirm`` token and execute the held operation.
+
+    Delegates to the shared ``operations.consume_confirmation`` (the same path
+    MCP uses). ``enforce_url_flow_block=True``: a ``url_only`` /
+    ``url_and_password`` token cannot be completed by this passwordless JSON
+    endpoint — only the password-collecting web form (``/confirm/{token}``)
+    may. Gate/lookup failures map to HTTP status codes; an operation that ran
+    but failed is returned as a 200 body with ``success: false``.
+    """
+    from admz import operations
     from admz.audit import record_event
     from admz.auth import get_current_principal
 
     principal = await get_current_principal(request)
     resource = f"confirm_token:{req.confirm_token[:8]}..."
 
-    session = confirm_store.get_session(req.confirm_token)
-    if session is None or session.effective_status != ConfirmStatus.PENDING:
-        record_event(principal, "catalog.confirm", resource=resource,
-                     success=False, error_message="invalid-or-expired-token")
-        raise HTTPException(
-            status_code=400, detail="Invalid or expired confirmation token"
-        )
-
-    if not confirm_store.complete_session(req.confirm_token, confirmed_by="rest"):
-        # Lost the race with another consumer (MCP or web UI).
-        record_event(principal, "catalog.confirm", resource=resource,
-                     success=False, error_message="token-already-used")
-        raise HTTPException(
-            status_code=409,
-            detail="Confirmation token already used or expired before this request completed.",
-        )
-
-    operation = ctx.catalog.get_operation(session.family, session.operation_id)
-    if not operation:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Operation '{session.operation_id}' no longer in catalog",
-        )
-
-    executor = ctx.executors.get(session.family)
-    device = ctx.registry.get_device_info(session.device_id)
-    device["device_id"] = session.device_id
-    credentials = ctx.registry.get_credentials(session.device_id)
-
-    result = await executor.execute(
-        operation.to_executor_dict(), device, credentials, session.params
+    result = await operations.consume_confirmation(
+        req.confirm_token,
+        catalog=ctx.catalog,
+        registry=ctx.registry,
+        executors=ctx.executors,
+        confirmed_by="rest",
+        enforce_url_flow_block=True,
     )
 
-    response = {
-        "success": result.success,
-        "confirmed_dangerous": True,
-        "operation_id": result.operation_id,
-        "device_id": result.device_id,
-        "status_code": result.status_code,
-        "duration_ms": result.duration_ms,
-    }
-    if result.success:
-        response["data"] = result.parsed_data
-    else:
-        response["error"] = result.error
+    if not result.get("confirmed"):
+        # The op never executed — a token/gate/lookup failure. Map to the
+        # historical HTTP status codes.
+        err = str(result.get("error", ""))
+        if "Invalid or expired" in err:
+            record_event(principal, "catalog.confirm", resource=resource,
+                         success=False, error_message="invalid-or-expired-token")
+            raise HTTPException(
+                status_code=400, detail="Invalid or expired confirmation token"
+            )
+        if "already used" in err:
+            record_event(principal, "catalog.confirm", resource=resource,
+                         success=False, error_message="token-already-used")
+            raise HTTPException(status_code=409, detail=err)
+        if "no longer found in catalog" in err:
+            record_event(principal, "catalog.confirm", resource=resource,
+                         success=False, error_message="operation-not-found")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Operation no longer in catalog: {err}",
+            )
+        # url_* token submitted to the JSON endpoint, missing executor, etc.
+        record_event(principal, "catalog.confirm", resource=resource,
+                     success=False, error_message="confirm-rejected")
+        raise HTTPException(status_code=400, detail=err)
 
     record_event(
         principal, "catalog.confirm",
-        resource=f"device:{session.device_id}/op:{session.operation_id}",
-        success=bool(result.success),
-        error_message="" if result.success else str(result.error or ""),
-        details={"status_code": result.status_code},
+        resource=f"device:confirmed/op:{req.confirm_token[:8]}",
+        success=bool(result.get("success")),
+        error_message="" if result.get("success") else str(result.get("error") or ""),
+        details={"status_code": result.get("status_code")},
     )
-    return response
+    return result

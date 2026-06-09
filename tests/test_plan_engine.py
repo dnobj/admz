@@ -130,7 +130,7 @@ class TestSequentialExecution:
                 "params": {"group": "root"},
             }],
         )
-        result = await engine.execute_plan(plan.plan_id)
+        result = await engine.run_plan(plan.plan_id)
         assert result.status == PlanStatus.COMPLETED
         assert len(executor.calls) == 1
         assert executor.calls[0]["device_id"] == "cam-01"
@@ -145,7 +145,7 @@ class TestSequentialExecution:
                 {"operation_id": "param.cgi:update", "device_id": "cam-01", "params": {}},
             ],
         )
-        result = await engine.execute_plan(plan.plan_id)
+        result = await engine.run_plan(plan.plan_id)
         assert result.status == PlanStatus.COMPLETED
         assert len(executor.calls) == 2
         # Same device → sequential, in order
@@ -169,7 +169,7 @@ class TestSequentialExecution:
             ],
             on_failure="stop",
         )
-        result = await engine.execute_plan(plan.plan_id)
+        result = await engine.run_plan(plan.plan_id)
         assert result.status == PlanStatus.FAILED
         # Only the first call was made
         assert len(executor.calls) == 1
@@ -191,7 +191,7 @@ class TestSequentialExecution:
             ],
             on_failure="continue",
         )
-        result = await engine.execute_plan(plan.plan_id)
+        result = await engine.run_plan(plan.plan_id)
         assert result.status == PlanStatus.FAILED  # one step failed
         assert len(executor.calls) == 2  # but second ran
 
@@ -212,7 +212,7 @@ class TestSequentialExecution:
             ],
             on_failure="skip_dependents",
         )
-        result = await engine.execute_plan(plan.plan_id)
+        result = await engine.run_plan(plan.plan_id)
         # Step 1 failed, step 2 should be skipped because it depends on 1
         assert len(executor.calls) == 1
         results_by_op = {r.operation_id: r for r in result.results}
@@ -239,7 +239,7 @@ class TestFleetParallel:
                 {"operation_id": "param.cgi:list", "device_id": "cam-03", "params": {}},
             ],
         )
-        result = await engine.execute_plan(plan.plan_id)
+        result = await engine.run_plan(plan.plan_id)
         assert result.status == PlanStatus.COMPLETED
         assert len(executor.calls) == 3
         device_ids = {c["device_id"] for c in executor.calls}
@@ -257,7 +257,7 @@ class TestFleetParallel:
                 {"operation_id": "param.cgi:list", "device_id": "cam-02", "params": {}, "depends_on": [1]},
             ],
         )
-        result = await engine.execute_plan(plan.plan_id)
+        result = await engine.run_plan(plan.plan_id)
         assert result.status == PlanStatus.COMPLETED
         assert len(executor.calls) == 2
         # Order is sequential
@@ -276,7 +276,7 @@ class TestPlanLifecycle:
     async def test_execute_nonexistent_plan_raises(self, setup):
         engine, _, _, _ = setup
         with pytest.raises(ValueError):
-            await engine.execute_plan("does-not-exist")
+            await engine.run_plan("does-not-exist")
 
     def test_get_plan_status(self, setup):
         engine, _, _, _ = setup
@@ -302,7 +302,7 @@ class TestPlanLifecycle:
                 {"operation_id": "param.cgi:list", "device_id": "cam-02", "params": {}},
             ],
         )
-        result = await engine.execute_plan(plan.plan_id)
+        result = await engine.run_plan(plan.plan_id)
         assert len(result.results) == 2
         assert all(r.success for r in result.results)
 
@@ -325,7 +325,7 @@ class TestRollback:
                 "params": {"root.Image.I0.Resolution": "1920x1080"},
             }],
         )
-        await engine.execute_plan(plan.plan_id)
+        await engine.run_plan(plan.plan_id)
         # Should see two calls: a pre-read (list) and the update
         op_ids = [c["operation_id"] for c in executor.calls]
         assert "param.cgi:list" in op_ids  # pre-read
@@ -351,10 +351,52 @@ def make_dangerous_op(op_id: str) -> Operation:
     )
 
 
-class TestDangerousPlanGate:
-    """Plans containing dangerous-risk steps must require explicit
-    confirm_dangerous=True at execute_plan time, mirroring the
-    confirm_dangerous_operation flow for single ops."""
+# --- plan-gate test scaffolding (decoupled from the DB) -------------------
+
+def _default_levels(risk):
+    """The shipped default risk→level mapping, as a pure function."""
+    return {
+        "read-only": "none",
+        "normal": "none",
+        "service-affecting": "llm_confirm",
+        "dangerous": "url_and_password",
+    }.get(risk, "none")
+
+
+class _FakeSession:
+    def __init__(self, token, risk_level="", confirmation_level=""):
+        self.token = token
+        self.risk_level = risk_level
+        self.confirmation_level = confirmation_level
+
+
+class _FakeStore:
+    """In-memory stand-in for ConfirmStore so plan-gate tests touch no DB."""
+
+    def __init__(self):
+        self.created = []
+        self._by_plan = {}
+
+    def create_session(self, **kw):
+        session = _FakeSession(
+            "plantoken1234567890123456789012",
+            risk_level=kw.get("risk_level", ""),
+            confirmation_level=kw.get("confirmation_level", ""),
+        )
+        self.created.append(kw)
+        self._by_plan[kw.get("plan_id", "")] = session
+        return session
+
+    def get_session_by_plan(self, plan_id):
+        return self._by_plan.get(plan_id)
+
+
+class TestPlanGate:
+    """Plans go through the SAME configurable per-risk confirmation gate as
+    single ops (admz.operations.execute_gated_plan). The strictest step level
+    decides: 'none' runs; 'llm_confirm' needs confirm_dangerous=True; 'url_*'
+    needs deterministic web/widget approval (a blocked envelope, never run by
+    a boolean)."""
 
     def _setup_with_dangerous_op(self):
         catalog = FakeCatalog(
@@ -380,28 +422,30 @@ class TestDangerousPlanGate:
         )
         return engine, executor
 
-    @pytest.mark.asyncio
-    async def test_dangerous_plan_refused_without_confirm(self):
-        engine, executor = self._setup_with_dangerous_op()
-        plan = engine.create_plan(
-            description="Factory reset",
-            steps=[{
-                "operation_id": "factorydefault.cgi:reset",
-                "device_id": "cam-01",
-                "params": {},
-            }],
-        )
-        with pytest.raises(PermissionError) as exc:
-            await engine.execute_plan(plan.plan_id)
-        msg = str(exc.value)
-        assert "dangerous" in msg
-        assert "factorydefault.cgi:reset" in msg
-        assert "confirm_dangerous=True" in msg
-        # Executor must not have been called.
-        assert executor.calls == []
+    def test_resolve_plan_confirmation_takes_max(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from admz import operations
+        monkeypatch.setattr(operations, "resolve_confirmation", _default_levels)
+        step = lambda risk: SimpleNamespace(risk_level=risk)
+
+        assert operations.resolve_plan_confirmation([]) == "none"
+        assert operations.resolve_plan_confirmation([step("read-only")]) == "none"
+        assert operations.resolve_plan_confirmation(
+            [step("read-only"), step("service-affecting")]
+        ) == "llm_confirm"
+        assert operations.resolve_plan_confirmation(
+            [step("service-affecting"), step("dangerous")]
+        ) == "url_and_password"
 
     @pytest.mark.asyncio
-    async def test_dangerous_plan_proceeds_with_confirm(self):
+    async def test_dangerous_plan_blocks_for_web_approval(self, monkeypatch):
+        """Default config: dangerous → url_and_password. A boolean is NOT
+        enough — even confirm_dangerous=True returns a blocked envelope that
+        must be approved at the confirm_url. (Option A: same gate as single
+        ops; closes the route-through-a-plan-for-a-weaker-gate hole.)"""
+        from admz import operations
+        monkeypatch.setattr(operations, "resolve_confirmation", _default_levels)
         engine, executor = self._setup_with_dangerous_op()
         plan = engine.create_plan(
             description="Factory reset",
@@ -411,15 +455,51 @@ class TestDangerousPlanGate:
                 "params": {},
             }],
         )
-        result = await engine.execute_plan(
-            plan.plan_id, confirm_dangerous=True
+        store = _FakeStore()
+        result = await operations.execute_gated_plan(
+            engine, plan.plan_id, store=store, confirm_dangerous=True
         )
-        assert result.status == PlanStatus.COMPLETED
-        # Executor *was* called now.
+        assert result["blocked"] is True
+        assert result["confirmation_level"] == "url_and_password"
+        assert "/confirm/" in result["confirm_url"]
+        assert executor.calls == []          # never ran
+        assert store.created                  # a plan confirm session was made
+
+    @pytest.mark.asyncio
+    async def test_dangerous_plan_runs_when_configured_llm_confirm(self, monkeypatch):
+        """If the operator lowers dangerous → llm_confirm, confirm_dangerous=True
+        runs it (the back-compat tier); without it, blocked with retry_with."""
+        from admz import operations
+        monkeypatch.setattr(
+            operations, "resolve_confirmation",
+            lambda r: "llm_confirm" if r == "dangerous" else "none",
+        )
+        engine, executor = self._setup_with_dangerous_op()
+        plan = engine.create_plan(
+            description="Factory reset",
+            steps=[{
+                "operation_id": "factorydefault.cgi:reset",
+                "device_id": "cam-01",
+                "params": {},
+            }],
+        )
+        blocked = await operations.execute_gated_plan(
+            engine, plan.plan_id, store=_FakeStore()
+        )
+        assert blocked["blocked"] is True
+        assert blocked["retry_with"] == {"confirm_dangerous": True}
+        assert executor.calls == []
+
+        result = await operations.execute_gated_plan(
+            engine, plan.plan_id, store=_FakeStore(), confirm_dangerous=True
+        )
+        assert result["success"] is True
         assert len(executor.calls) == 1
 
     @pytest.mark.asyncio
-    async def test_non_dangerous_plan_does_not_require_confirm(self):
+    async def test_non_dangerous_plan_runs_without_confirm(self, monkeypatch):
+        from admz import operations
+        monkeypatch.setattr(operations, "resolve_confirmation", _default_levels)
         engine, executor = self._setup_with_dangerous_op()
         plan = engine.create_plan(
             description="Read only",
@@ -429,13 +509,16 @@ class TestDangerousPlanGate:
                 "params": {},
             }],
         )
-        # Default confirm_dangerous=False should be fine for non-dangerous.
-        result = await engine.execute_plan(plan.plan_id)
-        assert result.status == PlanStatus.COMPLETED
+        result = await operations.execute_gated_plan(
+            engine, plan.plan_id, store=_FakeStore()
+        )
+        assert result["success"] is True
         assert len(executor.calls) == 1
 
     @pytest.mark.asyncio
-    async def test_mixed_plan_with_one_dangerous_step_is_gated(self):
+    async def test_mixed_plan_gated_by_dangerous_step(self, monkeypatch):
+        from admz import operations
+        monkeypatch.setattr(operations, "resolve_confirmation", _default_levels)
         engine, executor = self._setup_with_dangerous_op()
         plan = engine.create_plan(
             description="Read then reset",
@@ -452,10 +535,13 @@ class TestDangerousPlanGate:
                 },
             ],
         )
-        # Even though one step is read-only, the dangerous step gates the plan.
-        with pytest.raises(PermissionError):
-            await engine.execute_plan(plan.plan_id)
-        # Neither step should have executed.
+        # The read-only step doesn't lower the bar — the dangerous step gates
+        # the whole plan to url_and_password.
+        result = await operations.execute_gated_plan(
+            engine, plan.plan_id, store=_FakeStore()
+        )
+        assert result["blocked"] is True
+        assert result["confirmation_level"] == "url_and_password"
         assert executor.calls == []
 
 
@@ -495,7 +581,7 @@ class TestContinuePolicyRunsDependents:
             ],
             on_failure="continue",
         )
-        result = await engine.execute_plan(plan.plan_id)
+        result = await engine.run_plan(plan.plan_id)
 
         # The dependent step MUST have been attempted (not skipped)
         assert len(executor.calls) == 2, (
@@ -536,7 +622,7 @@ class TestContinuePolicyRunsDependents:
             ],
             on_failure="skip_dependents",
         )
-        result = await engine.execute_plan(plan.plan_id)
+        result = await engine.run_plan(plan.plan_id)
         # Step 2 should NOT have been called
         assert len(executor.calls) == 1
         results_by_op = {r.operation_id: r for r in result.results}

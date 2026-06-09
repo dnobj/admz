@@ -207,14 +207,28 @@ discovering at execute time that the device doesn't speak the API. Omit
 Run a single catalog operation.
 - **Args:** `device_id`, `operation_id`, `params` (object), `family` (default `"vapix"`)
 - **Returns (success):** `{success: true, status_code, duration_ms, data}`
-- **Returns (blocked):** `{blocked: true, risk_level: "dangerous", reason,
-  confirm_token, confirm_tool: "confirm_dangerous_operation", message}`
-- Dangerous operations are blocked until confirmed.
+- **Returns (blocked):** `{blocked: true, risk_level, confirmation_level, reason,
+  confirm_token, confirm_tool: "confirm_dangerous_operation",
+  confirm_url: "/confirm/{token}", message}`
+- Any operation above the configured `none` confirmation level is blocked
+  **without executing**, per the multi-level policy (ADR-0006, configurable at
+  `/confirm-settings`). The effective level (`llm_confirm` / `url_only` /
+  `url_and_password`) is returned as `confirmation_level`. Defaults:
+  read-only/normal → run inline; service-affecting → `llm_confirm`; dangerous →
+  `url_and_password`. MCP, REST, and plans all enforce this identically via the
+  shared core (`admz/operations.py`).
 
 ### `confirm_dangerous_operation`
-Confirm and execute a previously-blocked dangerous operation.
-- **Args:** `confirm_token`
-- **Returns:** same as `execute_operation` success
+Confirm and execute an operation `execute_operation` blocked at the
+`llm_confirm` level. (Name kept for backward compat; works for any
+`llm_confirm`-level op.)
+- **Args:** `confirm_token` — must come from a prior blocked `execute_operation`
+  response in this conversation.
+- **Returns:** the executed result, with `confirmed: true`.
+- `url_only` / `url_and_password` ops **cannot** be confirmed here — they must
+  be approved via the web form at the returned `confirm_url` (which collects the
+  explicit click and, for `url_and_password`, the password). Approving there now
+  also **executes** the held operation.
 - Tokens are single-use and expire after **5 minutes**.
 
 ---
@@ -232,9 +246,17 @@ Validate and stage a multi-step plan.
 
 ### `execute_plan`
 Execute an approved plan. Steps on different devices run in parallel.
-- **Args:** `plan_id`
-- **Returns:** `{success, plan_id, status, steps_total, steps_succeeded,
-  steps_failed, steps_skipped, results, rollback_available}`
+- **Args:** `plan_id`, `confirm_dangerous` (bool, default `false`)
+- **Returns (executed):** `{success, plan_id, status, steps_total,
+  steps_succeeded, steps_failed, steps_skipped, results, rollback_available}`
+- **Returns (blocked):** the plan goes through the **same per-risk gate** as a
+  single op (ADR-0005/0006). Its required level is the strictest level across
+  its steps. `llm_confirm`-tier plans run when called with
+  `confirm_dangerous: true` (else `{blocked: true, retry_with:
+  {confirm_dangerous: true}}`); `url_*`-tier plans return `{blocked: true,
+  confirm_url}` and must be approved via the web form (which then runs the
+  plan). Under default config a `dangerous` step ⇒ `url_and_password` ⇒
+  web/widget approval required.
 
 ### `get_plan_status`
 Check progress of a running plan.

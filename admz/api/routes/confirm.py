@@ -8,12 +8,13 @@ GET  /api/chat/confirm/{token}       → session details JSON (for chat client)
 POST /api/chat/confirm/{token}       → approve/deny in-chat, JSON response
 """
 
-from fastapi import APIRouter, Request, Form, HTTPException
+from fastapi import APIRouter, Request, Form, HTTPException, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
 from typing import Optional
 
+from admz.api.context import AppContext, get_context
 from admz.api.confirm_store import (
     confirm_store,
     ConfirmStatus,
@@ -145,6 +146,7 @@ async def confirm_submit(
     request: Request,
     token: str,
     confirm_password: Optional[str] = Form(None),
+    ctx: AppContext = Depends(get_context),
 ):
     """Process the confirmation form submission."""
     # Phase 4 stretch: per-IP rate limit on confirm POST. Catches
@@ -226,6 +228,19 @@ async def confirm_submit(
     is_plan = session.is_plan
     plan_summary = session.plan_summary if is_plan else None
 
+    # Now that the human has approved, actually perform the held operation /
+    # plan. (Before this, url_* approvals completed the token but never ran the
+    # op — the gate approved-but-didn't-execute.)
+    from admz import operations
+
+    outcome = await operations.execute_approved_session(
+        session,
+        catalog=ctx.catalog,
+        registry=ctx.registry,
+        executors=ctx.executors,
+        plan_engine=ctx.plan_engine,
+    )
+
     return templates.TemplateResponse(
         "confirm_done.html",
         {
@@ -234,6 +249,8 @@ async def confirm_submit(
             "session": session,
             "is_plan": is_plan,
             "plan_summary": plan_summary,
+            "outcome": outcome,
+            "executed": True,
         },
     )
 
@@ -297,6 +314,7 @@ async def chat_confirm_submit(
     request: Request,
     token: str,
     confirm_password: Optional[str] = Form(None),
+    ctx: AppContext = Depends(get_context),
 ):
     """Approve a confirmation session from within chat.
 
@@ -361,9 +379,22 @@ async def chat_confirm_submit(
             content={"status": "expired_or_not_found"},
         )
 
+    # Approved — now actually run the held operation / plan and report the
+    # outcome so the chat card can show the result (not just "completed").
+    from admz import operations
+
+    outcome = await operations.execute_approved_session(
+        session,
+        catalog=ctx.catalog,
+        registry=ctx.registry,
+        executors=ctx.executors,
+        plan_engine=ctx.plan_engine,
+    )
+
     return {
         "status": "completed",
         "is_plan": session.is_plan,
         "device_id": session.device_id,
         "operation_id": session.operation_id,
+        "outcome": outcome,
     }

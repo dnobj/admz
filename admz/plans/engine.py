@@ -12,7 +12,6 @@ from axis_api_atlas.catalog.loader import CatalogLoader
 from admz.executor.base import BaseExecutor
 from admz.executor.models import StepResult
 from admz.device_registry import DeviceRegistry
-from admz.exceptions import AccountNotFoundError
 from admz.plans.models import (
     ExecutionPlan,
     FailurePolicy,
@@ -148,32 +147,23 @@ class PlanEngine:
         self._plans[plan.plan_id] = plan
         return plan
 
-    async def execute_plan(
-        self,
-        plan_id: str,
-        confirm_dangerous: bool = False,
-    ) -> ExecutionPlan:
-        """
-        Execute an approved plan.
+    async def run_plan(self, plan_id: str) -> ExecutionPlan:
+        """Execute an approved plan's steps — **un-gated**.
 
-        Runs all steps respecting dependencies and failure policy.
-        Groups steps by device for parallel execution when possible.
+        The confirmation gate now lives in
+        :func:`admz.operations.execute_gated_plan`, which computes the plan's
+        required confirmation level (the strictest level across its steps,
+        per the configurable per-risk policy) and either calls this to run the
+        plan or returns a blocked envelope for web/widget approval. This method
+        just runs the steps; callers that haven't been gated MUST go through
+        ``execute_gated_plan`` first.
 
-        Args:
-            plan_id: The plan to execute.
-            confirm_dangerous: Must be set to True for plans containing
-                any ``dangerous``-risk step. This is the plan-level
-                analog of the ``confirm_dangerous_operation`` flow for
-                single operations — the caller (LLM or REST client) must
-                explicitly opt in to executing a destructive plan, so the
-                two-gate safety model isn't silently bypassed by routing
-                a destructive operation through a plan.
+        Runs all steps respecting dependencies and failure policy; groups steps
+        by device for parallel execution when possible.
 
         Raises:
-            PermissionError: If the plan contains a dangerous step and
-                ``confirm_dangerous`` is False. The error message lists
-                the offending steps so the caller can present them for
-                explicit approval.
+            ValueError: if the plan id is unknown or the plan is not in an
+                executable state.
         """
         plan = self._plans.get(plan_id)
         if not plan:
@@ -183,23 +173,6 @@ class PlanEngine:
             raise ValueError(
                 f"Plan {plan_id} is in state {plan.status.value}, "
                 "cannot execute"
-            )
-
-        # Phase 2D gate: dangerous-risk steps inside a plan must be
-        # explicitly opted-in by the caller. Previously plans bypassed
-        # the risk gate that execute_operation enforces.
-        dangerous_steps = [
-            s for s in plan.steps if s.risk_level == "dangerous"
-        ]
-        if dangerous_steps and not confirm_dangerous:
-            descriptions = ", ".join(
-                f"step {s.step_number} ({s.operation_id} on {s.device_id})"
-                for s in dangerous_steps
-            )
-            raise PermissionError(
-                f"Plan {plan_id} contains {len(dangerous_steps)} dangerous "
-                f"step(s): {descriptions}. Re-call execute_plan with "
-                f"confirm_dangerous=True to proceed."
             )
 
         plan.status = PlanStatus.EXECUTING
@@ -342,54 +315,45 @@ class PlanEngine:
                 ))
 
     async def _execute_step(self, step: PlanStep) -> StepResult:
-        """Execute a single plan step."""
-        executor = self.executors.get(step.family)
-        if not executor:
+        """Execute a single plan step via the shared execution tail.
+
+        The tail (load op → pick executor → fetch device+creds → execute) is
+        the same code single-op execution uses; failures are mapped back to a
+        ``StepResult`` so the plan's failure-policy logic is unchanged.
+        """
+        from admz import operations
+
+        try:
+            result = await operations.run_execution_tail(
+                device_id=step.device_id,
+                operation_id=step.operation_id,
+                family=step.family,
+                params=step.params,
+                catalog=self.catalog,
+                registry=self.registry,
+                executors=self.executors,
+            )
+        except operations.NoExecutorError:
             return StepResult(
                 operation_id=step.operation_id,
                 device_id=step.device_id,
                 success=False,
                 error=f"No executor for family '{step.family}'",
             )
-
-        # Load operation from catalog
-        operation = self.catalog.get_operation(step.family, step.operation_id)
-        if not operation:
+        except operations.OperationNotFoundError:
             return StepResult(
                 operation_id=step.operation_id,
                 device_id=step.device_id,
                 success=False,
                 error=f"Operation '{step.operation_id}' not found in catalog",
             )
-
-        # Get device info and credentials
-        try:
-            device = self.registry.get_device_info(step.device_id)
-            device["device_id"] = step.device_id
-        except Exception as e:
+        except Exception as e:  # device lookup / unexpected
             return StepResult(
                 operation_id=step.operation_id,
                 device_id=step.device_id,
                 success=False,
-                error=f"Failed to get device info: {e}",
+                error=f"Failed to execute step: {e}",
             )
-
-        try:
-            credentials = self.registry.get_credentials(step.device_id)
-        except AccountNotFoundError:
-            # No-auth devices (factory default) have no stored credentials
-            credentials = {"username": "", "password": ""}
-        except Exception as e:
-            return StepResult(
-                operation_id=step.operation_id,
-                device_id=step.device_id,
-                success=False,
-                error=f"Failed to get credentials: {e}",
-            )
-
-        op_dict = operation.to_executor_dict()
-
-        result = await executor.execute(op_dict, device, credentials, step.params)
 
         logger.info(
             "Step %d (%s on %s): %s [%.0fms]",
