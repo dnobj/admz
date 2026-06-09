@@ -55,9 +55,15 @@ settings `confirm_level_<risk>`):
 | Risk level         | Default confirmation level |
 |--------------------|---------------------------|
 | dangerous          | `url_and_password`        |
-| service-affecting  | `llm_confirm`             |
+| service-affecting  | `url_only`                |
 | normal             | `none`                    |
 | read-only          | `none`                    |
+
+> **Update 2026-06-09.** `service-affecting` now defaults to `url_only` (was
+> `llm_confirm`). Both device-affecting classes therefore require a
+> deterministic, human-only widget approval by default — the LLM cannot
+> self-approve a `url_*` gate. Operators who want lower-friction in-chat
+> confirmation can opt a risk class back into `llm_confirm` per fleet.
 
 The mapping is per-fleet, not per-operation — operators tighten or
 loosen by risk class, not by clicking through every operation.

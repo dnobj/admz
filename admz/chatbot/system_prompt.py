@@ -126,7 +126,8 @@ pointer to a getter). So:
   read-only or `none`-level op simply runs.)
 - **After a ``blocked: True`` response, do what its ``message`` says,
   keyed on ``confirmation_level``:**
-  - ``llm_confirm`` (typical for service-affecting and dangerous ops):
+  - ``llm_confirm`` (only when an operator has opted a risk class into it;
+    not a default — service-affecting and dangerous both default to a widget):
     if the user has ALREADY clearly agreed in this conversation (e.g.
     they said "yes"/"go ahead" after you described the action), call
     ``confirm_dangerous_operation`` with that exact ``confirm_token``

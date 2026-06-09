@@ -17,9 +17,15 @@ Confirmation levels (from strictest to most permissive):
 Default mapping from risk level → confirmation level:
 
   dangerous         → url_and_password
-  service-affecting → llm_confirm
+  service-affecting → url_only
   normal            → none
   read-only         → none
+
+Both `dangerous` and `service-affecting` default to a URL/widget flow so that
+consent for any device-affecting operation is a deterministic, human-only step
+(the LLM cannot self-approve a url_* gate) rather than an LLM judgement call.
+Operators can relax this per risk class via the ``confirm_level_<risk>`` fleet
+setting (e.g. back to ``llm_confirm`` for lower-friction in-chat confirmation).
 """
 
 import hashlib
@@ -38,7 +44,7 @@ from typing import Dict, Optional
 
 _DEFAULT_CONFIRMATION_LEVELS: Dict[str, str] = {
     "dangerous": "url_and_password",
-    "service-affecting": "llm_confirm",
+    "service-affecting": "url_only",
     "normal": "none",
     "read-only": "none",
 }
