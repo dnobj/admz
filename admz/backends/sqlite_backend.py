@@ -384,6 +384,7 @@ class SQLiteDeviceRegistry(DeviceRegistry):
     ) -> None:
         if self.device_exists(device_id):
             raise BackendError(f"Device '{device_id}' already exists")
+        self._assert_no_mac_collision(device_id, device_info)
 
         with self._connect() as conn:
             conn.execute(
