@@ -18,6 +18,7 @@ this phase.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import random
@@ -85,6 +86,32 @@ def _get_thinking_budget() -> int:
             "Invalid ADMZ_GEMINI_THINKING_BUDGET=%r; using dynamic (-1)", raw
         )
         return -1
+
+
+def _manual_tool_loop_enabled() -> bool:
+    """Whether to run tools through the in-ADMZ manual function-calling loop.
+
+    Default ON. Set ADMZ_GEMINI_MANUAL_TOOL_LOOP=0 to fall back to the SDK's
+    automatic function calling (AFC) — a kill-switch for the core-path change.
+    Only affects tool-using turns; the no-tools path is unchanged either way.
+    """
+    return os.getenv("ADMZ_GEMINI_MANUAL_TOOL_LOOP", "true").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+def _get_max_tool_iterations() -> int:
+    """Max non-streaming tool rounds in the manual loop (default 8)."""
+    raw = os.getenv("ADMZ_GEMINI_MAX_TOOL_ITERATIONS")
+    if raw is None:
+        return 8
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning(
+            "Invalid ADMZ_GEMINI_MAX_TOOL_ITERATIONS=%r; using 8", raw
+        )
+        return 8
 
 
 def _get_retry_base_delay() -> float:
@@ -378,6 +405,7 @@ from admz.chatbot.events import (  # noqa: E402 — kept near its consumer
     event_start,
     event_text,
     event_tool_call,
+    event_tool_result,
 )
 from admz.chatbot.mcp_bridge import (  # noqa: E402
     McpBridgeError,
@@ -727,33 +755,44 @@ async def _stream_via_models_api(
     """
     aio = getattr(client, "aio", None)
     models = getattr(aio, "models", None) if aio else None
-    stream_fn = getattr(models, "generate_content_stream", None) if models else None
+    if models is None:
+        raise ChatbotTurnError(
+            "google-genai client exposes no aio.models. Upgrade google-genai."
+        )
+    sys_inst = request_kwargs.get("system_instruction")
+
+    # --- Manual function-calling loop (fixes the gemini-3.x empty-turn AFC bug).
+    # When tools are in play we drive the function-calling loop ourselves instead
+    # of relying on the SDK's automatic function calling, whose async-streaming
+    # path bails before the continuation call on gemini-3.x (split function-call
+    # args + mandatory thought_signature). See docs/chatbot-gemini-3x-afc.md.
+    if mcp_session is not None and _manual_tool_loop_enabled():
+        async for chunk in _run_manual_tool_loop(
+            models,
+            request_kwargs["model"],
+            request_kwargs["contents"],
+            sys_inst,
+            mcp_session,
+        ):
+            yield chunk
+        return
+
+    # --- Legacy single streaming call: no-tools turns, or the AFC kill-switch.
+    stream_fn = getattr(models, "generate_content_stream", None)
     if stream_fn is None:
         raise ChatbotTurnError(
-            "google-genai client exposes neither interactions.stream nor "
-            "aio.models.generate_content_stream. Upgrade google-genai."
+            "google-genai client exposes no aio.models.generate_content_stream. "
+            "Upgrade google-genai."
         )
 
     config: dict = {}
-    sys_inst = request_kwargs.get("system_instruction")
     if sys_inst:
         config["system_instruction"] = sys_inst
     if mcp_session is not None:
         config["tools"] = [mcp_session]
-
-    # Disable Gemini 2.5's "thinking" mode by default. Thinking-mode
-    # responses occasionally emit zero output tokens (the model spent
-    # its budget reasoning internally without producing visible text),
-    # which surfaces to the user as empty bot bubbles. For chat-style
-    # use, the cost of thinking outweighs the benefit; explicit
-    # reasoning isn't useful when the answer is "look up the device's
-    # IP from history" or "list 8 devices."
-    #
-    # ADMZ_GEMINI_THINKING_BUDGET: -1 dynamic (default), 0 disables,
-    # >0 fixed token budget. Dynamic is required for reliable tool use
-    # (see _get_thinking_budget) and for the *-pro models.
-    thinking_budget = _get_thinking_budget()
-    config["thinking_config"] = {"thinking_budget": thinking_budget}
+    # ADMZ_GEMINI_THINKING_BUDGET: -1 dynamic (default), 0 disables, >0 fixed.
+    # Dynamic is required for reliable tool use and for the *-pro models.
+    config["thinking_config"] = {"thinking_budget": _get_thinking_budget()}
 
     call_kwargs = {
         "model": request_kwargs["model"],
@@ -765,6 +804,323 @@ async def _stream_via_models_api(
     result = stream_fn(**call_kwargs)
     async for chunk in _as_async_iter(result):
         yield chunk
+
+
+# ---------------------------------------------------------------------------
+# Manual function-calling loop (AFC replacement; all models)
+# ---------------------------------------------------------------------------
+#
+# We drive the tool loop in ADMZ rather than via the SDK's automatic function
+# calling. The documented manual convention (current Google docs) is:
+#   * disable AFC; pass explicit FunctionDeclarations (NOT the raw MCP session,
+#     which "relies on AFC" and is experimental);
+#   * non-streaming generate_content per turn (streaming + manual function calls
+#     is the fragile path — exactly the 3.x defect);
+#   * append the model's ``candidates[0].content`` VERBATIM to history (that is
+#     how thought_signatures round-trip on gemini-3, otherwise the API 400s),
+#     then a function_response Content; loop until the model returns no call.
+# Verified live on gemini-2.5-flash AND gemini-3.5-flash.
+
+
+class _ToolCallChunk:
+    """Synthetic chunk → TOOL_CALL event (the translator reads step_type+name).
+
+    ``args`` (redacted) + ``call_id`` feed the UI's expand pane and let the
+    frontend bind a later tool_result to the exact card (robust when the same
+    tool name is called many times in one turn).
+    """
+
+    def __init__(self, name: str, args=None, call_id=None):
+        self.step_type = "function_call"
+        self.name = name
+        self.args = args
+        self.call_id = call_id
+
+
+class _ToolResultChunk:
+    """Synthetic chunk → TOOL_RESULT event (per-tool completion, real-time)."""
+
+    def __init__(self, name, status, summary, call_id, result=None):
+        self.step_type = "function_result"
+        self.name = name
+        self.status = status        # "ok" | "error" | "skipped"
+        self.summary = summary      # short, inline (already redacted)
+        self.call_id = call_id
+        self.result = result        # full redacted result dict (expand pane)
+
+
+class _TextChunk:
+    """Synthetic chunk → TEXT event (the translator reads .text)."""
+
+    def __init__(self, text: str):
+        self.text = text
+
+
+class _UsageMetadata:
+    def __init__(self, input_tokens: int, output_tokens: int):
+        self.prompt_token_count = input_tokens
+        self.candidates_token_count = output_tokens
+
+
+class _UsageChunk:
+    """Synthetic terminal chunk carrying summed usage + interaction id → DONE."""
+
+    def __init__(self, input_tokens: int, output_tokens: int, interaction_id):
+        self.usage_metadata = _UsageMetadata(input_tokens, output_tokens)
+        self.id = interaction_id
+
+
+def _normalize_contents(contents: Any) -> list:
+    """The loop appends Content/Part objects, so coerce to a mutable list."""
+    if isinstance(contents, str):
+        return [{"role": "user", "parts": [{"text": contents}]}]
+    if isinstance(contents, list):
+        return list(contents)
+    return [contents]
+
+
+async def _mcp_declarations(mcp_session: Any, types: Any) -> list:
+    """Build explicit Gemini tool declarations from the MCP server's list_tools.
+
+    Decouples the manual loop from the SDK's experimental MCP-session-as-tool
+    auto-execution. The MCP inputSchema (JSON Schema) is passed through via
+    ``parameters_json_schema`` — verified accepted by 2.5-flash and 3.5-flash.
+    """
+    listed = await mcp_session.list_tools()
+    tools = getattr(listed, "tools", listed) or []
+    decls = []
+    for t in tools:
+        schema = getattr(t, "inputSchema", None)
+        if not isinstance(schema, dict):
+            schema = {"type": "object", "properties": {}}
+        decls.append(
+            types.FunctionDeclaration(
+                name=t.name,
+                description=getattr(t, "description", "") or "",
+                parameters_json_schema=schema,
+            )
+        )
+    return [types.Tool(function_declarations=decls)] if decls else []
+
+
+def _extract_function_calls(resp: Any):
+    """Return (list of function_call objects, raw model Content) from a response."""
+    content = None
+    try:
+        content = resp.candidates[0].content
+    except Exception:  # noqa: BLE001 - SDK shape drift / no candidates
+        content = None
+    calls = list(getattr(resp, "function_calls", None) or [])
+    if not calls and content is not None:
+        for part in (getattr(content, "parts", None) or []):
+            fc = getattr(part, "function_call", None)
+            if fc is not None:
+                calls.append(fc)
+    return calls, content
+
+
+def _response_text(resp: Any) -> str:
+    try:
+        t = getattr(resp, "text", None)
+        if t:
+            return t
+    except Exception:  # noqa: BLE001 - .text raises on non-text parts
+        pass
+    try:
+        parts = resp.candidates[0].content.parts or []
+        return "".join(getattr(p, "text", "") or "" for p in parts)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _chunk_text(text: str):
+    """Yield a long answer in modest whitespace-aligned slices (progressive UI)."""
+    if not text:
+        return
+    i, n = 0, len(text)
+    while i < n:
+        j = min(i + 80, n)
+        if j < n:
+            k = text.find(" ", j)
+            if k != -1 and k - j < 24:
+                j = k
+        yield text[i:j]
+        i = j
+
+
+def _make_function_response_part(types: Any, name: str, response: dict, call_id):
+    """Build a function_response Part, tolerant of SDK-version signature drift."""
+    fn = getattr(getattr(types, "Part", None), "from_function_response", None)
+    if fn is not None:
+        if call_id is not None:
+            try:
+                return fn(name=name, response=response, id=call_id)
+            except TypeError:
+                pass  # older SDK (e.g. 2.5.0) has no id kwarg
+        try:
+            return fn(name=name, response=response)
+        except Exception:  # noqa: BLE001
+            pass
+    return {"function_response": {"name": name, "response": response}}
+
+
+async def _call_mcp_tool(mcp_session: Any, name: str, args: Any) -> dict:
+    """Execute an MCP tool and return its JSON result as a dict."""
+    out = await mcp_session.call_tool(name, dict(args or {}))
+    content = getattr(out, "content", out)
+    try:
+        first = content[0]
+        text = getattr(first, "text", None)
+        if text is not None:
+            return json.loads(text)
+    except Exception:  # noqa: BLE001 - non-JSON / empty result
+        pass
+    return {"result": str(content)[:2000]}
+
+
+# --- display helpers for the tool-card UI (args/result panes + status) -------
+
+_SENSITIVE_KEY_PARTS = ("password", "passwd", "secret", "token", "api_key", "apikey", "key")
+_MAX_DISPLAY_STR = 300
+_MAX_DISPLAY_LIST = 50
+
+
+def _redact_for_display(obj: Any, depth: int = 0) -> Any:
+    """Make a tool's args/result safe + compact to show in the chat UI.
+
+    Masks values whose key looks like a credential, truncates long strings and
+    lists, and depth-guards. Device/operation IDs pass through (they help the
+    operator read the card). Never sends a raw secret to the browser.
+    """
+    if depth > 6:
+        return "…"
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            kl = str(k).lower()
+            if any(p in kl for p in _SENSITIVE_KEY_PARTS):
+                out[k] = "***"
+            else:
+                out[k] = _redact_for_display(v, depth + 1)
+        return out
+    if isinstance(obj, (list, tuple)):
+        items = [_redact_for_display(v, depth + 1) for v in list(obj)[:_MAX_DISPLAY_LIST]]
+        extra = len(obj) - _MAX_DISPLAY_LIST
+        if extra > 0:
+            items.append(f"… (+{extra} more)")
+        return items
+    if isinstance(obj, str) and len(obj) > _MAX_DISPLAY_STR:
+        return obj[:_MAX_DISPLAY_STR] + f"… ({len(obj)} chars)"
+    return obj
+
+
+def _short(text: Any, limit: int = 120) -> str:
+    s = str(text).replace("\n", " ").strip()
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _classify_tool_result(payload: Any):
+    """Map a tool result dict → (status, short inline summary) for the card.
+
+    status ∈ ok | error | skipped. A confirm-gated result (blocked) is
+    'skipped' (awaiting approval), NOT an error.
+    """
+    if not isinstance(payload, dict):
+        return "ok", _short(payload)
+    if payload.get("blocked"):
+        return "skipped", _short(payload.get("message") or "Awaiting approval")
+    if payload.get("error") or payload.get("success") is False:
+        return "error", _short(payload.get("error") or payload.get("message") or "failed")
+    # normal — prefer a human-readable field, else a compact key=value line
+    for key in ("message", "summary", "status"):
+        if payload.get(key):
+            return "ok", _short(payload[key])
+    scalars = [
+        f"{k}={_short(v, 40)}"
+        for k, v in payload.items()
+        if isinstance(v, (str, int, float, bool))
+    ]
+    if scalars:
+        return "ok", _short(", ".join(scalars[:5]))
+    return "ok", "done"
+
+
+async def _run_manual_tool_loop(models, model, contents, sys_inst, mcp_session):
+    """Drive the function-calling loop in ADMZ; yield translator-ready chunks."""
+    from google.genai import types  # type: ignore[import-not-found]
+
+    gen = getattr(models, "generate_content", None)
+    if gen is None:
+        raise ChatbotTurnError(
+            "google-genai client exposes no aio.models.generate_content. "
+            "Upgrade google-genai."
+        )
+
+    config: dict = {}
+    if sys_inst:
+        config["system_instruction"] = sys_inst
+    config["tools"] = await _mcp_declarations(mcp_session, types)
+    config["automatic_function_calling"] = {"disable": True}
+    config["thinking_config"] = {"thinking_budget": _get_thinking_budget()}
+    config_obj = _build_generate_config(config)
+
+    convo = _normalize_contents(contents)
+    total_in = total_out = 0
+    last_interaction_id = None
+    max_iter = _get_max_tool_iterations()
+    next_call_id = 0  # unique per executed tool, across iterations
+
+    hit_cap = True
+    for _ in range(max_iter):
+        resp = await gen(model=model, contents=convo, config=config_obj)
+        ti, to = _extract_usage_from_chunk(resp)
+        total_in += ti or 0
+        total_out += to or 0
+        last_interaction_id = (
+            getattr(resp, "id", None)
+            or getattr(resp, "response_id", None)
+            or last_interaction_id
+        )
+
+        calls, content = _extract_function_calls(resp)
+        if not calls:
+            for piece in _chunk_text(_response_text(resp)):
+                yield _TextChunk(piece)
+            hit_cap = False
+            break
+
+        # Append the model's turn VERBATIM (carries gemini-3 thought_signature),
+        # then one function_response per call. Parallel calls: execute all.
+        if content is not None:
+            convo.append(content)
+        for fc in calls:
+            call_id = str(next_call_id)
+            next_call_id += 1
+            name = getattr(fc, "name", "") or "tool"
+            raw_args = getattr(fc, "args", {}) or {}
+            yield _ToolCallChunk(
+                name, args=_redact_for_display(dict(raw_args)), call_id=call_id
+            )
+            payload = await _call_mcp_tool(mcp_session, name, raw_args)
+            safe_payload = _redact_for_display(payload)
+            status, summary = _classify_tool_result(safe_payload)
+            yield _ToolResultChunk(
+                name, status, summary, call_id, result=safe_payload
+            )
+            part = _make_function_response_part(
+                types, name, payload, getattr(fc, "id", None)
+            )
+            convo.append(types.Content(role="user", parts=[part]))
+
+    if hit_cap:
+        logger.warning("manual tool loop hit max iterations (%d)", max_iter)
+        yield _TextChunk(
+            f"(Stopped after {max_iter} tool calls without a final answer — "
+            "please refine your request.)"
+        )
+
+    # Final yield: summed usage so stream_turn's "keep latest" reports the total.
+    yield _UsageChunk(total_in, total_out, last_interaction_id)
 
 
 def _build_generate_config(config: dict) -> Any:
@@ -942,7 +1298,21 @@ def _translate_stream_chunk(chunk: Any) -> Optional[ChatEvent]:
             or _extract_function_call_from_chunk(chunk)
             or "tool"
         )
-        return event_tool_call(name=name, args_summary=f"{name}(...)")
+        return event_tool_call(
+            name=name,
+            args_summary=f"{name}(...)",
+            call_id=getattr(chunk, "call_id", None),
+            args=getattr(chunk, "args", None),
+        )
+    if step_type == "function_result":
+        name = getattr(chunk, "name", None) or "tool"
+        return event_tool_result(
+            name=name,
+            status=getattr(chunk, "status", "ok"),
+            summary=getattr(chunk, "summary", "") or "",
+            call_id=getattr(chunk, "call_id", None),
+            result=getattr(chunk, "result", None),
+        )
     fc_name = _extract_function_call_from_chunk(chunk)
     if fc_name and not _extract_text_from_chunk(chunk):
         return event_tool_call(name=fc_name, args_summary=f"{fc_name}(...)")

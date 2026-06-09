@@ -511,9 +511,8 @@ async def _run_chat_turn(
         and not summary.response
         and not summary.error
     ):
-        is_3x = chosen_model.startswith("gemini-3")
         if summary.output_tokens == 0:
-            # Case A
+            # Case A — truly empty completion (thinking-only / safety filter).
             summary.success = False
             summary.error = (
                 f"The model ({chosen_model}) returned no text. This sometimes "
@@ -521,33 +520,18 @@ async def _run_chat_turn(
                 "are triggered, or when thinking-mode consumed the response "
                 "budget. Try rephrasing the question — being more specific "
                 "often helps."
-                + (
-                    " (Note: gemini-3.x with tools occasionally produces empty "
-                    "completions; gemini-2.5-flash is more reliable for "
-                    "tool-using turns.)"
-                    if is_3x
-                    else " If it persists, switch to gemini-2.5-pro for a "
-                    "more capable model."
-                )
             )
         else:
-            # Case B — output tokens > 0 but no text visible (3.x AFC bug)
+            # Case B — output tokens > 0 but no visible text. The gemini-3.x AFC
+            # continuation bug that used to cause this is now handled by the
+            # in-ADMZ manual function-calling loop (see chatbot/client.py), so
+            # this is just a neutral backstop for other causes (e.g. a mid-stream
+            # content-filter or a malformed final turn).
             summary.success = False
             summary.error = (
                 f"The model ({chosen_model}) produced {summary.output_tokens} "
-                f"output tokens but no visible text — likely a tool-call "
-                f"that didn't trigger a follow-up response. "
-                + (
-                    "This is a known issue with gemini-3.x and MCP tools "
-                    "in google-genai 2.5.x; the SDK doesn't always make "
-                    "the AFC continuation call after a tool result. "
-                    "Switch to gemini-2.5-flash for reliable tool use, "
-                    "or retry the same prompt (sometimes it works on "
-                    "the second attempt)."
-                    if is_3x
-                    else "Try rephrasing the question, or switch to "
-                    "gemini-2.5-pro for more reliable behavior."
-                )
+                "output tokens but no visible text. Please retry or rephrase "
+                "the request."
             )
         logger.warning(
             "[chat] empty response on %s (tokens=%d) — surfacing as friendly error",

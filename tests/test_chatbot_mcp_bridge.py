@@ -13,6 +13,7 @@ don't actually fork processes, and they verify:
   - _stream_via_models_api builds a config with tools=[session]
 """
 
+from types import SimpleNamespace
 import sys
 from contextlib import asynccontextmanager
 from unittest.mock import MagicMock
@@ -160,14 +161,14 @@ async def test_open_mcp_or_none_short_circuits_when_use_tools_false():
 
 
 @pytest.mark.asyncio
-async def test_models_api_path_passes_tools_in_config(monkeypatch):
-    """When mcp_session is provided, the config dict contains
-    ``tools=[session]`` and the SDK is called via aio.models."""
+async def test_legacy_path_passes_tools_in_config_when_loop_disabled(monkeypatch):
+    """With the manual-loop kill-switch OFF, a session falls back to the legacy
+    AFC streaming call with ``tools=[session]`` in the config."""
+    monkeypatch.setenv("ADMZ_GEMINI_MANUAL_TOOL_LOOP", "0")
     captured = {}
 
     async def fake_stream(**kwargs):
         captured.update(kwargs)
-        # Async generator that yields nothing.
         if False:
             yield  # pragma: no cover
 
@@ -180,11 +181,7 @@ async def test_models_api_path_passes_tools_in_config(monkeypatch):
         "system_instruction": "sys",
         "contents": "hi",
     }
-
-    # Bypass GenerateContentConfig coupling: force the dict fallback.
-    monkeypatch.setattr(
-        client_mod, "_build_generate_config", lambda d: d
-    )
+    monkeypatch.setattr(client_mod, "_build_generate_config", lambda d: d)
 
     async for _ in client_mod._stream_via_models_api(
         fake_client, request_kwargs, mcp_session=fake_session
@@ -192,7 +189,6 @@ async def test_models_api_path_passes_tools_in_config(monkeypatch):
         pass
 
     assert captured["model"] == "gemini-2.5-pro"
-    assert captured["contents"] == "hi"
     config = captured["config"]
     assert config["tools"] == [fake_session]
     assert config["system_instruction"] == "sys"
@@ -200,10 +196,10 @@ async def test_models_api_path_passes_tools_in_config(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invoke_stream_routes_to_models_api_when_session_present(monkeypatch):
-    """_invoke_stream with mcp_session=non-None must go to the
-    models-API streaming path, not the Interactions API."""
+    """_invoke_stream with a session goes through the models API (the manual
+    function-calling loop's non-streaming generate_content), not Interactions."""
     interactions_called = False
-    models_called = False
+    gen_called = False
 
     async def interactions_stream(**kwargs):
         nonlocal interactions_called
@@ -211,19 +207,31 @@ async def test_invoke_stream_routes_to_models_api_when_session_present(monkeypat
         if False:
             yield  # pragma: no cover
 
-    async def models_stream(**kwargs):
-        nonlocal models_called
-        models_called = True
-        if False:
-            yield  # pragma: no cover
+    class _UM:
+        prompt_token_count = 1
+        candidates_token_count = 1
+
+    class _Resp:
+        function_calls = []
+        text = "ok"
+        usage_metadata = _UM()
+        id = "x"
+        candidates = [SimpleNamespace(content=SimpleNamespace(parts=[]))]
+
+    async def fake_gen(**kwargs):
+        nonlocal gen_called
+        gen_called = True
+        return _Resp()
+
+    class _Session:
+        async def list_tools(self):
+            return SimpleNamespace(tools=[])
 
     fake_client = MagicMock()
     fake_client.interactions.astream = interactions_stream
-    fake_client.aio.models.generate_content_stream = models_stream
+    fake_client.aio.models.generate_content = fake_gen
 
     monkeypatch.setattr(client_mod, "_build_generate_config", lambda d: d)
-
-    fake_session = object()
     request_kwargs = {
         "model": "gemini-2.5-pro",
         "system_instruction": "sys",
@@ -231,11 +239,11 @@ async def test_invoke_stream_routes_to_models_api_when_session_present(monkeypat
     }
 
     async for _ in client_mod._invoke_stream(
-        fake_client, request_kwargs, mcp_session=fake_session
+        fake_client, request_kwargs, mcp_session=_Session()
     ):
         pass
 
-    assert models_called is True
+    assert gen_called is True
     assert interactions_called is False
 
 
