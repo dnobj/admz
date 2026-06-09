@@ -150,13 +150,15 @@ CREATE INDEX IF NOT EXISTS idx_dgm_group ON device_group_memberships(group_id);
 # Columns added to the existing `devices` table via ALTER TABLE
 # (SQLite doesn't support IF NOT EXISTS on ADD COLUMN — the backend
 # checks existing columns via PRAGMA table_info before ALTERing).
-# Both are nullable on add so old rows pre-migration are valid;
-# the migration script + bootstrap fill them in. Long-term, code
-# that reads these treats NULL as "device belongs to the default
-# org/site" so callers don't need null-checks everywhere.
-_HIERARCHY_DEVICE_COLUMNS = (
-    ("org_id",  "TEXT"),
-    ("site_id", "TEXT"),
+# All nullable on add so rows that predate a column stay valid:
+#   - org_id/site_id: NULL means "the default org/site" (Slice 1).
+#   - created_at: Unix epoch seconds, stamped on add_device. NULL means
+#     the row predates this column (creation time unknown — fall back to
+#     insertion order / rowid).
+_DEVICE_EXTRA_COLUMNS = (
+    ("org_id",     "TEXT"),
+    ("site_id",    "TEXT"),
+    ("created_at", "REAL"),
 )
 
 
@@ -215,22 +217,22 @@ class SQLiteDeviceRegistry(DeviceRegistry):
         # previous long-lived self._conn pattern created.
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
-            self._apply_hierarchy_columns(conn)
+            self._apply_device_extra_columns(conn)
             conn.commit()
 
-    def _apply_hierarchy_columns(self, conn: sqlite3.Connection) -> None:
-        """Idempotently add the Slice-1 hierarchy columns to ``devices``.
+    def _apply_device_extra_columns(self, conn: sqlite3.Connection) -> None:
+        """Idempotently add the extra ``devices`` columns (hierarchy +
+        created_at).
 
         SQLite doesn't support ADD COLUMN IF NOT EXISTS — we check
         ``PRAGMA table_info`` and only ALTER for missing columns.
         Adding nullable columns is fast and non-blocking even on
-        large tables; the migration script (Slice 1 follow-up) is
-        what actually populates them on existing rows.
+        large tables; rows added before a column existed read it as NULL.
         """
         existing = {
             row[1] for row in conn.execute("PRAGMA table_info(devices)")
         }
-        for col_name, col_type in _HIERARCHY_DEVICE_COLUMNS:
+        for col_name, col_type in _DEVICE_EXTRA_COLUMNS:
             if col_name in existing:
                 continue
             # Inline-formatted because SQLite refuses ? placeholders
@@ -309,34 +311,41 @@ class SQLiteDeviceRegistry(DeviceRegistry):
 
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT info_json FROM devices WHERE device_id=?", (device_id,)
+                "SELECT info_json, created_at FROM devices WHERE device_id=?",
+                (device_id,),
             ).fetchone()
 
         info = json.loads(row[0])
         info["device_id"] = device_id
+        if row[1] is not None:
+            info["created_at"] = row[1]
         return info
 
     def get_device_by_nickname(self, nickname: str) -> Optional[Dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT device_id, info_json FROM devices"
+                "SELECT device_id, info_json, created_at FROM devices"
             ).fetchall()
-        for device_id, raw in rows:
+        for device_id, raw, created_at in rows:
             info = json.loads(raw)
             if info.get("nickname", "").lower() == nickname.lower():
                 info["device_id"] = device_id
+                if created_at is not None:
+                    info["created_at"] = created_at
                 return info
         return None
 
     def list_devices(self) -> List[Dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT device_id, info_json FROM devices"
+                "SELECT device_id, info_json, created_at FROM devices"
             ).fetchall()
         devices = []
-        for device_id, raw in rows:
+        for device_id, raw, created_at in rows:
             info = json.loads(raw)
             info["device_id"] = device_id
+            if created_at is not None:
+                info["created_at"] = created_at
             devices.append(info)
         return devices
 
@@ -388,8 +397,9 @@ class SQLiteDeviceRegistry(DeviceRegistry):
 
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO devices (device_id, info_json) VALUES (?, ?)",
-                (device_id, json.dumps(device_info)),
+                "INSERT INTO devices (device_id, info_json, created_at) "
+                "VALUES (?, ?, ?)",
+                (device_id, json.dumps(device_info), time.time()),
             )
             conn.commit()
 
@@ -404,6 +414,10 @@ class SQLiteDeviceRegistry(DeviceRegistry):
     ) -> None:
         info = self.get_device_info(device_id)
         info.update(updates)
+        # created_at lives in its own column — don't let the enriched read
+        # value leak into the info_json blob (it would shadow / diverge from
+        # the column).
+        info.pop("created_at", None)
         with self._connect() as conn:
             conn.execute(
                 "UPDATE devices SET info_json = ? WHERE device_id = ?",

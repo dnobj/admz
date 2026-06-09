@@ -109,6 +109,13 @@ class DeviceResponse(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(
         None, description="Additional device metadata"
     )
+    created_at: Optional[float] = Field(
+        None,
+        description=(
+            "Unix epoch seconds when this device was added to the registry. "
+            "None for rows that predate the column (creation time unknown)."
+        ),
+    )
 
     model_config = ConfigDict(
         json_schema_extra={

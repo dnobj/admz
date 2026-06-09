@@ -3,6 +3,7 @@ HashiCorp Vault backend for device credential storage.
 """
 
 import os
+import time
 from typing import Dict, List, Optional, Any
 import hvac
 from hvac.exceptions import InvalidPath, Forbidden, VaultError
@@ -366,6 +367,11 @@ class VaultDeviceRegistry(DeviceRegistry):
         if self.device_exists(device_id):
             raise BackendError(f"Device '{device_id}' already exists")
         self._assert_no_mac_collision(device_id, device_info)
+
+        # Stamp creation time. Vault has no columns, so it lives in the info
+        # dict (the SQLite backend stores it as a real column). Copy so we
+        # don't mutate the caller's dict.
+        device_info = {**device_info, "created_at": time.time()}
 
         # Write device info
         path = self._build_path(device_id, "device_info")

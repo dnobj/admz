@@ -145,6 +145,78 @@ class TestMacCollisionGuard:
         assert "already exists" in str(exc.value)
 
 
+class TestCreatedAt:
+    """devices.created_at: stamped on add, surfaced on read, column-managed."""
+
+    def test_created_at_set_on_add(self, registry, sample_device):
+        import time
+        t0 = time.time()
+        registry.add_device("cam-01", sample_device)
+        info = registry.get_device_info("cam-01")
+        assert "created_at" in info
+        assert abs(info["created_at"] - t0) < 5
+
+    def test_created_at_in_list_devices(self, registry, sample_device):
+        registry.add_device("cam-01", sample_device)
+        assert "created_at" in registry.list_devices()[0]
+
+    def test_created_at_ordering_reflects_insertion(self, registry, sample_device):
+        registry.add_device("a", sample_device)
+        registry.add_device("b", {**sample_device, "host": "192.168.1.2"})
+        ts = {d["device_id"]: d["created_at"] for d in registry.list_devices()}
+        assert ts["a"] <= ts["b"]
+
+    def test_created_at_not_duplicated_into_info_blob(self, registry, sample_device, tmp_path):
+        import json
+        import sqlite3
+        registry.add_device("cam-01", sample_device)
+        registry.update_device("cam-01", {"location": "Lobby"})
+        # The blob must not carry created_at — it's a column.
+        raw = sqlite3.connect(str(tmp_path / "admz.db")).execute(
+            "SELECT info_json, created_at FROM devices WHERE device_id='cam-01'"
+        ).fetchone()
+        assert "created_at" not in json.loads(raw[0])
+        assert raw[1] is not None
+        # ...but reads still surface it (from the column) after an update.
+        assert "created_at" in registry.get_device_info("cam-01")
+
+    def test_legacy_null_row_has_no_created_at(self, registry, sample_device, tmp_path):
+        import sqlite3
+        # Simulate a row that predates the column (created_at NULL).
+        conn = sqlite3.connect(str(tmp_path / "admz.db"))
+        conn.execute(
+            "INSERT INTO devices (device_id, info_json, created_at) VALUES (?, ?, NULL)",
+            ("legacy", '{"host": "10.0.0.9", "model": "Z"}'),
+        )
+        conn.commit()
+        info = registry.get_device_info("legacy")
+        assert "created_at" not in info  # absent rather than a fake timestamp
+
+    def test_migration_adds_column_to_legacy_db(self, tmp_path):
+        import sqlite3
+        from admz.backends.sqlite_backend import SQLiteDeviceRegistry
+        db = str(tmp_path / "legacy.db")
+        # Build a pre-migration devices table (no created_at column).
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE devices (device_id TEXT PRIMARY KEY, info_json TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO devices VALUES (?, ?)", ("old", '{"host": "10.0.0.1"}')
+        )
+        conn.commit()
+        conn.close()
+        # Opening the registry migrates the column in.
+        reg = SQLiteDeviceRegistry(db_path=db, key_path=str(tmp_path / "k.key"))
+        cols = {r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(devices)")}
+        assert "created_at" in cols
+        # Legacy row reads fine; its created_at is unknown (absent).
+        assert "created_at" not in reg.get_device_info("old")
+        # New adds get stamped.
+        reg.add_device("new", {"host": "10.0.0.2"})
+        assert "created_at" in reg.get_device_info("new")
+
+
 class TestAccountOperations:
 
     def test_add_and_get_account(self, registry, sample_device, sample_account):
