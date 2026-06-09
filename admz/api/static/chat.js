@@ -374,10 +374,19 @@
       r.textContent = data.summary;
       r.style.display = "";
     }
-    // An AWAITING-APPROVAL card carries a confirm_token — record it so a later
-    // out-of-band approval can find this card and flip it to COMPLETED.
-    if (skipped && card._result && card._result.confirm_token) {
-      card.dataset.confirmToken = card._result.confirm_token;
+    // An AWAITING-APPROVAL card carries the confirm token — record it so a
+    // later out-of-band approval can find this card and flip it. The token is
+    // read from confirm_url, NOT confirm_token: the display redactor masks any
+    // key containing "token" (confirm_token -> "***"), but confirm_url
+    // ("/confirm/{token}") passes through intact.
+    if (skipped && card._result) {
+      var tok = "";
+      var m = String(card._result.confirm_url || "").match(/\/confirm\/([A-Za-z0-9_-]+)/);
+      if (m) tok = m[1];
+      else if (card._result.confirm_token && card._result.confirm_token !== "***") {
+        tok = card._result.confirm_token;
+      }
+      if (tok) card.dataset.confirmToken = tok;
     }
     // If the detail pane is open, re-render now that _result has arrived.
     var pane = card.querySelector(".tc-details");
@@ -536,14 +545,17 @@
       .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, status: r.status, body: b }; }); })
       .then(function (resp) {
         if (resp.ok && resp.body && resp.body.status === "completed") {
-          renderApprovalDone(card, "ok", "Approved — executing");
           removePinnedAction("confirm", token);
-          // Flip the originating in-chat tool card from AWAITING APPROVAL to
-          // COMPLETED (or BLOCKED if the executed op reported failure).
+          // The op already ran synchronously on approval — the POST returned
+          // its outcome. So this is the FINAL state (ADMZ doesn't track the
+          // device's own post-reboot recovery). Reflect success/failure.
           var oc = resp.body.outcome;
           if (oc && oc.success === false) {
-            resolveApprovedToolCard(token, "error", "Approved, but the operation failed");
+            var failMsg = "Approved, but the operation failed" + (oc.error ? ": " + oc.error : "");
+            renderApprovalDone(card, "error", failMsg);
+            resolveApprovedToolCard(token, "error", "Approved — operation failed");
           } else {
+            renderApprovalDone(card, "ok", "Approved — executed");
             resolveApprovedToolCard(token, "ok", "Approved — executed");
           }
           return;
