@@ -841,8 +841,10 @@ class ADMZMCPServer:
                         "already blocked. Despite the name (kept for backward "
                         "compatibility), this works for ANY operation blocked by "
                         "execute_operation's risk gate with "
-                        "confirmation_level='llm_confirm' — typically service-affecting "
-                        "and dangerous operations. "
+                        "confirmation_level='llm_confirm'. By default no risk class "
+                        "uses llm_confirm (service-affecting and dangerous both default "
+                        "to a url_* widget flow); an operator must opt a risk class "
+                        "into llm_confirm via fleet settings for this tool to apply. "
                         "PRECONDITION: you must pass a confirm_token that a prior "
                         "execute_operation call returned in its {blocked: true, "
                         "confirm_token: ...} response during THIS conversation. That is "
@@ -2227,8 +2229,8 @@ class ADMZMCPServer:
         ``confirm_level_<risk>`` settings):
           - read-only         → none      (just run)
           - normal            → none      (just run)
-          - service-affecting → llm_confirm
-          - dangerous         → url_and_password
+          - service-affecting → url_only          (deterministic widget)
+          - dangerous         → url_and_password  (widget + password)
         """
         from admz import operations
 

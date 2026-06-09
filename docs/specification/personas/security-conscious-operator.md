@@ -43,7 +43,7 @@
 ## What ADMZ owes this persona
 
 - **Two-gate safety.** Independent semantic (LLM/user) and mechanical (catalog risk-level) approval for every write.
-- **Multi-level confirmation by risk.** `dangerous` → `url_and_password` by default; `service-affecting` → `llm_confirm`; configurable per fleet.
+- **Multi-level confirmation by risk.** `dangerous` → `url_and_password` and `service-affecting` → `url_only` by default (both device-affecting classes require a deterministic, human-only widget — the LLM can't self-approve); configurable per fleet.
 - **OOB credential capture.** Passwords enter via a one-time browser URL, not via chat.
 - **Fernet at-rest encryption** for SQLite-backed credentials, with a per-installation key file.
 - **Vault as a first-class alternative** for enterprise deployments.

@@ -358,7 +358,7 @@ def _default_levels(risk):
     return {
         "read-only": "none",
         "normal": "none",
-        "service-affecting": "llm_confirm",
+        "service-affecting": "url_only",
         "dangerous": "url_and_password",
     }.get(risk, "none")
 
@@ -433,7 +433,7 @@ class TestPlanGate:
         assert operations.resolve_plan_confirmation([step("read-only")]) == "none"
         assert operations.resolve_plan_confirmation(
             [step("read-only"), step("service-affecting")]
-        ) == "llm_confirm"
+        ) == "url_only"
         assert operations.resolve_plan_confirmation(
             [step("service-affecting"), step("dangerous")]
         ) == "url_and_password"

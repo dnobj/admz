@@ -3,15 +3,15 @@
 Bug found in live testing: user said "lets reboot the D4200",
 chatbot called execute_operation, and the device rebooted with no
 confirmation. The reboot op is risk_level=service-affecting, which
-the spec (ADR-0006) says requires llm_confirm — but the
-implementation only blocked 'dangerous' ops.
+the spec (ADR-0006) says must be gated — but the implementation only
+blocked 'dangerous' ops.
 
 These tests verify the gate now reads the *configured*
 confirmation level for the op's risk class and blocks accordingly.
 Covers:
 
   - read-only / normal pass through (default 'none')
-  - service-affecting blocks (default 'llm_confirm')
+  - service-affecting blocks (default 'url_only' — deterministic widget)
   - dangerous blocks (default 'url_and_password')
   - operator overrides via fleet settings change the gate
   - confirm_dangerous_operation refuses URL-flow tokens
@@ -142,7 +142,7 @@ class TestServiceAffectingBlocks:
         )
         assert result["blocked"] is True
         assert result["risk_level"] == "service-affecting"
-        assert result["confirmation_level"] == "llm_confirm"  # default
+        assert result["confirmation_level"] == "url_only"  # default
         assert "confirm_token" in result
         assert result["confirm_url"] == f"/confirm/{result['confirm_token']}"
         # The executor MUST NOT have been called.
@@ -222,7 +222,15 @@ class TestOperatorEscalation:
 class TestConfirmTool:
     @pytest.mark.asyncio
     async def test_llm_confirm_token_consumed_inline(self, isolate_db):
-        """The MCP confirm tool happily completes llm_confirm tokens."""
+        """The MCP confirm tool happily completes llm_confirm tokens.
+
+        service-affecting now defaults to url_only (which the confirm tool
+        refuses), so opt this risk class into llm_confirm explicitly to mint a
+        token the MCP confirm tool may consume.
+        """
+        from admz.fleet_settings import fleet_settings as fs
+        fs.set("confirm_level_service-affecting", "llm_confirm")
+
         server, executor = _make_server(catalog_risk="service-affecting")
         block = await server._execute_operation(
             device_id="test-dev",

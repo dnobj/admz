@@ -214,8 +214,10 @@ Run a single catalog operation.
   **without executing**, per the multi-level policy (ADR-0006, configurable at
   `/confirm-settings`). The effective level (`llm_confirm` / `url_only` /
   `url_and_password`) is returned as `confirmation_level`. Defaults:
-  read-only/normal → run inline; service-affecting → `llm_confirm`; dangerous →
-  `url_and_password`. MCP, REST, and plans all enforce this identically via the
+  read-only/normal → run inline; service-affecting → `url_only`; dangerous →
+  `url_and_password` (both device-affecting classes require the deterministic
+  widget by default — the LLM cannot self-approve a `url_*` gate). MCP, REST,
+  and plans all enforce this identically via the
   shared core (`admz/operations.py`).
 
 ### `confirm_dangerous_operation`

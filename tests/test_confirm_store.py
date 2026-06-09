@@ -344,7 +344,7 @@ class TestConfirmationLevel:
         monkeypatch.setattr(admz.fleet_settings, "fleet_settings", fs)
 
         assert get_confirmation_level("dangerous") == "url_and_password"
-        assert get_confirmation_level("service-affecting") == "llm_confirm"
+        assert get_confirmation_level("service-affecting") == "url_only"
         assert get_confirmation_level("normal") == "none"
         assert get_confirmation_level("read-only") == "none"
 
