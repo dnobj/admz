@@ -91,6 +91,60 @@ class TestDeviceOperations:
         assert device_ids == {"cam-01", "cam-02"}
 
 
+class TestMacCollisionGuard:
+    """add_device must refuse a second registry row for the same physical
+    device (same MAC under a different device_id). Regression for the
+    duplicate P8815 row whose device_id was the model name 'P8815-2' instead
+    of the MAC."""
+
+    def _dev(self, mac, host="192.168.1.153"):
+        return {"host": host, "model": "P8815-2", "mac_address": mac}
+
+    def test_canonical_mac_helper(self):
+        from admz.device_registry import canonical_mac
+        assert canonical_mac("AC:CC:8E:E6:E7:EE") == "ACCC8EE6E7EE"
+        assert canonical_mac("ac-cc-8e-e6-e7-ee") == "ACCC8EE6E7EE"
+        assert canonical_mac("ACCC8EE6E7EE") == "ACCC8EE6E7EE"
+        assert canonical_mac(None) == ""
+        assert canonical_mac("") == ""
+
+    def test_same_mac_different_device_id_rejected(self, registry):
+        registry.add_device("ACCC8EE6E7EE", self._dev("AC:CC:8E:E6:E7:EE"))
+        # The exact P8815 bug: model name used as device_id, same MAC.
+        with pytest.raises(BackendError) as exc:
+            registry.add_device("P8815-2", self._dev("AC:CC:8E:E6:E7:EE"))
+        # The message should point at the existing canonical row.
+        assert "ACCC8EE6E7EE" in str(exc.value)
+        # And the duplicate must NOT have been written.
+        assert registry.device_exists("P8815-2") is False
+        assert len(registry.list_devices()) == 1
+
+    def test_collision_is_format_insensitive(self, registry):
+        # Existing row stores the colon form; new add uses the stripped form.
+        registry.add_device("ACCC8EE6E7EE", self._dev("AC:CC:8E:E6:E7:EE"))
+        with pytest.raises(BackendError):
+            registry.add_device("dup", self._dev("accc8ee6e7ee"))
+
+    def test_different_mac_allowed(self, registry):
+        registry.add_device("dev-a", self._dev("AC:CC:8E:E6:E7:EE"))
+        registry.add_device("dev-b", self._dev("B8:A4:4F:66:1A:2F", host="192.168.1.238"))
+        assert len(registry.list_devices()) == 2
+
+    def test_devices_without_mac_not_guarded(self, registry, sample_device):
+        # sample_device has no mac_address — the guard is a no-op.
+        registry.add_device("cam-01", sample_device)
+        registry.add_device("cam-02", {**sample_device, "host": "192.168.1.101"})
+        assert len(registry.list_devices()) == 2
+
+    def test_same_device_id_still_raises_first(self, registry):
+        registry.add_device("ACCC8EE6E7EE", self._dev("AC:CC:8E:E6:E7:EE"))
+        # Re-adding the same id hits the original duplicate-id check, not the
+        # MAC guard — behavior unchanged.
+        with pytest.raises(BackendError) as exc:
+            registry.add_device("ACCC8EE6E7EE", self._dev("AC:CC:8E:E6:E7:EE"))
+        assert "already exists" in str(exc.value)
+
+
 class TestAccountOperations:
 
     def test_add_and_get_account(self, registry, sample_device, sample_account):

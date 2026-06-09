@@ -365,6 +365,7 @@ class VaultDeviceRegistry(DeviceRegistry):
         """Add a new device to Vault."""
         if self.device_exists(device_id):
             raise BackendError(f"Device '{device_id}' already exists")
+        self._assert_no_mac_collision(device_id, device_info)
 
         # Write device info
         path = self._build_path(device_id, "device_info")

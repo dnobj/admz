@@ -5,6 +5,23 @@ Abstract interface for device credential registries.
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any
 
+from admz.exceptions import BackendError
+
+
+def canonical_mac(value: Optional[str]) -> str:
+    """Normalize a MAC address to a comparable canonical form.
+
+    Strips separators (``:``, ``-``, ``.``, spaces) and uppercases, so that
+    ``"AC:CC:8E:E6:E7:EE"`` and the colon-stripped device-id form
+    ``"ACCC8EE6E7EE"`` compare equal. Returns ``""`` for falsy input.
+    """
+    if not value:
+        return ""
+    out = str(value).upper()
+    for sep in (":", "-", ".", " "):
+        out = out.replace(sep, "")
+    return out
+
 
 class DeviceRegistry(ABC):
     """
@@ -195,6 +212,36 @@ class DeviceRegistry(ABC):
             BackendError: Backend storage system error
         """
         raise NotImplementedError("This registry does not support adding devices")
+
+    def _assert_no_mac_collision(
+        self, device_id: str, device_info: Dict[str, Any]
+    ) -> None:
+        """Refuse to register a second row for the same physical device.
+
+        The registry is keyed by ``device_id``; the MAC lives inside the
+        device info. Without this guard, adding a device under a non-MAC
+        ``device_id`` (e.g. a model name like ``"P8815-2"``) for a device
+        already registered under its MAC silently creates a duplicate row that
+        points at the same physical box. Concrete backends call this from
+        ``add_device`` after the duplicate-``device_id`` check.
+
+        No-op when the new device carries no MAC (nothing to collide on).
+        Raises :class:`~admz.exceptions.BackendError` on collision.
+        """
+        new_mac = canonical_mac(device_info.get("mac_address"))
+        if not new_mac:
+            return
+        for existing in self.list_devices():
+            if existing.get("device_id") == device_id:
+                continue
+            if canonical_mac(existing.get("mac_address")) == new_mac:
+                raise BackendError(
+                    f"A device with MAC {device_info.get('mac_address')} is "
+                    f"already registered as "
+                    f"'{existing.get('device_id')}'. Refusing to add a second "
+                    f"entry '{device_id}' for the same physical device — use the "
+                    f"existing device_id, or remove/update the existing entry."
+                )
 
     def update_device(
         self,
