@@ -85,6 +85,80 @@ Flags: `--base-url` (default `$ADMZ_BASE_URL` or `http://localhost:4242`),
 
 The operator can walk away after step 2; the loop completes unattended.
 
+## Verified live run (smoke test)
+
+This sequence was run end-to-end against a real device (P8815-2,
+`ACCC8EE6E7EE`) on 2026-06-10 and is the reproducible smoke test for the
+whole chain — gate → unattended approval → real reboot → recovery → audit.
+Run it against any `lab`-tagged, reachable device.
+
+```bash
+# 0. Servers up on :4242 (.venv); pick a lab-tagged device id.
+DID=ACCC8EE6E7EE
+
+# 1. Capture the baseline bootid (also confirms it's online + creds work).
+#    Returns status="still_waiting" with the current bootid as baseline_bootid.
+.venv/Scripts/python.exe - <<PY
+import asyncio, json
+from admz.factory import create_device_registry
+from admz.components import build_components
+from admz.recovery import await_device_recovery
+reg = create_device_registry(); cat = build_components(reg).catalog
+r = asyncio.run(await_device_recovery(device_id="$DID", timeout_s=8, poll_interval_s=2, catalog=cat, registry=reg))
+print("baseline bootid:", r["baseline_bootid"])
+PY
+
+# 2. Start the auto-approver in watch mode (background), scoped to lab.
+ADMZ_DEV_AUTO_APPROVE=1 .venv/Scripts/python.exe tools/dev_auto_approve.py \
+    --watch --base-url http://127.0.0.1:4242 --allow-tags lab &
+
+# 3. Trip the gate: a service-affecting reboot. Returns blocked + a token;
+#    the op does NOT run yet.
+curl -s -X POST http://127.0.0.1:4242/api/catalog/execute \
+  -H "Content-Type: application/json" \
+  -d "{\"device_id\":\"$DID\",\"operation_id\":\"restart.cgi:restart\",\"family\":\"vapix\",\"params\":{}}"
+
+# 4. The watcher approves within ~1s (its log shows "✔ APPROVED (dev) … success=True")
+#    and the device reboots.
+
+# 5. Confirm recovery: pass the baseline from step 1.
+.venv/Scripts/python.exe - <<PY
+import asyncio, json
+from admz.factory import create_device_registry
+from admz.components import build_components
+from admz.recovery import await_device_recovery
+reg = create_device_registry(); cat = build_components(reg).catalog
+r = asyncio.run(await_device_recovery(device_id="$DID", timeout_s=120, poll_interval_s=3,
+    baseline_bootid="<baseline-from-step-1>", catalog=cat, registry=reg))
+print(r["status"], "| new bootid", r["bootid"], "| offline_observed", r["offline_observed"])
+PY
+```
+
+Expected (and observed) outcome:
+
+| Stage | Result |
+|---|---|
+| Trip the gate (step 3) | `blocked: true`, `confirmation_level: url_only`, op did **not** execute |
+| Watcher (step 4) | `✔ APPROVED (dev) … → restart.cgi:restart … execution success=True` |
+| Recovery (step 5) | `status: recovered`, `offline_observed: true`, **new bootid ≠ baseline**, fresh uptime, `needsetup: false` (~18s here) |
+| Audit log | `catalog.execute` (success=False — gate held) · `confirm.approve` (success=True, `confirmed_by=chat`) · `dev.auto_approve` (`requester=dev-auto-approver`, "not a human approval") |
+
+Audit check:
+
+```bash
+.venv/Scripts/python.exe -c "
+from admz.audit import AuditLog; import time
+log = AuditLog(); since = time.time() - 600
+for a in ('catalog.execute','confirm.approve','dev.auto_approve'):
+    for r in log.list_recent(action=a, since=since, limit=3):
+        print(a, '| success', r.success, '| confirmed_by', (r.details or {}).get('confirmed_by'))
+"
+```
+
+Stop the watcher when done (it's a polling loop): kill the
+`tools/dev_auto_approve.py` process, or run it in one-shot mode (no `--watch`)
+instead of leaving it resident.
+
 ## What it deliberately does NOT do
 
 - **No MCP `dev_approve` tool.** Approval stays in a separate process; adding

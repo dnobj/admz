@@ -242,6 +242,17 @@ handful of live-device tests are skipped unless their target is reachable.)
 Coverage is measured via `pytest-cov`; an HTML report is written to
 `htmlcov/`.
 
+### End-to-end testing of approval-gated flows (dev only)
+
+ADMZ's `url_*` confirmation gates are deliberately human-only, which blocks
+*unattended* end-to-end tests of reboot/restore/etc. For development,
+`tools/dev_auto_approve.py` is an automated stand-in for the human approver —
+it drives the **real** confirmation endpoint (no production bypass), scoped to
+`lab`/`test`-tagged devices and guarded by `ADMZ_DEV_AUTO_APPROVE=1`. See
+**[docs/DEV_AUTO_APPROVE.md](docs/DEV_AUTO_APPROVE.md)** for the design,
+safety model, and a verified live smoke-test recipe. **Never run it against a
+production ADMZ.**
+
 ## Backup
 
 ADMZ stores two files on first run that must be backed up **together**:
