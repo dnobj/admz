@@ -48,10 +48,22 @@ DEFAULT_VOICE_MODEL = "gemini-3.1-flash-live-preview"
 # Back-compat alias.
 VOICE_MODEL = DEFAULT_VOICE_MODEL
 
+# Prebuilt voices (verified to work across both model families). Pinning one
+# keeps the voice consistent between sessions — without this the Live API picks
+# its own each time, which is why the voice varied. Native-audio models support
+# many more; these core voices are the portable set.
+VOICE_NAMES = ["Puck", "Charon", "Kore", "Fenrir", "Aoede", "Leda", "Orus", "Zephyr"]
+DEFAULT_VOICE_NAME = "Puck"
+
 
 def resolve_voice_model(model: Optional[str]) -> str:
     """Return ``model`` if it's an allowed voice model, else the default."""
     return model if model in VOICE_MODELS else DEFAULT_VOICE_MODEL
+
+
+def resolve_voice_name(voice: Optional[str]) -> str:
+    """Return ``voice`` if it's an allowed prebuilt voice, else the default."""
+    return voice if voice in VOICE_NAMES else DEFAULT_VOICE_NAME
 
 
 INPUT_SAMPLE_RATE = 16000
@@ -92,6 +104,7 @@ class VoiceSession:
         display_name: Optional[str] = None,
         groups: Optional[List[str]] = None,
         model: Optional[str] = None,
+        voice: Optional[str] = None,
         use_tools: bool = True,
     ):
         self._api_key = api_key
@@ -99,6 +112,7 @@ class VoiceSession:
         self._display_name = display_name
         self._groups = groups
         self._model = resolve_voice_model(model)
+        self._voice = resolve_voice_name(voice)
         self._use_tools = use_tools
 
         self._mcp = None
@@ -110,6 +124,10 @@ class VoiceSession:
     @property
     def model_name(self) -> str:
         return self._model
+
+    @property
+    def voice_name(self) -> str:
+        return self._voice
 
     @property
     def tools_enabled(self) -> bool:
@@ -157,6 +175,14 @@ class VoiceSession:
             output_audio_transcription=types.AudioTranscriptionConfig(),
             system_instruction=prompt,
             tools=tools,
+            # Pin the voice so it's consistent between sessions.
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                        voice_name=self._voice
+                    )
+                )
+            ),
         )
 
         client = genai.Client(api_key=self._api_key)

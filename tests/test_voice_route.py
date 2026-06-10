@@ -30,6 +30,10 @@ class _FakeVoice:
         return "fake-voice-model"
 
     @property
+    def voice_name(self):
+        return "Puck"
+
+    @property
     def tools_enabled(self):
         return True
 
@@ -136,8 +140,10 @@ def test_not_configured_returns_error(client, monkeypatch):
         assert "not configured" in msg["error"].lower()
 
 
-def test_models_endpoint_lists_voice_models(client):
-    from admz.chatbot.voice import VOICE_MODELS, DEFAULT_VOICE_MODEL
+def test_models_endpoint_lists_voice_models_and_voices(client):
+    from admz.chatbot.voice import (
+        VOICE_MODELS, DEFAULT_VOICE_MODEL, VOICE_NAMES, DEFAULT_VOICE_NAME,
+    )
 
     r = client.get("/api/chat/voice/models")
     assert r.status_code == 200
@@ -145,13 +151,17 @@ def test_models_endpoint_lists_voice_models(client):
     assert body["models"] == VOICE_MODELS
     assert body["default"] == DEFAULT_VOICE_MODEL
     assert "gemini-3.1-flash-live-preview" in body["models"]
+    assert body["voices"] == VOICE_NAMES
+    assert body["default_voice"] == DEFAULT_VOICE_NAME
 
 
-def test_selected_model_passed_to_session(client):
+def test_selected_model_and_voice_passed_to_session(client):
     _FakeVoice.events = [{"type": "turn_complete"}]
     with client.websocket_connect(
-        "/api/chat/voice?model=gemini-3.1-flash-live-preview"
+        "/api/chat/voice?model=gemini-3.1-flash-live-preview&voice=Kore"
     ) as ws:
         assert ws.receive_json()["type"] == "ready"
         assert ws.receive_json()["type"] == "turn_complete"
-    assert _FakeVoice.instances[-1].kwargs.get("model") == "gemini-3.1-flash-live-preview"
+    kw = _FakeVoice.instances[-1].kwargs
+    assert kw.get("model") == "gemini-3.1-flash-live-preview"
+    assert kw.get("voice") == "Kore"

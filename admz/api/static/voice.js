@@ -15,6 +15,7 @@
   if (!btn) return;
   const statusEl = document.getElementById("voice-status");
   const modelSel = document.getElementById("voice-model");
+  const voiceSel = document.getElementById("voice-name");
   const transcript = document.getElementById("chat-transcript");
   const emptyEl = document.getElementById("chat-empty");
 
@@ -32,22 +33,35 @@
     playHead = 0;
   let activeSources = []; // scheduled audio chunks, for barge-in interruption
   let active = false;
+  let listeningLabel = "Listening…";
   let userBubble = null,
     asstBubble = null;
 
-  // Populate the voice-model dropdown from the server.
-  if (modelSel) {
+  // Populate the voice-model + voice-name dropdowns from the server.
+  if (modelSel || voiceSel) {
     fetch("/api/chat/voice/models")
       .then((r) => r.json())
       .then((d) => {
-        modelSel.innerHTML = "";
-        (d.models || []).forEach((m) => {
-          const opt = document.createElement("option");
-          opt.value = m;
-          opt.textContent = m.replace("gemini-", "").replace("-preview", "");
-          if (m === d.default) opt.selected = true;
-          modelSel.appendChild(opt);
-        });
+        if (modelSel) {
+          modelSel.innerHTML = "";
+          (d.models || []).forEach((m) => {
+            const opt = document.createElement("option");
+            opt.value = m;
+            opt.textContent = m.replace("gemini-", "").replace("-preview", "");
+            if (m === d.default) opt.selected = true;
+            modelSel.appendChild(opt);
+          });
+        }
+        if (voiceSel) {
+          voiceSel.innerHTML = "";
+          (d.voices || []).forEach((v) => {
+            const opt = document.createElement("option");
+            opt.value = v;
+            opt.textContent = v;
+            if (v === d.default_voice) opt.selected = true;
+            voiceSel.appendChild(opt);
+          });
+        }
       })
       .catch(() => {});
   }
@@ -140,12 +154,17 @@
     }
     switch (m.type) {
       case "ready":
-        setStatus("Listening — " + (m.model || "voice"), true);
+        listeningLabel =
+          "🎙 Listening — speak anytime · " +
+          (m.model || "voice") +
+          (m.voice ? " · " + m.voice : "");
+        setStatus(listeningLabel, true);
         break;
       case "interrupted":
         // barge-in: stop the model's current audio immediately
         stopPlayback();
         asstBubble = null;
+        setStatus(listeningLabel, true);
         break;
       case "input_transcript":
         // a new user phrase resets both bubbles
@@ -156,14 +175,17 @@
         appendUser(m.text);
         break;
       case "output_transcript":
+        setStatus("🔊 Speaking… (talk to interrupt)", true);
         appendAsst(m.text);
         break;
       case "tool_call":
+        setStatus("⚙ " + m.name + "…", true);
         appendTool(m.name);
         break;
       case "turn_complete":
         userBubble = null;
         asstBubble = null;
+        setStatus(listeningLabel, true);
         break;
       case "error":
         appendAsst("⚠ voice error: " + (m.error || "unknown"));
@@ -174,9 +196,11 @@
   async function start() {
     setStatus("Connecting…", true);
     activeSources = [];
-    const model = modelSel && modelSel.value ? modelSel.value : "";
-    const url = model ? WS_BASE + "?model=" + encodeURIComponent(model) : WS_BASE;
-    ws = new WebSocket(url);
+    const params = new URLSearchParams();
+    if (modelSel && modelSel.value) params.set("model", modelSel.value);
+    if (voiceSel && voiceSel.value) params.set("voice", voiceSel.value);
+    const qs = params.toString();
+    ws = new WebSocket(qs ? WS_BASE + "?" + qs : WS_BASE);
     ws.binaryType = "arraybuffer";
     ws.onmessage = onMessage;
     ws.onclose = () => stop(true);

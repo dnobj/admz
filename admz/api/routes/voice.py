@@ -25,14 +25,19 @@ logger = logging.getLogger(__name__)
 
 @router.get("/api/chat/voice/models", tags=["voice"])
 async def voice_models():
-    """The selectable voice models (for the UI dropdown) + the default."""
+    """The selectable voice models + voices (for the UI dropdowns) + defaults."""
     from admz.chatbot.config import get_chatbot_config
-    from admz.chatbot.voice import VOICE_MODELS, DEFAULT_VOICE_MODEL, voice_available
+    from admz.chatbot.voice import (
+        VOICE_MODELS, DEFAULT_VOICE_MODEL, VOICE_NAMES, DEFAULT_VOICE_NAME,
+        voice_available,
+    )
 
     return {
         "available": voice_available(get_chatbot_config()),
         "default": DEFAULT_VOICE_MODEL,
         "models": VOICE_MODELS,
+        "voices": VOICE_NAMES,
+        "default_voice": DEFAULT_VOICE_NAME,
     }
 
 
@@ -73,6 +78,7 @@ async def voice_ws(websocket: WebSocket):
 
     principal = await _ws_principal(websocket)
     requested_model = websocket.query_params.get("model")
+    requested_voice = websocket.query_params.get("voice")
 
     try:
         async with VoiceSession(
@@ -81,10 +87,12 @@ async def voice_ws(websocket: WebSocket):
             display_name=getattr(principal, "display_name", None),
             groups=list(getattr(principal, "groups", None) or []),
             model=requested_model,
+            voice=requested_voice,
         ) as vs:
             await websocket.send_json({
                 "type": "ready",
                 "model": vs.model_name,
+                "voice": vs.voice_name,
                 "tools_enabled": vs.tools_enabled,
                 "input_sample_rate": 16000,
                 "output_sample_rate": 24000,
