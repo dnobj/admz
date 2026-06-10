@@ -14,10 +14,11 @@
   const btn = document.getElementById("voice-toggle");
   if (!btn) return;
   const statusEl = document.getElementById("voice-status");
+  const modelSel = document.getElementById("voice-model");
   const transcript = document.getElementById("chat-transcript");
   const emptyEl = document.getElementById("chat-empty");
 
-  const WS_URL =
+  const WS_BASE =
     (location.protocol === "https:" ? "wss://" : "ws://") +
     location.host +
     "/api/chat/voice";
@@ -29,9 +30,27 @@
     micSink = null;
   let playCtx = null,
     playHead = 0;
+  let activeSources = []; // scheduled audio chunks, for barge-in interruption
   let active = false;
   let userBubble = null,
     asstBubble = null;
+
+  // Populate the voice-model dropdown from the server.
+  if (modelSel) {
+    fetch("/api/chat/voice/models")
+      .then((r) => r.json())
+      .then((d) => {
+        modelSel.innerHTML = "";
+        (d.models || []).forEach((m) => {
+          const opt = document.createElement("option");
+          opt.value = m;
+          opt.textContent = m.replace("gemini-", "").replace("-preview", "");
+          if (m === d.default) opt.selected = true;
+          modelSel.appendChild(opt);
+        });
+      })
+      .catch(() => {});
+  }
 
   function setStatus(text, recording) {
     active = !!recording;
@@ -89,6 +108,23 @@
     const t = Math.max(playHead, playCtx.currentTime + 0.02);
     node.start(t);
     playHead = t + buf.duration;
+    activeSources.push(node);
+    node.onended = () => {
+      const i = activeSources.indexOf(node);
+      if (i >= 0) activeSources.splice(i, 1);
+    };
+  }
+
+  // Barge-in: the user interrupted, so drop everything still queued.
+  function stopPlayback() {
+    activeSources.forEach((n) => {
+      try {
+        n.onended = null;
+        n.stop();
+      } catch (e) {}
+    });
+    activeSources = [];
+    if (playCtx) playHead = playCtx.currentTime;
   }
 
   function onMessage(ev) {
@@ -105,6 +141,11 @@
     switch (m.type) {
       case "ready":
         setStatus("Listening — " + (m.model || "voice"), true);
+        break;
+      case "interrupted":
+        // barge-in: stop the model's current audio immediately
+        stopPlayback();
+        asstBubble = null;
         break;
       case "input_transcript":
         // a new user phrase resets both bubbles
@@ -132,7 +173,10 @@
 
   async function start() {
     setStatus("Connecting…", true);
-    ws = new WebSocket(WS_URL);
+    activeSources = [];
+    const model = modelSel && modelSel.value ? modelSel.value : "";
+    const url = model ? WS_BASE + "?model=" + encodeURIComponent(model) : WS_BASE;
+    ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
     ws.onmessage = onMessage;
     ws.onclose = () => stop(true);
@@ -173,6 +217,7 @@
 
   function stop(fromClose) {
     setStatus("", false);
+    stopPlayback();
     try {
       if (micStream) micStream.getTracks().forEach((t) => t.stop());
     } catch (e) {}

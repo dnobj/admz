@@ -134,3 +134,24 @@ def test_not_configured_returns_error(client, monkeypatch):
         msg = ws.receive_json()
         assert msg["type"] == "error"
         assert "not configured" in msg["error"].lower()
+
+
+def test_models_endpoint_lists_voice_models(client):
+    from admz.chatbot.voice import VOICE_MODELS, DEFAULT_VOICE_MODEL
+
+    r = client.get("/api/chat/voice/models")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["models"] == VOICE_MODELS
+    assert body["default"] == DEFAULT_VOICE_MODEL
+    assert "gemini-3.1-flash-live-preview" in body["models"]
+
+
+def test_selected_model_passed_to_session(client):
+    _FakeVoice.events = [{"type": "turn_complete"}]
+    with client.websocket_connect(
+        "/api/chat/voice?model=gemini-3.1-flash-live-preview"
+    ) as ws:
+        assert ws.receive_json()["type"] == "ready"
+        assert ws.receive_json()["type"] == "turn_complete"
+    assert _FakeVoice.instances[-1].kwargs.get("model") == "gemini-3.1-flash-live-preview"

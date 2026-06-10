@@ -99,6 +99,8 @@
             Dangerous operations always require explicit approval — the two-gate model applies to AI and humans alike.</span>
           {% else %}<span style="flex:1"></span>{% endif %}
           <span id="voice-status" class="voice-status" aria-live="polite"></span>
+          <label for="voice-model" style="font-size:12px" title="Model used for voice mode (independent of the text model)">Voice</label>
+          <select id="voice-model" title="Realtime voice model"></select>
           <label for="model" style="font-size:12px">Model</label>
           <select id="model" name="model">
             {% for m in selectable_models %}

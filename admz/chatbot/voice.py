@@ -30,8 +30,30 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# The one Live-capable model available (feasibility-tested 2026-06-10).
-VOICE_MODEL = "gemini-2.5-flash-native-audio-preview-09-2025"
+# Live/voice-capable models on the project key (each verified 2026-06-10 to
+# stream audio + input/output transcription + tool calls). Listed newest-first;
+# the UI lets the operator pick one to A/B test.
+#   - gemini-3.1-flash-live-preview            : newest 3.1 audio-to-audio,
+#       native audio output + thinking, tuned for low-latency dialogue.
+#   - gemini-2.5-flash-native-audio-latest     : rolling 2.5 native-audio alias.
+#   - gemini-2.5-flash-native-audio-preview-12-2025 : pinned newer 2.5 native.
+#   - gemini-2.5-flash-native-audio-preview-09-2025 : the first one we shipped.
+VOICE_MODELS = [
+    "gemini-3.1-flash-live-preview",
+    "gemini-2.5-flash-native-audio-latest",
+    "gemini-2.5-flash-native-audio-preview-12-2025",
+    "gemini-2.5-flash-native-audio-preview-09-2025",
+]
+DEFAULT_VOICE_MODEL = "gemini-3.1-flash-live-preview"
+# Back-compat alias.
+VOICE_MODEL = DEFAULT_VOICE_MODEL
+
+
+def resolve_voice_model(model: Optional[str]) -> str:
+    """Return ``model`` if it's an allowed voice model, else the default."""
+    return model if model in VOICE_MODELS else DEFAULT_VOICE_MODEL
+
+
 INPUT_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
 INPUT_MIME = f"audio/pcm;rate={INPUT_SAMPLE_RATE}"
@@ -69,14 +91,14 @@ class VoiceSession:
         principal_name: str,
         display_name: Optional[str] = None,
         groups: Optional[List[str]] = None,
-        model: str = VOICE_MODEL,
+        model: Optional[str] = None,
         use_tools: bool = True,
     ):
         self._api_key = api_key
         self._principal_name = principal_name
         self._display_name = display_name
         self._groups = groups
-        self._model = model
+        self._model = resolve_voice_model(model)
         self._use_tools = use_tools
 
         self._mcp = None

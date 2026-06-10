@@ -5,15 +5,36 @@ talk to it, hear it answer, and see live text transcripts of both sides — with
 the **full ADMZ tool surface** available to the model. Click the 🎙 mic button
 in the console composer to start; click it again to stop.
 
-## What model it uses (important)
+## What model it uses (selectable)
 
-Voice mode always uses **`gemini-2.5-flash-native-audio-preview-09-2025`**,
-independent of the text-chat model selector. This is the only Live/voice-capable
-model available on the project's API key — there is **no 3.x voice/Live variant**
-(verified live: `gemini-3-pro-preview`, `gemini-3.5-flash`, and the older
-`gemini-2.0-flash-live-001` all return "not found for API version v1beta" on this
-key). The text models in the dropdown (2.5/3.x) are unaffected; they're for typed
-chat.
+Voice mode has its **own model dropdown** (independent of the text-chat model).
+The selectable Live/voice models — each verified live to stream audio + input/
+output transcription + tool calls — are (newest first):
+
+| Model | Notes |
+|---|---|
+| **`gemini-3.1-flash-live-preview`** (default) | Newest 3.1 audio-to-audio, native audio + thinking, tuned for low-latency dialogue |
+| `gemini-2.5-flash-native-audio-latest` | Rolling 2.5 native-audio alias |
+| `gemini-2.5-flash-native-audio-preview-12-2025` | Pinned newer 2.5 native audio |
+| `gemini-2.5-flash-native-audio-preview-09-2025` | The first one shipped |
+
+The list comes from `admz/chatbot/voice.py::VOICE_MODELS` and is served to the
+UI at `GET /api/chat/voice/models`. Pick one in the **Voice** dropdown and
+compare — 3.1 changed tool-use/event behavior vs 2.5, so they're worth A/B
+testing. (Discovering the right model names matters: an earlier guess
+[`gemini-3-pro-preview`, `gemini-2.0-flash-live-001`] returned "not found";
+listing the API's models is the reliable way — `client.models.list()` filtered
+to `bidiGenerateContent`.)
+
+## Real-time behavior: continuous streaming + barge-in
+
+The browser streams mic PCM continuously (not push-to-talk); Gemini's
+**automatic VAD** decides when you've finished a phrase and responds. You can
+**interrupt** the model while it's speaking ("barge-in") — when the server
+sends an `interrupted` event, the browser stops the queued audio immediately so
+the conversation stays fluid. (Manual VAD / `activityStart`/`activityEnd` and
+silence-duration tuning are available in the Live API if finer control is
+wanted later.)
 
 ## What it can do
 

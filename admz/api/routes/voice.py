@@ -23,6 +23,19 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+@router.get("/api/chat/voice/models", tags=["voice"])
+async def voice_models():
+    """The selectable voice models (for the UI dropdown) + the default."""
+    from admz.chatbot.config import get_chatbot_config
+    from admz.chatbot.voice import VOICE_MODELS, DEFAULT_VOICE_MODEL, voice_available
+
+    return {
+        "available": voice_available(get_chatbot_config()),
+        "default": DEFAULT_VOICE_MODEL,
+        "models": VOICE_MODELS,
+    }
+
+
 async def _ws_principal(websocket: WebSocket):
     """Resolve the principal for a WebSocket.
 
@@ -59,6 +72,7 @@ async def voice_ws(websocket: WebSocket):
         return
 
     principal = await _ws_principal(websocket)
+    requested_model = websocket.query_params.get("model")
 
     try:
         async with VoiceSession(
@@ -66,6 +80,7 @@ async def voice_ws(websocket: WebSocket):
             principal_name=principal.name,
             display_name=getattr(principal, "display_name", None),
             groups=list(getattr(principal, "groups", None) or []),
+            model=requested_model,
         ) as vs:
             await websocket.send_json({
                 "type": "ready",
