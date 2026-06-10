@@ -980,7 +980,6 @@ async def _call_mcp_tool(mcp_session: Any, name: str, args: Any) -> dict:
 
 # --- display helpers for the tool-card UI (args/result panes + status) -------
 
-_SENSITIVE_KEY_PARTS = ("password", "passwd", "secret", "token", "api_key", "apikey", "key")
 _MAX_DISPLAY_STR = 300
 _MAX_DISPLAY_LIST = 50
 
@@ -988,18 +987,20 @@ _MAX_DISPLAY_LIST = 50
 def _redact_for_display(obj: Any, depth: int = 0) -> Any:
     """Make a tool's args/result safe + compact to show in the chat UI.
 
-    Masks values whose key looks like a credential, truncates long strings and
-    lists, and depth-guards. Device/operation IDs pass through (they help the
-    operator read the card). Never sends a raw secret to the browser.
+    Masks values whose key looks like a credential (rules shared with audit
+    and fleet-settings via :mod:`admz.redact`, D-2), truncates long strings
+    and lists, and depth-guards. Device/operation IDs pass through (they help
+    the operator read the card). Never sends a raw secret to the browser.
     """
+    from admz.redact import MASK, is_sensitive_key
+
     if depth > 6:
         return "…"
     if isinstance(obj, dict):
         out = {}
         for k, v in obj.items():
-            kl = str(k).lower()
-            if any(p in kl for p in _SENSITIVE_KEY_PARTS):
-                out[k] = "***"
+            if is_sensitive_key(k):
+                out[k] = MASK
             else:
                 out[k] = _redact_for_display(v, depth + 1)
         return out

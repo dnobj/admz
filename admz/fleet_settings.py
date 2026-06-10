@@ -23,11 +23,14 @@ def is_sensitive_setting_key(key: str) -> bool:
 
     Used to keep passwords and other secrets out of any surface that returns
     fleet-settings to a caller — both the MCP ``get_fleet_settings`` tool and
-    the REST ``GET /api/fleet/settings`` endpoint use this. Centralized here
-    so both surfaces apply the same rule.
+    the REST ``GET /api/fleet/settings`` endpoint use this. Rules live in
+    :mod:`admz.redact` (D-2), shared with the audit sanitizer and the chat
+    display layer. (Note: ``pat`` now matches only as a discrete token —
+    ``github_pat`` yes, a hypothetical ``*_path`` setting no.)
     """
-    k = key.lower()
-    return "password" in k or "pat" in k or "token" in k or "secret" in k
+    from admz.redact import is_sensitive_key
+
+    return is_sensitive_key(key)
 
 
 # ---------------------------------------------------------------------------

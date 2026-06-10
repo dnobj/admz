@@ -125,32 +125,19 @@ _warn_base_url_mismatch()
 # ---------------------------------------------------------------------------
 
 
-# Field-name substrings whose values must NEVER be written to the audit
-# log. We log the keys (so an operator can tell that an arg was present)
-# but mask the value. Defensive even though CR-1/CR-2 removed the two
-# tools that took plaintext passwords as args — future tools should not
-# accidentally re-introduce a leak via the audit trail.
-_AUDIT_SENSITIVE_KEY_PARTS = ("password", "secret", "token", "api_key", "passwd")
-
-
+# Values whose key looks like a credential must NEVER be written to the
+# audit log. We log the keys (so an operator can tell that an arg was
+# present) but mask the value. Rules live in admz.redact (D-2) — shared
+# with the chat display layer and fleet-settings masking — which also
+# recurses into lists (the old inline version didn't, so a password
+# inside a list of dicts reached the audit log in plaintext).
 def _sanitize_tool_args(arguments: Any) -> Any:
-    """Return a copy of ``arguments`` safe to record in the audit log.
+    """Return a copy of ``arguments`` safe to record in the audit log."""
+    from admz.redact import redact_structure
 
-    For dict-shaped arguments, any key matching :data:`_AUDIT_SENSITIVE_KEY_PARTS`
-    has its value replaced with ``"***"``. Non-dict inputs are returned
-    as-is (the audit details column also length-limits via json.dumps).
-    """
     if not isinstance(arguments, dict):
         return arguments
-    out: Dict[str, Any] = {}
-    for k, v in arguments.items():
-        if any(part in k.lower() for part in _AUDIT_SENSITIVE_KEY_PARTS):
-            out[k] = "***"
-        elif isinstance(v, dict):
-            out[k] = _sanitize_tool_args(v)
-        else:
-            out[k] = v
-    return out
+    return redact_structure(arguments)
 
 
 def _validate_tool_args(name: str, arguments: Any) -> Optional[str]:
