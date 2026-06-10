@@ -282,34 +282,16 @@ List all accounts for a device (without passwords).
 }
 ```
 
-### 5. get_credentials
+> **Removed:** there used to be a `get_credentials` MCP tool here that
+> returned a device password to the LLM. It was deleted (change CR-1):
+> exposing plaintext passwords to the model's context is exactly what the
+> out-of-band capture flow (`capture_credentials`) exists to avoid. The
+> executor fetches stored credentials internally when it runs an operation;
+> the password never enters the LLM channel. For short-lived programmatic
+> access, use `create_temp_credentials` (returns a scoped `at_<hex>` device
+> user that auto-expires).
 
-Get credentials for a specific device and account.
-
-**Parameters**:
-- `device_id` (string, required): Device ID
-- `account_id` (string, optional): Account ID (default: "default")
-- `requester` (string, optional): Who is requesting (for audit logs)
-
-**Returns**:
-```json
-{
-  "success": true,
-  "device_id": "front-door",
-  "account_id": "default",
-  "credentials": {
-    "username": "admin",
-    "password": "secure-password-here",
-    "host": "192.168.1.100",
-    "account_type": "admin",
-    "permissions": ["read", "write", "admin"]
-  }
-}
-```
-
-**Security Note**: This tool retrieves sensitive credentials. Use with caution and ensure audit logging is enabled.
-
-### 6. register_device
+### 5. register_device
 
 Register a new device in the registry.
 
@@ -340,7 +322,7 @@ Register a new device in the registry.
 }
 ```
 
-### 7. add_account
+### 6. add_account
 
 Add a new account to an existing device.
 
@@ -364,7 +346,7 @@ Add a new account to an existing device.
 }
 ```
 
-### 8. update_device
+### 7. update_device
 
 Update device information.
 
@@ -384,7 +366,7 @@ Update device information.
 }
 ```
 
-### 9. delete_device
+### 8. delete_device
 
 Remove a device from the registry.
 
@@ -393,7 +375,7 @@ Remove a device from the registry.
 
 **Warning**: This deletes all device information and accounts. Cannot be undone.
 
-### 10. delete_account
+### 9. delete_account
 
 Remove an account from a device.
 
@@ -422,23 +404,29 @@ I found 5 outdoor cameras:
 ...
 ```
 
-### Example 2: Credential Retrieval
+### Example 2: Temporary Credentials
 
-User: "I need to configure the front door camera. Get me the admin credentials."
+User: "I need to log into the front door camera's web UI to check something."
 
 Claude:
 ```
-I'll retrieve the admin credentials for the front door camera.
+I'll mint a short-lived admin account on the front door camera — its
+stored password never leaves ADMZ, so I can't read it back to you, but I
+can create a temporary login that auto-expires.
 
-[Uses get_credentials with device_id: "front-door", account_id: "default"]
+[Uses create_temp_credentials with device_id: "front-door"]
 
-Credentials for front-door (default account):
+Temporary login for front-door (expires in 30 min):
 - Host: 192.168.1.100
-- Username: admin
-- Password: [secure-password-displayed]
+- Username: at_9f3c1a20
+- Password: [shown once]
 
-You can now connect to the camera's web interface at https://192.168.1.100
+Log in at https://192.168.1.100 — the account is cleaned up automatically.
 ```
+
+> Note: ADMZ never reveals a device's *stored* password to the chat. The
+> executor uses it internally to run operations; for human login, a
+> temporary scoped account is minted instead.
 
 ### Example 3: Device Registration
 

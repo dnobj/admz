@@ -1,7 +1,10 @@
 # ADR-0029: The Axis API Atlas as a maintained, reusable asset (DCA-refreshed capability matrix + standalone extraction)
 
-**Status:** Accepted (forward-looking; the refresh tool exists, extraction is planned).
-**Date:** 2026-06-05.
+**Status:** ✅ Implemented. The extraction is done: `axis-api-atlas` is a
+standalone repo/package, and ADMZ consumes it as a dependency (imports
+`axis_api_atlas.{catalog,knowledge,capabilities}`; see `admz/components.py`
+and `requirements.txt`). The DCA-refresh tooling lives in the atlas repo.
+**Date:** 2026-06-05. **Updated:** 2026-06-10.
 **Relates to:** ADR-0027 (control families / ConfigCollector), ADR-0001 (organize catalog by CGI), ADR-0003 (YAML not generated code), ADR-0015 (pluggable facets), [requirements/knowledge-and-capabilities.md](../requirements/knowledge-and-capabilities.md), [AXIS_API_ATLAS_MAINTENANCE.md](../../AXIS_API_ATLAS_MAINTENANCE.md)
 
 ---

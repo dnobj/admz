@@ -20,7 +20,7 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **At-rest encryption** — Encryption of credentials in the SQLite store using Fernet (AES-128-CBC + HMAC-SHA256). The key lives in `~/.admz/admz.key`.
 
-**Audit log** — A record of who did what to which device when. Currently a known gap: documented in the registry ABC but unimplemented.
+**Audit log** — A record of who did what to which device when. ✅ Implemented as a SQLite-backed store (`admz/audit.py`); `record_event` is called across the MCP, REST, and confirm-approval surfaces.
 
 **Axis OS** — The operating system on Axis devices. LTS milestones: 8.40, 9.80, 10.12, 11.11. Major-version upgrades typically must go through LTS milestones.
 
@@ -48,7 +48,7 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **config-rest** — The third generation of Axis APIs: REST endpoints under `/config/rest/{service}/v{N}` with JSON bodies.
 
-**Confirm token** — A single-use token issued when a `dangerous`-risk operation is attempted. TTL 5 minutes. Two distinct systems exist: an in-memory token for `execute_operation`, and a SQLite-backed `ConfirmStore` for the web URL+password flow. 🚧 These are not yet unified.
+**Confirm token** — A single-use token issued when a gated operation or plan is attempted. TTL 5 minutes. ✅ Unified: a single SQLite-backed `ConfirmStore` (`admz/api/confirm_store.py`) backs every gated path — single ops and plans, MCP and REST and the in-chat widget — so confirmation sessions are cross-process. (`url_*`-gated plans also serialize their steps into the session so the approving process can reconstruct and run them.)
 
 **Confirm level** — One of `none`, `llm_confirm`, `url_only`, `url_and_password`. Mapped per risk class via fleet settings.
 
@@ -126,7 +126,7 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **legacy-cgi** — The first generation of VAPIX APIs. GET with query parameters, or POST with form data.
 
-**LLM agent** — Any AI consumer of the MCP server (Claude, GPT-driven agent, custom Anthropic SDK client, etc.). One of the five personas.
+**LLM agent** — Any AI consumer of the MCP server (Claude, GPT-driven agent, custom Anthropic SDK client, etc.). One of the six personas.
 
 **LLM-confirm** — The default confirmation level for `service-affecting` operations. The LLM presents the change and waits for the user's natural-language "yes."
 

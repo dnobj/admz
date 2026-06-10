@@ -1,7 +1,9 @@
 # ADR-0030: Survey / contributor mode — distributed read-only API discovery feeding axis-api-atlas via GitHub PRs
 
-**Status:** Accepted (implemented on branch `feat/survey-contributor-mode`; live Tier-1 validation pending).
-**Date:** 2026-06-06.
+**Status:** ✅ Implemented and merged. Survey mode ships in `admz/survey/`
+(collector, validator, secret-scan gate, bundler, fork-and-PR) with a
+`/survey` UI route and a `survey` scheduler job type (ADR-0026).
+**Date:** 2026-06-06. **Updated:** 2026-06-10.
 **Relates to:** ADR-0029 (axis-api-atlas as a maintained reusable asset), ADR-0010 (Fernet encryption), ADR-0009 (OOB credential capture), ADR-0026 (job_type scheduler dispatch), ADR-0007 (per-protocol auth), [axis-api-atlas `docs/design/survey-contributor-mode.md`](https://github.com/mrdnlabs/axis-api-atlas/blob/main/docs/design/survey-contributor-mode.md)
 
 ---

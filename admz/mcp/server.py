@@ -3158,8 +3158,9 @@ class ADMZMCPServer:
                 "auto_registered": auto_registered,
                 "detail": (
                     f"Created admin user '{username}' on factory-default "
-                    f"device. Credentials stored. Use get_credentials to "
-                    f"retrieve the password."
+                    f"device. Credentials stored. The password stays in "
+                    f"ADMZ; for human login mint a temporary account with "
+                    f"create_temp_credentials."
                 ),
             }
 
@@ -3236,7 +3237,8 @@ class ADMZMCPServer:
                 "auto_registered": auto_registered,
                 "detail": (
                     f"Changed password for '{username}'. New credentials "
-                    f"stored. Use get_credentials to retrieve the password."
+                    f"stored. The password stays in ADMZ; for human login "
+                    f"mint a temporary account with create_temp_credentials."
                 ),
             }
 

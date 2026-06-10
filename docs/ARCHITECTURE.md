@@ -7,12 +7,30 @@ This document maps the major modules and how they connect.
 ```
 admz/
 ├── __init__.py            — public API: create_device_registry, exceptions
-├── __main__.py            — CLI entry: `python -m admz {api,mcp,discover}`
+├── __main__.py            — CLI entry: `python -m admz {api,mcp,discover,apikey,maint}`
 ├── device_registry.py     — DeviceRegistry ABC
 ├── factory.py             — backend selection (env var → registry instance)
+├── components.py          — builds the shared component stack (registry,
+│                            catalog, executors, engines, scheduler); single
+│                            source used by both the MCP and FastAPI surfaces
+├── operations.py          — shared gated-execution core: the one risk-gate +
+│                            execution tail MCP, REST, and plans all delegate to
+├── recovery.py            — reboot-recovery poller (await_device_recovery, #49)
+├── redact.py              — shared sensitive-key rules (chat/audit/fleet-settings)
 ├── exceptions.py          — ADMZError hierarchy
+├── validators.py          — identifier + git-ref input validation
+├── ssl_config.py          — TLS-verify default resolution
+├── logging_config.py      — global log level/format wiring
 ├── fleet_settings.py      — SQLite-backed K/V store for fleet-wide settings
 │                            (default password, confirmation levels, MCP tool toggles)
+│
+├── auth.py                — web/REST auth backend selection (none/windows/composite)
+├── authz.py               — authorization helpers (authenticated-principal gates)
+├── api_keys.py            — API keys for LLM agents (ADR-0022)
+├── ldap_groups.py         — LDAP group enrichment for Windows principals (ADR-0023)
+├── audit.py               — SQLite audit log (record_event across all surfaces)
+├── rate_limit.py          — token-bucket rate limiting for public endpoints
+├── migrations/            — one-shot data migrations (e.g. hierarchy_backfill.py)
 │
 ├── backends/              — credential storage backends
 │   ├── sqlite_backend.py  — local SQLite + Fernet-encrypted passwords
@@ -29,20 +47,12 @@ admz/
 │   ├── snmp_query.py      — sysDescr + sysName enrichment
 │   └── credential_probe.py — active no-auth / legacy / supplied-creds probe
 │
-├── catalog/               — operation catalog (YAML on disk)
-│   ├── models.py          — Operation, CgiMetadata, ParameterGroup, etc.
-│   ├── loader.py          — reads YAML from disk, caches
-│   └── resolver.py        — (device, intent) → filtered docs for the LLM
-│
-├── knowledge/             — product-specific hints registry
-│   ├── models.py          — Hint, ProductKnowledge
-│   ├── loader.py          — loads catalog/knowledge/{product-lines,series,products}/
-│   └── resolver.py        — accumulates hints from product → series → product-line
-│
-├── capabilities/          — per-model API support registry
-│   ├── models.py          — FirmwareSnapshot, ModelCapabilities
-│   ├── loader.py          — loads catalog/capabilities/models/
-│   └── resolver.py        — "does (model, firmware) support api_id?"
+│   # NOTE: the operation catalog, product knowledge, and per-model
+│   # capability matrix used to live here (admz/catalog, admz/knowledge,
+│   # admz/capabilities). They were extracted to the standalone
+│   # **axis-api-atlas** package (ADR-0029) and are now imported as
+│   # `axis_api_atlas.{catalog,knowledge,capabilities}`. See the data-layout
+│   # note below and docs/AXIS_API_ATLAS_MAINTENANCE.md.
 │
 ├── firmware/              — Axis public FTP firmware fetcher + upgrade-path
 │   ├── downloader.py      — fetch .bin from MPQT/PACS, cache locally
@@ -52,11 +62,12 @@ admz/
 │   ├── base.py            — BaseExecutor ABC
 │   ├── models.py          — ExecutionRequest, StepResult
 │   └── vapix.py           — VAPIX executor (legacy-cgi, json-rpc,
-│                             config-rest, soap — 4 generations)
+│                             config-rest, soap — 4 generations;
+│                             none/basic/bearer/digest auth)
 │
 ├── plans/                 — multi-step plan engine
 │   ├── models.py          — ExecutionPlan, PlanStep, FailurePolicy
-│   └── engine.py          — validation, execution, parallelism, rollback
+│   └── engine.py          — validation, execution, parallelism, rollback collection
 │
 ├── snapshot/              — config snapshot/restore/drift/schedule
 │   ├── models.py          — DeviceSnapshot, DriftReport, FacetResult
@@ -64,14 +75,34 @@ admz/
 │   ├── git_repo.py        — thin git wrapper
 │   ├── restore.py         — git YAML → execution plan
 │   ├── drift.py           — live vs git comparison
-│   ├── scheduler.py       — recurring snapshots
+│   ├── drift_alerts.py    — drift alert tracking/dedup
+│   ├── maintenance.py     — snapshot-repo GC / maintenance
+│   ├── scheduler.py       — recurring jobs (job_type registry — ADR-0026)
 │   └── facets/            — pluggable per-facet adapters
 │       ├── base.py        — FacetAdapter ABC + SimpleParamFacet
 │       ├── image.py, network.py, time_config.py, stream_profiles.py
 │       ├── users.py, events.py
 │
+├── fleet/                 — fleet-wide background services
+│   └── health.py          — background health monitor (get_fleet_health)
+│
+├── chatbot/               — Gemini web chatbot (ADR-0024/0025)
+│   ├── client.py          — manual tool-calling loop over the MCP surface
+│   ├── config.py          — model selection + API-key bootstrap
+│   ├── mcp_bridge.py      — spawns `python -m admz mcp` as a stdio subprocess
+│   ├── mcp_pool.py        — per-principal MCP subprocess pool
+│   ├── system_prompt.py   — principal-aware system prompt
+│   ├── events.py, sessions.py, usage.py — SSE events, history, token accounting
+│
+├── survey/                — contributor "survey mode" (ADR-0030)
+│   ├── collector.py, runner.py — read-only discovery → contribution bundle
+│   ├── validate.py, secrets.py, redact.py — validation + secret-scan gate
+│   ├── bundle.py, diff.py, github.py — bundle schema, diffing, fork-and-PR
+│
 ├── mcp/                   — MCP server (the primary entry point)
 │   ├── server.py          — 44 tools wiring everything together
+│   ├── tools/             — extracted tool-schema modules (firmware, fleet,
+│   │                         knowledge, provision, schedules)
 │   └── temp_credentials.py — short-lived device user accounts manager
 │
 └── api/                   — FastAPI web server (mirrors the MCP surface)
@@ -90,28 +121,23 @@ admz/
     │   ├── schedules.py   — recurring snapshot schedules
     │   ├── capture.py     — credential capture endpoints
     │   ├── confirm.py     — out-of-band confirmation endpoints
+    │   ├── chat.py        — chatbot SSE route
+    │   ├── survey.py      — survey-mode UI/config
+    │   ├── api_keys.py    — API-key management
     │   └── web.py         — browser-facing HTML routes
     └── templates/         — Jinja templates for the UI
                             (includes confirm_form, confirm_settings,
                              fleet_settings, capture_form, …)
-
-catalog/                   — the actual catalog data (YAML, not code)
-├── vapix/
-│   ├── cgi/<cgi-name>/    — one folder per legacy/json-rpc CGI endpoint
-│   │   ├── _api.yaml      — endpoint metadata (renamed from _cgi.yaml)
-│   │   └── <ver>/<op>.yaml — one file per operation, versioned
-│   ├── rest/<service>/    — config-rest services (cert, snmp, ssh, …)
-│   │   ├── _api.yaml
-│   │   └── v<N>/<op>.yaml
-│   ├── ws/<service>/      — SOAP services (action-service, certificates, …)
-│   │   ├── _api.yaml
-│   │   └── <Op>.yaml
-│   └── index/
-│       ├── by-task.yaml   — task slug → file paths
-│       └── by-risk.yaml   — risk level → file paths
-├── knowledge/             — product hints (product-lines/, series/, products/)
-└── capabilities/          — per-model API snapshots (models/<model>.yaml)
 ```
+
+**Catalog data lives in a sibling package.** The operation catalog
+(400+ YAML ops), product knowledge, and per-model capability matrix are
+maintained in the standalone **axis-api-atlas** repository and imported as the
+`axis_api_atlas` package (ADR-0029). Its on-disk data layout
+(`data/vapix/{cgi,rest,ws}/…`, `data/knowledge/`, `data/capabilities/`,
+`data/products/`) mirrors what used to live under a root `catalog/` tree.
+Edit the catalog *there*, not in ADMZ — see
+[AXIS_API_ATLAS_MAINTENANCE.md](AXIS_API_ATLAS_MAINTENANCE.md).
 
 ## Layering
 
@@ -150,10 +176,11 @@ is the only place that wires all the pieces together.
    + parameter docs for the LLM
 4. **LLM**: picks `param.cgi:update` with `root.Image.I0.Resolution=1920x1080`
 5. **Agent**: calls `execute_operation(device_id, operation_id, params)`
-6. **MCP server**: checks risk level, looks up operation, gets credentials
-   from registry, calls `VapixExecutor.execute()` which builds the HTTP
-   request, sends it (with digest auth), parses the response, returns
-   `StepResult`
+6. **MCP server**: routes through `operations.execute_gated_operation` —
+   checks risk level, looks up operation, gets credentials from registry,
+   calls `VapixExecutor.execute()` which builds the HTTP request, sends it
+   (with the device's auth scheme — none/basic/bearer/digest), parses the
+   response, returns `StepResult`
 7. **Agent**: relays success/failure to user
 
 For a multi-step change ("update resolution and compression"), step 5 is
@@ -194,8 +221,8 @@ two-gate safety for free.
 
 - **API families** — add a new executor by implementing `BaseExecutor`
   and registering it in `executors` dict on the MCP server. Catalog
-  picks up via the family namespace (`catalog/vapix/`, `catalog/acs/`,
-  etc.).
+  picks up via the family namespace (`axis_api_atlas` data dirs
+  `vapix/`, and future `acs/`, etc.).
 - **Discovery protocols** — add a new module under `discovery/` extending
   `DiscoveryProtocolBase`, then register it in
   `orchestrator.DiscoveryOrchestrator`.
@@ -214,14 +241,14 @@ two-gate safety for free.
 | Device registry (host, model, tags) | SQLite or Vault | DeviceRegistry backend |
 | Credentials (encrypted) | SQLite or Vault | DeviceRegistry backend |
 | Device configuration history | Git repo | GitRepo |
-| Operation catalog | YAML files on disk | CatalogLoader |
-| Product knowledge hints | YAML files on disk | KnowledgeLoader |
-| Per-model API capabilities | YAML files on disk | CapabilitiesLoader |
+| Operation catalog | YAML files in the axis-api-atlas package | `axis_api_atlas` CatalogLoader |
+| Product knowledge hints | YAML files in the axis-api-atlas package | `axis_api_atlas` KnowledgeLoader |
+| Per-model API capabilities | YAML files in the axis-api-atlas package | `axis_api_atlas` CapabilitiesLoader |
 | Fleet settings (default password, confirm levels, MCP toggles) | SQLite | FleetSettings |
-| In-flight plans | In-memory dict on PlanEngine | PlanEngine |
+| In-flight plans | In-memory dict on PlanEngine (per process). For `url_*`-gated plans the full steps are also serialized into the confirm session so a different process can reconstruct and run them on approval. | PlanEngine + ConfirmStore |
 | Capture sessions | SQLite | CaptureStore |
-| Confirmation sessions (multi-level, password-protected) | SQLite | ConfirmStore |
-| Legacy in-memory confirm tokens (TTL 5min) — still used by `execute_operation`; migration to ConfirmStore is pending | In-memory dict on MCP server | ADMZMCPServer |
+| Confirmation sessions (multi-level, password-protected; single-source for both single ops and plans, cross-process) | SQLite | ConfirmStore |
+| Audit log (who did what, when — incl. confirm approvals) | SQLite | AuditLog |
 | Snapshot schedules | JSON in `~/.admz/schedules.json` | SnapshotScheduler |
 | Temp credentials (live device users with TTL) | In-memory dict on MCP server | TempCredentialManager |
 | Cached firmware binaries | `~/.admz/firmware/*.bin` | firmware.downloader |

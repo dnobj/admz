@@ -16,7 +16,7 @@ Who ADMZ is built for. Each persona drives a set of user stories and requirement
 - [Experience Center operator](personas/experience-center-operator.md) — the original driver of the snapshot/restore work
 - [Enterprise fleet operator](personas/enterprise-fleet-operator.md) — Vault-backed, hundreds-of-devices use case
 - [LLM agent](personas/llm-agent.md) — the AI consumer of the MCP surface
-- [Web-Chatbot user](personas/web-chatbot-user.md) 📋 — the operator who doesn't run their own agent (expected primary persona)
+- [Web-Chatbot user](personas/web-chatbot-user.md) ✅ — the operator who doesn't run their own agent (expected primary persona; the chatbot is live)
 - [Security-conscious operator](personas/security-conscious-operator.md) — the human at the keyboard who cares about safety gates
 - [Catalog contributor](personas/catalog-contributor.md) — an external developer adding new operations, protocols, or backends
 
@@ -28,11 +28,11 @@ Workflows the system must support. Grouped by area.
 - [Credential management](user-stories/credential-management.md) — capture, probe, rotate, temp creds
 - [Snapshot and restore](user-stories/snapshot-and-restore.md) — capturing, restoring, forking device configs
 - [LLM-driven configuration](user-stories/llm-driven-configuration.md) — catalog query → execute → confirm
-- [Chatbot-driven workflows](user-stories/chatbot-driven-workflows.md) 📋 — what the bundled chat client will deliver
+- [Chatbot-driven workflows](user-stories/chatbot-driven-workflows.md) ✅ — what the bundled chat client delivers
 - [Network discovery](user-stories/network-discovery.md) — finding devices on the local network
 - [Demo workflows](user-stories/demo-workflows.md) — Experience Center-specific demo/tag/restore patterns
 - [Drift and monitoring](user-stories/drift-and-monitoring.md) — configuration audits (just-in-time + scheduled), detecting and reconciling unauthorized changes
-- [Scheduled operations](user-stories/scheduled-operations.md) 📋 — recurring unattended jobs (snapshots, configuration audits) on one scheduler
+- [Scheduled operations](user-stories/scheduled-operations.md) ✅ — recurring unattended jobs (snapshots, configuration audits, survey) on one job-type scheduler
 - [Firmware operations](user-stories/firmware-operations.md) — fetch, plan upgrades, apply
 
 ## Requirements
@@ -55,7 +55,7 @@ What the system must do, per capability area. Each file has Functional Requireme
 - [MCP server](requirements/mcp-server.md) — tool surface, gating
 - [Web API](requirements/web-api.md) — REST surface
 - [Web UI](requirements/web-ui.md)
-- [Web chatbot](requirements/web-chatbot.md) 🚧 — bundled Gemini-powered chat client (Phase 5)
+- [Web chatbot](requirements/web-chatbot.md) ✅ — bundled Gemini-powered chat client (manual MCP tool loop)
 - [Organization hierarchy](requirements/hierarchy.md) 📋 — Org → Site → Group → Device (draft skeleton)
 - [Multi-target support](requirements/multi-target-support.md) 📋 — 2N intercoms, ACS Pro VMS, typed target taxonomy, ConfigCollector / Actuator split
 
@@ -80,7 +80,8 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 - [0003 — YAML catalog, not generated code](decisions/0003-yaml-not-generated-code.md)
 - [0004 — Tags live only in index files](decisions/0004-tags-in-index.md)
 - [0019 — Inverted index files for routing](decisions/0019-inverted-index-files.md)
-- [0029 — Axis API Atlas as a maintained, reusable asset (DCA-refreshed capability matrix + standalone extraction)](decisions/0029-axis-api-atlas-as-maintained-reusable-asset.md) 📋 — also see the [maintenance runbook](../AXIS_API_ATLAS_MAINTENANCE.md)
+- [0029 — Axis API Atlas as a maintained, reusable asset (DCA-refreshed capability matrix + standalone extraction)](decisions/0029-axis-api-atlas-as-maintained-reusable-asset.md) ✅ — also see the [maintenance runbook](../AXIS_API_ATLAS_MAINTENANCE.md)
+- [0030 — Survey / contributor mode (distributed read-only API discovery → axis-api-atlas PRs)](decisions/0030-survey-contributor-mode.md) ✅
 
 ### Safety & gating
 
@@ -97,8 +98,8 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 
 ### Entry-point surfaces
 
-- [0024 — Bundled web chatbot](decisions/0024-bundled-web-chatbot.md) 🚧 (accepted, Phase 5 in progress)
-- [0025 — Gemini 3.1 + native MCP for the chatbot](decisions/0025-gemini-chatbot-mcp-native.md) 🚧
+- [0024 — Bundled web chatbot](decisions/0024-bundled-web-chatbot.md) ✅ (live)
+- [0025 — Gemini for the chatbot (manual MCP tool loop)](decisions/0025-gemini-chatbot-mcp-native.md) ✅ (amended — shipped the manual tool loop, not SDK-native MCP; default gemini-2.5-flash)
 
 ### Authentication & secrets
 
@@ -121,7 +122,7 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 
 - [0012 — Snapshot/restore implemented on top of the plan engine](decisions/0012-snapshot-on-plans.md)
 - [0013 — Hybrid YAML + raw artifact format](decisions/0013-hybrid-yaml-and-raw.md)
-- [0026 — Unified job scheduler](decisions/0026-unified-job-scheduler.md) 📋 (proposed) — generalize the snapshot-only scheduler to job types; enables scheduled configuration audits
+- [0026 — Unified job scheduler](decisions/0026-unified-job-scheduler.md) ✅ — generalized the snapshot-only scheduler to a `job_type` handler registry; ships snapshot, drift_audit, and survey job types
 
 ### Activity tracking & monitoring
 
@@ -131,6 +132,13 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 
 - [0016 — Merge discovery results by MAC](decisions/0016-merge-discovery-by-mac.md)
 - [0017 — Two-phase discovery (broadcast then enrich)](decisions/0017-two-phase-discovery.md)
+
+## Reviews
+
+Point-in-time production-readiness reviews and their follow-up trackers.
+
+- [review-2026-06-10.md](review-2026-06-10.md) — exhaustive architecture / security / vestigial-code / duplication / docs review, with a prioritized action plan and per-finding status
+- [review-followup.md](review-followup.md) — the 2026-05-17 review's follow-up tracker
 
 ## Reading paths by role
 

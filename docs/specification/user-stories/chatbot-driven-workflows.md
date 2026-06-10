@@ -1,8 +1,11 @@
 # User stories: chatbot-driven workflows
 
-> **Status:** 📋 Planned. These stories describe the experience the
-> bundled web chatbot is intended to deliver. The chatbot itself is
-> not yet built — see [ADR-0024](../decisions/0024-bundled-web-chatbot.md).
+> **Status:** ✅ Live. These stories describe the experience the bundled
+> web chatbot delivers. It ships as a Gemini-powered chat client driving a
+> manual tool-calling loop over the MCP surface — see
+> [ADR-0024](../decisions/0024-bundled-web-chatbot.md),
+> [ADR-0025](../decisions/0025-gemini-chatbot-mcp-native.md), and
+> [requirements/web-chatbot.md](../requirements/web-chatbot.md).
 
 The Web-Chatbot User persona drives ADMZ entirely through a built-in
 chat interface, without ever installing Claude Code or any other MCP

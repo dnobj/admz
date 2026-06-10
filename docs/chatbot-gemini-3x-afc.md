@@ -1,7 +1,11 @@
 # Gemini 3.x + MCP tools: the empty-turn (AFC) issue and how to fix it
 
-**Status:** Diagnosed; fix not yet implemented. gemini-2.5-flash (the default) is
-unaffected and reliable. This is the reference for adding gemini-3.x support.
+**Status:** ✅ Fixed. The recommended **Option B (manual function-calling loop
+with SDK AFC disabled)** shipped in `admz/chatbot/client.py` — chat turns run a
+hand-rolled tool loop (`automatic_function_calling={"disable": True}`) instead
+of the broken async-stream AFC, so gemini-3.x tool turns no longer empty-out.
+gemini-2.5-flash remains the reliable default. This doc is retained as the
+diagnosis + design record for that loop.
 
 ## Symptom
 

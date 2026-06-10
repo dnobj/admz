@@ -47,13 +47,12 @@ Each tick checks every enabled schedule's `next_run` and fires
 ready jobs. One scheduler instance per process — enforced by the
 components builder (FR-CORE-006).
 
-### FR-SCH-005 — Snapshot is the only job type today 🚧
-`_execute_schedule()` calls `engine.snapshot_fleet(...)` directly;
-`SnapshotSchedule` carries only snapshot params. There is **no** drift
-job type and **no** `register_drift_schedule` / `register_snapshot_schedule`
-factory in the code. Generalizing to multiple job types — starting with
-`drift_audit` — is planned via the unified job scheduler (FR-SCH-010,
-ADR-0026).
+### FR-SCH-005 — Multiple job types via a handler registry ✅
+The scheduler dispatches on a per-schedule `job_type` through a handler
+registry (`register_job_handler` / `_HANDLERS` in
+`admz/snapshot/scheduler.py`, ADR-0026 / FR-SCH-010). Three job types ship
+today: `snapshot`, `drift_audit`, and `survey`. Legacy rows with no
+`job_type` migrate to `"snapshot"` on load.
 
 ### FR-SCH-006 — Bounded concurrency via shared semaphore ✅
 Both snapshot and drift jobs go through `snapshot_engine` which

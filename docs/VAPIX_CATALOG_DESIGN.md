@@ -5,12 +5,20 @@
 > execution plans, multi-API-family architecture, and device interrogation.
 >
 > The core design is **implemented and shipping** — see
-> `admz/catalog/`, `admz/executor/`, `admz/plans/`, and the MCP tools
+> `admz/executor/`, `admz/plans/`, and the MCP tools
 > `query_catalog`, `execute_operation`, `create_plan`, `execute_plan`.
-> The actual catalog content (under `catalog/vapix/`) is intentionally
-> a small seed set; this doc enumerates many CGIs that the design
-> *supports* but that have not yet been written. Adding a new CGI is
-> a YAML-only change — see the "Catalog file format" section.
+>
+> **⚠️ Catalog location moved (ADR-0029).** The catalog *content* and its
+> loader/resolver (`admz/catalog/`, `admz/knowledge/`, `admz/capabilities/`)
+> were extracted to the standalone **axis-api-atlas** package and are now
+> imported as `axis_api_atlas.{catalog,knowledge,capabilities}`. The catalog
+> is no longer a local `catalog/` tree or a `.vapix-catalog/` git clone
+> inside ADMZ — it ships as a Python dependency. The 400+ operation YAMLs
+> live in the atlas repo under `data/vapix/{cgi,rest,ws}/…`. Edit the catalog
+> *there* — see [AXIS_API_ATLAS_MAINTENANCE.md](AXIS_API_ATLAS_MAINTENANCE.md).
+> The file-format, generation, and risk-classification concepts described
+> below are unchanged; only the *location* and the central-repo-sync sections
+> near the end are obsolete.
 
 ## Problem
 

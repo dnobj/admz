@@ -1,7 +1,33 @@
-# ADR-0025: Gemini 3.1 as the chatbot LLM, native MCP integration
+# ADR-0025: Gemini as the chatbot LLM, MCP integration
 
-**Status:** Accepted, in progress.
-**Date:** 2026-05-18.
+**Status:** Accepted — **shipped, with the implementation diverging from the
+original SDK-native plan (see Amendment below).**
+**Date:** 2026-05-18. **Amended:** 2026-06-10.
+
+> ## Amendment (2026-06-10) — what actually shipped
+>
+> Two parts of the original decision changed during implementation; the body
+> below is preserved as the record of the thinking at the time.
+>
+> - **Tool integration: manual loop, not SDK-native MCP/AFC.** The
+>   experimental native-MCP path in `google-genai` did not hold up, so ADMZ
+>   ships the **fallback that this ADR itself anticipated** (Alternative 4 /
+>   the mitigation): a hand-rolled tool-calling loop in
+>   `admz/chatbot/client.py` that spawns the MCP server as a stdio subprocess
+>   (`admz/chatbot/mcp_bridge.py`), advertises the tools, and bounces tool
+>   calls in-process. The Interactions API + `previous_interaction_id`
+>   server-side state was **not** adopted; conversation history is handled by
+>   ADMZ.
+> - **Default model: `gemini-2.5-flash`, not `gemini-3.1-pro`.** 2.5-flash is
+>   the proven, cheaper floor for chat-style turns. The selectable list spans
+>   the 2.5 and 3.x lines (see `admz/chatbot/config.py` `SELECTABLE_MODELS`);
+>   operators pick 3.x explicitly or via `ADMZ_GEMINI_DEFAULT_MODEL`.
+> - **Tool count:** the MCP surface is now **44 tools**, not the 19 cited
+>   below.
+>
+> The provider choice (Gemini), the SSE streaming protocol, the inline
+> approval cards, the protected-fleet-setting API key, and the
+> graceful-degradation behaviour all shipped as written.
 
 ## Context
 

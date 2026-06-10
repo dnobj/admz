@@ -11,11 +11,11 @@ It rests on four pillars:
 3. **A safe execution engine** that turns catalog operations into authenticated HTTP calls, with two-gate approval for anything destructive.
 4. **A git-backed configuration store** that snapshots device state, supports diff and restore, and treats device configuration as a versioned, branchable, reviewable asset.
 
-The system exposes these pillars through **three planned surfaces:**
+The system exposes these pillars through **three surfaces:**
 
 1. **MCP server** — for users who already operate an MCP-capable agent (Claude Code, custom Anthropic SDK clients, etc.). Live today.
 2. **FastAPI REST API + Jinja2 web UI** — CRUD + management UI for humans, also the AJAX target for the chatbot. Live today.
-3. **Bundled web chatbot** — a built-in chat client for users who don't operate their own agent. The expected primary path for most users. Currently 📋 planned; deferred until the rest of the app is otherwise complete. See [ADR-0024](decisions/0024-bundled-web-chatbot.md).
+3. **Bundled web chatbot** — a built-in Gemini chat client for users who don't operate their own agent. The expected primary path for most users. ✅ Live (manual tool-calling loop over the MCP surface; gemini-2.5-flash default). See [ADR-0024](decisions/0024-bundled-web-chatbot.md), [ADR-0025](decisions/0025-gemini-chatbot-mcp-native.md).
 
 The MCP server and the chatbot are intended as **co-equal entry points**, not primary/secondary — power users keep using their own clients, while everyone else gets the bundled chat experience. Same safety gates, same audit log, same tool surface.
 
@@ -82,7 +82,7 @@ ADMZ deliberately **does not**:
 - **Manage ACAP application lifecycle directly.** Applications can be discovered and their configuration snapshotted, but installing/upgrading the ACAP runtime itself is out of scope (it may be integrated via the catalog later).
 - **Federate multiple Experience Centers / fleets.** One ADMZ instance owns one fleet. Multi-fleet federation is out of scope.
 - **Run its own scheduler daemon.** Schedules execute as asyncio tasks inside the MCP/API process.
-- **Provide multi-tenant access control with per-user roles inside ADMZ itself.** Authentication-to-ADMZ is currently absent and is a known gap (see [requirements/security.md](requirements/security.md)).
+- **Provide multi-tenant access control with per-user roles inside ADMZ itself.** Authentication-*to*-ADMZ shipped in Phase 4 (optional `ADMZ_AUTH_BACKEND` — none/windows/composite — plus API keys for agents and LDAP group enrichment; see [ADR-0021](decisions/0021-windows-iwa-via-reverse-proxy.md)–[ADR-0023](decisions/0023-ldap-group-enrichment.md) and [requirements/authentication.md](requirements/authentication.md)). Fine-grained per-user *role-based authorization inside* ADMZ remains out of scope.
 - **Manage non-Axis devices.** The architecture is family-pluggable in principle (`BaseExecutor`), but no non-VAPIX executor exists or is planned.
 - **Serve as a real-time monitoring or alerting platform.** Drift detection is poll-based; there is no continuous webhook/event-driven monitoring loop.
 

@@ -93,14 +93,19 @@ shipping with no concrete second consumer. If a second provider
 is needed later, it lands as a separate ADR + extraction. See
 [ADR-0025](../decisions/0025-gemini-chatbot-mcp-native.md).
 
-### FR-CB-008 — Per-user model selection 🚧
-The chat UI exposes a model selector:
-- `gemini-3.1-pro` (default; $2 in / $12 out per 1M tokens)
-- `gemini-3.1-flash` (fast tier)
-- `gemini-3.1-flash-lite` (cheapest; $0.25 / $1.50 per 1M)
+### FR-CB-008 — Per-user model selection ✅
+The chat UI exposes a model selector spanning the Gemini 2.5 and 3.x
+lines (the authoritative list is `SELECTABLE_MODELS` in
+`admz/chatbot/config.py`):
+- `gemini-2.5-flash` — **default** (proven, cheap floor for chat-style turns)
+- `gemini-2.5-pro`, `gemini-2.5-flash-lite`
+- `gemini-3.1-pro-preview`, `gemini-3.5-flash`, `gemini-3.1-flash-lite`
 
-Selection persists per principal via a UI cookie. The org-wide
-default is configurable in `/settings/chat`.
+The default is intentionally **not** the newest 3.x line — 2.5-flash is
+cheaper and reliable for tool-calling turns; operators pick a 3.x model
+explicitly or set `ADMZ_GEMINI_DEFAULT_MODEL`. Selection persists per
+principal. (Pricing shifts with Google's tiers; see
+`admz/chatbot/usage.py` `PRICING` for the values ADMZ bills against.)
 
 ### FR-CB-009 — Disabled by default ✅
 With no Gemini API key configured (neither

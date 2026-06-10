@@ -16,8 +16,10 @@ conversationally.
 - **Captures credentials out-of-band** so passwords never enter the
   LLM conversation
 - **Catalogs VAPIX operations** as YAML so the LLM picks parameters
-  from a single source of truth (~250 operations across legacy CGI,
-  config-REST, and SOAP — growing)
+  from a single source of truth (400+ operations across legacy CGI,
+  json-RPC, config-REST, and SOAP — maintained in the
+  [axis-api-atlas](https://github.com/mrdnlabs/axis-api-atlas) package
+  and growing)
 - **Executes operations** against devices with a two-gate risk check
 - **Plans multi-step changes** that are reviewed once and run
   autonomously
@@ -28,17 +30,27 @@ conversationally.
 
 ## Installation
 
+ADMZ depends on the [axis-api-atlas](https://github.com/mrdnlabs/axis-api-atlas)
+package (the executable operation catalog + knowledge + capability matrix —
+ADR-0029). It is listed in `requirements.txt`, but is not yet on PyPI, so for
+local development install the sibling clone editable alongside ADMZ:
+
 ```bash
-git clone <repo-url>
+git clone <admz-repo-url> admz
+git clone https://github.com/mrdnlabs/axis-api-atlas.git
 cd admz
-pip install -e .
+pip install -e ../axis-api-atlas   # the catalog dependency (required)
+pip install -e .                   # ADMZ itself
 ```
 
-Optional extras:
+The core install already includes the network-discovery stack (zeroconf,
+WSDiscovery, scapy, pysnmp), the Vault client (hvac), the chatbot LLM client
+(google-genai), and LDAP support (ldap3) — discovery and the chatbot both
+degrade gracefully when their optional runtime config is absent. The only
+extra is `dev` (test + lint tooling):
 
 ```bash
-pip install -e ".[discovery]"   # network discovery
-pip install hvac                # Vault backend (otherwise SQLite is default)
+pip install -e ".[dev]"          # development / test dependencies
 ```
 
 ## Quick start
@@ -92,7 +104,7 @@ full parameter reference.
 ### As a web service
 
 ```bash
-python -m admz api --host 127.0.0.1 --port 8000
+python -m admz api --host 127.0.0.1 --port 4242
 ```
 
 Provides:
@@ -119,10 +131,13 @@ REST endpoint groups:
 | Capture | `/api/capture`, `/api/capture/{token}/status`, `/capture/{token}` (HTML) |
 | Confirm | `/api/confirm/{token}/status`, `/confirm/{token}` (HTML) |
 
-> ⚠️ **No auth on the web UI / REST API as of this release.** Bind to
-> `127.0.0.1` and put a reverse proxy with auth in front for any
-> non-localhost deployment. Default `--host` is `127.0.0.1`; pass
-> `--host 0.0.0.0` explicitly to expose on all interfaces.
+> ⚠️ **Authentication is optional and defaults to off.** Set
+> `ADMZ_AUTH_BACKEND` to `windows` (Windows IWA via a reverse proxy —
+> ADR-0021) or `composite` to require auth; the default `none` leaves the
+> web UI / REST API open. LLM agents can authenticate with API keys
+> (ADR-0022). Regardless of backend, bind to `127.0.0.1` and front it with
+> a reverse proxy for any non-localhost deployment. Default `--host` is
+> `127.0.0.1`; pass `--host 0.0.0.0` explicitly to expose on all interfaces.
 
 ## Configuration
 
@@ -133,26 +148,35 @@ ADMZ is configured via environment variables:
 | `DEVICE_REGISTRY_BACKEND` | `sqlite` | `sqlite` or `vault` |
 | `ADMZ_DB_PATH` | `~/.admz/admz.db` | SQLite database path |
 | `ADMZ_KEY_PATH` | `~/.admz/admz.key` | Fernet key file path |
-| `ADMZ_CATALOG_PATH` | `<repo>/catalog` | Operation catalog directory |
+| `ADMZ_CATALOG_PATH` | _(axis-api-atlas package data dir)_ | Override to point at a local/forked atlas data directory |
 | `ADMZ_CONFIG_REPO_PATH` | `~/.admz/config-repo` | Config git repo path |
 | `ADMZ_CONFIG_REPO_REMOTE` | _unset_ | Git remote URL for config repo |
 | `ADMZ_LOG_LEVEL` | `INFO` | Log level: `CRITICAL`/`ERROR`/`WARNING`/`INFO`/`DEBUG` |
 | `ADMZ_LOG_FORMAT` | `text` | `text` (human-readable) or `json` (one JSON object per line for log aggregators) |
-| `ADMZ_ALLOWED_ORIGINS` | `http://localhost:4242,http://127.0.0.1:4242,http://localhost:8000,http://127.0.0.1:8000` | Comma-separated CORS allowlist for the REST API. Pass `*` (NOT recommended) to allow any origin — credentialed requests will be browser-rejected per the CORS spec. |
+| `ADMZ_ALLOWED_ORIGINS` | `http://localhost:4242,http://127.0.0.1:4242` | Comma-separated CORS allowlist for the REST API. Pass `*` (NOT recommended) to allow any origin — credentialed requests will be browser-rejected per the CORS spec. |
 | `ADMZ_VAPIX_RETRIES` | `1` | Per-request retry count in the VAPIX executor |
 | `ADMZ_SNAPSHOT_FLEET_CONCURRENCY` | `50` | Max devices snapshotted concurrently during `snapshot_fleet`. Bound is per-call (asyncio semaphore). Higher values trade memory + FD pressure for wall-clock; lower values are safer at very large fleet sizes. |
 | `ADMZ_VERIFY_SSL` | _unset_ (treated as `false`) | Verify device TLS certificates. Off by default because Axis devices ship with self-signed certs. Set to `true` once you've installed trust anchors on the ADMZ host. Accepts `true`/`false`/`1`/`0`/`yes`/`no`. |
-| `ADMZ_BASE_URL` | `http://localhost:8000` | Base URL the MCP server uses when generating fleet-password capture links |
+| `ADMZ_BASE_URL` | `http://localhost:4242` | Base URL the MCP server uses when generating fleet-password capture links. Behind a reverse proxy, set this to the public-facing URL. |
+| `ADMZ_AUTH_BACKEND` | `none` | Web/REST auth: `none`, `windows` (IWA via reverse proxy — ADR-0021), or `composite`. |
+| `ADMZ_LDAP_ENABLED` | `false` | Enable LDAP group enrichment for Windows principals (ADR-0023). When `true`, reads the `ADMZ_LDAP_*` connection vars. |
+| `ADMZ_GEMINI_API_KEY` | _unset_ | Seeds the Gemini API key for the web chatbot (`/chat`). Stored thereafter as a protected fleet setting; the route is disabled when unset. |
+| `ADMZ_GEMINI_DEFAULT_MODEL` | `gemini-2.5-flash` | Default chatbot model (operators can also pick per-session from the dropdown). |
 | `VAULT_ADDR` | _unset_ | Vault server URL (vault backend only) |
 | `VAULT_TOKEN` | _unset_ | Vault auth token |
 | `VAULT_ROLE_ID` | _unset_ | AppRole role id (vault backend only) |
 | `VAULT_SECRET_ID` | _unset_ | AppRole secret id (vault backend only) |
 
+Additional env vars exist for finer control (auth proxy trust, LDAP
+connection details, Gemini retry/thinking budget, git timeouts, fleet-health
+intervals, survey mode). They are documented at their point of use in the
+code and in the relevant `docs/specification/requirements/` files.
+
 ## Architecture
 
 ```
                           ┌─────────────────────┐
-                          │   MCP server (41    │
+                          │   MCP server (44    │
                           │      tools)         │
                           └──────────┬──────────┘
                                      │
@@ -210,10 +234,10 @@ The `docs/` folder contains:
 pytest tests/ --ignore=tests/test_vault_backend.py
 ```
 
-534 tests across the catalog, executor, plans, snapshots, scheduler,
-discovery, capture, confirm-store, capabilities, knowledge, firmware,
-API routes, and SQLite backend. (Vault backend tests are skipped unless
-a Vault server is reachable.)
+~1,600 tests across the executor, plans, operations gate, snapshots,
+scheduler, discovery, capture, confirm-store, redaction, firmware, auth,
+chatbot, survey, API routes, and SQLite backend. (Vault backend tests and a
+handful of live-device tests are skipped unless their target is reachable.)
 
 Coverage is measured via `pytest-cov`; an HTML report is written to
 `htmlcov/`.

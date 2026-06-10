@@ -127,7 +127,7 @@ never enters the LLM context.
 Create a capture session and return the URL.
 - **Args:** `device_id`, `account_id` (default `"default"`),
   `account_type` (default `"service"`), `purpose` (string, optional),
-  `base_url` (default `http://localhost:8000`)
+  `base_url` (default `http://localhost:4242`, from `ADMZ_BASE_URL`)
 - **Returns:** `{success, url, token, device_id, account_id, expires_in_seconds}`
 - **TTL:** 10 minutes
 
@@ -167,7 +167,8 @@ Probe a device, then take state-appropriate action: factory-default →
 create admin user; legacy default → store; unknown → error. Auto-registers
 the device using its MAC if `device_id` is omitted. Generated passwords
 are stored under account `default` and **never returned** in the response
-— use `get_credentials` (if enabled) to retrieve them.
+— the executor uses them internally, and for human login you mint a
+short-lived account with `create_temp_credentials`.
 - **Args:** `device_id?` or `host?` (one required), `username` (default
   `"root"`), `password?` (else fleet default or 24-char generated),
   `force_change` (bool, default `false`)

@@ -9,12 +9,12 @@ Every write operation against a device passes through two independent gates:
 1. **Semantic gate** — the LLM (or REST caller) presents the proposed change to a human in natural language; the human approves or rejects.
 2. **Mechanical gate** — the catalog's per-operation `risk_level` field. `dangerous`-risk operations are blocked at execute time and return a `confirm_token`. A reasoning bug in the LLM cannot bypass the mechanical check; a misconfigured catalog cannot bypass the user review.
 
-**Enforced at:** `mcp/server.py::_execute_operation`, `api/routes/catalog.py::execute_operation`, and `plans/engine.py::execute_plan`. See [0005](../decisions/0005-two-gate-plan-approval.md).
+**Enforced at:** the shared gate in `operations.py` (`execute_gated_operation` / `execute_gated_plan`), which the MCP server (`mcp/server.py`), REST (`api/routes/catalog.py`, `api/routes/plans.py`), and the plan engine all delegate to — one risk→level policy, one execution tail. See [0005](../decisions/0005-two-gate-plan-approval.md).
 
-### FR-SEC-002 — Dangerous-step plans require explicit confirmation ✅
-`PlanEngine.execute_plan(plan_id, confirm_dangerous=True)` must be set for any plan containing a step with `risk_level: dangerous`. Otherwise `PermissionError` is raised listing the offending steps. The MCP `execute_plan` tool surfaces this as a structured `{blocked: true, reason: "plan_contains_dangerous_steps", retry_with: {confirm_dangerous: true}}` envelope.
+### FR-SEC-002 — Gated-risk plans require explicit confirmation ✅
+A plan's required confirmation level is the strictest across its steps (per the configurable per-risk policy). `operations.execute_gated_plan` runs it immediately only when that level is `none`; an `llm_confirm`-level plan needs `confirm_dangerous=True` (else a `{blocked: true, retry_with: {confirm_dangerous: true}}` envelope); a `url_*`-level plan returns a blocked envelope whose `/confirm/{token}` page approves and runs it. `plans/engine.py::run_plan` itself is un-gated and only reached after approval.
 
-**Enforced at:** `plans/engine.py::execute_plan` (Phase 2D). Tested in `tests/test_plan_engine.py::TestDangerousPlanGate`.
+**Enforced at:** `operations.py::execute_gated_plan` (the shared plan gate). Tested in `tests/test_plan_engine.py::TestPlanGate` and `tests/test_operations_core.py`.
 
 ### FR-SEC-003 — Confirmation tokens are single-use, time-limited, cross-surface ✅
 `confirm_token`s issued by either MCP `execute_operation` or REST `POST /api/catalog/execute` are stored in a shared SQLite `ConfirmStore`:

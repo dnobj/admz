@@ -1,8 +1,10 @@
 # ADR-0026: Unified job scheduler
 
-**Status:** Proposed (2026-05-21). Not yet built.
-**Supersedes the implicit design in:** `admz/snapshot/scheduler.py`
-(snapshot-only today).
+**Status:** ✅ Implemented (proposed 2026-05-21; built since). The scheduler
+carries a `job_type` per schedule and dispatches via a handler registry
+(`register_job_handler` / `_HANDLERS` in `admz/snapshot/scheduler.py`); three
+job types ship today: `snapshot`, `drift_audit`, and `survey`.
+**Superseded the snapshot-only design in:** `admz/snapshot/scheduler.py`.
 
 ## Context
 
