@@ -87,6 +87,9 @@
         <div class="composer-box">
           <textarea id="message" name="message" rows="1" required
             placeholder="Tell ADMZ what to do…  (Enter to send)"></textarea>
+          <button id="voice-toggle" type="button" class="btn" aria-pressed="false"
+            title="Voice conversation (Gemini Live — speak to ADMZ)"
+            {% if not configured %}disabled{% endif %}><i data-lucide="mic"></i></button>
           <button id="chat-send" type="submit" class="btn primary" title="Send"
             {% if not configured %}disabled{% endif %}><i data-lucide="send-horizontal"></i></button>
         </div>
@@ -95,6 +98,7 @@
           <span class="safety"><i data-lucide="shield"></i>
             Dangerous operations always require explicit approval — the two-gate model applies to AI and humans alike.</span>
           {% else %}<span style="flex:1"></span>{% endif %}
+          <span id="voice-status" class="voice-status" aria-live="polite"></span>
           <label for="model" style="font-size:12px">Model</label>
           <select id="model" name="model">
             {% for m in selectable_models %}

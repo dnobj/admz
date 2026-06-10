@@ -14,6 +14,18 @@
   {% include "_console.html" %}
 {% endblock %}
 
+{% block extra_css %}
+<style>
+  #voice-toggle.recording { background:#e23; color:#fff; border-color:#e23;
+    animation:voice-pulse 1.2s ease-in-out infinite; }
+  @keyframes voice-pulse { 0%,100%{box-shadow:0 0 0 0 rgba(238,34,51,.5);}
+    50%{box-shadow:0 0 0 6px rgba(238,34,51,0);} }
+  .voice-status { font-size:12px; color:#9aa; margin-right:auto; }
+  .voice-turn .vt-tool { font-size:12px; opacity:.7; font-style:italic; }
+</style>
+{% endblock %}
+
 {% block extra_js %}
 <script src="/static/chat.js" defer></script>
+<script src="/static/voice.js" defer></script>
 {% endblock %}
