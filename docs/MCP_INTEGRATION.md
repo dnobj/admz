@@ -157,12 +157,12 @@ The ADMZ MCP server uses stdio transport and is compatible with any MCP client. 
 
 ## Available Tools
 
-The ADMZ MCP server currently exposes **41 tools** across these areas:
-device & account CRUD, out-of-band credential capture, provisioning &
-temp credentials, network discovery, catalog/knowledge/capabilities,
-operation execution with two-gate safety, multi-step plans,
-snapshot/restore/diff/drift, scheduled snapshots, fleet settings, and
-firmware management.
+The ADMZ MCP server currently exposes **44 tools** across these areas:
+device & account CRUD, health & reboot-recovery waiting, out-of-band
+credential capture, provisioning & temp credentials, network discovery,
+catalog/knowledge/capabilities, operation execution with two-gate
+safety, multi-step plans, snapshot/restore/diff/drift, scheduled
+snapshots, fleet settings, and firmware management.
 
 For the **authoritative per-tool reference** (inputs, outputs, gating,
 error envelopes), see

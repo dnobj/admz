@@ -71,7 +71,7 @@ admz/
 │       ├── users.py, events.py
 │
 ├── mcp/                   — MCP server (the primary entry point)
-│   ├── server.py          — 41 tools wiring everything together
+│   ├── server.py          — 44 tools wiring everything together
 │   └── temp_credentials.py — short-lived device user accounts manager
 │
 └── api/                   — FastAPI web server (mirrors the MCP surface)

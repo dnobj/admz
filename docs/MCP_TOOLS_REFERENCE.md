@@ -1,14 +1,15 @@
 # ADMZ MCP Tools Reference
 
-Complete reference for the **41 tools** the ADMZ MCP server exposes.
+Complete reference for the **44 tools** the ADMZ MCP server exposes.
 
-> Note: `get_credentials` is filtered out of `list_tools()` unless the
-> fleet setting `tool_get_credentials_enabled = "true"` is set (via the
-> `/confirm-settings` web UI). With it disabled, the server appears to
-> expose 40 tools.
+> Note: a `get_credentials` MCP tool used to exist. It was **removed**
+> (CR-1) because returning plaintext passwords into LLM context violates
+> the project's stated invariant. Use `create_temp_credentials` when the
+> LLM needs to authenticate against a device.
 
 Group key:
 - 🗂 = registry + accounts
+- 🩺 = health + reboot recovery
 - 🔐 = out-of-band credential capture
 - 🔑 = provisioning &amp; temp credentials
 - 📡 = network discovery
@@ -73,10 +74,46 @@ Remove an account from a device.
 - **Args:** `device_id`, `account_id`
 - **Returns:** `{success, device_id, account_id}`
 
-### `get_credentials`
-Retrieve credentials (returns the actual password — sensitive).
-- **Args:** `device_id`, `account_id` (default `"default"`), `requester` (string, optional)
-- **Returns:** `{success, credentials: {username, password, ...}}`
+---
+
+## 🩺 Health & recovery
+
+### `get_device_health`
+Cached reachability status for one device (from the background health
+monitor — no network call fires).
+- **Args:** `device_id`
+- **Returns:** `{success, device_id, status, ...}`
+- **Status values:** `online`, `unreachable`, `auth_failed`, `unknown`
+
+### `get_fleet_health`
+Cached reachability status for every registered device.
+- **Args:** none
+- **Returns:** `{success, total, counts, devices}`
+
+### `await_device_recovery`
+Wait for a device to come back after a reboot/restart. **Live-polls**
+the device's `systemready` API (unlike the cached health tools) until it
+confirms a completed reboot — boot id changed, uptime reset, or an
+offline period followed by a healthy response.
+- **Args:** `device_id`; optional `timeout_s` (default 90, clamped
+  5–600 — keep ≤90 from chat, the stream aborts tool calls after ~120s),
+  `poll_interval_s` (default 3, clamped 1–30), `baseline_bootid`
+  (pass the value from a previous `still_waiting` result to continue
+  detection across calls)
+- **Returns:** `{success, recovered, status, device_id, waited_s, polls,
+  offline_observed, not_ready_observed, bootid, uptime_s, needsetup,
+  baseline_bootid, message}`
+- **Status values:** `recovered` (definitive — evidence of a real boot
+  cycle), `still_waiting` (budget exhausted; call again with the returned
+  `baseline_bootid`), `auth_failed` (device is UP but rejected stored
+  credentials on 2 consecutive probes — fails fast instead of polling out
+  the budget)
+- A healthy response on the *pre-reboot* boot (old boot id, high uptime)
+  is **not** reported as recovered — the poller waits for the down/up
+  transition. `needsetup: true` means the device came back
+  factory-defaulted (e.g. after factory reset) and needs provisioning.
+- **Errors:** `DeviceNotFound`, `OperationNotFound` (systemready missing
+  from the catalog)
 
 ---
 
@@ -301,6 +338,14 @@ Compare live device state against git HEAD.
 - **Returns:** single device: `{success, device_id, has_drift,
   facets_checked, facets_drifted, drifted_fields}`
 - Returns fleet: `{success, count, drifted, reports: [...]}`
+
+### `get_drift_alerts`
+Read the drift-alert history that `check_drift` writes as a side effect
+of every run (transitions: `appeared`, `changed`, `cleared`). Read-only —
+no device traffic, no commits.
+- **Args:** `device_id` (optional — omit for all), `since` (optional
+  timestamp lower bound), `limit` (optional)
+- **Returns:** `{success, count, alerts: [...]}`
 
 ---
 

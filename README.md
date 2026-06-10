@@ -69,18 +69,19 @@ registry.add_account("camera-lobby-01", "default", {
 python -m admz mcp
 ```
 
-The server exposes 41 tools across these areas:
+The server exposes 44 tools across these areas:
 
 | Area | Tools |
 |---|---|
-| Devices & accounts | `list_devices`, `get_device`, `search_devices`, `register_device`, `update_device`, `delete_device`, `list_accounts`, `add_account`, `delete_account`, `get_credentials` (disabled by default — see fleet settings) |
+| Devices & accounts | `list_devices`, `get_device`, `search_devices`, `register_device`, `update_device`, `delete_device`, `list_accounts`, `add_account`, `delete_account` |
+| Health & recovery | `get_device_health`, `get_fleet_health`, `await_device_recovery` |
 | Out-of-band capture | `capture_credentials`, `check_capture_status` |
 | Provisioning & temp creds | `provision_device`, `test_device_credentials`, `create_temp_credentials`, `cleanup_temp_credentials` |
 | Discovery | `discover_network_devices`, `register_discovered_device` |
 | Catalog, knowledge, capabilities | `query_catalog`, `query_knowledge`, `check_api_support` |
 | Execution | `execute_operation`, `confirm_dangerous_operation` |
 | Plans | `create_plan`, `execute_plan`, `get_plan_status` |
-| Snapshots | `snapshot_device`, `snapshot_fleet`, `restore_device`, `diff_device`, `check_drift` |
+| Snapshots | `snapshot_device`, `snapshot_fleet`, `restore_device`, `diff_device`, `check_drift`, `get_drift_alerts` |
 | Schedules | `create_snapshot_schedule`, `list_snapshot_schedules`, `update_snapshot_schedule`, `delete_snapshot_schedule`, `run_snapshot_schedule` |
 | Fleet settings | `get_fleet_settings`, `set_fleet_setting` |
 | Firmware | `download_firmware`, `import_firmware`, `list_cached_firmware` |

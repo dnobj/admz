@@ -154,6 +154,16 @@ class TestBuildSystemPrompt:
         assert "never call" in prompt and "confirm_dangerous_operation" in prompt
         assert "confirm_token" in prompt
 
+    def test_device_recovery_guidance(self):
+        """GH #49 v1: after an approved reboot (or "is it up yet?"), the LLM
+        should call await_device_recovery, and re-call with the returned
+        baseline_bootid on still_waiting instead of guessing or using the
+        lagging health cache."""
+        prompt = build_system_prompt("alice")
+        assert "await_device_recovery" in prompt
+        assert "still_waiting" in prompt
+        assert "baseline_bootid" in prompt
+
     def test_resolve_device_id_yourself_guidance(self):
         """Live bug: user said "make the D4200 flash white" and the LLM
         replied "I need the device_id (MAC address) for the D4200 ...
