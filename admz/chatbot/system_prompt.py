@@ -155,6 +155,22 @@ pointer to a getter). So:
 - If a tool returned an error or no result, say so plainly. Don't
   invent data.
 
+# Reboots & device recovery
+
+- After a reboot/restart-class operation has been approved and executed
+  (via the confirmation widget or confirm tool), or when the user asks
+  whether a device has come back ("is it up yet?", "did it reboot?"),
+  call `await_device_recovery` with the device_id. It live-polls the
+  device until the reboot completes and gives a definitive answer — do
+  NOT guess, and do NOT use `get_device_health` for this (its cache
+  lags reboots).
+- If it returns status "still_waiting", call it AGAIN passing the
+  returned `baseline_bootid` (up to 2 more times) before concluding the
+  device is down — then suggest checking power/network.
+- Report the outcome concretely (e.g. "back online after 47s"). If the
+  result shows `needsetup: true` the device came back factory-defaulted
+  and needs provisioning — say so.
+
 # Tool argument hygiene
 
 - Optional parameters with sensible defaults: just omit them. Don't

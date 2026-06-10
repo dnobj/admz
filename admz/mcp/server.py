@@ -484,6 +484,58 @@ class ADMZMCPServer:
                     },
                 ),
                 Tool(
+                    name="await_device_recovery",
+                    description=(
+                        "Wait for a device to come back after a reboot/restart. "
+                        "Live-polls the device's systemready API every few "
+                        "seconds until it confirms a completed reboot (boot id "
+                        "changed, uptime reset, or an offline period followed "
+                        "by a healthy response), then returns. Call this AFTER "
+                        "a reboot-class operation was approved and executed, or "
+                        "when the user asks whether a device is back up. Unlike "
+                        "get_device_health (cached, lags reboots) this performs "
+                        "live probes. If it returns status='still_waiting', "
+                        "call it AGAIN passing the returned baseline_bootid — "
+                        "detection continues across calls. Statuses: "
+                        "'recovered', 'still_waiting', 'auth_failed'."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID (MAC) to wait for.",
+                            },
+                            "timeout_s": {
+                                "type": "integer",
+                                "default": 90,
+                                "description": (
+                                    "Max seconds to wait in THIS call "
+                                    "(clamped 5-600). Keep at/below 90 when "
+                                    "called from chat — the chat stream "
+                                    "aborts tool calls after ~120s."
+                                ),
+                            },
+                            "poll_interval_s": {
+                                "type": "number",
+                                "default": 3,
+                                "description": "Seconds between probes (clamped 1-30).",
+                            },
+                            "baseline_bootid": {
+                                "type": "string",
+                                "default": "",
+                                "description": (
+                                    "Boot id observed before/at the start of "
+                                    "waiting. Pass the baseline_bootid from a "
+                                    "previous still_waiting result to continue "
+                                    "detection."
+                                ),
+                            },
+                        },
+                        "required": ["device_id"],
+                    },
+                ),
+                Tool(
                     name="search_devices",
                     description=(
                         "Search devices by tags, location, model, or other criteria. "
@@ -1525,6 +1577,8 @@ class ADMZMCPServer:
                     result = await self._get_device_health(arguments["device_id"])
                 elif name == "get_fleet_health":
                     result = await self._get_fleet_health()
+                elif name == "await_device_recovery":
+                    result = await self._await_device_recovery(arguments)
                 elif name == "search_devices":
                     result = await self._search_devices(arguments)
                 elif name == "list_accounts":
@@ -1809,6 +1863,23 @@ class ADMZMCPServer:
             "counts": counts,
             "devices": entries,
         }
+
+    async def _await_device_recovery(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Live-poll systemready until the device finishes rebooting (GH #49 v1).
+
+        Thin delegate to the pure core in ``admz/recovery.py`` so the
+        planned v2 REST surface can reuse it.
+        """
+        from admz.recovery import await_device_recovery
+
+        return await await_device_recovery(
+            device_id=arguments["device_id"],
+            timeout_s=arguments.get("timeout_s", 90),
+            poll_interval_s=arguments.get("poll_interval_s", 3),
+            baseline_bootid=arguments.get("baseline_bootid", "") or "",
+            catalog=self.catalog,
+            registry=self.registry,
+        )
 
     async def _get_device(self, device_id: str) -> Dict[str, Any]:
         """Get device information by ID or nickname."""
