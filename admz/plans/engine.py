@@ -462,6 +462,15 @@ class PlanEngine:
     # Plan management
     # ------------------------------------------------------------------
 
+    def register_plan(self, plan: ExecutionPlan) -> None:
+        """Register an externally-constructed plan so run_plan can find it.
+
+        Used by ``admz.operations`` to install a plan reconstructed from a
+        confirm session's serialized steps when the approving process is not
+        the one that created the plan (C-1 cross-process approval).
+        """
+        self._plans[plan.plan_id] = plan
+
     def get_plan(self, plan_id: str) -> Optional[ExecutionPlan]:
         """Get a plan by ID."""
         return self._plans.get(plan_id)

@@ -166,7 +166,7 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **param.cgi** — The single largest VAPIX endpoint. Exposes the entire device parameter tree (root.Image, root.Network, root.Time, etc.) as a key-value namespace.
 
-**PlanEngine** — Validates and executes multi-step plans. Owns the `_plans` in-memory dict.
+**PlanEngine** — Validates and executes multi-step plans. Owns the `_plans` in-memory dict (per-process). For `url_*`-gated plans the full step data is also serialized into the confirm session (`plan_steps_json`), so a different process — e.g. the uvicorn web server approving a plan created in a chat MCP subprocess — can reconstruct and execute it.
 
 **PlanStep** — One step in a plan. Has `operation_id`, `device_id`, `params`, optional `depends_on`.
 

@@ -232,3 +232,96 @@ class TestHtmlFormUnchanged:
         # HTML, not JSON.
         assert "text/html" in r.headers["content-type"]
         assert b"factory-reset" in r.content or b"factorydefault" in r.content
+
+
+# ---------------------------------------------------------------------------
+# H-5 (review 2026-06-10): url_* approvals must write audit rows
+# ---------------------------------------------------------------------------
+
+
+class TestConfirmAudit:
+    """The web form and chat-widget approval paths are the riskiest
+    executions in the system; both must leave an audit trail."""
+
+    def _audit(self):
+        from admz.audit import AuditLog
+        return AuditLog()
+
+    def test_chat_approval_writes_audit_row(self, client):
+        session = _make_session()  # url_only
+        r = client.post(f"/api/chat/confirm/{session.token}")
+        assert r.status_code == 200
+        assert r.json()["status"] == "completed"
+
+        rows = self._audit().list_recent(action="confirm.approve")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.resource == "device:cam-01/op:factorydefault.cgi:factory-reset"
+        assert row.details["confirmed_by"] == "chat"
+        assert row.details["risk_level"] == "dangerous"
+        assert row.details["confirmation_level"] == "url_only"
+        assert row.details["is_plan"] is False
+        # Execution fails (device not in registry) but the approval is
+        # still audited - that is the point.
+        assert row.success is False
+
+    def test_web_form_approval_writes_audit_row(self, client):
+        session = _make_session()  # url_only
+        r = client.post(f"/confirm/{session.token}")
+        assert r.status_code == 200
+
+        rows = self._audit().list_recent(action="confirm.approve")
+        assert len(rows) == 1
+        assert rows[0].details["confirmed_by"] == "web"
+
+    def test_wrong_password_writes_audit_row_without_password(self, client):
+        from admz.api.confirm_store import hash_confirm_password
+        from admz.fleet_settings import fleet_settings as fs
+        fs.set("confirm_password_hash", hash_confirm_password("hunter2"))
+
+        try:
+            session = _make_session(confirmation_level="url_and_password")
+            r = client.post(
+                f"/api/chat/confirm/{session.token}",
+                data={"confirm_password": "wrong-guess"},
+            )
+            assert r.status_code == 403
+
+            rows = self._audit().list_recent(action="confirm.password_failed")
+            assert len(rows) == 1
+            row = rows[0]
+            assert row.success is False
+            assert row.details["confirmed_by"] == "chat"
+            assert row.details["locked_out"] is False
+            # The submitted password must never reach the audit log.
+            import json as json_mod
+            flat = json_mod.dumps(row.details) + row.error_message + row.resource
+            assert "wrong-guess" not in flat
+            assert "hunter2" not in flat
+
+            # No approve row - the gate held.
+            assert self._audit().list_recent(action="confirm.approve") == []
+        finally:
+            fs.delete("confirm_password_hash")
+
+    def test_lockout_flag_recorded_on_final_attempt(self, client):
+        from admz.api.confirm_store import hash_confirm_password
+        from admz.fleet_settings import fleet_settings as fs
+        fs.set("confirm_password_hash", hash_confirm_password("hunter2"))
+
+        try:
+            session = _make_session(confirmation_level="url_and_password")
+            # _MAX_PW_ATTEMPTS is 5; the 5th failure trips the lockout.
+            for _ in range(5):
+                client.post(
+                    f"/api/chat/confirm/{session.token}",
+                    data={"confirm_password": "nope"},
+                )
+
+            rows = self._audit().list_recent(action="confirm.password_failed")
+            assert len(rows) == 5
+            # newest first - the final attempt carries locked_out=True
+            assert rows[0].details["locked_out"] is True
+            assert rows[-1].details["locked_out"] is False
+        finally:
+            fs.delete("confirm_password_hash")

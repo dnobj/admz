@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from xml.etree import ElementTree
 
@@ -23,6 +24,29 @@ from admz.executor.models import ExecutionRequest, StepResult
 from admz.ssl_config import verify_ssl_default
 
 logger = logging.getLogger(__name__)
+
+# H-3 (review 2026-06-10): file uploads may only read from the firmware
+# cache. The upload path reaches the executor via caller-supplied operation
+# params (e.g. a chatbot tool call), so an unconstrained path would let a
+# caller read ANY host file (~/.admz/admz.key, the SQLite DB, ...) and
+# exfiltrate it to a device it controls. Mirrors
+# admz.firmware.downloader._DEFAULT_FIRMWARE_DIR (not imported — the
+# executor stays a leaf module).
+_UPLOAD_ROOT = Path.home() / ".admz" / "firmware"
+
+
+def _upload_path_allowed(file_path: str) -> bool:
+    """True if ``file_path`` resolves to inside the firmware cache.
+
+    Resolves symlinks and ``..`` segments before comparing, so neither
+    traversal nor a symlink planted in the cache can escape the root.
+    """
+    try:
+        resolved = Path(file_path).resolve()
+        root = _UPLOAD_ROOT.resolve()
+    except (OSError, ValueError):
+        return False
+    return resolved == root or root in resolved.parents
 
 
 class _BearerAuth(httpx.Auth):
@@ -103,6 +127,19 @@ class VapixExecutor(BaseExecutor):
                 transport=transport, timeout=effective_timeout
             ) as client:
                 if request.file_path:
+                    # H-3: refuse uploads from outside the firmware cache.
+                    if not _upload_path_allowed(request.file_path):
+                        return StepResult(
+                            operation_id=op_id,
+                            device_id=device_id,
+                            success=False,
+                            error=(
+                                "Upload file_path must be inside the firmware "
+                                f"cache ({_UPLOAD_ROOT}); got: {request.file_path}. "
+                                "Use download_firmware or import_firmware to "
+                                "stage the file first."
+                            ),
+                        )
                     # Multipart/form-data with file upload
                     with open(request.file_path, "rb") as f:
                         files = {

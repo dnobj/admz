@@ -291,6 +291,9 @@ class _FakePlanEngine:
     def get_plan(self, plan_id):
         return self._engine.get_plan(plan_id)
 
+    def register_plan(self, plan):
+        self._engine.register_plan(plan)
+
     async def run_plan(self, plan_id):
         return await self._engine.run_plan(plan_id)
 

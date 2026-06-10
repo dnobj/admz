@@ -67,6 +67,111 @@ from admz.api.templating import configure as _configure_templates  # noqa: E402
 _configure_templates(templates)
 
 
+# ── Shared approval core (HTML form + JSON chat twin) ────────────────────
+#
+# H-5/D-6 (review 2026-06-10): the two POST handlers duplicated the whole
+# gate sequence (rate limit → session → lockout → password → complete →
+# execute) and neither wrote audit rows — the riskiest executions in the
+# system (url_* approvals) were invisible to the audit log.  Both handlers
+# now call this helper and only shape the response.
+
+
+class _Approval:
+    """Outcome of an approval attempt; handlers map status → response."""
+
+    __slots__ = ("status", "session", "outcome")
+
+    def __init__(self, status, session=None, outcome=None):
+        self.status = status        # completed | rate_limited | expired |
+        self.session = session      #   locked | wrong_password
+        self.outcome = outcome      # execution result when completed
+
+
+def _session_resource(session) -> str:
+    """Audit resource string for a confirm session (catalog.py convention)."""
+    if session.is_plan:
+        return f"plan:{session.plan_id}"
+    return f"device:{session.device_id}/op:{session.operation_id}"
+
+
+async def _approve_session(
+    request: Request,
+    token: str,
+    confirm_password: Optional[str],
+    ctx: "AppContext",
+    confirmed_by: str,
+) -> _Approval:
+    """Run the full approval gate and (on success) execute the held work.
+
+    Writes audit rows for the two security-relevant outcomes: a failed
+    password attempt and the approval itself (with the execution result).
+    Never logs the submitted password.
+    """
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+
+    principal = await get_current_principal(request)
+
+    if not rate_limiter.check("confirm", client_key_from_request(request)):
+        return _Approval("rate_limited")
+
+    session = confirm_store.get_session(token)
+    if session is None or session.effective_status != ConfirmStatus.PENDING:
+        return _Approval("expired")
+
+    if _is_locked(token):
+        return _Approval("locked", session=session)
+
+    if session.confirmation_level == "url_and_password":
+        password_hash = fleet_settings.get("confirm_password_hash")
+        if password_hash:
+            if not confirm_password or not verify_confirm_password(
+                confirm_password, password_hash
+            ):
+                now_locked = _record_password_failure(token)
+                record_event(
+                    principal, "confirm.password_failed",
+                    resource=_session_resource(session),
+                    success=False,
+                    error_message="incorrect confirmation password",
+                    details={
+                        "confirmed_by": confirmed_by,
+                        "locked_out": now_locked,
+                    },
+                )
+                return _Approval("wrong_password", session=session)
+
+    _clear_password_failures(token)
+
+    if not confirm_store.complete_session(token, confirmed_by=confirmed_by):
+        return _Approval("expired")
+
+    from admz import operations
+
+    outcome = await operations.execute_approved_session(
+        session,
+        catalog=ctx.catalog,
+        registry=ctx.registry,
+        executors=ctx.executors,
+        plan_engine=ctx.plan_engine,
+    )
+
+    record_event(
+        principal, "confirm.approve",
+        resource=_session_resource(session),
+        success=bool(outcome.get("success")),
+        error_message="" if outcome.get("success") else str(outcome.get("error") or ""),
+        details={
+            "confirmed_by": confirmed_by,
+            "risk_level": session.risk_level,
+            "confirmation_level": session.confirmation_level,
+            "is_plan": session.is_plan,
+        },
+    )
+
+    return _Approval("completed", session=session, outcome=outcome)
+
+
 # ── JSON status endpoint (polled by MCP tool) ───────────────────────────
 
 @router.get("/api/confirm/{token}/status", tags=["confirm"])
@@ -149,30 +254,31 @@ async def confirm_submit(
     ctx: AppContext = Depends(get_context),
 ):
     """Process the confirmation form submission."""
-    # Phase 4 stretch: per-IP rate limit on confirm POST. Catches
-    # password-attempt hammering before the per-token lockout kicks in.
-    if not rate_limiter.check("confirm", client_key_from_request(request)):
+    result = await _approve_session(request, token, confirm_password, ctx, "web")
+
+    if result.status == "rate_limited":
         raise HTTPException(
             status_code=429,
             detail="Too many confirm attempts from this address. Try again in a few minutes.",
         )
 
-    session = confirm_store.get_session(token)
-
-    if session is None or session.effective_status != ConfirmStatus.PENDING:
+    if result.status == "expired":
         return templates.TemplateResponse(
             "capture_expired.html",
             {"request": request, "title": "Link Expired"},
             status_code=410,
         )
 
-    # Phase 4 stretch: per-token password-attempt lockout. After
-    # _MAX_PW_ATTEMPTS failures within _PW_LOCKOUT_SECONDS we refuse
-    # this token entirely until the lockout clears. Defeats slow brute
-    # force of the confirm password.
-    if _is_locked(token):
-        is_plan = session.is_plan
-        plan_summary = session.plan_summary if is_plan else None
+    session = result.session
+    is_plan = session.is_plan
+    plan_summary = session.plan_summary if is_plan else None
+
+    if result.status in ("locked", "wrong_password"):
+        error = (
+            "Too many failed attempts. This confirmation link is temporarily locked."
+            if result.status == "locked"
+            else "Incorrect confirmation password."
+        )
         return templates.TemplateResponse(
             "confirm_form.html",
             {
@@ -181,65 +287,12 @@ async def confirm_submit(
                 "token": token,
                 "session": session,
                 "needs_password": True,
-                "error": "Too many failed attempts. This confirmation link is temporarily locked.",
+                "error": error,
                 "is_plan": is_plan,
                 "plan_summary": plan_summary,
             },
-            status_code=429,
+            status_code=429 if result.status == "locked" else 200,
         )
-
-    # Check password if required
-    if session.confirmation_level == "url_and_password":
-        password_hash = fleet_settings.get("confirm_password_hash")
-        if password_hash:
-            if not confirm_password or not verify_confirm_password(
-                confirm_password, password_hash
-            ):
-                # Record the failure and (potentially) trigger lockout
-                _record_password_failure(token)
-                is_plan = session.is_plan
-                plan_summary = session.plan_summary if is_plan else None
-                # Re-render form with error
-                return templates.TemplateResponse(
-                    "confirm_form.html",
-                    {
-                        "request": request,
-                        "title": "Confirm Plan" if is_plan else "Confirm Operation",
-                        "token": token,
-                        "session": session,
-                        "needs_password": True,
-                        "error": "Incorrect confirmation password.",
-                        "is_plan": is_plan,
-                        "plan_summary": plan_summary,
-                    },
-                )
-
-    # Success: clear any partial failure history for this token
-    _clear_password_failures(token)
-
-    # Mark session as completed
-    if not confirm_store.complete_session(token, confirmed_by="web"):
-        return templates.TemplateResponse(
-            "capture_expired.html",
-            {"request": request, "title": "Link Expired"},
-            status_code=410,
-        )
-
-    is_plan = session.is_plan
-    plan_summary = session.plan_summary if is_plan else None
-
-    # Now that the human has approved, actually perform the held operation /
-    # plan. (Before this, url_* approvals completed the token but never ran the
-    # op — the gate approved-but-didn't-execute.)
-    from admz import operations
-
-    outcome = await operations.execute_approved_session(
-        session,
-        catalog=ctx.catalog,
-        registry=ctx.registry,
-        executors=ctx.executors,
-        plan_engine=ctx.plan_engine,
-    )
 
     return templates.TemplateResponse(
         "confirm_done.html",
@@ -249,7 +302,7 @@ async def confirm_submit(
             "session": session,
             "is_plan": is_plan,
             "plan_summary": plan_summary,
-            "outcome": outcome,
+            "outcome": result.outcome,
             "executed": True,
         },
     )
@@ -326,7 +379,9 @@ async def chat_confirm_submit(
     Always returns a body (even on error) so the chat client can
     render a meaningful card update without parsing HTML.
     """
-    if not rate_limiter.check("confirm", client_key_from_request(request)):
+    result = await _approve_session(request, token, confirm_password, ctx, "chat")
+
+    if result.status == "rate_limited":
         return JSONResponse(
             status_code=429,
             content={
@@ -338,14 +393,13 @@ async def chat_confirm_submit(
             },
         )
 
-    session = confirm_store.get_session(token)
-    if session is None or session.effective_status != ConfirmStatus.PENDING:
+    if result.status == "expired":
         return JSONResponse(
             status_code=410,
             content={"status": "expired_or_not_found"},
         )
 
-    if _is_locked(token):
+    if result.status == "locked":
         return JSONResponse(
             status_code=429,
             content={
@@ -357,44 +411,20 @@ async def chat_confirm_submit(
             },
         )
 
-    if session.confirmation_level == "url_and_password":
-        password_hash = fleet_settings.get("confirm_password_hash")
-        if password_hash:
-            if not confirm_password or not verify_confirm_password(
-                confirm_password, password_hash
-            ):
-                _record_password_failure(token)
-                return JSONResponse(
-                    status_code=403,
-                    content={
-                        "status": "wrong_password",
-                        "error": "Incorrect confirmation password.",
-                    },
-                )
-
-    _clear_password_failures(token)
-    if not confirm_store.complete_session(token, confirmed_by="chat"):
+    if result.status == "wrong_password":
         return JSONResponse(
-            status_code=410,
-            content={"status": "expired_or_not_found"},
+            status_code=403,
+            content={
+                "status": "wrong_password",
+                "error": "Incorrect confirmation password.",
+            },
         )
 
-    # Approved — now actually run the held operation / plan and report the
-    # outcome so the chat card can show the result (not just "completed").
-    from admz import operations
-
-    outcome = await operations.execute_approved_session(
-        session,
-        catalog=ctx.catalog,
-        registry=ctx.registry,
-        executors=ctx.executors,
-        plan_engine=ctx.plan_engine,
-    )
-
+    session = result.session
     return {
         "status": "completed",
         "is_plan": session.is_plan,
         "device_id": session.device_id,
         "operation_id": session.operation_id,
-        "outcome": outcome,
+        "outcome": result.outcome,
     }

@@ -404,7 +404,7 @@ def _register_plan_from_session(plan_engine: Any, session: "ConfirmSession") -> 
         status=PlanStatus.APPROVED,
         risk_summary=summary.get("risk_summary", {}),
     )
-    plan_engine._plans[session.plan_id] = plan
+    plan_engine.register_plan(plan)
 
 
 async def execute_approved_session(

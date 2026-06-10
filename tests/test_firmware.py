@@ -811,3 +811,91 @@ class TestDefaultDownloadDirs:
         """All returned directories should actually exist."""
         for d in default_download_dirs():
             assert os.path.isdir(d)
+
+
+# ------------------------------------------------------------------
+# H-3: upload file_path allow-list (review 2026-06-10)
+# ------------------------------------------------------------------
+
+
+class TestUploadPathAllowList:
+    """The executor must refuse to open upload files outside the
+    firmware cache - the path comes from caller params, so an
+    unconstrained value is an arbitrary-host-file-read primitive."""
+
+    def _upload_op(self):
+        return {
+            "id": "firmwaremanagement.cgi:upgrade",
+            "method": "POST",
+            "generation": "legacy-cgi",
+            "endpoint": "/axis-cgi/firmwaremanagement.cgi",
+            "request": {
+                "content_type": "multipart/form-data",
+                "body": {
+                    "json": {"apiVersion": "1.0", "method": "upgrade"},
+                    "file": "{firmware_file}",
+                },
+            },
+        }
+
+    def _device(self):
+        return {"device_id": "dev", "host": "192.0.2.1"}
+
+    def _creds(self):
+        return {"username": "root", "password": "x"}
+
+    def test_allows_path_inside_cache(self, tmp_path, monkeypatch):
+        from admz.executor import vapix as vapix_module
+        monkeypatch.setattr(vapix_module, "_UPLOAD_ROOT", tmp_path)
+        fw = tmp_path / "fw.bin"
+        fw.write_bytes(b"x")
+        assert vapix_module._upload_path_allowed(str(fw)) is True
+
+    def test_rejects_path_outside_cache(self, tmp_path, monkeypatch):
+        from admz.executor import vapix as vapix_module
+        monkeypatch.setattr(vapix_module, "_UPLOAD_ROOT", tmp_path / "cache")
+        outside = tmp_path / "secret.key"
+        outside.write_bytes(b"x")
+        assert vapix_module._upload_path_allowed(str(outside)) is False
+
+    def test_rejects_traversal_out_of_cache(self, tmp_path, monkeypatch):
+        from admz.executor import vapix as vapix_module
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        monkeypatch.setattr(vapix_module, "_UPLOAD_ROOT", cache)
+        secret = tmp_path / "admz.key"
+        secret.write_bytes(b"x")
+        sneaky = str(cache / ".." / "admz.key")
+        assert vapix_module._upload_path_allowed(sneaky) is False
+
+    def test_execute_refuses_disallowed_path_before_open(self, tmp_path, monkeypatch):
+        """execute() returns a failed StepResult with staging guidance,
+        without attempting the file read or any HTTP."""
+        from admz.executor import vapix as vapix_module
+        monkeypatch.setattr(vapix_module, "_UPLOAD_ROOT", tmp_path / "cache")
+        outside = tmp_path / "outside.bin"
+        outside.write_bytes(b"x")
+        executor = VapixExecutor(timeout=1.0, retries=0)
+        result = _run(executor.execute(
+            self._upload_op(), self._device(), self._creds(),
+            {"firmware_file": str(outside)},
+        ))
+        assert result.success is False
+        assert "firmware cache" in result.error
+        assert "download_firmware" in result.error
+
+    def test_execute_allows_cache_path_past_gate(self, tmp_path, monkeypatch):
+        """An allowed-but-missing file reaches open() and fails with
+        'File not found' - proving the gate passed (no HTTP happens
+        because open() raises first)."""
+        from admz.executor import vapix as vapix_module
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        monkeypatch.setattr(vapix_module, "_UPLOAD_ROOT", cache)
+        executor = VapixExecutor(timeout=1.0, retries=0)
+        result = _run(executor.execute(
+            self._upload_op(), self._device(), self._creds(),
+            {"firmware_file": str(cache / "missing.bin")},
+        ))
+        assert result.success is False
+        assert "File not found" in result.error
