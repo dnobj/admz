@@ -12,11 +12,12 @@
 
 ## Goals
 
-- **Add a new operation by writing YAML only**, with no Python changes for ordinary cases.
-- **Add a new API family** (e.g. a non-VAPIX vendor) by implementing `BaseExecutor` and dropping YAMLs under `catalog/<family>/`.
+- **Add a new operation by writing YAML only**, with no Python changes for ordinary cases. (The catalog now lives in the standalone **axis-api-atlas** package — ADR-0029 — so catalog edits land there, not in ADMZ.)
+- **Add a new API family** (e.g. a non-VAPIX vendor) by implementing `BaseExecutor` and dropping YAMLs under the atlas's `data/<family>/`.
 - **Add a new discovery protocol** by implementing `DiscoveryProtocolBase` and registering it in the orchestrator.
 - **Add a new snapshot facet** for a device type with a configuration shape no existing facet covers — by implementing `FacetAdapter` and decorating with `@register_facet`.
 - **Add a new registry backend** (e.g. a different cloud secrets manager) by subclassing `DeviceRegistry`.
+- **Contribute device knowledge automatically** via **survey / contributor mode** (ADR-0030, shipped) — a running ADMZ install surveys real hardware and submits redacted catalog improvements upstream as GitHub PRs, instead of every entry being hand-authored.
 - **Validate their work** against the existing test suite + new tests.
 - **Understand the existing conventions** without reading every file in the codebase.
 
@@ -35,6 +36,7 @@
 - [Executor](../requirements/executor.md) — how the executor consumes a YAML operation.
 - [Discovery](../requirements/discovery.md) — protocol contract, orchestrator wiring.
 - [Snapshot and restore](../requirements/snapshot-restore.md) — FacetAdapter contract.
+- [Survey / contributor mode](../requirements/survey.md) — the automated, redacted PR-based contribution path to axis-api-atlas.
 
 ## What ADMZ owes this persona
 

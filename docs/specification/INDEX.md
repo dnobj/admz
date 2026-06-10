@@ -32,7 +32,10 @@ Workflows the system must support. Grouped by area.
 - [Network discovery](user-stories/network-discovery.md) — finding devices on the local network
 - [Demo workflows](user-stories/demo-workflows.md) — Experience Center-specific demo/tag/restore patterns
 - [Drift and monitoring](user-stories/drift-and-monitoring.md) — configuration audits (just-in-time + scheduled), detecting and reconciling unauthorized changes
+- [Fleet monitoring](user-stories/fleet-monitoring.md) ✅ — "which devices are online right now?" from a maintained status table
+- [Device recovery](user-stories/device-recovery.md) ✅ — "is it back up yet?" after an approved reboot (#49)
 - [Scheduled operations](user-stories/scheduled-operations.md) ✅ — recurring unattended jobs (snapshots, configuration audits, survey) on one job-type scheduler
+- [Survey contribution](user-stories/survey-contribution.md) ✅ — contribute redacted device knowledge upstream to axis-api-atlas
 - [Firmware operations](user-stories/firmware-operations.md) — fetch, plan upgrades, apply
 
 ## Requirements
@@ -49,7 +52,10 @@ What the system must do, per capability area. Each file has Functional Requireme
 - [Plans](requirements/plans.md) — validation, dependencies, failure policies, rollback
 - [Snapshot and restore](requirements/snapshot-restore.md) — facets, git repo, hybrid YAML/raw
 - [Drift detection](requirements/drift-detection.md)
+- [Fleet health](requirements/fleet-health.md) ✅ — background reachability monitor, current-status table
+- [Device recovery](requirements/device-recovery.md) ✅ — live-poll a device back after a reboot (#49 v1)
 - [Scheduling](requirements/scheduling.md)
+- [Survey / contributor mode](requirements/survey.md) ✅ — opt-in, redacted catalog contributions via GitHub PR (ADR-0030)
 - [Knowledge and capabilities](requirements/knowledge-and-capabilities.md) — product hints and per-model API support
 - [Firmware](requirements/firmware.md) — downloader, upgrade-path
 - [MCP server](requirements/mcp-server.md) — tool surface, gating
