@@ -82,6 +82,7 @@ class ConfirmSession:
     danger_description: str = ""
     plan_id: str = ""
     plan_summary_json: str = ""
+    plan_steps_json: str = ""
     created_at: float = field(default_factory=time.time)
     ttl: float = 300.0  # 5 minutes
     status: ConfirmStatus = ConfirmStatus.PENDING
@@ -133,6 +134,7 @@ CREATE TABLE IF NOT EXISTS confirm_sessions (
     danger_description  TEXT NOT NULL DEFAULT '',
     plan_id             TEXT NOT NULL DEFAULT '',
     plan_summary_json   TEXT NOT NULL DEFAULT '',
+    plan_steps_json     TEXT NOT NULL DEFAULT '',
     created_at          REAL NOT NULL,
     ttl                 REAL NOT NULL DEFAULT 300.0,
     status              TEXT NOT NULL DEFAULT 'pending',
@@ -170,14 +172,17 @@ class ConfirmStore:
         try:
             conn.executescript(_CONFIRM_SCHEMA)
             # Migration: add plan_summary_json to existing tables
-            try:
-                conn.execute(
-                    "ALTER TABLE confirm_sessions "
-                    "ADD COLUMN plan_summary_json TEXT NOT NULL DEFAULT ''"
-                )
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass  # column already exists
+            for col, ddl in (
+                ("plan_summary_json", "TEXT NOT NULL DEFAULT ''"),
+                ("plan_steps_json",   "TEXT NOT NULL DEFAULT ''"),
+            ):
+                try:
+                    conn.execute(
+                        f"ALTER TABLE confirm_sessions ADD COLUMN {col} {ddl}"
+                    )
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass  # column already exists
             conn.commit()
         finally:
             conn.close()
@@ -193,6 +198,7 @@ class ConfirmStore:
         danger_description: str = "",
         plan_id: str = "",
         plan_summary_json: str = "",
+        plan_steps_json: str = "",
         ttl: float = 300.0,
     ) -> ConfirmSession:
         """Create a new confirmation session and return it."""
@@ -213,6 +219,7 @@ class ConfirmStore:
             danger_description=danger_description,
             plan_id=plan_id,
             plan_summary_json=plan_summary_json,
+            plan_steps_json=plan_steps_json,
             created_at=now,
             ttl=ttl,
         )
@@ -223,12 +230,12 @@ class ConfirmStore:
                 "INSERT INTO confirm_sessions "
                 "(token, device_id, operation_id, family, params_json, "
                 "risk_level, confirmation_level, danger_description, plan_id, "
-                "plan_summary_json, created_at, ttl, status, confirmed_by) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "plan_summary_json, plan_steps_json, created_at, ttl, status, confirmed_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     token, device_id, operation_id, family, params_json,
                     risk_level, confirmation_level, danger_description, plan_id,
-                    plan_summary_json, now, ttl, "pending", "",
+                    plan_summary_json, plan_steps_json, now, ttl, "pending", "",
                 ),
             )
             conn.commit()
@@ -244,7 +251,7 @@ class ConfirmStore:
             row = conn.execute(
                 "SELECT token, device_id, operation_id, family, params_json, "
                 "risk_level, confirmation_level, danger_description, plan_id, "
-                "plan_summary_json, created_at, ttl, status, confirmed_by "
+                "plan_summary_json, plan_steps_json, created_at, ttl, status, confirmed_by "
                 "FROM confirm_sessions WHERE token=?",
                 (token,),
             ).fetchone()
@@ -265,10 +272,11 @@ class ConfirmStore:
             danger_description=row[7],
             plan_id=row[8],
             plan_summary_json=row[9],
-            created_at=row[10],
-            ttl=row[11],
-            status=ConfirmStatus(row[12]),
-            confirmed_by=row[13],
+            plan_steps_json=row[10],
+            created_at=row[11],
+            ttl=row[12],
+            status=ConfirmStatus(row[13]),
+            confirmed_by=row[14],
         )
 
         if session.is_expired and session.status != ConfirmStatus.COMPLETED:
@@ -308,7 +316,7 @@ class ConfirmStore:
             row = conn.execute(
                 "SELECT token, device_id, operation_id, family, params_json, "
                 "risk_level, confirmation_level, danger_description, plan_id, "
-                "plan_summary_json, created_at, ttl, status, confirmed_by "
+                "plan_summary_json, plan_steps_json, created_at, ttl, status, confirmed_by "
                 "FROM confirm_sessions WHERE plan_id=? AND status='pending' "
                 "ORDER BY created_at DESC LIMIT 1",
                 (plan_id,),
@@ -330,10 +338,11 @@ class ConfirmStore:
             danger_description=row[7],
             plan_id=row[8],
             plan_summary_json=row[9],
-            created_at=row[10],
-            ttl=row[11],
-            status=ConfirmStatus(row[12]),
-            confirmed_by=row[13],
+            plan_steps_json=row[10],
+            created_at=row[11],
+            ttl=row[12],
+            status=ConfirmStatus(row[13]),
+            confirmed_by=row[14],
         )
 
         if session.is_expired:

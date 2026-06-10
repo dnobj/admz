@@ -3754,7 +3754,13 @@ class ADMZMCPServer:
 
     async def run(self):
         """Run the MCP server with stdio transport."""
-        await self.scheduler.start()
+        # H-1: when spawned as a pool subprocess by the chatbot, the uvicorn
+        # process already owns the SnapshotScheduler.  Skip starting it here
+        # to avoid N+1 schedulers firing duplicate jobs and contending on the
+        # git lock.  Standalone `python -m admz mcp` usage is unaffected.
+        _pool_subprocess = os.getenv("ADMZ_MCP_NO_SCHEDULER") == "1"
+        if not _pool_subprocess:
+            await self.scheduler.start()
         cleanup_task = asyncio.create_task(self._temp_credential_cleanup_loop())
         try:
             async with stdio_server() as (read_stream, write_stream):
@@ -3770,7 +3776,8 @@ class ADMZMCPServer:
                 await cleanup_task
             except asyncio.CancelledError:
                 pass
-            await self.scheduler.stop()
+            if not _pool_subprocess:
+                await self.scheduler.stop()
 
 
 async def main():

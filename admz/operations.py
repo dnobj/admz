@@ -367,6 +367,46 @@ async def consume_confirmation(
     )
 
 
+def _register_plan_from_session(plan_engine: Any, session: "ConfirmSession") -> None:
+    """Reconstruct an ExecutionPlan from a confirm session's stored step data
+    and register it in plan_engine._plans so run_plan can find it.
+
+    Called when the approving process is different from the one that created
+    the plan (C-1: chat MCP subprocess creates plan, uvicorn process approves).
+    """
+    from admz.plans.models import ExecutionPlan, FailurePolicy, PlanStatus, PlanStep
+
+    steps_data = json.loads(session.plan_steps_json or "[]")
+    summary = session.plan_summary
+    steps = [
+        PlanStep(
+            step_number=s["step_number"],
+            operation_id=s["operation_id"],
+            device_id=s["device_id"],
+            params=s.get("params", {}),
+            description=s.get("description", ""),
+            risk_level=s.get("risk_level", "normal"),
+            family=s.get("family", "vapix"),
+            depends_on=s.get("depends_on", []),
+        )
+        for s in steps_data
+    ]
+    try:
+        on_failure = FailurePolicy(summary.get("on_failure", "stop"))
+    except ValueError:
+        on_failure = FailurePolicy.STOP
+
+    plan = ExecutionPlan(
+        plan_id=session.plan_id,
+        description=summary.get("description", ""),
+        steps=steps,
+        on_failure=on_failure,
+        status=PlanStatus.APPROVED,
+        risk_summary=summary.get("risk_summary", {}),
+    )
+    plan_engine._plans[session.plan_id] = plan
+
+
 async def execute_approved_session(
     session: ConfirmSession,
     *,
@@ -385,6 +425,12 @@ async def execute_approved_session(
     if session.is_plan:
         if plan_engine is None:
             return {"success": False, "error": "Plan engine unavailable"}
+        # If this process didn't create the plan (e.g. the plan was created
+        # in a chat MCP subprocess but approved via the web UI in the uvicorn
+        # process) the in-memory dict won't have it.  Reconstruct from the
+        # serialized step data stored in the confirm session.
+        if plan_engine.get_plan(session.plan_id) is None and session.plan_steps_json:
+            _register_plan_from_session(plan_engine, session)
         try:
             plan = await plan_engine.run_plan(session.plan_id)
         except ValueError as exc:
@@ -498,6 +544,10 @@ async def execute_gated_plan(
         device_id = (
             first.device_id if (first and len(device_ids) == 1) else "multiple"
         )
+        # Serialize the full step data so the approving process (which may be a
+        # different uvicorn process than the MCP subprocess that created the plan)
+        # can reconstruct and execute the plan from the confirm session alone.
+        plan_steps_json = json.dumps([s.to_dict() for s in plan.steps])
         session = store.create_session(
             device_id=device_id,
             operation_id=f"plan:{plan_id}",
@@ -508,6 +558,7 @@ async def execute_gated_plan(
             danger_description="",
             plan_id=plan_id,
             plan_summary_json=json.dumps(plan.to_summary()),
+            plan_steps_json=plan_steps_json,
             ttl=CONFIRM_TOKEN_TTL_SECONDS,
         )
     env = blocked_envelope(session, is_plan=True)

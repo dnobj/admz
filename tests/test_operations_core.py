@@ -255,3 +255,138 @@ async def test_execute_approved_session_runs_single_op(store):
     assert outcome["confirmed"] is True
     assert outcome["success"] is True
     assert execs["vapix"].calls  # ran on approval
+
+
+# --- C-1: cross-process plan approval ----------------------------------------
+# Plans created in an MCP subprocess are not in the uvicorn process's
+# PlanEngine._plans.  execute_gated_plan must serialise the steps into the
+# confirm session, and execute_approved_session must reconstruct the plan
+# from that data when the in-memory lookup misses.
+
+
+class _FakeOpWithRisk(_FakeOp):
+    """FakeOp that also carries risk_level for PlanEngine.create_plan()."""
+    risk_level = "service-affecting"
+
+
+class _FakeCatalogForPlan(_FakeCatalog):
+    """Catalog that returns an op with risk_level for plan-engine use."""
+    def __init__(self):
+        super().__init__(risk="service-affecting", op=_FakeOpWithRisk())
+
+    def get_operation(self, family, op_id):
+        return _FakeOpWithRisk()
+
+
+class _FakePlanEngine:
+    """Minimal plan engine stand-in for C-1 tests."""
+
+    def __init__(self, catalog, registry, executors):
+        from admz.plans.engine import PlanEngine
+        self._engine = PlanEngine(catalog, registry, executors)
+
+    def create_plan(self, *a, **kw):
+        return self._engine.create_plan(*a, **kw)
+
+    def get_plan(self, plan_id):
+        return self._engine.get_plan(plan_id)
+
+    async def run_plan(self, plan_id):
+        return await self._engine.run_plan(plan_id)
+
+    @property
+    def _plans(self):
+        return self._engine._plans
+
+    @_plans.setter
+    def _plans(self, v):
+        self._engine._plans = v
+
+
+@pytest.mark.asyncio
+async def test_execute_gated_plan_serialises_steps_into_session(store, monkeypatch):
+    """execute_gated_plan stores plan_steps_json in the confirm session
+    so a different process can reconstruct the plan on approval."""
+    monkeypatch.setattr(operations, "resolve_confirmation", lambda r: "url_only")
+
+    execs = _executors()
+    engine = _FakePlanEngine(_FakeCatalogForPlan(), _FakeRegistry(), execs)
+    plan = engine.create_plan("test plan", [
+        {"operation_id": "test:op", "device_id": "dev", "params": {"x": "1"}},
+    ])
+
+    result = await operations.execute_gated_plan(engine, plan.plan_id, store=store)
+    assert result.get("blocked") is True
+
+    session = store.get_session(result["confirm_token"])
+    assert session is not None
+    assert session.plan_steps_json  # must be non-empty
+
+    import json
+    steps = json.loads(session.plan_steps_json)
+    assert len(steps) == 1
+    assert steps[0]["operation_id"] == "test:op"
+    assert steps[0]["device_id"] == "dev"
+    assert steps[0]["params"] == {"x": "1"}
+
+
+@pytest.mark.asyncio
+async def test_execute_approved_session_reconstructs_plan_cross_process(store, monkeypatch):
+    """C-1 fix: when plan_engine has no entry for the plan_id (simulating the
+    cross-process gap), execute_approved_session reconstructs it from
+    plan_steps_json and still executes the plan successfully."""
+    monkeypatch.setattr(operations, "resolve_confirmation", lambda r: "url_only")
+
+    execs = _executors()
+    engine = _FakePlanEngine(_FakeCatalogForPlan(), _FakeRegistry(), execs)
+    plan = engine.create_plan("test plan", [
+        {"operation_id": "test:op", "device_id": "dev", "params": {"k": "v"}},
+    ])
+
+    # Gate creates the confirm session with serialised steps.
+    blocked = await operations.execute_gated_plan(engine, plan.plan_id, store=store)
+    token = blocked["confirm_token"]
+    session = store.get_session(token)
+    assert session.plan_steps_json
+
+    # Simulate the cross-process gap: clear the in-memory dict.
+    engine._plans.clear()
+    assert engine.get_plan(plan.plan_id) is None  # precondition
+
+    # Approve + execute — must reconstruct and run.
+    outcome = await operations.execute_approved_session(
+        session,
+        catalog=_FakeCatalogForPlan(), registry=_FakeRegistry(), executors=execs,
+        plan_engine=engine,
+    )
+    assert outcome.get("success") is True
+    assert outcome.get("is_plan") is True
+    assert outcome["steps_succeeded"] == 1
+    assert execs["vapix"].calls  # the step actually ran
+
+
+@pytest.mark.asyncio
+async def test_execute_approved_session_uses_in_memory_plan_when_present(store, monkeypatch):
+    """When the plan IS in the engine's memory (same-process path), the normal
+    code path runs without reconstruction."""
+    monkeypatch.setattr(operations, "resolve_confirmation", lambda r: "url_only")
+
+    execs = _executors()
+    engine = _FakePlanEngine(_FakeCatalogForPlan(), _FakeRegistry(), execs)
+    plan = engine.create_plan("test plan", [
+        {"operation_id": "test:op", "device_id": "dev", "params": {}},
+    ])
+
+    blocked = await operations.execute_gated_plan(engine, plan.plan_id, store=store)
+    session = store.get_session(blocked["confirm_token"])
+
+    # Plan is still in memory — no reconstruction needed.
+    assert engine.get_plan(plan.plan_id) is not None
+
+    outcome = await operations.execute_approved_session(
+        session,
+        catalog=_FakeCatalogForPlan(), registry=_FakeRegistry(), executors=execs,
+        plan_engine=engine,
+    )
+    assert outcome.get("success") is True
+    assert outcome["steps_succeeded"] == 1

@@ -110,6 +110,10 @@ def _principal_to_env(principal: Any) -> Dict[str, str]:
         # Comma-separated; matches the shape ReverseProxyAuth produces
         # via LDAP enrichment.
         env["ADMZ_PRINCIPAL_GROUPS"] = ",".join(str(g) for g in groups)
+    # H-1: the uvicorn process already runs the SnapshotScheduler.  Suppress
+    # it in every pool subprocess to prevent N+1 schedulers writing duplicate
+    # snapshot/drift jobs and contending on the git lock.
+    env["ADMZ_MCP_NO_SCHEDULER"] = "1"
     return env
 
 
