@@ -35,6 +35,23 @@ logger = logging.getLogger(__name__)
 _UPLOAD_ROOT = Path.home() / ".admz" / "firmware"
 
 
+def _auth_method_from_challenge(header: Optional[str]) -> Optional[str]:
+    """Parse a ``WWW-Authenticate`` header into ``"basic"`` / ``"digest"``.
+
+    Used by the connectivity self-healing path to relearn a device's auth
+    method when the configured one was wrong. Prefers Digest when a device
+    offers both. Returns None if the header is absent/unrecognized.
+    """
+    if not header:
+        return None
+    low = header.lower()
+    if "digest" in low:
+        return "digest"
+    if "basic" in low:
+        return "basic"
+    return None
+
+
 def _upload_path_allowed(file_path: str) -> bool:
     """True if ``file_path`` resolves to inside the firmware cache.
 
@@ -68,6 +85,7 @@ class VapixExecutor(BaseExecutor):
         timeout: float = 15.0,
         verify_ssl: Optional[bool] = None,
         retries: int = 1,
+        transport: Optional[httpx.AsyncBaseTransport] = None,
     ):
         self._timeout = timeout
         # If caller didn't pin a value, honor ADMZ_VERIFY_SSL (default False).
@@ -75,6 +93,14 @@ class VapixExecutor(BaseExecutor):
             verify_ssl_default() if verify_ssl is None else bool(verify_ssl)
         )
         self._retries = retries
+        # Test seam: when set, all requests go through this transport (e.g.
+        # httpx.MockTransport). Production leaves it None and builds a real one.
+        self._transport = transport
+
+    def _make_transport(self) -> httpx.AsyncBaseTransport:
+        return self._transport or httpx.AsyncHTTPTransport(
+            retries=self._retries, verify=self._verify_ssl
+        )
 
     @property
     def family(self) -> str:
@@ -105,6 +131,21 @@ class VapixExecutor(BaseExecutor):
             # Build the HTTP request from operation spec
             request = self.build_request(operation, params)
 
+            # H-3: refuse uploads from outside the firmware cache
+            # (scheme-independent, so check once up front).
+            if request.file_path and not _upload_path_allowed(request.file_path):
+                return StepResult(
+                    operation_id=op_id,
+                    device_id=device_id,
+                    success=False,
+                    error=(
+                        "Upload file_path must be inside the firmware "
+                        f"cache ({_UPLOAD_ROOT}); got: {request.file_path}. "
+                        "Use download_firmware or import_firmware to "
+                        "stage the file first."
+                    ),
+                )
+
             # Determine scheme from device auth profile
             auth_info = device.get("auth")
             if auth_info and isinstance(auth_info, dict):
@@ -112,80 +153,29 @@ class VapixExecutor(BaseExecutor):
             else:
                 scheme = "http"
             port = device.get("port", 443 if scheme == "https" else 80)
-            url = f"{scheme}://{host}:{port}{request.path}"
-
-            # Resolve auth from device profile (protocol-aware)
-            auth = self._resolve_auth(device, credentials, scheme)
 
             # Per-operation timeout override (e.g., firmware upload)
             effective_timeout = request.timeout_override or self._timeout
 
-            transport = httpx.AsyncHTTPTransport(
-                retries=self._retries, verify=self._verify_ssl
+            # Send with connectivity self-healing: on a connection refusal,
+            # retry the other scheme; on a 401 whose challenge names a
+            # different auth method, retry with that method. Any correction is
+            # returned as ``learned_auth`` for the caller to persist.
+            response, learned_auth = await self._send_self_healing(
+                request=request, host=host, device=device,
+                credentials=credentials, scheme=scheme, port=port,
+                timeout=effective_timeout,
             )
-            async with httpx.AsyncClient(
-                transport=transport, timeout=effective_timeout
-            ) as client:
-                if request.file_path:
-                    # H-3: refuse uploads from outside the firmware cache.
-                    if not _upload_path_allowed(request.file_path):
-                        return StepResult(
-                            operation_id=op_id,
-                            device_id=device_id,
-                            success=False,
-                            error=(
-                                "Upload file_path must be inside the firmware "
-                                f"cache ({_UPLOAD_ROOT}); got: {request.file_path}. "
-                                "Use download_firmware or import_firmware to "
-                                "stage the file first."
-                            ),
-                        )
-                    # Multipart/form-data with file upload
-                    with open(request.file_path, "rb") as f:
-                        files = {
-                            request.file_field_name: (
-                                os.path.basename(request.file_path),
-                                f,
-                                "application/octet-stream",
-                            )
-                        }
-                        response = await client.request(
-                            method=request.method,
-                            url=url,
-                            data=request.form_data or {},
-                            files=files,
-                            auth=auth,
-                        )
-                elif request.raw_body is not None:
-                    # SOAP XML or other pre-built body
-                    response = await client.request(
-                        method=request.method,
-                        url=url,
-                        content=request.raw_body,
-                        auth=auth,
-                        headers={"Content-Type": request.content_type}
-                        if request.content_type
-                        else None,
-                    )
-                else:
-                    response = await client.request(
-                        method=request.method,
-                        url=url,
-                        params=request.query_params,
-                        json=request.json_body,
-                        auth=auth,
-                        headers={"Content-Type": request.content_type}
-                        if request.content_type
-                        and request.content_type != "multipart/form-data"
-                        else None,
-                    )
 
             elapsed = (time.monotonic() - start) * 1000
 
             # Parse response
-            return self._parse_response(
+            result = self._parse_response(
                 operation, response, op_id, device_id, elapsed
             )
+            if learned_auth:
+                result.learned_auth = learned_auth
+            return result
 
         except FileNotFoundError:
             elapsed = (time.monotonic() - start) * 1000
@@ -239,8 +229,142 @@ class VapixExecutor(BaseExecutor):
                 duration_ms=elapsed,
             )
 
+    async def _open_and_send(
+        self,
+        scheme: str,
+        host: str,
+        port: int,
+        request: ExecutionRequest,
+        auth: Optional[httpx.Auth],
+        timeout: float,
+    ) -> httpx.Response:
+        """Open a client and send the request once for one scheme/port/auth.
+
+        Propagates httpx.ConnectError / httpx.TimeoutException / FileNotFoundError
+        to the caller; returns the httpx.Response otherwise.
+        """
+        url = f"{scheme}://{host}:{port}{request.path}"
+        async with httpx.AsyncClient(
+            transport=self._make_transport(), timeout=timeout
+        ) as client:
+            if request.file_path:
+                with open(request.file_path, "rb") as f:
+                    files = {
+                        request.file_field_name: (
+                            os.path.basename(request.file_path),
+                            f,
+                            "application/octet-stream",
+                        )
+                    }
+                    return await client.request(
+                        method=request.method, url=url,
+                        data=request.form_data or {}, files=files, auth=auth,
+                    )
+            if request.raw_body is not None:
+                return await client.request(
+                    method=request.method, url=url, content=request.raw_body,
+                    auth=auth,
+                    headers={"Content-Type": request.content_type}
+                    if request.content_type else None,
+                )
+            return await client.request(
+                method=request.method, url=url, params=request.query_params,
+                json=request.json_body, auth=auth,
+                headers={"Content-Type": request.content_type}
+                if request.content_type
+                and request.content_type != "multipart/form-data" else None,
+            )
+
+    async def _send_self_healing(
+        self,
+        *,
+        request: ExecutionRequest,
+        host: str,
+        device: Dict[str, Any],
+        credentials: Dict[str, Any],
+        scheme: str,
+        port: int,
+        timeout: float,
+    ) -> Tuple[httpx.Response, Optional[Dict[str, str]]]:
+        """Send the request, healing connectivity issues as it goes:
+
+          - on ``httpx.ConnectError`` (e.g. the configured scheme's port is
+            refused), retry the *other* scheme on its default port;
+          - on a ``401`` whose ``WWW-Authenticate`` names a different auth
+            method than we used, retry with that method.
+
+        Returns ``(response, learned_auth)`` where ``learned_auth`` is a profile
+        fragment like ``{"scheme": "https", "https": "basic"}`` when a
+        correction was applied (else ``None``). Re-raises ``ConnectError`` only
+        when *every* scheme refuses the connection. Uploads (``file_path``) are
+        never scheme-flipped — a firmware push targets one endpoint.
+        """
+        method = self._method_for_scheme(device, scheme)
+        learned: Optional[Dict[str, str]] = None
+
+        try:
+            response = await self._open_and_send(
+                scheme, host, port, request,
+                self._auth_for_method(method, credentials), timeout,
+            )
+        except httpx.ConnectError:
+            if request.file_path:
+                raise  # don't scheme-flip a multipart upload
+            alt_scheme = "https" if scheme == "http" else "http"
+            alt_port = 443 if alt_scheme == "https" else 80
+            alt_method = self._method_for_scheme(device, alt_scheme)
+            response = await self._open_and_send(  # may re-raise ConnectError
+                alt_scheme, host, alt_port, request,
+                self._auth_for_method(alt_method, credentials), timeout,
+            )
+            scheme, port, method = alt_scheme, alt_port, alt_method
+            learned = {"scheme": scheme, scheme: method}
+
+        # Relearn the auth method if the 401 challenge names a different one
+        # than we used (profile says digest, device offers basic, ...).
+        if response.status_code == 401:
+            offered = _auth_method_from_challenge(
+                response.headers.get("www-authenticate")
+            )
+            if offered and offered in ("basic", "digest") and offered != method:
+                retry = await self._open_and_send(
+                    scheme, host, port, request,
+                    self._auth_for_method(offered, credentials), timeout,
+                )
+                if retry.status_code != 401:
+                    response, method = retry, offered
+                    learned = {**(learned or {}), "scheme": scheme, scheme: method}
+
+        return response, learned
+
     @staticmethod
+    def _method_for_scheme(device: Dict[str, Any], scheme: str) -> str:
+        """The configured auth method for a scheme (basic/digest/bearer/none)."""
+        auth_info = device.get("auth")
+        if auth_info and isinstance(auth_info, dict):
+            return auth_info.get(scheme, "digest")
+        return device.get("auth_method", "digest")  # legacy fallback
+
+    @staticmethod
+    def _auth_for_method(
+        method: str, credentials: Dict[str, Any]
+    ) -> Optional[httpx.Auth]:
+        """Build an httpx auth object for a method + credentials."""
+        username = credentials.get("username", "")
+        password = credentials.get("password", "")
+        if method == "none":
+            return None
+        elif method == "basic":
+            return httpx.BasicAuth(username, password)
+        elif method == "bearer":
+            token = credentials.get("token", password)
+            return _BearerAuth(token)
+        else:  # "digest" or unknown
+            return httpx.DigestAuth(username, password)
+
+    @classmethod
     def _resolve_auth(
+        cls,
         device: Dict[str, Any],
         credentials: Dict[str, Any],
         scheme: str = "http",
@@ -255,24 +379,9 @@ class VapixExecutor(BaseExecutor):
         to its auth method.  Falls back to the legacy ``auth_method``
         field for backward compatibility.
         """
-        auth_info = device.get("auth")
-        if auth_info and isinstance(auth_info, dict):
-            method = auth_info.get(scheme, "digest")
-        else:
-            # Legacy fallback
-            method = device.get("auth_method", "digest")
-
-        username = credentials.get("username", "")
-        password = credentials.get("password", "")
-        if method == "none":
-            return None
-        elif method == "basic":
-            return httpx.BasicAuth(username, password)
-        elif method == "bearer":
-            token = credentials.get("token", password)
-            return _BearerAuth(token)
-        else:  # "digest" or unknown
-            return httpx.DigestAuth(username, password)
+        return cls._auth_for_method(
+            cls._method_for_scheme(device, scheme), credentials
+        )
 
     # Matches {name}, {name:type}, {name=default}, or {name:type=default}
     # placeholders in YAML templates. Group 1 = name, 2 = type hint (optional),

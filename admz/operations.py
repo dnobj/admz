@@ -186,9 +186,40 @@ async def run_execution_tail(
     except AccountNotFoundError:
         credentials = {"username": "", "password": ""}
 
-    return await executor.execute(
+    result = await executor.execute(
         operation.to_executor_dict(), device, credentials, dict(params or {})
     )
+
+    # Connectivity self-healing: if the executor had to correct the device's
+    # scheme/auth (it connect-refused on the configured scheme, or the auth
+    # method was wrong), persist the corrected profile so the next call uses
+    # it directly. Best-effort — a backend without update_device_info (e.g.
+    # Vault, pending H-4) just keeps re-healing per call.
+    learned = getattr(result, "learned_auth", None)
+    if learned:
+        _persist_learned_auth(registry, device_id, device.get("auth"), learned)
+
+    return result
+
+
+def _persist_learned_auth(
+    registry: Any, device_id: str, current_auth: Any, learned: Mapping[str, str]
+) -> None:
+    import logging
+
+    merged = dict(current_auth) if isinstance(current_auth, dict) else {}
+    merged.update(learned)
+    if merged == current_auth:
+        return
+    try:
+        registry.update_device_info(device_id, {"auth": merged})
+        logging.getLogger(__name__).info(
+            "Self-healed connectivity profile for %s: %s", device_id, dict(learned)
+        )
+    except Exception as exc:  # pragma: no cover - best effort
+        logging.getLogger(__name__).debug(
+            "Could not persist self-healed auth for %s: %s", device_id, exc
+        )
 
 
 def normalize_result(

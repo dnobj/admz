@@ -100,7 +100,7 @@ admz/
 │   ├── bundle.py, diff.py, github.py — bundle schema, diffing, fork-and-PR
 │
 ├── mcp/                   — MCP server (the primary entry point)
-│   ├── server.py          — 44 tools wiring everything together
+│   ├── server.py          — 45 tools wiring everything together
 │   ├── tools/             — extracted tool-schema modules (firmware, fleet,
 │   │                         knowledge, provision, schedules)
 │   └── temp_credentials.py — short-lived device user accounts manager

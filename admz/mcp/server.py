@@ -1397,6 +1397,36 @@ class ADMZMCPServer:
                         "required": ["device_id", "ip_address"],
                     },
                 ),
+                Tool(
+                    name="reconcile_device_addresses",
+                    description=(
+                        "Run a network discovery scan and update any registered "
+                        "device whose MAC now answers at a different IP (DHCP "
+                        "moved it). Follows the MAC, not the stale IP — fixes the "
+                        "'looks online but ADMZ says unreachable' case caused by "
+                        "a changed address. Read-only except for correcting the "
+                        "stored host; never registers new devices. Returns the "
+                        "list of corrected devices."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "subnet": {
+                                "type": "string",
+                                "description": (
+                                    "Subnet for the ARP scan in CIDR "
+                                    "(e.g. '192.168.1.0/24'). Auto-detected if omitted."
+                                ),
+                            },
+                            "timeout": {
+                                "type": "number",
+                                "description": "Per-protocol timeout in seconds (default: 5.0)",
+                                "default": 5.0,
+                            },
+                        },
+                        "required": [],
+                    },
+                ),
                 # Schedules, fleet settings, provisioning, and firmware
                 # tools moved to admz/mcp/tools/ (Phase 9). The MIGRATED_TOOLS
                 # splice below preserves the wire-level tool list.
@@ -1682,6 +1712,8 @@ class ADMZMCPServer:
                     result = await self._discover_network_devices(arguments)
                 elif name == "register_discovered_device":
                     result = await self._register_discovered_device(arguments)
+                elif name == "reconcile_device_addresses":
+                    result = await self._reconcile_device_addresses(arguments)
                 # --- Schedule tools ---
                 elif name == "create_snapshot_schedule":
                     result = await self._create_snapshot_schedule(
@@ -2766,6 +2798,33 @@ class ADMZMCPServer:
                 "to set credentials via the out-of-band URL flow."
             ),
             "device_id": device_id,
+        }
+
+    async def _reconcile_device_addresses(
+        self, arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Discover, then correct any registered device whose MAC moved IP."""
+        from admz.discovery.reconcile import reconcile_device_ips
+
+        devices = await run_network_discovery(
+            timeout=arguments.get("timeout", 5.0),
+            axis_only=False,
+            subnet=arguments.get("subnet"),
+            enable_ping=False,
+        )
+        changes = reconcile_device_ips(self.registry, devices)
+        return {
+            "success": True,
+            "discovered": len(devices),
+            "updated": len(changes),
+            "changes": changes,
+            "message": (
+                f"Reconciled {len(changes)} device address(es) from "
+                f"{len(devices)} discovered."
+                if changes
+                else f"All registered devices already match the {len(devices)} "
+                "discovered addresses; nothing to update."
+            ),
         }
 
     # ------------------------------------------------------------------

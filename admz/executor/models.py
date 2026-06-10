@@ -40,3 +40,9 @@ class StepResult:
     duration_ms: Optional[float] = None
     # For rollback: values read before the write
     rollback_data: Optional[Dict[str, str]] = None
+    # Connectivity self-healing: when the executor had to fall back to a
+    # different scheme/auth method than the stored profile (because the
+    # configured one connect-refused or used the wrong auth), it records the
+    # corrected ``auth`` profile here. ``run_execution_tail`` persists it to
+    # the registry so the next call uses the right values directly.
+    learned_auth: Optional[Dict[str, str]] = None

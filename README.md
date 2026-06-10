@@ -81,7 +81,7 @@ registry.add_account("camera-lobby-01", "default", {
 python -m admz mcp
 ```
 
-The server exposes 44 tools across these areas:
+The server exposes 45 tools across these areas:
 
 | Area | Tools |
 |---|---|
@@ -89,7 +89,7 @@ The server exposes 44 tools across these areas:
 | Health & recovery | `get_device_health`, `get_fleet_health`, `await_device_recovery` |
 | Out-of-band capture | `capture_credentials`, `check_capture_status` |
 | Provisioning & temp creds | `provision_device`, `test_device_credentials`, `create_temp_credentials`, `cleanup_temp_credentials` |
-| Discovery | `discover_network_devices`, `register_discovered_device` |
+| Discovery | `discover_network_devices`, `register_discovered_device`, `reconcile_device_addresses` |
 | Catalog, knowledge, capabilities | `query_catalog`, `query_knowledge`, `check_api_support` |
 | Execution | `execute_operation`, `confirm_dangerous_operation` |
 | Plans | `create_plan`, `execute_plan`, `get_plan_status` |

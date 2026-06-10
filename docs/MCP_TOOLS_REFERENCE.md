@@ -1,6 +1,6 @@
 # ADMZ MCP Tools Reference
 
-Complete reference for the **44 tools** the ADMZ MCP server exposes.
+Complete reference for the **45 tools** the ADMZ MCP server exposes.
 
 > Note: a `get_credentials` MCP tool used to exist. It was **removed**
 > (CR-1) because returning plaintext passwords into LLM context violates
@@ -157,6 +157,15 @@ Add a discovered device to the registry.
 - **Returns:** `{success, device_id}`
 - The device is created without credentials. Use `capture_credentials`
   to set them via the OOB flow.
+
+### `reconcile_device_addresses`
+Run a discovery scan and update any registered device whose **MAC** now
+answers at a different **IP** (DHCP moved it). Follows the MAC, not the stale
+IP — fixes the "looks online but ADMZ says unreachable" case. Read-only
+except for correcting the stored `host`; never registers new devices.
+- **Args:** `subnet` (string, optional CIDR), `timeout` (number, default 5.0)
+- **Returns:** `{success, discovered, updated, changes: [{device_id,
+  old_host, new_ip}], message}`
 
 ---
 

@@ -58,9 +58,28 @@ _DEFAULT_INTERVAL_SECONDS = 60.0       # Poll every minute by default
 _DEFAULT_TIMEOUT_SECONDS = 5.0         # Per-device check timeout
 _DEFAULT_CONCURRENCY = 8               # Concurrent probes in flight
 
+# Reachability vs. authentication: ``systemready`` answers 200 even with
+# *invalid* credentials on some Axis firmware, so a 200 there proves the
+# device is up but NOT that ADMZ's stored password is correct. To detect a
+# wrong/stale password (status auth_failed, not a misleading "online") we
+# follow up a successful systemready with one auth-required call.
+SYSTEMREADY_OP = "systemready.cgi:systemReady"
+AUTH_CHECK_OP = "basicdeviceinfo.cgi:getAllProperties"
+
 
 def _fs():
     return _fs_module.fleet_settings
+
+
+def _verify_credentials_enabled() -> bool:
+    """Whether the health probe confirms credentials with an auth-required
+    call after systemready. Default on; set ``health_verify_credentials`` to
+    a falsey value to skip it (e.g. fleets of intentionally low-privilege
+    accounts that legitimately can't read basicdeviceinfo)."""
+    raw = _fs().get("health_verify_credentials")
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in ("0", "false", "no", "off")
 
 
 def _resolve_interval_seconds() -> float:
@@ -318,6 +337,49 @@ async def _tcp_probe(host: str, port: int, timeout: float) -> Optional[int]:
     return elapsed_ms
 
 
+async def _confirm_credentials(
+    *,
+    catalog: Any,
+    executor: Any,
+    device_info: Dict[str, Any],
+    device_id: str,
+    credentials: Dict[str, Any],
+    timeout_seconds: float,
+) -> Optional[bool]:
+    """Confirm the stored credentials actually authenticate.
+
+    Calls an auth-required op (``basicdeviceinfo``). Returns:
+      - ``False`` when the device explicitly rejects the credentials (401/403),
+      - ``True`` when they're accepted (2xx) or the device answers some other
+        way (a non-auth error doesn't implicate the password),
+      - ``None`` when we can't tell (op missing, transient error) — caller
+        should not flip status on ``None``.
+    """
+    op = None
+    try:
+        op = catalog.get_operation("vapix", AUTH_CHECK_OP)
+    except Exception:
+        op = None
+    if op is None:
+        return None
+    try:
+        result = await asyncio.wait_for(
+            executor.execute(
+                op.to_executor_dict(),
+                {**device_info, "device_id": device_id},
+                credentials,
+                {},
+            ),
+            timeout=timeout_seconds + 2,
+        )
+    except Exception:
+        return None  # transient — don't flap the status on a second-call hiccup
+    sc = getattr(result, "status_code", None)
+    if sc in (401, 403):
+        return False
+    return True
+
+
 async def probe_device(
     *,
     device_id: str,
@@ -447,6 +509,31 @@ async def probe_device(
                 uptime_seconds = None
                 bootid = None
 
+            uptime_int = int(uptime_seconds) if uptime_seconds is not None else None
+            bootid_str = str(bootid) if bootid is not None else None
+
+            # systemready 200 proves reachability but NOT valid credentials on
+            # some firmware. Confirm with an auth-required call so a wrong/stale
+            # password surfaces as auth_failed instead of a misleading "online".
+            if _verify_credentials_enabled():
+                creds_ok = await _confirm_credentials(
+                    catalog=catalog, executor=executor, device_info=device_info,
+                    device_id=device_id, credentials=credentials,
+                    timeout_seconds=timeout_seconds,
+                )
+                if creds_ok is False:
+                    return DeviceHealthRecord(
+                        device_id=device_id,
+                        status=DeviceHealthStatus.AUTH_FAILED,
+                        last_check=now,
+                        last_seen_online=now,  # it IS reachable, just not authable
+                        latency_ms=elapsed_ms,
+                        consecutive_failures=1,
+                        last_error="credentials rejected (HTTP 401 on basicdeviceinfo)",
+                        uptime_seconds=uptime_int,
+                        bootid=bootid_str,
+                    )
+
             return DeviceHealthRecord(
                 device_id=device_id,
                 status=DeviceHealthStatus.ONLINE,
@@ -454,8 +541,8 @@ async def probe_device(
                 last_seen_online=now,
                 latency_ms=elapsed_ms,
                 consecutive_failures=0,
-                uptime_seconds=int(uptime_seconds) if uptime_seconds is not None else None,
-                bootid=str(bootid) if bootid is not None else None,
+                uptime_seconds=uptime_int,
+                bootid=bootid_str,
             )
 
     # ---- Tier 2: TCP connect probe ----

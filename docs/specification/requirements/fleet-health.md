@@ -36,6 +36,18 @@ flapping devices.
 The TCP fallback means a device with no stored creds still yields an
 "the IP is up" signal.
 
+### FR-HLT-008 — Auth-aware: a `systemready` 200 is not proof of valid creds ✅
+On some Axis firmware `systemready.cgi:systemReady` answers `200` **without
+validating credentials**, so a device with a wrong/stale stored password would
+otherwise show a misleading `online`. After a successful systemready, the probe
+issues one **auth-required** call (`basicdeviceinfo.cgi:getAllProperties`,
+`_confirm_credentials`): a `401`/`403` flips the status to `auth_failed`
+(reachable, but credentials rejected); a `2xx` (or any non-auth answer) keeps
+it `online`. The extra call fires only for already-reachable devices, and is
+skippable via the `health_verify_credentials` fleet setting (default on) for
+fleets of intentionally low-privilege accounts. This is the gap that masked the
+real-world I8016 case (right IP, stale password — was shown "online").
+
 ### FR-HLT-004 — Single background loop, opt-in ✅
 `HealthMonitor` is one async loop per process (shared between the MCP and
 REST surfaces like SnapshotScheduler), bounded by an asyncio semaphore

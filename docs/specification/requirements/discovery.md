@@ -69,6 +69,17 @@ devices first).
 explicitly call `register_discovered_device(device_id, ip_address, ...)`
 for each one to be managed.
 
+### FR-DISC-009 — MAC-based IP reconciliation ✅
+`reconcile_device_addresses` (MCP) runs a discovery scan and updates any
+*already-registered* device whose MAC now answers at a different IP — DHCP
+moved it. It follows the MAC (the `device_id`), not the stale IP, so it
+self-corrects the registry without re-registering anything. Core:
+`admz/discovery/reconcile.py::reconcile_device_ips(registry, discovered)`,
+which returns the list of `{device_id, old_host, new_ip}` changes. This is the
+discovery-side fix for the "device moved IP → ADMZ says unreachable" failure
+(the real-world I8016: `.207` → `.208`). Devices discovery didn't see are left
+untouched; nothing is auto-registered.
+
 ## Non-functional requirements
 
 ### NFR-DISC-001 — Discovery is read-only on the network ✅

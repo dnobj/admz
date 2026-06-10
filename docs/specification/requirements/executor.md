@@ -81,6 +81,23 @@ in the registry takes precedence. Cameras commonly use
 self-signed certs; production deployments should set
 `verify_ssl=true` per device after installing a trusted cert.
 
+### FR-EXE-010 — Connectivity self-healing (scheme + auth relearn) ✅
+When the stored profile is wrong, the executor corrects it instead of just
+failing:
+- On `httpx.ConnectError` (the configured scheme's port is refused), it
+  retries the *other* scheme on its default port — so an HTTPS-only device
+  registered as `http` still works (the real-world P3288: `http:80` refused →
+  retry `https:443`). Multipart uploads are never scheme-flipped.
+- On a `401` whose `WWW-Authenticate` challenge names a different auth method
+  than was used (profile says digest, device offers Basic), it retries with
+  the offered method.
+Any correction is returned on `StepResult.learned_auth`; `run_execution_tail`
+(`admz/operations.py`) persists the merged profile to the registry via
+`update_device_info`, so subsequent calls use the right scheme/method
+directly. Best-effort persistence — a backend without `update_device_info`
+(Vault, pending H-4) simply re-heals each call. A `401` that stays `401` after
+the method retry is **not** "learned" (the password is wrong, not the method).
+
 ## Non-functional requirements
 
 ### NFR-EXE-001 — No state between calls ✅
