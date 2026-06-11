@@ -158,7 +158,7 @@ def _validate_tool_args(name: str, arguments: Any) -> Optional[str]:
 
     ident_keys = ("device_id", "account_id", "facet_name")
     list_ident_keys = ("device_ids", "facets")
-    ref_keys = ("ref", "ref_a", "ref_b")
+    ref_keys = ("ref", "ref_a", "ref_b", "commit_sha")
 
     for k in ident_keys:
         v = arguments.get(k)
@@ -215,6 +215,9 @@ _DESTRUCTIVE_MCP_TOOLS = frozenset({
     "delete_device",
     "restore_device",
     "execute_plan",
+    # Re-pointing a device's blessed baseline changes what drift means and
+    # what restore replays — metadata-only, but consequential (ADR-0031).
+    "accept_baseline",
 })
 
 
@@ -1114,8 +1117,10 @@ class ADMZMCPServer:
                     description=(
                         "Build a plan that restores a device to a previous "
                         "configuration from git. Returns the plan for review — "
-                        "call execute_plan to apply it. Accepts a git ref "
-                        "(commit SHA, tag, or branch)."
+                        "call execute_plan to apply it. Omit `ref` to revert "
+                        "the device to its blessed BASELINE (the usual "
+                        "'undo this drift' case); pass a git ref (commit SHA, "
+                        "tag, or branch) to restore another point in history."
                     ),
                     inputSchema={
                         "type": "object",
@@ -1139,6 +1144,40 @@ class ADMZMCPServer:
                                     "Specific facets to restore "
                                     "(e.g. ['image', 'time']). "
                                     "Omit to restore all."
+                                ),
+                            },
+                        },
+                        "required": ["device_id"],
+                    },
+                ),
+                Tool(
+                    name="accept_baseline",
+                    description=(
+                        "Accept/promote an observed configuration as a "
+                        "device's new blessed BASELINE (ADR-0031). Use after "
+                        "check_drift reports drift the user has confirmed is "
+                        "intentional ('yes, keep it that way'). Defaults to "
+                        "the device's latest recorded observation; pass "
+                        "commit_sha to bless a specific historical commit. "
+                        "Metadata-only (no device traffic), but it changes "
+                        "what drift means and what restore replays — confirm "
+                        "with the user before calling. The opposite action "
+                        "(reject the drift) is restore_device with ref "
+                        "omitted."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID",
+                            },
+                            "commit_sha": {
+                                "type": "string",
+                                "description": (
+                                    "Git commit to bless as the baseline. "
+                                    "Omit to use the device's latest "
+                                    "recorded observation."
                                 ),
                             },
                         },
@@ -1690,6 +1729,11 @@ class ADMZMCPServer:
                         arguments["device_id"],
                         arguments.get("ref"),
                         arguments.get("facets"),
+                    )
+                elif name == "accept_baseline":
+                    result = await self._accept_baseline(
+                        arguments["device_id"],
+                        arguments.get("commit_sha"),
                     )
                 elif name == "diff_device":
                     result = await self._diff_device(
@@ -2531,6 +2575,58 @@ class ADMZMCPServer:
             "warnings": plan_spec.get("warnings", []),
             "source_ref": plan_spec.get("source_ref", ref),
             **plan.to_summary(),
+        }
+
+    async def _accept_baseline(
+        self, device_id: str, commit_sha: Optional[str]
+    ) -> Dict[str, Any]:
+        """Bless a commit as the device's baseline (ADR-0031 slice 3).
+
+        Defaults to the latest recorded observation. Metadata-only — no
+        device traffic — but it re-points what drift compares against and
+        what restore replays, so the tool is in _DESTRUCTIVE_MCP_TOOLS.
+        """
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+
+        device_info = self.registry.get_device_info(device_id)
+        target = commit_sha or device_info.get("latest_observed_sha")
+        if not target:
+            return {
+                "success": False,
+                "error": (
+                    f"No commit to accept for {device_id}: pass commit_sha, "
+                    "or run check_drift/snapshot_device first so there is a "
+                    "recorded observation."
+                ),
+            }
+
+        # The target must actually hold config for this device — a baseline
+        # pointing at a commit with no facets would make every drift check
+        # report no_baseline-like emptiness.
+        facets = self.git_repo.list_facets_at(device_id, target)
+        if not facets:
+            return {
+                "success": False,
+                "error": (
+                    f"Commit {target[:12]} holds no config for {device_id} "
+                    "— not accepting it as a baseline."
+                ),
+            }
+
+        previous = device_info.get("baseline_sha")
+        self.registry.set_config_pointers(device_id, baseline_sha=target)
+        return {
+            "success": True,
+            "device_id": device_id,
+            "baseline_sha": target,
+            "previous_baseline_sha": previous,
+            "facets": facets,
+            "message": (
+                f"Baseline for {device_id} is now {target[:12]} "
+                f"({len(facets)} facet(s)). Drift is measured against it; "
+                "restore_device (ref omitted) replays it."
+            ),
         }
 
     async def _diff_device(

@@ -142,7 +142,7 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **MCP** — Model Context Protocol. The protocol used by LLM agents to invoke ADMZ tools.
 
-**MCP server** — The primary entry point for LLM-driven ADMZ use. Implemented in `admz/mcp/server.py`. Exposes 45 tools (see `docs/MCP_TOOLS_REFERENCE.md`).
+**MCP server** — The primary entry point for LLM-driven ADMZ use. Implemented in `admz/mcp/server.py`. Exposes 46 tools (see `docs/MCP_TOOLS_REFERENCE.md`).
 
 **mDNS** — Multicast DNS. Used by Axis devices to announce themselves via Bonjour/Zeroconf.
 

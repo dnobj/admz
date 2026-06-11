@@ -365,6 +365,27 @@ class GitRepo:
             d.name for d in fleet_dir.iterdir() if d.is_dir()
         )
 
+    def list_facets_at(self, device_id: str, ref: str) -> List[str]:
+        """Facet names committed for ``device_id`` at ``ref`` ([] if none).
+
+        Used to validate accept/promote targets: a commit can only become a
+        device's baseline if it actually holds config for that device.
+        """
+        from admz.validators import validate_git_ref, validate_identifier
+        validate_identifier(device_id, "device_id")
+        validate_git_ref(ref)
+        result = self._run_git(
+            "ls-tree", "--name-only",
+            f"{ref}:fleet/{device_id}/config", check=False,
+        )
+        if result.returncode != 0:
+            return []
+        return sorted(
+            name[:-5]
+            for name in result.stdout.split()
+            if name.endswith(".yaml")
+        )
+
     def head_sha(self) -> Optional[str]:
         """Current repo HEAD commit SHA, or None on an empty repo.
 

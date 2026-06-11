@@ -102,6 +102,87 @@ async def snapshot_fleet(
     }
 
 
+class AcceptBaselineRequest(BaseModel):
+    device_id: str
+    # None -> accept the device's latest recorded observation.
+    commit_sha: Optional[str] = None
+
+    @field_validator("device_id")
+    @classmethod
+    def _check_device_id(cls, v: str) -> str:
+        return validate_identifier(v, "device_id")
+
+    @field_validator("commit_sha")
+    @classmethod
+    def _check_commit_sha(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        return validate_git_ref(v)
+
+
+@router.post("/snapshot/accept-baseline")
+async def accept_baseline(
+    request: Request,
+    req: AcceptBaselineRequest,
+    ctx: AppContext = Depends(get_context),
+):
+    """Bless a commit (default: the latest observation) as a device's
+    baseline (ADR-0031 slice 3). Metadata-only, but it re-points what
+    drift compares against and what restore replays — so, like restore,
+    it requires an authenticated principal (CR-3 parity)."""
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+    resource = f"device:{req.device_id}"
+
+    if not ctx.registry.device_exists(req.device_id):
+        record_event(principal, "snapshot.accept_baseline", resource=resource,
+                     success=False, error_message="not-found")
+        raise HTTPException(
+            status_code=404, detail=f"Device not found: {req.device_id}"
+        )
+
+    device_info = ctx.registry.get_device_info(req.device_id)
+    target = req.commit_sha or device_info.get("latest_observed_sha")
+    if not target:
+        record_event(principal, "snapshot.accept_baseline", resource=resource,
+                     success=False, error_message="no-target")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No commit to accept: pass commit_sha, or snapshot/audit "
+                "the device first so there is a recorded observation."
+            ),
+        )
+
+    facets = ctx.git_repo.list_facets_at(req.device_id, target)
+    if not facets:
+        record_event(principal, "snapshot.accept_baseline", resource=resource,
+                     success=False, error_message="no-config-at-commit")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Commit {target[:12]} holds no config for "
+                f"{req.device_id} — not accepting it as a baseline."
+            ),
+        )
+
+    previous = device_info.get("baseline_sha")
+    ctx.registry.set_config_pointers(req.device_id, baseline_sha=target)
+    record_event(principal, "snapshot.accept_baseline", resource=resource,
+                 details={"baseline_sha": target, "previous": previous})
+    return {
+        "success": True,
+        "device_id": req.device_id,
+        "baseline_sha": target,
+        "previous_baseline_sha": previous,
+        "facets": facets,
+    }
+
+
 @router.post("/snapshot/restore")
 async def restore_device(
     request: Request,

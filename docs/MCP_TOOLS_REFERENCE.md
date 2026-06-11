@@ -1,6 +1,6 @@
 # ADMZ MCP Tools Reference
 
-Complete reference for the **45 tools** the ADMZ MCP server exposes.
+Complete reference for the **46 tools** the ADMZ MCP server exposes.
 
 > Note: a `get_credentials` MCP tool used to exist. It was **removed**
 > (CR-1) because returning plaintext passwords into LLM context violates
@@ -331,10 +331,26 @@ Snapshot many devices in parallel into a single commit.
 - **Returns:** `{success, count, results: [...]}`
 
 ### `restore_device`
-Build a plan that restores a device to a previous configuration.
-- **Args:** `device_id`, `ref` (default `"HEAD"`), `facets` (array, optional)
+Build a plan that restores a device to a previous configuration. **Omit
+`ref` to revert the device to its blessed baseline** (the usual "undo this
+drift" case, ADR-0031); pass a ref to restore another point in history.
+- **Args:** `device_id`, `ref` (optional — default: the device's
+  `baseline_sha`), `facets` (array, optional)
 - **Returns:** `{success, plan_id, steps, warnings, source_ref}`
 - Does **not** execute — call `execute_plan` after review.
+
+### `accept_baseline`
+Accept/promote an observed configuration as a device's new blessed
+**baseline** (ADR-0031). Use after `check_drift` when the user confirms the
+drift is intentional. Metadata-only (no device traffic), but it re-points
+what drift means and what restore replays — anonymous-blocked like the
+other destructive tools.
+- **Args:** `device_id`, `commit_sha` (optional — default: the device's
+  latest recorded observation)
+- **Returns:** `{success, device_id, baseline_sha, previous_baseline_sha,
+  facets, message}`
+- Errors when there is no observation to accept, or when the target commit
+  holds no config for the device.
 
 ### `diff_device`
 Show config changes for a device between two refs.

@@ -42,8 +42,17 @@ pins existing config-bearing devices to HEAD.
 `snapshot_device`/`snapshot_fleet` set `baseline_sha = HEAD` after a
 successful capture ("this state is good now"). `RestoreBuilder` and the
 `restore_device` tool/route default to the device's `baseline_sha` (an
-explicit ref still overrides). Accept/promote + revert-to-baseline are
-slice 3.
+explicit ref still overrides) — so "revert the drift" is `restore_device`
+with `ref` omitted. The accept path is `accept_baseline` (FR-BAS-004).
+
+### FR-BAS-004 — Accept/promote a baseline ✅
+`accept_baseline(device_id, commit_sha?)` (MCP, anonymous-blocked via
+`_DESTRUCTIVE_MCP_TOOLS`) and `POST /api/snapshot/accept-baseline`
+(REST, authenticated like restore) re-point `baseline_sha` to a chosen
+commit — default: the device's latest recorded observation. The target
+must hold committed config for the device (`git_repo.list_facets_at`),
+else the call is rejected. Metadata-only: no device traffic, no git
+writes; audited as `snapshot.accept_baseline`.
 
 ### FR-BAS-003 — Audits record observations ✅
 Every `check_drift` probes the device once and records what it observed
@@ -155,11 +164,12 @@ fields like `image.fps = 30` vs `30.0` would surface as drift.
 None of the current facets emit ambiguous numerics, but this is a
 latent issue if a new facet does.
 
-### KL-DRF-002 — No "accept current state" shortcut ⚠️
-To accept the live state as the new baseline, operators run a
-fresh `snapshot_device`. There's no `accept_drift` command. This
-is intentional — accepting drift should be an explicit recorded
-event — but operators sometimes ask for a one-call shortcut.
+### KL-DRF-002 — No "accept current state" shortcut ✅
+Resolved by ADR-0031 slice 3: `accept_baseline` (FR-BAS-004) is the
+one-call shortcut — it blesses the latest recorded observation (or an
+explicit commit) as the baseline, as an explicit, audited event.
+Running a fresh `snapshot_device` still works and does the same
+re-pointing as a side effect.
 
 ### KL-DRF-003 — Drift sweep cost grows with fleet × facets ⚠️
 A fleet of 500 devices with 6 facets each is ~3000 read calls per
