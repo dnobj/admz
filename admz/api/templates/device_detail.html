@@ -6,7 +6,7 @@
 {% block content %}
 <div class="breadcrumb">
   <a href="/devices">Fleet</a>
-  {% if primary_group %}<span class="sep"><i data-lucide="chevron-right"></i></span><a href="/devices">{{ primary_group }}</a>{% endif %}
+  {% if device.tags %}<span class="sep"><i data-lucide="chevron-right"></i></span><a href="/devices?tag={{ device.tags[0] }}">{{ device.tags[0] }}</a>{% endif %}
   <span class="sep"><i data-lucide="chevron-right"></i></span>
   <span class="last">{{ device.nickname or device.device_id }}</span>
 </div>
@@ -47,7 +47,9 @@
           <div class="keyval"><span class="k">Device ID</span><span class="v mono">{{ device.device_id }}</span></div>
           <div class="keyval"><span class="k">Name</span><span class="v">{{ device.nickname or '—' }}</span></div>
           <div class="keyval"><span class="k">Site</span><span class="v">{{ site_name or '—' }}</span></div>
-          <div class="keyval"><span class="k">Group</span><span class="v">{{ primary_group or 'Ungrouped' }}</span></div>
+          <div class="keyval"><span class="k">Tags</span><span class="v">
+            {% if device.tags %}{% for tag in device.tags %}<a class="tag" href="/devices?tag={{ tag }}">{{ tag }}</a> {% endfor %}{% else %}—{% endif %}
+          </span></div>
         </div>
 
         <div class="nav-divider"></div>
@@ -67,12 +69,6 @@
         <div style="margin-top:14px">
           <button class="btn subtle sm" type="button" title="Re-bind a replacement unit to this slot (coming soon)" disabled><i data-lucide="repeat"></i> Replace hardware</button>
         </div>
-        {% if device.tags %}
-        <div style="margin-top:14px" class="flex items-center gap-8">
-          <span class="section-label">Tags</span>
-          {% for tag in device.tags %}<span class="tag">{{ tag }}</span>{% endfor %}
-        </div>
-        {% endif %}
       </div>
     </div>
 

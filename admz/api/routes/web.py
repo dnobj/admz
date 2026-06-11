@@ -76,17 +76,19 @@ async def devices_page(
     registry: DeviceRegistry = Depends(get_registry),
 ):
     """
-    Fleet dashboard — health, model, IP, group, drift, tags for the
-    active site. Hierarchy-aware: filters to the cookie-selected site and
-    (optionally) a ?group= filter, mirroring the sidebar group list.
+    Fleet dashboard — health, model, IP, drift, tags for the active
+    site. Filters to the cookie-selected site and (optionally) a ?tag=
+    filter, mirroring the sidebar tag list (ADR-0032: tags are the
+    device-grouping primitive; `untagged` is the reserved value for
+    devices with no tags).
     """
     try:
         devices = registry.list_devices()
         devices.sort(key=lambda d: d.get("nickname") or d.get("device_id", ""))
 
-        # ── Hierarchy scoping (defensive: backend may not support it) ──
+        # ── Site scoping (defensive: backend may not support it) ──
         active_site = request.cookies.get("admz_site")
-        group_filter = request.query_params.get("group")
+        tag_filter = request.query_params.get("tag")
         hierarchy = True
         try:
             sites = registry.list_sites()
@@ -110,27 +112,18 @@ async def devices_page(
                     os_ = {}
                 if active_site and os_.get("site_id") and os_.get("site_id") != active_site:
                     continue
-                # group memberships + primary group label
-                try:
-                    memberships = registry.list_groups_for_device(did)
-                except Exception:
-                    memberships = []
-                gids = [m.get("group_id") for m in memberships]
-                primary = next((m for m in memberships if m.get("is_primary")), None)
-                d["_groups"] = gids
-                d["_primary_group"] = (primary or (memberships[0] if memberships else {})).get("name") if memberships else None
-                if group_filter and group_filter not in gids:
-                    continue
                 scoped.append(d)
             devices = scoped
 
-        group_name = None
-        if group_filter and hierarchy:
-            try:
-                g = registry.get_device_group(group_filter)
-                group_name = g.get("name") if g else group_filter
-            except Exception:
-                group_name = group_filter
+        # ── Tag filter (exact membership, same semantics as tag_filter
+        # in scheduling/drift/snapshot) ──
+        if tag_filter:
+            if tag_filter == "untagged":
+                devices = [d for d in devices if not d.get("tags")]
+            else:
+                devices = [
+                    d for d in devices if tag_filter in (d.get("tags") or [])
+                ]
 
         return templates.TemplateResponse(
             "index.html",
@@ -138,8 +131,7 @@ async def devices_page(
                 "request": request,
                 "devices": devices,
                 "site": site_obj,
-                "group_filter": group_filter,
-                "group_name": group_name,
+                "tag_filter": tag_filter,
                 "title": "Fleet",
             },
         )
@@ -176,19 +168,14 @@ async def device_detail(
         except Exception:
             accounts = []
 
-        # Hierarchy context for the slot identity card (defensive).
+        # Site context for the slot identity card (defensive). Tags come
+        # straight off the device dict (ADR-0032: no Group level).
         site_name = None
-        group_names = []
-        primary_group = None
         try:
             os_ = registry.get_device_org_site(device_id) or {}
             if os_.get("site_id"):
                 site = registry.get_site(os_["site_id"])
                 site_name = site.get("name") if site else os_["site_id"]
-            memberships = registry.list_groups_for_device(device_id)
-            group_names = [m.get("name") for m in memberships]
-            primary = next((m for m in memberships if m.get("is_primary")), None)
-            primary_group = (primary or (memberships[0] if memberships else {})).get("name")
         except Exception:
             pass
 
@@ -199,8 +186,6 @@ async def device_detail(
                 "device": device,
                 "accounts": accounts,
                 "site_name": site_name,
-                "group_names": group_names,
-                "primary_group": primary_group,
                 "title": device.get("nickname", device_id),
             },
         )

@@ -1,21 +1,18 @@
-"""Tests for Slice 1 of the Org → Site → Group hierarchy.
+"""Tests for the Org → Site hierarchy (ADR-0032: no Group level).
 
 Covers:
-  * SQLite schema additions (4 new tables + 2 new device columns) load
-    cleanly on a fresh DB AND on an existing DB (ALTER TABLE idempotency).
-  * CRUD round-trip for Organization, Site, DeviceGroup.
-  * N:N device → group memberships with the partial unique constraint
-    on `is_primary` (at most one primary per device).
+  * SQLite schema (organizations + sites tables, org_id/site_id device
+    columns) loads cleanly on a fresh DB AND on an existing DB
+    (ALTER TABLE idempotency); the removed Group tables are DROPPED
+    idempotently when opening a legacy DB.
+  * CRUD round-trip for Organization and Site.
   * Foreign-key enforcement (can't add a Site without its parent Org,
     can't remove an Org while sites still belong to it, etc.).
-  * `set_device_primary_group` reassigns cleanly without violating the
-    partial unique index.
   * `set_device_org_site` validates that Site belongs to the named Org.
-  * Default Org/Site/Group bootstrap in `build_components` is idempotent
+  * Default Org/Site bootstrap in `build_components` is idempotent
     and adopts the legacy config-repo's existing origin URL (the
     homelab-style "operator already did git remote add").
-  * `validate_identifier` enforcement on org_id / site_id / group_id
-    (CR-5 reuse).
+  * `validate_identifier` enforcement on org_id / site_id (CR-5 reuse).
 """
 
 from __future__ import annotations
@@ -72,18 +69,6 @@ def site(registry, org):
     return ("axis-comm", "aec-chicago")
 
 
-@pytest.fixture
-def group(registry, site):
-    """An Org + Site + Group triple."""
-    registry.add_device_group(
-        group_id="lobby",
-        site_id=site[1],
-        name="Lobby",
-        purpose="Public-facing demo cameras",
-    )
-    return ("axis-comm", "aec-chicago", "lobby")
-
-
 # ---------------------------------------------------------------------------
 # Schema + ALTER TABLE idempotency
 # ---------------------------------------------------------------------------
@@ -100,8 +85,10 @@ class TestSchema:
         assert {
             "devices", "accounts",
             "organizations", "sites",
-            "device_groups", "device_group_memberships",
         }.issubset(names)
+        # ADR-0032: the Group tables are gone.
+        assert "device_groups" not in names
+        assert "device_group_memberships" not in names
 
     def test_devices_has_hierarchy_columns(self, registry):
         import sqlite3
@@ -124,27 +111,37 @@ class TestSchema:
         r2 = SQLiteDeviceRegistry(db_path=db, key_path=key)
         r2.list_organizations()  # smoke
 
-    def test_partial_unique_index_on_primary(self, registry, group):
-        # Manually seed a device row (without hitting our CRUD which
-        # we test elsewhere) so we can exercise the constraint.
+    def test_group_tables_dropped_from_legacy_db(self, tmp_path):
+        """Opening a registry over a pre-ADR-0032 DB (which still has the
+        Group tables) drops them — idempotently across reopens."""
         import sqlite3
-        registry.add_device("cam-x", {"host": "192.0.2.1"})
-        registry.add_device_to_group(
-            "cam-x", group[2], is_primary=True,
+        db = str(tmp_path / "legacy.db")
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            "CREATE TABLE devices (device_id TEXT PRIMARY KEY, "
+            "info_json TEXT NOT NULL);"
+            "CREATE TABLE device_groups (group_id TEXT PRIMARY KEY, "
+            "site_id TEXT, name TEXT);"
+            "CREATE TABLE device_group_memberships (device_id TEXT, "
+            "group_id TEXT, is_primary INTEGER, added_at REAL);"
+            "INSERT INTO device_groups VALUES ('ungrouped', 'default', "
+            "'Ungrouped');"
         )
-        # Try to insert a second primary membership row by hand —
-        # the partial unique index should refuse it.
-        with sqlite3.connect(registry._db_path) as conn:
-            registry.add_device_group(
-                group_id="rooftop", site_id=group[1],
-                name="Rooftop", purpose="",
+        conn.commit()
+        conn.close()
+        for _ in range(2):  # idempotent across reopens
+            SQLiteDeviceRegistry(
+                db_path=db, key_path=str(tmp_path / "k.key"),
             )
-            with pytest.raises(sqlite3.IntegrityError):
-                conn.execute(
-                    "INSERT INTO device_group_memberships "
-                    "(device_id, group_id, is_primary, added_at) "
-                    "VALUES ('cam-x', 'rooftop', 1, 0)"
+            names = {
+                r[0]
+                for r in sqlite3.connect(db).execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
                 )
+            }
+            assert "device_groups" not in names
+            assert "device_group_memberships" not in names
+            assert {"devices", "organizations", "sites"}.issubset(names)
 
 
 # ---------------------------------------------------------------------------
@@ -249,113 +246,15 @@ class TestSiteCRUD:
         assert s["name"] == "AEC NYC"
         assert s["location"] == "NY"
 
-    def test_remove_with_child_group_refuses(self, registry, group):
-        with pytest.raises(BackendError, match="group"):
-            registry.remove_site(group[1])
-
     def test_remove_empty_site(self, registry, site):
         registry.remove_site(site[1])
         assert registry.get_site(site[1]) is None
 
-
-# ---------------------------------------------------------------------------
-# Device-group CRUD
-# ---------------------------------------------------------------------------
-
-
-class TestDeviceGroupCRUD:
-    def test_add_and_get(self, registry, site):
-        registry.add_device_group(
-            "lobby", site[1], "Lobby", purpose="Public-facing",
-        )
-        g = registry.get_device_group("lobby")
-        assert g["group_id"] == "lobby"
-        assert g["site_id"] == site[1]
-        assert g["purpose"] == "Public-facing"
-
-    def test_list_filtered_by_site(self, registry, org):
-        registry.add_site("site-1", org, "S1")
-        registry.add_site("site-2", org, "S2")
-        registry.add_device_group("g1", "site-1", "G1")
-        registry.add_device_group("g2", "site-1", "G2")
-        registry.add_device_group("g3", "site-2", "G3")
-        site1_groups = registry.list_device_groups(site_id="site-1")
-        assert {g["group_id"] for g in site1_groups} == {"g1", "g2"}
-
-
-# ---------------------------------------------------------------------------
-# N:N device-group memberships
-# ---------------------------------------------------------------------------
-
-
-class TestDeviceGroupMembership:
-    @pytest.fixture
-    def cam(self, registry, group):
+    def test_remove_site_with_devices_refuses(self, registry, site):
         registry.add_device("cam-01", {"host": "192.0.2.1"})
-        return "cam-01"
-
-    def test_add_device_to_group(self, registry, group, cam):
-        registry.add_device_to_group(cam, group[2])
-        gs = registry.list_groups_for_device(cam)
-        assert len(gs) == 1
-        assert gs[0]["group_id"] == group[2]
-        assert gs[0]["is_primary"] is False
-
-    def test_first_primary_assignment(self, registry, group, cam):
-        registry.add_device_to_group(cam, group[2], is_primary=True)
-        assert registry.get_device_primary_group(cam)["group_id"] == group[2]
-
-    def test_set_primary_swaps_correctly(self, registry, group, cam):
-        # Add device to two groups; promote second to primary.
-        registry.add_device_to_group(cam, group[2], is_primary=True)
-        registry.add_device_group("rooftop", group[1], "Rooftop")
-        registry.add_device_to_group(cam, "rooftop")
-        registry.set_device_primary_group(cam, "rooftop")
-        primary = registry.get_device_primary_group(cam)
-        assert primary["group_id"] == "rooftop"
-        # Old primary is demoted, not deleted.
-        all_groups = registry.list_groups_for_device(cam)
-        assert {g["group_id"] for g in all_groups} == {group[2], "rooftop"}
-        primaries = [g for g in all_groups if g["is_primary"]]
-        assert [p["group_id"] for p in primaries] == ["rooftop"]
-
-    def test_set_primary_for_new_membership(self, registry, group, cam):
-        # set_device_primary_group should ADD the membership if not
-        # yet present, not just toggle is_primary on an existing row.
-        registry.set_device_primary_group(cam, group[2])
-        gs = registry.list_groups_for_device(cam)
-        assert len(gs) == 1
-        assert gs[0]["is_primary"] is True
-
-    def test_remove_device_from_group(self, registry, group, cam):
-        registry.add_device_to_group(cam, group[2])
-        registry.remove_device_from_group(cam, group[2])
-        assert registry.list_groups_for_device(cam) == []
-
-    def test_remove_group_with_primary_member_refuses(
-        self, registry, group, cam
-    ):
-        registry.add_device_to_group(cam, group[2], is_primary=True)
-        with pytest.raises(BackendError, match="primary"):
-            registry.remove_device_group(group[2])
-
-    def test_membership_for_unknown_device_raises(self, registry, group):
-        with pytest.raises(DeviceNotFoundError):
-            registry.add_device_to_group("no-such-cam", group[2])
-
-    def test_membership_for_unknown_group_raises(self, registry, cam):
-        with pytest.raises(BackendError, match="Group"):
-            registry.add_device_to_group(cam, "no-such-group")
-
-    def test_cascade_on_device_delete(self, registry, group, cam):
-        # Membership rows go away when the parent device does
-        # (ON DELETE CASCADE).
-        registry.add_device_to_group(cam, group[2], is_primary=True)
-        registry.remove_device(cam)
-        # Sanity: re-add a fresh device with the same id, no leftover
-        # membership rows from the previous incarnation.
-        registry.add_device(cam, {"host": "192.0.2.1"})
-        assert registry.list_groups_for_device(cam) == []
+        registry.set_device_org_site("cam-01", site[0], site[1])
+        with pytest.raises(BackendError, match="device"):
+            registry.remove_site(site[1])
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +321,7 @@ def _isolate_admz_env(tmp_path, monkeypatch):
 
 
 class TestDefaultBootstrap:
-    def test_creates_default_org_site_group(self, tmp_path, monkeypatch):
+    def test_creates_default_org_site(self, tmp_path, monkeypatch):
         db_path = _isolate_admz_env(tmp_path, monkeypatch)
         registry = SQLiteDeviceRegistry(
             db_path=str(db_path),
@@ -436,7 +335,8 @@ class TestDefaultBootstrap:
         )
         assert registry.get_organization("default") is not None
         assert registry.get_site("default") is not None
-        assert registry.get_device_group("ungrouped") is not None
+        # ADR-0032: no Group level — the ABC stub raises.
+        assert not hasattr(registry, "get_device_group")
 
     def test_bootstrap_idempotent(self, tmp_path, monkeypatch):
         db_path = _isolate_admz_env(tmp_path, monkeypatch)

@@ -58,7 +58,7 @@ When implemented:
 1. A job with `job_type="drift_audit"`, an interval, and a `scope` runs `check_fleet_drift(scope)` on its cadence — directly, with no Gemini call or MCP subprocess (US-SCHED-003).
 2. Each run persists results (which devices drifted, which fields) to a queryable store; a clean run is recorded too, so "nothing drifted" is a positive signal rather than silence.
 3. Reuses the existing `drift_alerts` transition logic (`appeared` / `changed` / `cleared`) so the schedule surfaces *changes*, not the same standing drift every hour.
-4. `scope` accepts `org_id` / `site_id` / `group_id` (hierarchy-aware) alongside the existing `tag_filter` / `device_ids` (US-SCHED-006).
+4. `scope` accepts `org_id` / `site_id` (hierarchy-aware) alongside the existing `tag_filter` / `device_ids` (US-SCHED-006; ADR-0032 — tags replaced the Group level).
 5. Alerting hooks (webhook / email / syslog) are a follow-on layer on the persisted transitions.
 
 **Related requirements:** [scheduling](../requirements/scheduling.md), [drift-detection](../requirements/drift-detection.md).

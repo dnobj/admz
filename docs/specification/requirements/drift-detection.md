@@ -125,7 +125,7 @@ scheduler, it rides the unified job scheduler as `job_type="drift_audit"`
    evidence is not yet recorded — deferred follow-up.
 3. ✅ Reuses the `drift_alerts` transition logic (`appeared` / `changed` /
    `cleared`) so each run emits *changes*, not the standing drift set.
-4. 📋 `scope` is hierarchy-aware (`org_id`/`site_id`/`group_id`) alongside
+4. 📋 `scope` is hierarchy-aware (`org_id`/`site_id`; ADR-0032 — no group level) alongside
    `tag_filter` / `device_ids`. Today scope is `tag_filter` + `device_ids`
    only; hierarchy fields land with FR-SCH-012 when Org/Site/Group
    Slice 2 lands.

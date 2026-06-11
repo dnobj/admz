@@ -103,7 +103,7 @@ clean, and the transition tally. The history is queryable via
 the FR-DRF-010 surface that landed earlier.
 
 ### FR-SCH-012 — Hierarchy-aware scope 📋
-A job's `scope` accepts `org_id` / `site_id` / `group_id` alongside
+A job's `scope` accepts `org_id` / `site_id` alongside (ADR-0032: no group level — use tags)
 `tag_filter` / `device_ids`, resolved to a device set at run time so
 dynamic Group membership is honored. A scheduled snapshot for a Site
 commits into that Site's Org repo (per the per-Org-repo hierarchy).

@@ -187,10 +187,9 @@ def main():
     maint_migrate = maint_sub.add_parser(
         "migrate",
         help=(
-            "Backfill the Slice-1 hierarchy on existing devices: "
-            "assigns every device lacking org_id/site_id to the default "
-            "Org/Site and adds it to the 'ungrouped' device group as "
-            "the primary. Idempotent — safe to re-run."
+            "Backfill the hierarchy on existing devices: assigns every "
+            "device lacking org_id/site_id to the default Org/Site. "
+            "Idempotent — safe to re-run."
         ),
     )
     maint_migrate.add_argument(

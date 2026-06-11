@@ -1,14 +1,8 @@
-"""Tests for the Slice-1 device hierarchy backfill migration.
+"""Tests for the hierarchy backfill migration (ADR-0032: org/site only).
 
-Covers:
-  * Existing devices without org_id/site_id get assigned to
-    (default, default).
-  * Each backfilled device gets the 'ungrouped' group as its
-    primary membership.
-  * Already-migrated devices are skipped (counter increments without
-    rewriting their assignments).
-  * Dry-run reports correct counts without writing.
-  * Per-device errors don't halt the rest of the migration.
+Pre-Slice-1 devices have NULL org_id/site_id; the migration assigns them
+to (default, default). The former assign-to-"ungrouped"-group step was
+removed with the Group level — operational grouping is device tags now.
 """
 
 from __future__ import annotations
@@ -25,7 +19,7 @@ from admz.migrations import migrate_hierarchy_backfill
 
 
 def _registry(tmp_path, monkeypatch):
-    """Fresh registry with the default hierarchy already bootstrapped."""
+    """Fresh registry with the default Org/Site already bootstrapped."""
     db = tmp_path / "admz.db"
     monkeypatch.setenv("ADMZ_DB_PATH", str(db))
     monkeypatch.setenv("ADMZ_KEY_PATH", str(tmp_path / "admz.key"))
@@ -40,7 +34,7 @@ def _registry(tmp_path, monkeypatch):
     registry = SQLiteDeviceRegistry(
         db_path=str(db), key_path=str(tmp_path / "admz.key"),
     )
-    # Bootstrap the default org/site/group inline (don't bring all of
+    # Bootstrap the default org/site inline (don't bring all of
     # build_components into the test — we just need the rows).
     registry.add_organization(
         org_id="default", name="Default Organization",
@@ -48,9 +42,6 @@ def _registry(tmp_path, monkeypatch):
     )
     registry.add_site(
         site_id="default", org_id="default", name="Default Site",
-    )
-    registry.add_device_group(
-        group_id="ungrouped", site_id="default", name="Ungrouped",
     )
     return registry
 
@@ -66,112 +57,69 @@ class TestHierarchyBackfill:
         result = migrate_hierarchy_backfill(registry)
         assert result["devices_total"] == 0
         assert result["backfilled"] == 0
-        assert result["primary_assigned"] == 0
+        assert result["already_migrated"] == 0
 
-    def test_backfills_pre_hierarchy_devices(
-        self, tmp_path, monkeypatch
-    ):
+    def test_backfills_pre_hierarchy_devices(self, tmp_path, monkeypatch):
         registry = _registry(tmp_path, monkeypatch)
-        # Three devices added pre-hierarchy: their org_id/site_id
-        # are NULL and they have no group memberships.
-        for did in ("cam-01", "cam-02", "cam-03"):
-            registry.add_device(did, {"host": "192.0.2.1"})
-
+        # Devices added via add_device have NULL org_id/site_id.
+        for i in range(3):
+            registry.add_device(f"cam-{i:02d}", {"host": f"10.0.0.{i}"})
         result = migrate_hierarchy_backfill(registry)
         assert result["devices_total"] == 3
         assert result["backfilled"] == 3
-        assert result["primary_assigned"] == 3
-        assert result["already_migrated"] == 0
-
-        for did in ("cam-01", "cam-02", "cam-03"):
-            os_pair = registry.get_device_org_site(did)
-            assert os_pair == {"org_id": "default", "site_id": "default"}
-            primary = registry.get_device_primary_group(did)
-            assert primary["group_id"] == "ungrouped"
+        for i in range(3):
+            did = f"cam-{i:02d}"
+            assert registry.get_device_org_site(did) == {
+                "org_id": "default", "site_id": "default",
+            }
 
     def test_idempotent_when_rerun(self, tmp_path, monkeypatch):
         registry = _registry(tmp_path, monkeypatch)
-        registry.add_device("cam-01", {"host": "192.0.2.1"})
-
-        # First run does the work.
+        registry.add_device("cam-01", {"host": "10.0.0.1"})
         first = migrate_hierarchy_backfill(registry)
         assert first["backfilled"] == 1
-        assert first["primary_assigned"] == 1
-        assert first["already_migrated"] == 0
-
-        # Second run sees the device as already migrated.
         second = migrate_hierarchy_backfill(registry)
         assert second["backfilled"] == 0
-        assert second["primary_assigned"] == 0
         assert second["already_migrated"] == 1
 
     def test_dry_run_writes_nothing(self, tmp_path, monkeypatch):
         registry = _registry(tmp_path, monkeypatch)
-        registry.add_device("cam-01", {"host": "192.0.2.1"})
+        registry.add_device("cam-01", {"host": "10.0.0.1"})
         result = migrate_hierarchy_backfill(registry, dry_run=True)
         assert result["dry_run"] is True
-        assert result["backfilled"] == 1
-        # But the device wasn't actually written.
+        assert result["backfilled"] == 1  # would have
         assert registry.get_device_org_site("cam-01") is None
-        assert registry.get_device_primary_group("cam-01") is None
 
-    def test_mixed_state_partially_migrated(self, tmp_path, monkeypatch):
-        """A device that already has org_id/site_id but no primary
-        group gets ONLY the primary-group assignment."""
+    def test_existing_assignment_preserved(self, tmp_path, monkeypatch):
+        """A device already assigned to a custom org/site is left alone."""
         registry = _registry(tmp_path, monkeypatch)
-        registry.add_device("cam-01", {"host": "192.0.2.1"})
-        # Half-migrated: org+site assigned but no group.
-        registry.set_device_org_site("cam-01", "default", "default")
-        result = migrate_hierarchy_backfill(registry)
-        assert result["backfilled"] == 0           # org/site already set
-        assert result["primary_assigned"] == 1     # group assigned now
-        assert result["already_migrated"] == 0
-
-    def test_existing_membership_preserved(self, tmp_path, monkeypatch):
-        """A device with an existing primary group in some OTHER
-        group is left alone (counter increments as already_migrated
-        because it has org/site/primary already)."""
-        registry = _registry(tmp_path, monkeypatch)
-        registry.add_device("cam-01", {"host": "192.0.2.1"})
-        # Real custom group in a real custom site under a custom org.
-        registry.add_organization(
-            "axis-comm", "Axis", str(tmp_path / "axis-repo"),
-        )
-        registry.add_site("aec", "axis-comm", "AEC Chicago")
-        registry.add_device_group("lobby", "aec", "Lobby")
-        registry.set_device_org_site("cam-01", "axis-comm", "aec")
-        registry.set_device_primary_group("cam-01", "lobby")
-
+        registry.add_organization("acme", "Acme", repo_path="/tmp/acme")
+        registry.add_site("hq", "acme", "HQ")
+        registry.add_device("cam-01", {"host": "10.0.0.1"})
+        registry.set_device_org_site("cam-01", "acme", "hq")
         result = migrate_hierarchy_backfill(registry)
         assert result["already_migrated"] == 1
-        # cam-01 still belongs to the custom hierarchy, not default.
+        assert result["backfilled"] == 0
         assert registry.get_device_org_site("cam-01") == {
-            "org_id": "axis-comm", "site_id": "aec",
+            "org_id": "acme", "site_id": "hq",
         }
-        assert registry.get_device_primary_group("cam-01")["group_id"] == "lobby"
 
     def test_continues_past_per_device_error(self, tmp_path, monkeypatch):
-        """A failing device doesn't halt the rest."""
         registry = _registry(tmp_path, monkeypatch)
-        registry.add_device("cam-01", {"host": "192.0.2.1"})
-        registry.add_device("cam-02", {"host": "192.0.2.2"})
+        registry.add_device("cam-01", {"host": "10.0.0.1"})
+        registry.add_device("cam-02", {"host": "10.0.0.2"})
 
-        original = registry.set_device_primary_group
+        original = registry.set_device_org_site
 
-        def flaky(device_id, group_id):
+        def flaky(device_id, org_id, site_id):
             if device_id == "cam-01":
-                raise RuntimeError("simulated transient failure")
-            return original(device_id, group_id)
+                raise RuntimeError("boom")
+            return original(device_id, org_id, site_id)
 
-        monkeypatch.setattr(registry, "set_device_primary_group", flaky)
+        monkeypatch.setattr(registry, "set_device_org_site", flaky)
         result = migrate_hierarchy_backfill(registry)
-        assert result["devices_total"] == 2
-        # cam-01 got its org/site set but failed on group; cam-02 succeeded.
-        assert any(
-            e["device_id"] == "cam-01" for e in result.get("errors", [])
-        )
-        assert result["primary_assigned"] == 1   # only cam-02 made it
-        # cam-01's org/site still got written (the error came AFTER):
-        assert registry.get_device_org_site("cam-01") == {
-            "org_id": "default", "site_id": "default",
-        }
+        # cam-01 failed; cam-02 succeeded — migration didn't halt.
+        assert result["backfilled"] == 1
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["device_id"] == "cam-01"
+        assert registry.get_device_org_site("cam-02") is not None

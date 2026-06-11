@@ -94,11 +94,11 @@ CREATE TABLE IF NOT EXISTS accounts (
     FOREIGN KEY (device_id) REFERENCES devices(device_id) ON DELETE CASCADE
 );
 
--- Slice 1: Organization → Site → Group → Device hierarchy.
--- Per docs/specification/decisions/... the Org is the unit of
--- git-archive isolation: each Org has its own ``repo_path`` +
--- optional ``repo_remote_url``. The SQLite tables here are the
--- cache of current state; the git repos are the temporal
+-- Org → Site → Device hierarchy (ADR-0032: the former Group level was
+-- removed — operational grouping is done with device TAGS instead).
+-- The Org is the unit of git-archive isolation: each Org has its own
+-- ``repo_path`` + optional ``repo_remote_url``. The SQLite tables here
+-- are the cache of current state; the git repos are the temporal
 -- source of truth.
 
 CREATE TABLE IF NOT EXISTS organizations (
@@ -119,33 +119,13 @@ CREATE TABLE IF NOT EXISTS sites (
     metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_sites_org ON sites(org_id);
-
-CREATE TABLE IF NOT EXISTS device_groups (
-    group_id      TEXT PRIMARY KEY,
-    site_id       TEXT NOT NULL REFERENCES sites(site_id) ON DELETE RESTRICT,
-    name          TEXT NOT NULL,
-    purpose       TEXT NOT NULL DEFAULT '',
-    created_at    REAL NOT NULL,
-    metadata_json TEXT NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS idx_device_groups_site ON device_groups(site_id);
-
--- N:N device → group membership with at most one row per device
--- marked is_primary=1 (enforced by the partial unique index below).
--- The primary group determines the device's location in its Org's
--- git repo: {repo_path}/{site_id}/{primary_group_id}/{device_id}/
-CREATE TABLE IF NOT EXISTS device_group_memberships (
-    device_id  TEXT NOT NULL,
-    group_id   TEXT NOT NULL REFERENCES device_groups(group_id) ON DELETE CASCADE,
-    is_primary INTEGER NOT NULL DEFAULT 0,
-    added_at   REAL NOT NULL,
-    PRIMARY KEY (device_id, group_id),
-    FOREIGN KEY (device_id) REFERENCES devices(device_id) ON DELETE CASCADE
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_dgm_one_primary
-    ON device_group_memberships(device_id) WHERE is_primary = 1;
-CREATE INDEX IF NOT EXISTS idx_dgm_group ON device_group_memberships(group_id);
 """
+
+# ADR-0032: the device_groups / device_group_memberships tables are gone —
+# dropped idempotently on open. They only ever held the bootstrap
+# "ungrouped" row plus memberships pointing at it (no operator-authored
+# groups existed before the removal), so the drop is safe.
+_DROPPED_TABLES = ("device_group_memberships", "device_groups")
 
 # Columns added to the existing `devices` table via ALTER TABLE
 # (SQLite doesn't support IF NOT EXISTS on ADD COLUMN — the backend
@@ -245,6 +225,7 @@ class SQLiteDeviceRegistry(DeviceRegistry):
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
             self._apply_device_extra_columns(conn)
+            self._drop_removed_tables(conn)
             conn.commit()
 
     def _apply_device_extra_columns(self, conn: sqlite3.Connection) -> None:
@@ -268,6 +249,18 @@ class SQLiteDeviceRegistry(DeviceRegistry):
             conn.execute(
                 f"ALTER TABLE devices ADD COLUMN {col_name} {col_type}"
             )
+
+    def _drop_removed_tables(self, conn: sqlite3.Connection) -> None:
+        """Idempotently drop tables removed from the schema (ADR-0032).
+
+        The Group level of the hierarchy was replaced by device tags;
+        its two tables only ever held the bootstrap "ungrouped" row +
+        memberships pointing at it, so dropping them loses nothing an
+        operator authored. DROP TABLE IF EXISTS makes this a no-op on
+        every subsequent open.
+        """
+        for table in _DROPPED_TABLES:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
 
     def _connect(self) -> sqlite3.Connection:
         """Open a fresh SQLite connection with WAL + foreign-keys enabled."""
@@ -815,15 +808,6 @@ class SQLiteDeviceRegistry(DeviceRegistry):
 
     def remove_site(self, site_id: str) -> None:
         with self._connect() as conn:
-            child_groups = conn.execute(
-                "SELECT COUNT(*) FROM device_groups WHERE site_id=?",
-                (site_id,),
-            ).fetchone()[0]
-            if child_groups:
-                raise BackendError(
-                    f"Cannot remove Site '{site_id}': {child_groups} group(s) "
-                    "still belong to it."
-                )
             child_devices = conn.execute(
                 "SELECT COUNT(*) FROM devices WHERE site_id=?", (site_id,),
             ).fetchone()[0]
@@ -834,256 +818,6 @@ class SQLiteDeviceRegistry(DeviceRegistry):
                 )
             conn.execute("DELETE FROM sites WHERE site_id=?", (site_id,))
             conn.commit()
-
-    # -- Device groups -----------------------------------------------
-
-    def add_device_group(
-        self,
-        group_id: str,
-        site_id: str,
-        name: str,
-        purpose: str = "",
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        from admz.validators import validate_identifier
-        validate_identifier(group_id, "group_id")
-        validate_identifier(site_id, "site_id")
-        if self.get_site(site_id) is None:
-            raise BackendError(f"Parent Site '{site_id}' does not exist")
-        with self._connect() as conn:
-            try:
-                conn.execute(
-                    "INSERT INTO device_groups "
-                    "(group_id, site_id, name, purpose, created_at, "
-                    " metadata_json) VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        group_id, site_id, name, purpose,
-                        time.time(), json.dumps(metadata or {}),
-                    ),
-                )
-                conn.commit()
-            except sqlite3.IntegrityError as e:
-                raise BackendError(
-                    f"Group '{group_id}' already exists or violates a "
-                    f"constraint: {e}"
-                ) from e
-
-    def get_device_group(self, group_id: str) -> Optional[Dict[str, Any]]:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT group_id, site_id, name, purpose, created_at, "
-                "metadata_json FROM device_groups WHERE group_id=?",
-                (group_id,),
-            ).fetchone()
-        if row is None:
-            return None
-        return {
-            "group_id": row[0], "site_id": row[1], "name": row[2],
-            "purpose": row[3], "created_at": row[4],
-            "metadata": json.loads(row[5] or "{}"),
-        }
-
-    def list_device_groups(
-        self, site_id: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        sql = (
-            "SELECT group_id, site_id, name, purpose, created_at, "
-            "metadata_json FROM device_groups"
-        )
-        params: tuple = ()
-        if site_id is not None:
-            sql += " WHERE site_id=?"
-            params = (site_id,)
-        sql += " ORDER BY group_id"
-        with self._connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        return [
-            {
-                "group_id": r[0], "site_id": r[1], "name": r[2],
-                "purpose": r[3], "created_at": r[4],
-                "metadata": json.loads(r[5] or "{}"),
-            }
-            for r in rows
-        ]
-
-    def update_device_group(
-        self, group_id: str, updates: Dict[str, Any],
-    ) -> None:
-        allowed = {"name", "purpose", "metadata"}
-        if not (set(updates) & allowed):
-            return
-        existing = self.get_device_group(group_id)
-        if existing is None:
-            raise BackendError(f"Group '{group_id}' not found")
-        merged_name = updates.get("name", existing["name"])
-        merged_purpose = updates.get("purpose", existing["purpose"])
-        merged_meta = existing["metadata"]
-        if "metadata" in updates:
-            merged_meta = dict(merged_meta)
-            merged_meta.update(updates["metadata"])
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE device_groups SET name=?, purpose=?, "
-                "metadata_json=? WHERE group_id=?",
-                (merged_name, merged_purpose, json.dumps(merged_meta), group_id),
-            )
-            conn.commit()
-
-    def remove_device_group(self, group_id: str) -> None:
-        """Removes the group. Memberships ON DELETE CASCADE so any
-        device whose primary group was this one is left without a
-        primary — callers must reassign before invoking."""
-        with self._connect() as conn:
-            still_primary = conn.execute(
-                "SELECT COUNT(*) FROM device_group_memberships "
-                "WHERE group_id=? AND is_primary=1",
-                (group_id,),
-            ).fetchone()[0]
-            if still_primary:
-                raise BackendError(
-                    f"Cannot remove Group '{group_id}': it is the primary "
-                    f"group for {still_primary} device(s). Reassign each "
-                    "device's primary first via set_device_primary_group()."
-                )
-            conn.execute(
-                "DELETE FROM device_groups WHERE group_id=?", (group_id,),
-            )
-            conn.commit()
-
-    # -- Device group memberships (N:N) ------------------------------
-
-    def add_device_to_group(
-        self,
-        device_id: str,
-        group_id: str,
-        is_primary: bool = False,
-    ) -> None:
-        """Add a device to a group. The device's first group is
-        automatically promoted to primary if ``is_primary=True`` is
-        not specified; subsequent additions stay non-primary unless
-        explicitly requested."""
-        if not self.device_exists(device_id):
-            raise DeviceNotFoundError(f"Device '{device_id}' not found")
-        if self.get_device_group(group_id) is None:
-            raise BackendError(f"Group '{group_id}' not found")
-        with self._connect() as conn:
-            # If is_primary, clear the existing primary first to keep
-            # the partial unique index happy.
-            if is_primary:
-                conn.execute(
-                    "UPDATE device_group_memberships SET is_primary=0 "
-                    "WHERE device_id=? AND is_primary=1",
-                    (device_id,),
-                )
-            try:
-                conn.execute(
-                    "INSERT INTO device_group_memberships "
-                    "(device_id, group_id, is_primary, added_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    (device_id, group_id, 1 if is_primary else 0, time.time()),
-                )
-            except sqlite3.IntegrityError:
-                # Already a member — no-op the insert, only update
-                # is_primary if requested.
-                if is_primary:
-                    conn.execute(
-                        "UPDATE device_group_memberships SET is_primary=1 "
-                        "WHERE device_id=? AND group_id=?",
-                        (device_id, group_id),
-                    )
-            conn.commit()
-
-    def remove_device_from_group(
-        self, device_id: str, group_id: str,
-    ) -> None:
-        with self._connect() as conn:
-            cur = conn.execute(
-                "DELETE FROM device_group_memberships "
-                "WHERE device_id=? AND group_id=?",
-                (device_id, group_id),
-            )
-            conn.commit()
-            if cur.rowcount == 0:
-                # Best-effort: no-op when the membership wasn't there.
-                # Callers that care can pre-check via list_groups_for_device.
-                pass
-
-    def list_groups_for_device(self, device_id: str) -> List[Dict[str, Any]]:
-        """Return all groups the device belongs to. ``is_primary`` is
-        included on each row so callers can identify the canonical
-        group without a second query."""
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT g.group_id, g.site_id, g.name, g.purpose, "
-                "       g.created_at, g.metadata_json, m.is_primary "
-                "FROM device_group_memberships m "
-                "JOIN device_groups g ON m.group_id = g.group_id "
-                "WHERE m.device_id=? "
-                "ORDER BY m.is_primary DESC, g.group_id",
-                (device_id,),
-            ).fetchall()
-        return [
-            {
-                "group_id": r[0], "site_id": r[1], "name": r[2],
-                "purpose": r[3], "created_at": r[4],
-                "metadata": json.loads(r[5] or "{}"),
-                "is_primary": bool(r[6]),
-            }
-            for r in rows
-        ]
-
-    def set_device_primary_group(
-        self, device_id: str, group_id: str,
-    ) -> None:
-        """Designate ``group_id`` as the device's primary group.
-
-        If the device wasn't already a member, it's added. The
-        previous primary (if any) is demoted to non-primary in the
-        same transaction so the partial unique index stays satisfied.
-        """
-        if not self.device_exists(device_id):
-            raise DeviceNotFoundError(f"Device '{device_id}' not found")
-        if self.get_device_group(group_id) is None:
-            raise BackendError(f"Group '{group_id}' not found")
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE device_group_memberships SET is_primary=0 "
-                "WHERE device_id=? AND is_primary=1",
-                (device_id,),
-            )
-            # INSERT OR REPLACE to handle both the "already a member"
-            # and "not yet a member" cases atomically.
-            conn.execute(
-                "INSERT INTO device_group_memberships "
-                "(device_id, group_id, is_primary, added_at) "
-                "VALUES (?, ?, 1, ?) "
-                "ON CONFLICT(device_id, group_id) DO UPDATE SET "
-                "is_primary=1",
-                (device_id, group_id, time.time()),
-            )
-            conn.commit()
-
-    def get_device_primary_group(
-        self, device_id: str,
-    ) -> Optional[Dict[str, Any]]:
-        """Return the primary group dict or None if the device has no
-        group memberships yet."""
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT g.group_id, g.site_id, g.name, g.purpose, "
-                "       g.created_at, g.metadata_json "
-                "FROM device_group_memberships m "
-                "JOIN device_groups g ON m.group_id = g.group_id "
-                "WHERE m.device_id=? AND m.is_primary=1",
-                (device_id,),
-            ).fetchone()
-        if row is None:
-            return None
-        return {
-            "group_id": row[0], "site_id": row[1], "name": row[2],
-            "purpose": row[3], "created_at": row[4],
-            "metadata": json.loads(row[5] or "{}"),
-        }
 
     # -- Device org/site assignment ----------------------------------
 

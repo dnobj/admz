@@ -141,7 +141,7 @@ what they found, without tailing logs.
 job against a whole Org, Site, or Group — not just a tag.
 
 **Acceptance criteria:** 📋 (depends on the Org/Site/Group hierarchy).
-1. A job's `scope` accepts `org_id` / `site_id` / `group_id` alongside
+1. A job's `scope` accepts `org_id` / `site_id` alongside (ADR-0032: tags, not groups)
    the existing `tag_filter` / `device_ids`.
 2. "Audit the Chicago AEC lobby every hour" resolves to the devices in
    that Group at run time (membership is dynamic — devices added to the

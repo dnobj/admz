@@ -166,6 +166,8 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **Orchestrator** — See "DiscoveryOrchestrator."
 
+**Organization (Org)** — The top level of the device hierarchy: *who owns the cameras*. Owns the git config repo (`repo_path`, optional `repo_remote_url`) and is the tenant/isolation boundary. Contains Sites. A `default` Org is bootstrapped on first run (adopting the legacy `~/.admz/config-repo/`). See ADR-0032 and [hierarchy.md](requirements/hierarchy.md).
+
 **OUI** — Organizationally Unique Identifier. The first three bytes of a MAC address. Used to identify devices as Axis-manufactured.
 
 ## P
@@ -212,6 +214,8 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **Serial number** — Often equal to or derivable from the MAC address on Axis devices. Used as the primary device identifier in some flows.
 
+**Site** — The second level of the device hierarchy: *which site (usually a local network) the cameras are installed on*. Belongs to exactly one Organization; every device belongs to exactly one Site. The sidebar's site switcher scopes the fleet view. Below Site there is no Group level — devices are organized with **tags** (ADR-0032).
+
 **Service-affecting** — Risk classification for operations that may interrupt service but are recoverable. E.g. restart, network reconfiguration. Default confirm level: `llm_confirm`.
 
 **SOAP** — Simple Object Access Protocol. The fourth generation of VAPIX APIs (WSDL-based web services under `/vapix/services`).
@@ -226,7 +230,7 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 ## T
 
-**Tag** — A free-form string label on a device. Used for filtering (`tag_filter="auto-snapshot"`).
+**Tag** — A free-form string label on a device, and the device-grouping primitive (ADR-0032 — it replaced the former Group level). Drives the web sidebar/`?tag=` filtering, scheduling/drift/snapshot scoping (`tag_filter`), and search. Exact membership, case-sensitive. Not to be confused with `Principal.groups` (user-identity RBAC).
 
 **TempCredential** — A short-lived device user account created by `create_temp_credentials`, auto-cleaned up by the background loop. Username pattern: `at_<8 hex>`.
 
