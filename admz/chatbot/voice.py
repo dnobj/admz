@@ -242,44 +242,56 @@ class VoiceSession:
           {"type": "interrupted"} / {"type": "turn_complete"}
         """
         types = self._types
-        async for msg in self._session.receive():
-            tc = getattr(msg, "tool_call", None)
-            if tc and getattr(tc, "function_calls", None):
-                for fc in tc.function_calls:
-                    args = dict(getattr(fc, "args", None) or {})
-                    yield {"type": "tool_call", "name": fc.name, "args": args}
-                    result = await self._run_tool(fc.name, args)
-                    await self._session.send_tool_response(
-                        function_responses=[types.FunctionResponse(
-                            id=getattr(fc, "id", None), name=fc.name, response=result,
-                        )]
-                    )
-                    yield {
-                        "type": "tool_result", "name": fc.name,
-                        "blocked": bool(result.get("blocked")),
-                        "success": result.get("success"),
-                    }
-                continue
+        # The SDK's receive() yields the messages for ONE turn and then
+        # completes — so loop it. Without the outer loop the read side ended
+        # after the first exchange, the WebSocket closed, and the browser shut
+        # the mic off (i.e. it was a single-turn call, not a conversation).
+        while True:
+            produced = False
+            async for msg in self._session.receive():
+                produced = True
+                tc = getattr(msg, "tool_call", None)
+                if tc and getattr(tc, "function_calls", None):
+                    for fc in tc.function_calls:
+                        args = dict(getattr(fc, "args", None) or {})
+                        yield {"type": "tool_call", "name": fc.name, "args": args}
+                        result = await self._run_tool(fc.name, args)
+                        await self._session.send_tool_response(
+                            function_responses=[types.FunctionResponse(
+                                id=getattr(fc, "id", None), name=fc.name, response=result,
+                            )]
+                        )
+                        yield {
+                            "type": "tool_result", "name": fc.name,
+                            "blocked": bool(result.get("blocked")),
+                            "success": result.get("success"),
+                        }
+                    continue
 
-            sc = getattr(msg, "server_content", None)
-            if sc is None:
-                continue
-            it = getattr(sc, "input_transcription", None)
-            if it and getattr(it, "text", None):
-                yield {"type": "input_transcript", "text": it.text}
-            ot = getattr(sc, "output_transcription", None)
-            if ot and getattr(ot, "text", None):
-                yield {"type": "output_transcript", "text": ot.text}
-            mt = getattr(sc, "model_turn", None)
-            if mt:
-                for p in (getattr(mt, "parts", None) or []):
-                    inline = getattr(p, "inline_data", None)
-                    if inline and getattr(inline, "data", None):
-                        yield {"type": "audio", "data": inline.data}
-            if getattr(sc, "interrupted", None):
-                yield {"type": "interrupted"}
-            if getattr(sc, "turn_complete", None):
-                yield {"type": "turn_complete"}
+                sc = getattr(msg, "server_content", None)
+                if sc is None:
+                    continue
+                it = getattr(sc, "input_transcription", None)
+                if it and getattr(it, "text", None):
+                    yield {"type": "input_transcript", "text": it.text}
+                ot = getattr(sc, "output_transcription", None)
+                if ot and getattr(ot, "text", None):
+                    yield {"type": "output_transcript", "text": ot.text}
+                mt = getattr(sc, "model_turn", None)
+                if mt:
+                    for p in (getattr(mt, "parts", None) or []):
+                        inline = getattr(p, "inline_data", None)
+                        if inline and getattr(inline, "data", None):
+                            yield {"type": "audio", "data": inline.data}
+                if getattr(sc, "interrupted", None):
+                    yield {"type": "interrupted"}
+                if getattr(sc, "turn_complete", None):
+                    yield {"type": "turn_complete"}
+            # receive() ended. If it produced nothing at all, the session has
+            # closed (e.g. the client hung up) — stop. Otherwise loop to await
+            # the next turn.
+            if not produced:
+                break
 
     async def _run_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         if self._mcp is None:
