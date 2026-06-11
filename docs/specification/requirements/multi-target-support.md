@@ -118,7 +118,7 @@ response shape) and set `device_type=intercom-2n`, `control_family=twon` when a
 A single site may have **more than one ACS Pro server**. The data model must
 support N ACS-server records per site from the start — a 1:1 assumption per
 site is incorrect. ACS server records are site-scoped targets within the
-Org → Site → Group hierarchy (see [hierarchy.md](hierarchy.md)). There is no
+Org → Site hierarchy (see [hierarchy.md](hierarchy.md); ADR-0032). There is no
 maximum enforced at the data layer; the UI and CLI should make it clear that
 multiple servers are expected.
 
@@ -234,7 +234,7 @@ The `control_family`, `device_type`, `connection_method`, and
 columns with safe defaults (`control_family="vapix"`,
 `device_type="unknown"`, `connection_method="http"`, `parent_system_id=null`).
 No existing column is dropped or retyped. Migration is forward-only and
-idempotent, and is coordinated with the Org → Site → Group migration
+idempotent, and is coordinated with the Org → Site migration
 ([hierarchy.md](hierarchy.md) NFR-HIER-001).
 
 ### NFR-MT-002 — Non-VAPIX families do not break VAPIX behavior 📋

@@ -62,7 +62,7 @@ What the system must do, per capability area. Each file has Functional Requireme
 - [Web API](requirements/web-api.md) — REST surface
 - [Web UI](requirements/web-ui.md)
 - [Web chatbot](requirements/web-chatbot.md) ✅ — bundled Gemini-powered chat client (manual MCP tool loop)
-- [Organization hierarchy](requirements/hierarchy.md) 📋 — Org → Site → Group → Device (draft skeleton)
+- [Organization hierarchy](requirements/hierarchy.md) ✅ — Org → Site → Device, with tags as the grouping primitive (ADR-0032)
 - [Multi-target support](requirements/multi-target-support.md) 📋 — 2N intercoms, ACS Pro VMS, typed target taxonomy, ConfigCollector / Actuator split
 
 ### Cross-cutting requirements

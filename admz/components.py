@@ -117,7 +117,10 @@ def _bootstrap_default_hierarchy(
     registry,
     legacy_config_repo_path: str,
 ) -> None:
-    """Idempotently create the default Org/Site/Group rows on first run.
+    """Idempotently create the default Org/Site rows on first run.
+
+    (ADR-0032: there is no Group level — devices are organized by Org →
+    Site, with free-form tags for operational grouping.)
 
     Behavior:
       * Default Org's ``repo_path`` adopts the legacy ~/.admz/config-repo/
@@ -166,14 +169,8 @@ def _bootstrap_default_hierarchy(
             org_id="default",
             name="Default Site",
         )
-        registry.add_device_group(
-            group_id="ungrouped",
-            site_id="default",
-            name="Ungrouped",
-            purpose="Devices without an assigned group",
-        )
         logger.info(
-            "Bootstrapped default Org/Site/Group: repo_path=%s remote=%r",
+            "Bootstrapped default Org/Site: repo_path=%s remote=%r",
             default_repo_path,
             default_remote or "(none)",
         )

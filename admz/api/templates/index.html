@@ -1,15 +1,15 @@
 {% extends "base.html" %}
 {% block nav_active %}fleet{% endblock %}
 {% block title %}Fleet{% endblock %}
-{% block crumb_tail %}{{ group_name or 'Fleet' }}{% endblock %}
+{% block crumb_tail %}{{ ('Tag: ' + tag_filter) if tag_filter else 'Fleet' }}{% endblock %}
 
 {% block content %}
 <div class="page-header">
   <div class="pt">
-    <h1 class="page-title">{{ group_name or 'Fleet' }}</h1>
+    <h1 class="page-title">{{ ('Tag: ' + tag_filter) if tag_filter else 'Fleet' }}</h1>
     <p class="page-sub">
       {% if site %}{{ site.name }} · {% endif %}{{ devices|length }} device{{ '' if devices|length == 1 else 's' }}
-      {% if group_filter %}· filtered to group{% endif %}
+      {% if tag_filter %}· filtered by tag{% endif %}
     </p>
   </div>
   <div class="page-actions">
@@ -31,8 +31,8 @@
   <button class="chip active" data-health="all"><i data-lucide="filter"></i> All health</button>
   <button class="chip" data-health="online">Online</button>
   <button class="chip" data-health="attention">Needs attention</button>
-  {% if group_filter %}
-  <a class="chip active" href="/devices"><i data-lucide="hash"></i> Group: {{ group_name }} <i data-lucide="x"></i></a>
+  {% if tag_filter %}
+  <a class="chip active" href="/devices"><i data-lucide="tag"></i> Tag: {{ tag_filter }} <i data-lucide="x"></i></a>
   {% endif %}
   <div class="right">
     <span class="shown-count" id="shown-count">{{ devices|length }} shown</span>
@@ -43,7 +43,7 @@
 <table class="data-table" id="fleet-table">
   <thead>
     <tr>
-      <th>Health</th><th>Device</th><th>IP</th><th>Firmware</th><th>Group</th><th>Drift</th><th>Tags</th><th></th>
+      <th>Health</th><th>Device</th><th>IP</th><th>Firmware</th><th>Drift</th><th>Tags</th><th></th>
     </tr>
   </thead>
   <tbody>
@@ -67,12 +67,11 @@
       </td>
       <td class="mono">{{ device.host or '—' }}</td>
       <td class="mono">{{ device.firmware_version or device.firmware or '—' }}</td>
-      <td>{{ device._primary_group or '—' }}</td>
       <td>
         <span class="drift-cell fg-grey"><span class="dot sem-grey"></span>No baseline</span>
       </td>
       <td>
-        {% for tag in device.tags|default([]) %}<span class="tag">{{ tag }}</span> {% endfor %}
+        {% for tag in device.tags|default([]) %}<a class="tag" href="/devices?tag={{ tag }}" onclick="event.stopPropagation()">{{ tag }}</a> {% endfor %}
       </td>
       <td style="text-align:right;color:var(--text-faint)"><i data-lucide="chevron-right"></i></td>
     </tr>

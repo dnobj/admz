@@ -114,19 +114,19 @@
       {% if nav.active_site %}
       <div class="nav-divider"></div>
       <div class="nav-group-head">
-        <span class="section-label">Groups</span>
+        <span class="section-label">Tags</span>
         <span class="right">{{ nav.active_site.short }}</span>
       </div>
-      <a class="group-row {{ 'active' if active == 'fleet' and not nav.active_group }}" href="/devices">
-        <span class="ico"><i data-lucide="hash"></i></span>
-        <span class="label">All groups</span>
+      <a class="group-row {{ 'active' if active == 'fleet' and not nav.active_tag }}" href="/devices">
+        <span class="ico"><i data-lucide="tag"></i></span>
+        <span class="label">All devices</span>
         <span class="count">{{ nav.active_site.count }}</span>
       </a>
-      {% for g in nav.groups %}
-      <a class="group-row {{ 'active' if active == 'fleet' and nav.active_group == g.id }}" href="/devices?group={{ g.id }}">
-        <span class="ico"><i data-lucide="hash"></i></span>
-        <span class="label">{{ g.name }}</span>
-        <span class="count">{{ g.count }}</span>
+      {% for t in nav.tags %}
+      <a class="group-row {{ 'active' if active == 'fleet' and nav.active_tag == t.id }}" href="/devices?tag={{ t.id }}">
+        <span class="ico"><i data-lucide="tag"></i></span>
+        <span class="label">{{ t.name }}</span>
+        <span class="count">{{ t.count }}</span>
       </a>
       {% endfor %}
       {% endif %}

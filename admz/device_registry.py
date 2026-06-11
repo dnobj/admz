@@ -398,15 +398,20 @@ class DeviceRegistry(ABC):
         raise NotImplementedError("This registry does not support removing accounts")
 
     # ------------------------------------------------------------------
-    # Slice 1: Organization → Site → Group hierarchy
+    # Organization → Site hierarchy (ADR-0032)
     # ------------------------------------------------------------------
+    #
+    # Org = who owns the cameras (and owns the git config repo:
+    # repo_path / repo_remote_url). Site = which site/LAN the cameras
+    # are installed on. There is deliberately NO Group level —
+    # operational grouping is done with device TAGS (free-form, many
+    # per device), which already drive scheduling, drift/snapshot
+    # scoping, and search.
     #
     # Optional — backends that don't carry the hierarchy raise
     # NotImplementedError. The SQLite backend implements all of them;
     # the Vault backend stubs them out for now (a follow-up PR will
     # land a Vault implementation once the SQLite shape proves out).
-    #
-    # See plans/majestic-munching-marble.md for the design.
 
     def add_organization(
         self,
@@ -468,82 +473,6 @@ class DeviceRegistry(ABC):
 
     def remove_site(self, site_id: str) -> None:
         raise NotImplementedError("This registry does not support sites")
-
-    def add_device_group(
-        self,
-        group_id: str,
-        site_id: str,
-        name: str,
-        purpose: str = "",
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        raise NotImplementedError(
-            "This registry does not support device groups"
-        )
-
-    def get_device_group(
-        self, group_id: str,
-    ) -> Optional[Dict[str, Any]]:
-        raise NotImplementedError(
-            "This registry does not support device groups"
-        )
-
-    def list_device_groups(
-        self, site_id: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        raise NotImplementedError(
-            "This registry does not support device groups"
-        )
-
-    def update_device_group(
-        self, group_id: str, updates: Dict[str, Any],
-    ) -> None:
-        raise NotImplementedError(
-            "This registry does not support device groups"
-        )
-
-    def remove_device_group(self, group_id: str) -> None:
-        raise NotImplementedError(
-            "This registry does not support device groups"
-        )
-
-    def add_device_to_group(
-        self,
-        device_id: str,
-        group_id: str,
-        is_primary: bool = False,
-    ) -> None:
-        raise NotImplementedError(
-            "This registry does not support device group memberships"
-        )
-
-    def remove_device_from_group(
-        self, device_id: str, group_id: str,
-    ) -> None:
-        raise NotImplementedError(
-            "This registry does not support device group memberships"
-        )
-
-    def list_groups_for_device(
-        self, device_id: str,
-    ) -> List[Dict[str, Any]]:
-        raise NotImplementedError(
-            "This registry does not support device group memberships"
-        )
-
-    def set_device_primary_group(
-        self, device_id: str, group_id: str,
-    ) -> None:
-        raise NotImplementedError(
-            "This registry does not support device group memberships"
-        )
-
-    def get_device_primary_group(
-        self, device_id: str,
-    ) -> Optional[Dict[str, Any]]:
-        raise NotImplementedError(
-            "This registry does not support device group memberships"
-        )
 
     def set_device_org_site(
         self, device_id: str, org_id: str, site_id: str,

@@ -84,16 +84,16 @@ def _device_health(device: Dict[str, Any]) -> str:
 def build_nav(request) -> Dict[str, Any]:
     """Assemble the chrome navigation context for the active request.
 
-    Returns a dict with: org_name, sites[], active_site, groups[],
-    active_group, principal{name,initials}.
+    Returns a dict with: org_name, sites[], active_site, tags[],
+    active_tag, principal{name,initials}.
     """
     reg = _registry()
     nav: Dict[str, Any] = {
         "org_name": "ADMZ",
         "sites": [],
         "active_site": None,
-        "groups": [],
-        "active_group": request.query_params.get("group"),
+        "tags": [],
+        "active_tag": request.query_params.get("tag"),
         "principal": {"name": "", "initials": "AD"},
         "hierarchy_enabled": False,
     }
@@ -174,31 +174,28 @@ def build_nav(request) -> Dict[str, Any]:
         active_id = site_entries[0]["id"]
     nav["active_site"] = next((e for e in site_entries if e["id"] == active_id), None)
 
-    # Groups for the active site (+ per-group membership counts).
+    # Tags for the active site's devices (ADR-0032: tags are the
+    # device-grouping primitive — there is no Group level). Counts are
+    # exact-membership, matching tag_filter semantics everywhere else.
+    # An "Untagged" pseudo-row appears only when untagged devices exist.
     if active_id:
-        try:
-            groups = reg.list_device_groups(active_id)
-        except Exception:
-            groups = []
-        # Build device -> group_ids map for this site's devices.
         site_devs = _site_devices(active_id)
-        group_counts: Dict[str, int] = {}
+        tag_counts: Dict[str, int] = {}
+        untagged = 0
         for d in site_devs:
-            try:
-                memberships = reg.list_groups_for_device(d.get("device_id"))
-            except Exception:
-                memberships = []
-            for m in memberships:
-                gid = m.get("group_id")
-                group_counts[gid] = group_counts.get(gid, 0) + 1
-        nav["groups"] = [
-            {
-                "id": g.get("group_id"),
-                "name": g.get("name") or g.get("group_id"),
-                "count": group_counts.get(g.get("group_id"), 0),
-            }
-            for g in groups
+            tags = d.get("tags") or []
+            if not tags:
+                untagged += 1
+            for t in tags:
+                tag_counts[t] = tag_counts.get(t, 0) + 1
+        nav["tags"] = [
+            {"id": t, "name": t, "count": c}
+            for t, c in sorted(tag_counts.items())
         ]
+        if untagged:
+            nav["tags"].append(
+                {"id": "untagged", "name": "Untagged", "count": untagged}
+            )
 
     return nav
 
