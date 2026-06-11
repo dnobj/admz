@@ -70,6 +70,27 @@ store. Registry-managed pointer fields are excluded from the committed
 `device.yaml` (they're DB state *about* the repo; writing them back
 would defeat commit-on-change).
 
+### FR-BAS-005 — Restore plans gate at the widget and skip non-writable keys ✅
+Three properties, all verified live on the P3288 (AXIS OS 12):
+- **Always gated**: every step `RestoreBuilder` emits declares
+  `risk_level: "service-affecting"`, and `PlanEngine.create_plan` honors a
+  step dict's declared risk as a **raise-only floor** over the catalog's —
+  so `execute_gated_plan` blocks restore plans with the url_only confirm
+  widget (ADR-0034). Without the floor, `param.cgi:update` (catalog-risk
+  "normal") let a whole-config restore run ungated. The floor can never
+  *lower* catalog risk (no self-degating by plan authors).
+- **Restore-safe params only**: facet deserializers skip what the device
+  can't or must not accept — masked secrets (`'******'`; writing the mask
+  back would corrupt the real secret), `Volatile*` runtime keys, and
+  per-facet `RESTORE_EXCLUDE` entries (read-only mirrors like `Time.NTP.*`,
+  structural constants like `Image.I*.Source/Type`, live interface state
+  like `Network.eth0.*`). Skipped keys stay **serialized** — drift on them
+  is real, observable change — and surface as plan warnings so the operator
+  knows what a restore cannot revert.
+- **Chunked updates**: large `param.cgi:update` calls split into ~1500-byte
+  steps so the GET query string stays under device URI limits (observed:
+  HTTP 414 at ~344 image params).
+
 ### FR-DRF-003 — Field-level diffing via flatten ✅
 Both stored and live facet outputs are flattened to dotted-key
 strings (`network.dns.servers.0 = "8.8.8.8"`), which gives stable
@@ -193,6 +214,24 @@ Alerts persist to the `drift_alerts` SQLite table with timestamp,
 device, transition, field counts, signature hash, and a one-line
 summary. Operators query via `DriftAlertStore.list_alerts(since=…,
 device_id=…, transitions=…, limit=…)`.
+
+### KL-DRF-005 — Restore cannot revert everything drift can see ⚠️
+By design, drift observes more than restore can write (FR-BAS-005):
+- **Read-only mirrors** (e.g. `Time.NTP.Server` on AXIS OS — NTP config
+  moved to `ntp.cgi`) drift visibly but can't be reverted via
+  `param.cgi`; a future facet could map them to their JSON-API setters.
+- **Live-only keys** (e.g. stream profiles an external VMS created after
+  the baseline) show as drift, but restore only *writes* baseline keys —
+  it never deletes extras. Accepting the observed state is the way to
+  absorb them.
+- **State-dependent params**: `Network.Resolver.NameServer*/Search` are
+  writable on static-DNS devices but answer 401 under DHCP — the static
+  exclude list skips them unconditionally, so static-DNS restores lose
+  DNS settings (revisit if a fleet needs that).
+The restore plan's warnings enumerate every skipped key per facet, so
+none of this is silent. The protected-param exclude lists were verified
+live on a P3288 (AXIS OS 12); other models may expose additional
+protected params, which fail their chunk's step loudly at execution.
 
 The check itself is still pull-based — drift sweeps via the
 scheduler or operator-initiated checks feed the alert log

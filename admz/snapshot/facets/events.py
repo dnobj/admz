@@ -3,6 +3,7 @@ from typing import Any, Dict, List
 from admz.snapshot.facets.base import (
     DeviceCriteria,
     FacetAdapter,
+    is_restorable,
     register_facet,
 )
 
@@ -17,6 +18,13 @@ class EventsFacet(FacetAdapter):
     """
 
     PREFIXES = ["root.Event.", "root.IOPort."]
+
+    # Per-group restore excludes: I/O port Configurable is a hardware
+    # capability flag — 401 on write (verified live, AXIS OS 12).
+    RESTORE_EXCLUDE = {
+        "event": (),
+        "ioport": ("I*.Configurable",),
+    }
 
     @property
     def name(self) -> str:
@@ -50,10 +58,20 @@ class EventsFacet(FacetAdapter):
 
     def deserialize(self, yaml_doc: Dict[str, Any]) -> List[Dict[str, Any]]:
         params: Dict[str, str] = {}
-        for key, value in yaml_doc.get("event", {}).items():
-            params[f"root.Event.{key}"] = str(value)
-        for key, value in yaml_doc.get("ioport", {}).items():
-            params[f"root.IOPort.{key}"] = str(value)
+        skipped = []
+        for group, prefix in (("event", "root.Event."), ("ioport", "root.IOPort.")):
+            exclude = self.RESTORE_EXCLUDE.get(group, ())
+            for key, value in yaml_doc.get(group, {}).items():
+                if not is_restorable(key, value, exclude):
+                    skipped.append(f"{group}.{key}")
+                    continue
+                params[f"{prefix}{key}"] = str(value)
         if not params:
             return []
-        return [{"operation_id": "param.cgi:update", "params": params}]
+        call: Dict[str, Any] = {
+            "operation_id": "param.cgi:update",
+            "params": params,
+        }
+        if skipped:
+            call["skipped"] = sorted(skipped)
+        return [call]
