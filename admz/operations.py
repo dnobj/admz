@@ -438,6 +438,88 @@ def _register_plan_from_session(plan_engine: Any, session: "ConfirmSession") -> 
     plan_engine.register_plan(plan)
 
 
+# --------------------------------------------------------------------------
+# Action sessions (ADR-0034) — registry-level actions behind the same widget
+# --------------------------------------------------------------------------
+#
+# accept_baseline and delete_device don't execute a catalog operation, so the
+# per-op gate can't hold them — but they're consequential, so they go through
+# the SAME link/widget approval as device writes. The MCP handler validates
+# the request, serializes it into an action session, and returns the standard
+# blocked envelope; the confirm route's approval path dispatches here.
+
+
+def _action_accept_baseline(action: Mapping[str, Any], registry: Any) -> Dict[str, Any]:
+    device_id = action["device_id"]
+    target = action["baseline_sha"]
+    previous = action.get("previous_baseline_sha")
+    registry.set_config_pointers(device_id, baseline_sha=target)
+    return {
+        "success": True,
+        "action": "accept_baseline",
+        "device_id": device_id,
+        "baseline_sha": target,
+        "previous_baseline_sha": previous,
+        "message": (
+            f"Baseline for {device_id} is now {target[:12]}. Drift is "
+            "measured against it; restore_device (ref omitted) replays it."
+        ),
+    }
+
+
+def _action_delete_device(action: Mapping[str, Any], registry: Any) -> Dict[str, Any]:
+    device_id = action["device_id"]
+    if not registry.device_exists(device_id):
+        return {
+            "success": False,
+            "action": "delete_device",
+            "error": f"Device not found: {device_id}",
+        }
+    registry.remove_device(device_id)
+    return {
+        "success": True,
+        "action": "delete_device",
+        "device_id": device_id,
+        "message": f"Device {device_id} and its accounts were removed.",
+    }
+
+
+_ACTION_EXECUTORS = {
+    "accept_baseline": _action_accept_baseline,
+    "delete_device": _action_delete_device,
+}
+
+
+def create_action_session(
+    *,
+    action: str,
+    device_id: str,
+    payload: Mapping[str, Any],
+    reason: str,
+    store: Any = None,
+) -> Any:
+    """Create a url_only confirm session holding a registry-level action.
+
+    Always ``url_only`` regardless of fleet overrides — the whole point of
+    ADR-0034 is that every destructive action takes the deterministic
+    human/widget path (parity with how reboots are approved).
+    """
+    if action not in _ACTION_EXECUTORS:
+        raise ValueError(f"Unknown action: {action}")
+    store = _resolve_store(store)
+    return store.create_session(
+        device_id=device_id,
+        operation_id=f"action:{action}",
+        family="admz",
+        params={},
+        risk_level="service-affecting",
+        confirmation_level="url_only",
+        danger_description=reason,
+        action_json=json.dumps({"action": action, **dict(payload)}),
+        ttl=CONFIRM_TOKEN_TTL_SECONDS,
+    )
+
+
 async def execute_approved_session(
     session: ConfirmSession,
     *,
@@ -446,13 +528,30 @@ async def execute_approved_session(
     executors: Mapping[str, Any],
     plan_engine: Any = None,
 ) -> Dict[str, Any]:
-    """Run the op/plan held by an ALREADY-completed confirm session.
+    """Run the op/plan/action held by an ALREADY-completed confirm session.
 
     The web form (``/confirm/{token}``) and the in-chat approval twin verify
     the password and complete the session themselves, then call this to
     actually perform the approved work — closing the gap where ``url_*`` ops
     were marked approved but never executed. Returns a normalized outcome dict.
     """
+    if session.is_action:
+        action = session.action
+        executor = _ACTION_EXECUTORS.get(action.get("action", ""))
+        if executor is None:
+            return {
+                "success": False,
+                "error": f"Unknown action in session: {action.get('action')!r}",
+            }
+        try:
+            return executor(action, registry)
+        except Exception as exc:  # noqa: BLE001 — surface, don't crash the route
+            return {
+                "success": False,
+                "action": action.get("action"),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
     if session.is_plan:
         if plan_engine is None:
             return {"success": False, "error": "Plan engine unavailable"}

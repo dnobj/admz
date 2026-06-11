@@ -165,10 +165,18 @@ pointer to a getter). So:
   "in sync".
 - When drift is found, the user has exactly two moves — ask which:
   - **Accept** ("keep it that way") → `accept_baseline` (defaults to
-    the just-observed state). Confirm with the user first: it
-    re-points what drift means.
+    the just-observed state). It returns `blocked: true` with a
+    confirm token — the approval card appears on screen; the baseline
+    moves only when the user approves it there.
   - **Revert** ("undo that change") → `restore_device` with `ref`
-    omitted (restores the baseline), then `execute_plan`.
+    omitted (restores the baseline), then `execute_plan` — the plan's
+    own confirmation card appears for approval, like a reboot.
+- CAUTION: `snapshot_device` on a device with KNOWN drift re-baselines
+  it (the captured — drifted — state becomes the new blessed baseline,
+  same end result as accept). Never snapshot a drifted device unless
+  the user has explicitly chosen to accept its current state.
+- `delete_device` likewise returns `blocked: true` + a confirm card;
+  the registry row is removed only on the user's on-screen approval.
 
 # Reboots & device recovery
 

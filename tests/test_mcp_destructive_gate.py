@@ -1,28 +1,25 @@
-"""Tests for Task #41 — MCP-side gate on destructive tools.
+"""Tests for ADR-0034 — uniform widget gating of destructive MCP tools.
 
-CR-3 added ``require_authenticated_principal`` to five REST endpoints
-(mint API key, /confirm-settings, delete device, restore, plan
-execute). The MCP equivalents of the destructive subset
-(delete_device, restore_device, execute_plan) had no such gate —
-anyone using an anonymous-principal chat session could call them
-and actually wipe / restore / execute against real devices.
+History: Task #41 (CR-4) flat-refused delete_device / restore_device /
+execute_plan for anonymous principals after a live incident where the
+LLM deleted a real device. ADR-0034 supersedes that posture: every
+destructive tool now takes the SAME deterministic human/widget approval
+path as device writes (parity with how a reboot is approved), for every
+principal:
 
-This file pins the new behavior:
-  * Anonymous principals get a PermissionDenied envelope from
-    delete_device / restore_device / execute_plan, with no side
-    effects on the registry.
-  * Authenticated principals (Windows IWA, API key, even the
-    synthetic 'mcp-standalone' principal for CLI invocations of
-    ``python -m admz mcp``) pass through to the handler as before.
-  * Non-destructive tools (list_devices, get_device, snapshot_device,
-    query_catalog, etc.) are not affected by the new gate — anonymous
-    is fine for those.
-  * Successful denials are still audit-logged with success=False.
+  * restore_device builds a plan only; execute_plan blocks at the
+    plan-level url_* gate (confirm widget) — approval runs the plan.
+  * accept_baseline / delete_device return a blocked envelope holding a
+    url_only ACTION session; the action executes only when the user
+    approves /confirm/{token}.
+
+This file pins: the empty flat-refusal set, the blocked envelopes (for
+anonymous AND authenticated callers), no side effects before approval,
+and that approval actually executes the action.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 
 import pytest
@@ -30,54 +27,20 @@ import pytest
 from admz.mcp.server import _DESTRUCTIVE_MCP_TOOLS
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-
 class TestDestructiveToolSet:
-    """The list is the single source of truth — pin it so the set
-    doesn't accidentally grow / shrink without a deliberate change."""
-
-    def test_expected_tools_are_in_the_set(self):
-        # Parity with CR-3's REST destructive list:
-        #   DELETE /api/devices/{id}             → delete_device
-        #   POST /api/snapshot/restore           → restore_device
-        #   POST /api/plans/{id}/execute         → execute_plan
-        #   POST /api/snapshot/accept-baseline   → accept_baseline (ADR-0031)
-        assert "delete_device" in _DESTRUCTIVE_MCP_TOOLS
-        assert "restore_device" in _DESTRUCTIVE_MCP_TOOLS
-        assert "execute_plan" in _DESTRUCTIVE_MCP_TOOLS
-        assert "accept_baseline" in _DESTRUCTIVE_MCP_TOOLS
-
-    def test_non_destructive_tools_are_not_in_the_set(self):
-        # Common read-only + low-risk-write tools must NOT be gated.
-        not_gated = {
-            "list_devices", "get_device", "get_device_health",
-            "get_fleet_health", "search_devices",
-            "snapshot_device", "snapshot_fleet",
-            "register_device", "add_account", "delete_account",
-            "query_catalog", "query_knowledge",
-            "test_device_credentials", "discover_network_devices",
-            "create_temp_credentials", "cleanup_temp_credentials",
-            "execute_operation",  # dangerous ops gate themselves
-                                  # separately via the confirmation flow
-        }
-        overlap = not_gated & _DESTRUCTIVE_MCP_TOOLS
-        assert not overlap, (
-            f"these tools should NOT be in _DESTRUCTIVE_MCP_TOOLS: {overlap}"
-        )
+    def test_flat_refusal_set_is_empty(self):
+        # ADR-0034: nothing is flat-refused anymore — destructive tools
+        # are widget-gated instead. Growing this set again is a
+        # deliberate policy decision, not a default.
+        assert _DESTRUCTIVE_MCP_TOOLS == frozenset()
 
 
 # ---------------------------------------------------------------------------
-# Live dispatcher behavior
+# Fixtures
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def anon_mcp_server(tmp_path, monkeypatch):
-    """MCP server initialized as the anonymous principal — the default
-    ADMZ_AUTH_BACKEND=none mapping."""
+def _make_server(tmp_path, monkeypatch, *, anonymous: bool):
     monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
     monkeypatch.setenv("ADMZ_KEY_PATH", str(tmp_path / "admz.key"))
     monkeypatch.setenv("ADMZ_CONFIG_REPO_PATH", str(tmp_path / "config-repo"))
@@ -85,52 +48,47 @@ def anon_mcp_server(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
 
-    # Anonymous principal — name="anonymous", source="none"
-    monkeypatch.setenv("ADMZ_PRINCIPAL_NAME", "anonymous")
-    monkeypatch.setenv("ADMZ_PRINCIPAL_SOURCE", "none")
-    monkeypatch.delenv("ADMZ_PRINCIPAL_GROUPS", raising=False)
+    if anonymous:
+        monkeypatch.setenv("ADMZ_PRINCIPAL_NAME", "anonymous")
+        monkeypatch.setenv("ADMZ_PRINCIPAL_SOURCE", "none")
+        monkeypatch.delenv("ADMZ_PRINCIPAL_GROUPS", raising=False)
+    else:
+        monkeypatch.setenv("ADMZ_PRINCIPAL_NAME", "HOMELAB\\alice")
+        monkeypatch.setenv("ADMZ_PRINCIPAL_SOURCE", "windows-local")
+        monkeypatch.setenv("ADMZ_PRINCIPAL_GROUPS", "Administrators")
 
-    # Repoint the audit-log singleton for readback isolation.
     from admz import audit as audit_module
-    fresh_audit = audit_module.AuditLog(db_path=str(tmp_path / "admz.db"))
-    monkeypatch.setattr(audit_module, "audit_log", fresh_audit)
+    monkeypatch.setattr(
+        audit_module, "audit_log",
+        audit_module.AuditLog(db_path=str(tmp_path / "admz.db")),
+    )
+    # Point the module-level confirm store (operations._resolve_store reads
+    # it lazily) at the tmp DB so sessions are visible to the test.
+    import admz.api.confirm_store as cs_module
+    monkeypatch.setattr(
+        cs_module, "confirm_store",
+        cs_module.ConfirmStore(db_path=str(tmp_path / "admz.db")),
+    )
 
     from admz.mcp.server import ADMZMCPServer
-    server = ADMZMCPServer()
-    # Sanity: the principal we built really IS marked anonymous.
-    assert server.principal.is_anonymous is True
-    return server
+    return ADMZMCPServer()
 
 
 @pytest.fixture
 def auth_mcp_server(tmp_path, monkeypatch):
-    """MCP server initialized as a real authenticated principal —
-    the Windows-IWA-style identity the pool spawns when a logged-in
-    user drives the chatbot."""
-    monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
-    monkeypatch.setenv("ADMZ_KEY_PATH", str(tmp_path / "admz.key"))
-    monkeypatch.setenv("ADMZ_CONFIG_REPO_PATH", str(tmp_path / "config-repo"))
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
-
-    monkeypatch.setenv("ADMZ_PRINCIPAL_NAME", "AXIS\\alice")
-    monkeypatch.setenv("ADMZ_PRINCIPAL_SOURCE", "windows")
-    monkeypatch.setenv("ADMZ_PRINCIPAL_GROUPS", "Administrators")
-
-    from admz import audit as audit_module
-    fresh_audit = audit_module.AuditLog(db_path=str(tmp_path / "admz.db"))
-    monkeypatch.setattr(audit_module, "audit_log", fresh_audit)
-
-    from admz.mcp.server import ADMZMCPServer
-    server = ADMZMCPServer()
+    server = _make_server(tmp_path, monkeypatch, anonymous=False)
     assert server.principal.is_anonymous is False
     return server
 
 
+@pytest.fixture
+def anon_mcp_server(tmp_path, monkeypatch):
+    server = _make_server(tmp_path, monkeypatch, anonymous=True)
+    assert server.principal.is_anonymous is True
+    return server
+
+
 async def _call_tool(server, name: str, arguments: dict):
-    """Dispatch through the registered call_tool handler. Returns
-    the parsed JSON result."""
     from mcp.types import CallToolRequest, CallToolRequestParams
 
     handler = None
@@ -149,196 +107,7 @@ async def _call_tool(server, name: str, arguments: dict):
     return json.loads(text)
 
 
-class TestAnonymousBlockedFromDestructive:
-    """The headline case: an anonymous principal gets PermissionDenied
-    from each destructive tool, with no side effect on the registry."""
-
-    @pytest.mark.asyncio
-    async def test_anonymous_delete_device_refused(self, anon_mcp_server):
-        # Seed a real device so any tool-side delete attempt would
-        # actually have something to drop. If the gate works, the
-        # device survives.
-        anon_mcp_server.registry.add_device(
-            "test-cam", {"host": "192.0.2.10"},
-        )
-        result = await _call_tool(
-            anon_mcp_server, "delete_device", {"device_id": "test-cam"},
-        )
-        assert result.get("error") == "PermissionDenied"
-        assert "authenticated principal" in result.get("message", "").lower()
-        # Device still exists — gate stopped the call before the handler.
-        assert anon_mcp_server.registry.device_exists("test-cam")
-
-    @pytest.mark.asyncio
-    async def test_anonymous_restore_device_refused(self, anon_mcp_server):
-        anon_mcp_server.registry.add_device(
-            "test-cam", {"host": "192.0.2.10"},
-        )
-        result = await _call_tool(
-            anon_mcp_server, "restore_device",
-            {"device_id": "test-cam", "ref": "HEAD"},
-        )
-        assert result.get("error") == "PermissionDenied"
-
-    @pytest.mark.asyncio
-    async def test_anonymous_execute_plan_refused(self, anon_mcp_server):
-        result = await _call_tool(
-            anon_mcp_server, "execute_plan",
-            {"plan_id": "plan-deadbeef"},
-        )
-        assert result.get("error") == "PermissionDenied"
-
-    @pytest.mark.asyncio
-    async def test_anonymous_accept_baseline_refused(self, anon_mcp_server):
-        anon_mcp_server.registry.add_device(
-            "test-cam", {"host": "192.0.2.10"},
-        )
-        result = await _call_tool(
-            anon_mcp_server, "accept_baseline", {"device_id": "test-cam"},
-        )
-        assert result.get("error") == "PermissionDenied"
-        # Gate stopped it before the handler: no baseline was set.
-        info = anon_mcp_server.registry.get_device_info("test-cam")
-        assert "baseline_sha" not in info
-
-    @pytest.mark.asyncio
-    async def test_denial_is_audited(self, anon_mcp_server):
-        anon_mcp_server.registry.add_device(
-            "test-cam", {"host": "192.0.2.10"},
-        )
-        await _call_tool(
-            anon_mcp_server, "delete_device", {"device_id": "test-cam"},
-        )
-        from admz import audit as audit_module
-        entries = audit_module.audit_log.list_recent(
-            action="mcp.delete_device", limit=5,
-        )
-        assert entries
-        assert entries[0].success is False
-        assert "PermissionDenied" in entries[0].error_message
-        assert entries[0].requester == "anonymous"
-
-
-class TestAuthenticatedPassesThrough:
-    """Real principals — Windows IWA, API key, or the standalone
-    mcp-standalone identity used by ``python -m admz mcp`` — bypass
-    the new gate. (Whether the underlying op then succeeds is the
-    handler's problem; the gate just shouldn't be in the way.)"""
-
-    @pytest.mark.asyncio
-    async def test_admin_delete_device_reaches_handler(self, auth_mcp_server):
-        # Add a device, then have the authenticated principal delete it.
-        # No gate refusal — the device actually goes away.
-        auth_mcp_server.registry.add_device(
-            "test-cam", {"host": "192.0.2.10"},
-        )
-        result = await _call_tool(
-            auth_mcp_server, "delete_device", {"device_id": "test-cam"},
-        )
-        # The handler succeeded — error envelope absent or non-permission.
-        assert result.get("error") != "PermissionDenied", (
-            f"authenticated principal was blocked: {result!r}"
-        )
-        assert not auth_mcp_server.registry.device_exists("test-cam")
-
-    @pytest.mark.asyncio
-    async def test_admin_execute_plan_reaches_handler(self, auth_mcp_server):
-        # Plan doesn't exist; handler should respond with a "not found"
-        # style error rather than the permission-denied gate.
-        result = await _call_tool(
-            auth_mcp_server, "execute_plan",
-            {"plan_id": "plan-deadbeef"},
-        )
-        assert result.get("error") != "PermissionDenied", (
-            f"authenticated principal was blocked: {result!r}"
-        )
-
-    @pytest.mark.asyncio
-    async def test_mcp_standalone_treated_as_authenticated(
-        self, tmp_path, monkeypatch,
-    ):
-        """``python -m admz mcp`` (no chatbot context) doesn't get
-        ADMZ_PRINCIPAL_* env vars; the server falls back to the
-        synthetic 'mcp-standalone' identity. That identity has
-        source='mcp-standalone' so is_anonymous=False — destructive
-        tools work because the operator has shell access."""
-        monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
-        monkeypatch.setenv("ADMZ_KEY_PATH", str(tmp_path / "admz.key"))
-        monkeypatch.setenv("ADMZ_CONFIG_REPO_PATH", str(tmp_path / "config-repo"))
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("USERPROFILE", str(tmp_path))
-        monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
-        for k in (
-            "ADMZ_PRINCIPAL_NAME", "ADMZ_PRINCIPAL_SOURCE",
-            "ADMZ_PRINCIPAL_GROUPS", "ADMZ_PRINCIPAL_DOMAIN",
-            "ADMZ_PRINCIPAL_DISPLAY_NAME",
-        ):
-            monkeypatch.delenv(k, raising=False)
-
-        from admz import audit as audit_module
-        fresh_audit = audit_module.AuditLog(db_path=str(tmp_path / "admz.db"))
-        monkeypatch.setattr(audit_module, "audit_log", fresh_audit)
-
-        from admz.mcp.server import ADMZMCPServer
-        server = ADMZMCPServer()
-        assert server.principal.name == "mcp-standalone"
-        assert server.principal.is_anonymous is False  # ← key
-
-        server.registry.add_device("test-cam", {"host": "192.0.2.10"})
-        result = await _call_tool(
-            server, "delete_device", {"device_id": "test-cam"},
-        )
-        # Not blocked.
-        assert result.get("error") != "PermissionDenied"
-
-
-class TestNonDestructiveToolsUnaffected:
-    """Sanity: tools NOT in _DESTRUCTIVE_MCP_TOOLS still work for
-    anonymous principals. The gate is narrow on purpose."""
-
-    @pytest.mark.asyncio
-    async def test_anonymous_list_devices(self, anon_mcp_server):
-        result = await _call_tool(anon_mcp_server, "list_devices", {})
-        assert result.get("success") is True
-        assert "devices" in result
-
-    @pytest.mark.asyncio
-    async def test_anonymous_get_device(self, anon_mcp_server):
-        anon_mcp_server.registry.add_device(
-            "test-cam", {"host": "192.0.2.10", "model": "M"},
-        )
-        result = await _call_tool(
-            anon_mcp_server, "get_device", {"device_id": "test-cam"},
-        )
-        assert result.get("error") != "PermissionDenied"
-        assert result.get("success") is True
-
-    @pytest.mark.asyncio
-    async def test_anonymous_snapshot_device_not_gated(self, anon_mcp_server):
-        # snapshot_device is intentionally NOT in the destructive set —
-        # it's reads from the device + commits a yaml snapshot, no
-        # device-side mutation. Confirms the gate is narrowly scoped.
-        # (Note: this will fail later because the test device isn't real
-        # to probe, but it must get past the gate first.)
-        anon_mcp_server.registry.add_device(
-            "test-cam", {"host": "192.0.2.10"},
-        )
-        result = await _call_tool(
-            anon_mcp_server, "snapshot_device", {"device_id": "test-cam"},
-        )
-        # The handler will report some other error (network failure,
-        # facet failure) — but NOT PermissionDenied from our new gate.
-        assert result.get("error") != "PermissionDenied"
-
-
-# ---------------------------------------------------------------------------
-# accept_baseline handler behavior (ADR-0031 slice 3)
-# ---------------------------------------------------------------------------
-
-
 def _commit_facet(server, device_id, facet, data, message):
-    """Write + commit a facet through the server's own git repo,
-    configuring a git identity on first use (GitRepo doesn't set one)."""
     import subprocess
     for key, val in [
         ("user.email", "test@test.com"),
@@ -353,13 +122,86 @@ def _commit_facet(server, device_id, facet, data, message):
     return server.git_repo.commit_snapshot(device_id, message=message)
 
 
-class TestAcceptBaseline:
-    """accept_baseline re-points baseline_sha to an observed commit —
-    defaulting to the latest observation — and validates the target
-    actually holds config for the device."""
+async def _approve(session_token):
+    """Simulate the user approving /confirm/{token}: complete the session
+    and execute the held action — the same two steps the confirm route's
+    _approve_session performs."""
+    from admz import operations
+    import admz.api.confirm_store as cs_module
+    store = cs_module.confirm_store
+    session = store.get_session(session_token)
+    assert session is not None
+    store.complete_session(session_token, confirmed_by="test-approver")
+    # Action sessions only need the registry.
+    from admz.factory import create_device_registry
+    return await operations.execute_approved_session(
+        store.get_session(session_token),
+        catalog=None,
+        registry=create_device_registry(),
+        executors={},
+    )
+
+
+# ---------------------------------------------------------------------------
+# delete_device — widget-gated for everyone
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteDeviceWidgetGate:
+    @pytest.mark.asyncio
+    async def test_blocked_envelope_no_side_effect(self, auth_mcp_server):
+        auth_mcp_server.registry.add_device("test-cam", {"host": "192.0.2.10"})
+        result = await _call_tool(
+            auth_mcp_server, "delete_device", {"device_id": "test-cam"},
+        )
+        assert result.get("blocked") is True
+        assert result.get("confirm_token")
+        assert result.get("confirmation_level") == "url_only"
+        # Nothing happened yet.
+        assert auth_mcp_server.registry.device_exists("test-cam")
 
     @pytest.mark.asyncio
-    async def test_accept_explicit_commit(self, auth_mcp_server):
+    async def test_approval_executes_deletion(self, auth_mcp_server):
+        auth_mcp_server.registry.add_device("test-cam", {"host": "192.0.2.10"})
+        result = await _call_tool(
+            auth_mcp_server, "delete_device", {"device_id": "test-cam"},
+        )
+        outcome = await _approve(result["confirm_token"])
+        assert outcome["success"] is True
+        assert outcome["action"] == "delete_device"
+        assert not auth_mcp_server.registry.device_exists("test-cam")
+
+    @pytest.mark.asyncio
+    async def test_anonymous_gets_the_same_widget_not_refusal(
+        self, anon_mcp_server
+    ):
+        # ADR-0034: the gate is the widget, uniformly — no PermissionDenied.
+        anon_mcp_server.registry.add_device("test-cam", {"host": "192.0.2.10"})
+        result = await _call_tool(
+            anon_mcp_server, "delete_device", {"device_id": "test-cam"},
+        )
+        assert result.get("error") != "PermissionDenied"
+        assert result.get("blocked") is True
+        assert anon_mcp_server.registry.device_exists("test-cam")
+
+    @pytest.mark.asyncio
+    async def test_unknown_device_errors_immediately(self, auth_mcp_server):
+        result = await _call_tool(
+            auth_mcp_server, "delete_device", {"device_id": "nope"},
+        )
+        assert result.get("blocked") is not True
+        assert "not found" in str(result.get("message", result)).lower() or \
+            result.get("error")
+
+
+# ---------------------------------------------------------------------------
+# accept_baseline — widget-gated; validation still immediate
+# ---------------------------------------------------------------------------
+
+
+class TestAcceptBaselineWidgetGate:
+    @pytest.mark.asyncio
+    async def test_blocked_then_approval_repoints(self, auth_mcp_server):
         auth_mcp_server.registry.add_device("test-cam", {"host": "192.0.2.10"})
         sha = _commit_facet(
             auth_mcp_server, "test-cam", "image",
@@ -369,14 +211,20 @@ class TestAcceptBaseline:
             auth_mcp_server, "accept_baseline",
             {"device_id": "test-cam", "commit_sha": sha},
         )
-        assert result.get("success") is True
-        assert result["baseline_sha"] == sha
-        assert "image" in result["facets"]
+        assert result.get("blocked") is True
+        token = result["confirm_token"]
+        # Not yet re-pointed.
+        info = auth_mcp_server.registry.get_device_info("test-cam")
+        assert info.get("baseline_sha") != sha
+
+        outcome = await _approve(token)
+        assert outcome["success"] is True
+        assert outcome["baseline_sha"] == sha
         info = auth_mcp_server.registry.get_device_info("test-cam")
         assert info["baseline_sha"] == sha
 
     @pytest.mark.asyncio
-    async def test_accept_defaults_to_latest_observation(self, auth_mcp_server):
+    async def test_defaults_to_latest_observation(self, auth_mcp_server):
         auth_mcp_server.registry.add_device("test-cam", {"host": "192.0.2.10"})
         sha = _commit_facet(
             auth_mcp_server, "test-cam", "image",
@@ -388,25 +236,27 @@ class TestAcceptBaseline:
         result = await _call_tool(
             auth_mcp_server, "accept_baseline", {"device_id": "test-cam"},
         )
-        assert result.get("success") is True
-        assert result["baseline_sha"] == sha
+        assert result.get("blocked") is True
+        outcome = await _approve(result["confirm_token"])
+        assert outcome["success"] is True
+        assert outcome["baseline_sha"] == sha
 
     @pytest.mark.asyncio
-    async def test_accept_without_observation_errors(self, auth_mcp_server):
+    async def test_no_observation_errors_immediately(self, auth_mcp_server):
         auth_mcp_server.registry.add_device("test-cam", {"host": "192.0.2.10"})
         result = await _call_tool(
             auth_mcp_server, "accept_baseline", {"device_id": "test-cam"},
         )
         assert result.get("success") is False
+        assert result.get("blocked") is not True
         assert "No commit to accept" in result.get("error", "")
 
     @pytest.mark.asyncio
-    async def test_accept_commit_without_device_config_errors(
+    async def test_commit_without_device_config_errors_immediately(
         self, auth_mcp_server
     ):
         auth_mcp_server.registry.add_device("test-cam", {"host": "192.0.2.10"})
         auth_mcp_server.registry.add_device("other", {"host": "192.0.2.11"})
-        # The commit holds config only for the OTHER device.
         sha = _commit_facet(
             auth_mcp_server, "other", "image",
             {"I0.Resolution": "640x480"}, "Audit: other",
@@ -416,6 +266,33 @@ class TestAcceptBaseline:
             {"device_id": "test-cam", "commit_sha": sha},
         )
         assert result.get("success") is False
+        assert result.get("blocked") is not True
         assert "no config" in result.get("error", "")
-        info = auth_mcp_server.registry.get_device_info("test-cam")
-        assert "baseline_sha" not in info
+
+
+# ---------------------------------------------------------------------------
+# restore_device / execute_plan — reach their handlers (plan gate covers them)
+# ---------------------------------------------------------------------------
+
+
+class TestRestoreAndPlansReachHandlers:
+    @pytest.mark.asyncio
+    async def test_restore_device_not_refused(self, anon_mcp_server):
+        anon_mcp_server.registry.add_device("test-cam", {"host": "192.0.2.10"})
+        result = await _call_tool(
+            anon_mcp_server, "restore_device", {"device_id": "test-cam"},
+        )
+        # No config in git -> the handler's own "no config" outcome, not
+        # a permission refusal. (Real restores then gate at execute_plan
+        # via the plan-level url_* confirm widget.)
+        assert result.get("error") != "PermissionDenied"
+
+    @pytest.mark.asyncio
+    async def test_execute_plan_not_refused(self, anon_mcp_server):
+        result = await _call_tool(
+            anon_mcp_server, "execute_plan", {"plan_id": "plan-deadbeef"},
+        )
+        assert result.get("error") != "PermissionDenied"
+        # Unknown plan surfaces the engine's own error.
+        assert "not found" in str(result.get("error", "")).lower() or \
+            result.get("success") is False

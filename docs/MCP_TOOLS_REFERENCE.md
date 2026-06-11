@@ -54,9 +54,12 @@ Merge updates into a device's information.
 - **Errors:** `DeviceNotFound`
 
 ### `delete_device`
-Remove a device and cascade-delete its accounts.
+Request removing a device and its accounts (ADR-0034: **widget-gated**).
 - **Args:** `device_id`
-- **Returns:** `{success, device_id}`
+- **Returns:** a blocked envelope `{blocked, confirm_token, confirm_url, ...}`
+  — the registry row is removed only after the user approves the on-screen
+  confirmation card. The physical device is untouched; git config history
+  is retained.
 
 ### `list_accounts`
 List accounts on a device (no passwords).
@@ -343,14 +346,15 @@ drift" case, ADR-0031); pass a ref to restore another point in history.
 Accept/promote an observed configuration as a device's new blessed
 **baseline** (ADR-0031). Use after `check_drift` when the user confirms the
 drift is intentional. Metadata-only (no device traffic), but it re-points
-what drift means and what restore replays — anonymous-blocked like the
-other destructive tools.
+what drift means and what restore replays — so it executes only via the
+standard link/widget approval (ADR-0034).
 - **Args:** `device_id`, `commit_sha` (optional — default: the device's
   latest recorded observation)
-- **Returns:** `{success, device_id, baseline_sha, previous_baseline_sha,
-  facets, message}`
-- Errors when there is no observation to accept, or when the target commit
-  holds no config for the device.
+- **Returns:** a blocked envelope `{blocked, confirm_token, confirm_url, ...}`
+  (ADR-0034) — the baseline is re-pointed only after the user approves the
+  on-screen confirmation card.
+- Errors immediately (no widget) when there is no observation to accept, or
+  when the target commit holds no config for the device.
 
 ### `diff_device`
 Show config changes for a device between two refs.
