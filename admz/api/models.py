@@ -116,6 +116,24 @@ class DeviceResponse(BaseModel):
             "None for rows that predate the column (creation time unknown)."
         ),
     )
+    baseline_sha: Optional[str] = Field(
+        None,
+        description=(
+            "Git commit the operator has blessed as this device's config "
+            "baseline (drift is measured against it). None until snapshotted."
+        ),
+    )
+    latest_observed_sha: Optional[str] = Field(
+        None,
+        description=(
+            "Git commit of the most recent observation (snapshot or audit) "
+            "recorded for this device. None until first observed."
+        ),
+    )
+    last_observed_at: Optional[float] = Field(
+        None,
+        description="Unix epoch seconds of the last observation. None if never observed.",
+    )
 
     model_config = ConfigDict(
         json_schema_extra={

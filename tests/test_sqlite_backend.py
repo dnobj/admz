@@ -217,6 +217,79 @@ class TestCreatedAt:
         assert "created_at" in reg.get_device_info("new")
 
 
+class TestConfigBaselineColumns:
+    """baseline_sha / latest_observed_sha / last_observed_at: git config
+    pointers, column-managed (ADR-0031)."""
+
+    def test_null_on_add(self, registry, sample_device):
+        registry.add_device("cam-01", sample_device)
+        info = registry.get_device_info("cam-01")
+        assert "baseline_sha" not in info
+        assert "latest_observed_sha" not in info
+        assert "last_observed_at" not in info
+
+    def test_set_config_pointers(self, registry, sample_device):
+        import time
+        registry.add_device("cam-01", sample_device)
+        registry.set_config_pointers(
+            "cam-01", baseline_sha="abc", latest_observed_sha="abc",
+            last_observed_at=time.time(),
+        )
+        info = registry.get_device_info("cam-01")
+        assert info["baseline_sha"] == "abc"
+        assert info["latest_observed_sha"] == "abc"
+        assert info["last_observed_at"] is not None
+
+    def test_advance_observed_keeps_baseline(self, registry, sample_device):
+        registry.add_device("cam-01", sample_device)
+        registry.set_config_pointers(
+            "cam-01", baseline_sha="base", latest_observed_sha="base"
+        )
+        registry.set_config_pointers("cam-01", latest_observed_sha="obs2")
+        info = registry.get_device_info("cam-01")
+        assert info["baseline_sha"] == "base"  # untouched
+        assert info["latest_observed_sha"] == "obs2"
+
+    def test_pointers_in_list_devices(self, registry, sample_device):
+        registry.add_device("cam-01", sample_device)
+        registry.set_config_pointers("cam-01", baseline_sha="xyz")
+        assert registry.list_devices()[0]["baseline_sha"] == "xyz"
+
+    def test_pointers_not_duplicated_into_info_blob(
+        self, registry, sample_device, tmp_path
+    ):
+        import json
+        import sqlite3
+        registry.add_device("cam-01", sample_device)
+        registry.set_config_pointers("cam-01", baseline_sha="abc")
+        registry.update_device("cam-01", {"location": "Lobby"})
+        raw = sqlite3.connect(str(tmp_path / "admz.db")).execute(
+            "SELECT info_json, baseline_sha FROM devices WHERE device_id='cam-01'"
+        ).fetchone()
+        assert "baseline_sha" not in json.loads(raw[0])
+        assert raw[1] == "abc"  # update_device must not wipe the column
+
+    def test_set_pointers_unknown_device_raises(self, registry):
+        from admz.exceptions import DeviceNotFoundError
+        with pytest.raises(DeviceNotFoundError):
+            registry.set_config_pointers("nope", baseline_sha="x")
+
+    def test_migration_adds_pointer_columns(self, tmp_path):
+        import sqlite3
+        from admz.backends.sqlite_backend import SQLiteDeviceRegistry
+        db = str(tmp_path / "legacy.db")
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE devices "
+            "(device_id TEXT PRIMARY KEY, info_json TEXT NOT NULL, created_at REAL)"
+        )
+        conn.commit()
+        conn.close()
+        SQLiteDeviceRegistry(db_path=db, key_path=str(tmp_path / "k.key"))
+        cols = {r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(devices)")}
+        assert {"baseline_sha", "latest_observed_sha", "last_observed_at"} <= cols
+
+
 class TestAccountOperations:
 
     def test_add_and_get_account(self, registry, sample_device, sample_account):

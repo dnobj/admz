@@ -241,7 +241,9 @@ class TestDriftDetectorIntegration:
         from unittest.mock import AsyncMock, MagicMock
 
         engine = MagicMock()
-        engine.registry.get_device_info.return_value = {"device_id": "cam-01"}
+        engine.registry.get_device_info.return_value = {
+            "device_id": "cam-01", "baseline_sha": "abc123",
+        }
         engine._read_all_params = AsyncMock(return_value={})
         engine._read_extra_ops = AsyncMock(return_value={})
 

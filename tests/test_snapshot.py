@@ -758,3 +758,41 @@ class TestEngineHelpers:
         result = _parse_param_dump(text)
         assert "root.Image.I0.Resolution" in result
         assert len(result) == 1
+
+
+class TestBaselinePointers:
+    """SnapshotEngine._set_baseline_pointers — a snapshot blesses the
+    current config as the baseline (ADR-0031); writes are best-effort."""
+
+    def _engine(self, registry):
+        from admz.snapshot.engine import SnapshotEngine
+        return SnapshotEngine(
+            catalog=None, registry=registry, executors={}, git_repo=None
+        )
+
+    def test_writes_baseline_and_observed(self):
+        calls = {}
+
+        class _Reg:
+            def set_config_pointers(self, device_id, **kw):
+                calls[device_id] = kw
+
+        self._engine(_Reg())._set_baseline_pointers("cam-01", "deadbeef")
+        assert calls["cam-01"]["baseline_sha"] == "deadbeef"
+        assert calls["cam-01"]["latest_observed_sha"] == "deadbeef"
+        assert "last_observed_at" in calls["cam-01"]
+
+    def test_none_sha_is_noop(self):
+        class _Reg:
+            def set_config_pointers(self, *a, **k):
+                raise AssertionError("must not write for a None sha")
+
+        self._engine(_Reg())._set_baseline_pointers("cam-01", None)
+
+    def test_degrades_on_not_implemented(self):
+        class _Reg:  # e.g. the stubbed Vault backend (H-4)
+            def set_config_pointers(self, *a, **k):
+                raise NotImplementedError
+
+        # Must swallow — a pointer-less backend can't fail the snapshot.
+        self._engine(_Reg())._set_baseline_pointers("cam-01", "abc")

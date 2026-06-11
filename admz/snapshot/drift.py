@@ -29,11 +29,23 @@ class DriftDetector:
     async def check_drift(
         self,
         device_id: str,
-        ref: str = "HEAD",
+        baseline_sha: Optional[str] = None,
         family: str = "vapix",
     ) -> DriftReport:
         device_info = self.engine.registry.get_device_info(device_id)
         device_info["device_id"] = device_id
+
+        # Drift is measured against the device's blessed baseline commit, not
+        # whatever happens to be at git HEAD (ADR-0031). An explicit
+        # baseline_sha overrides; otherwise use the device's stored pointer.
+        if baseline_sha is None:
+            baseline_sha = device_info.get("baseline_sha")
+        if not baseline_sha:
+            # Nothing blessed to compare against — say so explicitly rather
+            # than silently reporting "no drift" (which would imply in-sync).
+            return DriftReport(
+                device_id=device_id, has_drift=False, no_baseline=True
+            )
 
         facets = get_facets_for_device(device_info)
 
@@ -47,7 +59,7 @@ class DriftDetector:
         report = DriftReport(device_id=device_id, has_drift=False)
 
         for facet in facets:
-            stored = self.git.read_facet(device_id, facet.name, ref)
+            stored = self.git.read_facet(device_id, facet.name, baseline_sha)
             if stored is None:
                 continue
 
@@ -109,7 +121,6 @@ class DriftDetector:
         self,
         device_ids: Optional[List[str]] = None,
         tag_filter: Optional[str] = None,
-        ref: str = "HEAD",
         family: str = "vapix",
     ) -> List[DriftReport]:
         if device_ids is None:
@@ -129,7 +140,7 @@ class DriftDetector:
         reports = []
         for did in device_ids:
             try:
-                report = await self.check_drift(did, ref, family)
+                report = await self.check_drift(did, family=family)
                 reports.append(report)
             except Exception as e:
                 logger.exception("Drift check failed for %s", did)

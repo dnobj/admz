@@ -29,7 +29,9 @@ class SnapshotFleetRequest(BaseModel):
 
 class RestoreRequest(BaseModel):
     device_id: str
-    ref: str = "HEAD"
+    # None -> restore the device's blessed baseline (ADR-0031). An explicit
+    # ref restores from that commit/tag/branch instead.
+    ref: Optional[str] = None
     facets: Optional[List[str]] = None
 
     @field_validator("device_id")
@@ -39,7 +41,9 @@ class RestoreRequest(BaseModel):
 
     @field_validator("ref")
     @classmethod
-    def _check_ref(cls, v: str) -> str:
+    def _check_ref(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
         return validate_git_ref(v)
 
     @field_validator("facets")
@@ -124,11 +128,12 @@ async def restore_device(
     plan_spec = ctx.restore_builder.build_restore_plan(
         req.device_id, ref=req.ref, facet_names=req.facets
     )
+    resolved_ref = plan_spec.get("source_ref", req.ref)
     if not plan_spec["steps"]:
         record_event(principal, "snapshot.restore", resource=resource,
-                     details={"ref": req.ref, "outcome": "no-steps"})
+                     details={"ref": resolved_ref, "outcome": "no-steps"})
         return {
-            "message": f"No config found for {req.device_id} at {req.ref}",
+            "message": f"No config found for {req.device_id} at {resolved_ref}",
             "warnings": plan_spec.get("warnings", []),
         }
     try:

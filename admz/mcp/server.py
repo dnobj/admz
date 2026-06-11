@@ -1127,10 +1127,10 @@ class ADMZMCPServer:
                             "ref": {
                                 "type": "string",
                                 "description": (
-                                    "Git ref to restore from "
-                                    "(SHA, tag, or branch). Default: HEAD"
+                                    "Git ref to restore from (SHA, tag, or "
+                                    "branch). Omit to restore the device's "
+                                    "blessed baseline (the usual 'revert' case)."
                                 ),
-                                "default": "HEAD",
                             },
                             "facets": {
                                 "type": "array",
@@ -1688,7 +1688,7 @@ class ADMZMCPServer:
                 elif name == "restore_device":
                     result = await self._restore_device(
                         arguments["device_id"],
-                        arguments.get("ref", "HEAD"),
+                        arguments.get("ref"),
                         arguments.get("facets"),
                     )
                 elif name == "diff_device":
@@ -2494,20 +2494,22 @@ class ADMZMCPServer:
     async def _restore_device(
         self,
         device_id: str,
-        ref: str,
+        ref: Optional[str],
         facet_names: Optional[List[str]],
     ) -> Dict[str, Any]:
         if not self.registry.device_exists(device_id):
             raise DeviceNotFoundError(f"Device not found: {device_id}")
 
+        # ref=None -> the builder resolves the device's baseline_sha.
         plan_spec = self.restore_builder.build_restore_plan(
             device_id, ref=ref, facet_names=facet_names
         )
+        resolved_ref = plan_spec.get("source_ref", ref)
 
         if not plan_spec["steps"]:
             return {
                 "success": True,
-                "message": f"No config found for {device_id} at {ref}",
+                "message": f"No config found for {device_id} at {resolved_ref}",
                 "warnings": plan_spec.get("warnings", []),
             }
 

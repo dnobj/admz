@@ -151,15 +151,42 @@ CREATE INDEX IF NOT EXISTS idx_dgm_group ON device_group_memberships(group_id);
 # (SQLite doesn't support IF NOT EXISTS on ADD COLUMN — the backend
 # checks existing columns via PRAGMA table_info before ALTERing).
 # All nullable on add so rows that predate a column stay valid:
-#   - org_id/site_id: NULL means "the default org/site" (Slice 1).
+#   - org_id/site_id: NULL means "the default org/site".
 #   - created_at: Unix epoch seconds, stamped on add_device. NULL means
 #     the row predates this column (creation time unknown — fall back to
 #     insertion order / rowid).
+#   - baseline_sha/latest_observed_sha/last_observed_at: config-baseline
+#     pointers into the git config repo (the single source of truth for
+#     config bytes — see ADR-0014/0031). NULL until the device is
+#     snapshotted (baseline) or audited (observed).
 _DEVICE_EXTRA_COLUMNS = (
-    ("org_id",     "TEXT"),
-    ("site_id",    "TEXT"),
-    ("created_at", "REAL"),
+    ("org_id",              "TEXT"),
+    ("site_id",             "TEXT"),
+    ("created_at",          "REAL"),
+    ("baseline_sha",        "TEXT"),
+    ("latest_observed_sha", "TEXT"),
+    ("last_observed_at",    "REAL"),
 )
+
+# Subset of the extra columns surfaced into the device-info dict on read
+# (NULL -> key omitted). org_id/site_id are deliberately excluded — the
+# hierarchy layer queries them directly; they aren't device_info fields.
+_DEVICE_INFO_EXTRA_COLUMNS = (
+    "created_at",
+    "baseline_sha",
+    "latest_observed_sha",
+    "last_observed_at",
+)
+_DEVICE_INFO_EXTRA_SELECT = ", ".join(_DEVICE_INFO_EXTRA_COLUMNS)
+
+
+def _merge_info_extras(info: Dict[str, Any], extras) -> Dict[str, Any]:
+    """Attach non-null extra-column values to a device-info dict, by position
+    (matching ``_DEVICE_INFO_EXTRA_COLUMNS`` / ``_DEVICE_INFO_EXTRA_SELECT``)."""
+    for name, val in zip(_DEVICE_INFO_EXTRA_COLUMNS, extras):
+        if val is not None:
+            info[name] = val
+    return info
 
 
 class SQLiteDeviceRegistry(DeviceRegistry):
@@ -311,42 +338,41 @@ class SQLiteDeviceRegistry(DeviceRegistry):
 
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT info_json, created_at FROM devices WHERE device_id=?",
+                f"SELECT info_json, {_DEVICE_INFO_EXTRA_SELECT} "
+                "FROM devices WHERE device_id=?",
                 (device_id,),
             ).fetchone()
 
         info = json.loads(row[0])
         info["device_id"] = device_id
-        if row[1] is not None:
-            info["created_at"] = row[1]
-        return info
+        return _merge_info_extras(info, row[1:])
 
     def get_device_by_nickname(self, nickname: str) -> Optional[Dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT device_id, info_json, created_at FROM devices"
+                f"SELECT device_id, info_json, {_DEVICE_INFO_EXTRA_SELECT} "
+                "FROM devices"
             ).fetchall()
-        for device_id, raw, created_at in rows:
+        for row in rows:
+            device_id, raw = row[0], row[1]
             info = json.loads(raw)
             if info.get("nickname", "").lower() == nickname.lower():
                 info["device_id"] = device_id
-                if created_at is not None:
-                    info["created_at"] = created_at
-                return info
+                return _merge_info_extras(info, row[2:])
         return None
 
     def list_devices(self) -> List[Dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT device_id, info_json, created_at FROM devices"
+                f"SELECT device_id, info_json, {_DEVICE_INFO_EXTRA_SELECT} "
+                "FROM devices"
             ).fetchall()
         devices = []
-        for device_id, raw, created_at in rows:
+        for row in rows:
+            device_id, raw = row[0], row[1]
             info = json.loads(raw)
             info["device_id"] = device_id
-            if created_at is not None:
-                info["created_at"] = created_at
-            devices.append(info)
+            devices.append(_merge_info_extras(info, row[2:]))
         return devices
 
     def list_accounts(self, device_id: str) -> List[Dict[str, str]]:
@@ -414,14 +440,55 @@ class SQLiteDeviceRegistry(DeviceRegistry):
     ) -> None:
         info = self.get_device_info(device_id)
         info.update(updates)
-        # created_at lives in its own column — don't let the enriched read
-        # value leak into the info_json blob (it would shadow / diverge from
-        # the column).
-        info.pop("created_at", None)
+        # created_at + config pointers live in their own columns — don't let
+        # the enriched read values leak into the info_json blob (they'd shadow
+        # / diverge from the columns).
+        for _col in _DEVICE_INFO_EXTRA_COLUMNS:
+            info.pop(_col, None)
         with self._connect() as conn:
             conn.execute(
                 "UPDATE devices SET info_json = ? WHERE device_id = ?",
                 (json.dumps(info), device_id),
+            )
+            conn.commit()
+
+    def set_config_pointers(
+        self,
+        device_id: str,
+        *,
+        baseline_sha: Optional[str] = None,
+        latest_observed_sha: Optional[str] = None,
+        last_observed_at: Optional[float] = None,
+    ) -> None:
+        """Update the git config-baseline pointer columns for a device.
+
+        Only non-None arguments are written, so callers can advance the
+        observed pointer without touching the baseline (and vice versa).
+        These are discrete columns, not part of the ``info_json`` blob.
+        """
+        if not self.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device '{device_id}' not found")
+        assignments = []
+        values: List[Any] = []
+        if baseline_sha is not None:
+            assignments.append("baseline_sha = ?")
+            values.append(baseline_sha)
+        if latest_observed_sha is not None:
+            assignments.append("latest_observed_sha = ?")
+            values.append(latest_observed_sha)
+        if last_observed_at is not None:
+            assignments.append("last_observed_at = ?")
+            values.append(last_observed_at)
+        if not assignments:
+            return
+        values.append(device_id)
+        with self._connect() as conn:
+            conn.execute(
+                # Column names are our own constants (no injection); values
+                # are parameterized.
+                f"UPDATE devices SET {', '.join(assignments)} "
+                "WHERE device_id = ?",
+                values,
             )
             conn.commit()
 

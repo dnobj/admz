@@ -20,12 +20,30 @@ Empty `fields` + `has_drift=False` means "in sync." Each
 `DriftField` is a single point of disagreement, so a report with
 20 changed values has 20 entries.
 
-### FR-DRF-002 — DriftDetector reuses facets ✅
+### FR-DRF-002 — Drift is measured against the baseline ✅
 `admz/snapshot/drift.py::DriftDetector.check_drift(device_id,
-ref="HEAD")` reads the device's live state via the same facet
-adapters that captured the snapshot (FR-SNP-002), and compares
-against the YAML in `~/.admz/configs/<device_id>/<facet>.yaml` at
-the given git ref.
+baseline_sha=None)` reads the device's live state via the same facet
+adapters that captured the snapshot (FR-SNP-002), and compares it
+against the YAML at the device's **baseline commit** (`baseline_sha`
+from the registry, ADR-0031) — NOT git HEAD. With no baseline set, the
+report carries `no_baseline=True` ("nothing blessed to compare",
+distinct from "in sync").
+
+### FR-BAS-001 — Per-device baseline / observation pointers ✅
+The `devices` row carries `baseline_sha` (the blessed baseline commit),
+`latest_observed_sha`, and `last_observed_at`
+(`DeviceRegistry.set_config_pointers`, SQLite-backed; the Vault backend
+is stubbed per H-4 and callers degrade best-effort). Git stays the
+source of truth for config bytes (ADR-0014); these are pointers + status
+only. A one-time idempotent backfill (`components._backfill_baselines`)
+pins existing config-bearing devices to HEAD.
+
+### FR-BAS-002 — Snapshot blesses the baseline; restore replays it ✅
+`snapshot_device`/`snapshot_fleet` set `baseline_sha = HEAD` after a
+successful capture ("this state is good now"). `RestoreBuilder` and the
+`restore_device` tool/route default to the device's `baseline_sha` (an
+explicit ref still overrides). Accept/promote + revert-to-baseline are
+slice 3.
 
 ### FR-DRF-003 — Field-level diffing via flatten ✅
 Both stored and live facet outputs are flattened to dotted-key
@@ -33,17 +51,17 @@ strings (`network.dns.servers.0 = "8.8.8.8"`), which gives stable
 per-field diffs even when nested. The flattening is in
 `admz/snapshot/drift.py::_flatten`.
 
-### FR-DRF-004 — Compare against an arbitrary git ref ✅
-The `ref` parameter accepts any git-resolvable name — `HEAD`, a
-specific commit SHA, a tag (`pre-firmware-upgrade`), or a date
-(`HEAD@{2026-04-01}`). Lets operators ask: "what changed since
-last Tuesday?"
+### FR-DRF-004 — Inspect arbitrary refs via the diff surface ✅
+Drift compares only against the baseline. To ask "what changed since
+last Tuesday?", use the diff surface (`GET /api/snapshot/diff`,
+`git_repo.diff`/`log`), which accepts any git-resolvable name — a SHA,
+a tag (`pre-firmware-upgrade`), or `HEAD@{2026-04-01}`.
 
 ### FR-DRF-005 — Fleet-wide drift sweep ✅
-`check_fleet_drift(device_ids=None, ref="HEAD")` runs drift checks
-across many devices concurrently, bounded by the same fleet
-semaphore as snapshot (FR-SNP-004). Returns a list of
-DriftReports; the caller filters to `has_drift=True`.
+`check_fleet_drift(device_ids=None, tag_filter=None)` runs drift checks
+across many devices concurrently — each compared against **its own**
+baseline — bounded by the same fleet semaphore as snapshot (FR-SNP-004).
+Returns a list of DriftReports; the caller filters to `has_drift=True`.
 
 ### FR-DRF-006 — Drift report is read-only ✅
 `check_drift` never modifies the device or the git repo. It's

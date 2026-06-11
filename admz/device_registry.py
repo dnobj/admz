@@ -316,6 +316,40 @@ class DeviceRegistry(ABC):
         """
         raise NotImplementedError("This registry does not support updating device info")
 
+    def set_config_pointers(
+        self,
+        device_id: str,
+        *,
+        baseline_sha: Optional[str] = None,
+        latest_observed_sha: Optional[str] = None,
+        last_observed_at: Optional[float] = None,
+    ) -> None:
+        """Update the git config-baseline pointers for a device.
+
+        These track the device's relationship to the git config repo (the
+        source of truth for config bytes — see ADR-0014/0031):
+
+            baseline_sha        — the commit the operator has blessed as the
+                                  intended baseline (drift is measured vs this).
+            latest_observed_sha — the most recent commit an audit/snapshot
+                                  recorded for the device.
+            last_observed_at    — Unix epoch of that last observation.
+
+        Only non-None arguments are written, so a caller can advance the
+        observed pointer without disturbing the baseline (and vice versa).
+
+        Optional method — backends that don't track config (e.g. the stubbed
+        Vault backend) raise NotImplementedError; callers treat it best-effort.
+
+        Raises:
+            NotImplementedError: If the backend doesn't support this operation.
+            DeviceNotFoundError: Device not found in registry.
+            BackendError: Backend storage system error.
+        """
+        raise NotImplementedError(
+            "This registry does not support config-baseline pointers"
+        )
+
     def update_account(
         self,
         device_id: str,
