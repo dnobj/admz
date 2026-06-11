@@ -132,9 +132,12 @@ REST endpoint groups:
 | Confirm | `/api/confirm/{token}/status`, `/confirm/{token}` (HTML) |
 
 > ⚠️ **Authentication is optional and defaults to off.** Set
-> `ADMZ_AUTH_BACKEND` to `windows` (Windows IWA via a reverse proxy —
-> ADR-0021) or `composite` to require auth; the default `none` leaves the
-> web UI / REST API open. LLM agents can authenticate with API keys
+> `ADMZ_AUTH_BACKEND` to `windows-local` (sign in with the box's own
+> Windows accounts via the `/login` page — ADR-0033; the recommended
+> posture for single-box / workgroup installs), `windows` (Windows IWA
+> via a reverse proxy — ADR-0021), or `composite` to require auth; the
+> default `none` leaves the web UI / REST API open. LLM agents can
+> authenticate with API keys
 > (ADR-0022). Regardless of backend, bind to `127.0.0.1` and front it with
 > a reverse proxy for any non-localhost deployment. Default `--host` is
 > `127.0.0.1`; pass `--host 0.0.0.0` explicitly to expose on all interfaces.
@@ -158,7 +161,7 @@ ADMZ is configured via environment variables:
 | `ADMZ_SNAPSHOT_FLEET_CONCURRENCY` | `50` | Max devices snapshotted concurrently during `snapshot_fleet`. Bound is per-call (asyncio semaphore). Higher values trade memory + FD pressure for wall-clock; lower values are safer at very large fleet sizes. |
 | `ADMZ_VERIFY_SSL` | _unset_ (treated as `false`) | Verify device TLS certificates. Off by default because Axis devices ship with self-signed certs. Set to `true` once you've installed trust anchors on the ADMZ host. Accepts `true`/`false`/`1`/`0`/`yes`/`no`. |
 | `ADMZ_BASE_URL` | `http://localhost:4242` | Base URL the MCP server uses when generating fleet-password capture links. Behind a reverse proxy, set this to the public-facing URL. |
-| `ADMZ_AUTH_BACKEND` | `none` | Web/REST auth: `none`, `windows` (IWA via reverse proxy — ADR-0021), or `composite`. |
+| `ADMZ_AUTH_BACKEND` | `none` | Web/REST auth: `none`, `windows-local` (Windows-account login page — ADR-0033), `windows` (IWA via reverse proxy — ADR-0021), `api-key`, or `composite`. |
 | `ADMZ_LDAP_ENABLED` | `false` | Enable LDAP group enrichment for Windows principals (ADR-0023). When `true`, reads the `ADMZ_LDAP_*` connection vars. |
 | `ADMZ_GEMINI_API_KEY` | _unset_ | Seeds the Gemini API key for the web chatbot (`/chat`). Stored thereafter as a protected fleet setting; the route is disabled when unset. |
 | `ADMZ_GEMINI_DEFAULT_MODEL` | `gemini-2.5-flash` | Default chatbot model (operators can also pick per-session from the dropdown). |

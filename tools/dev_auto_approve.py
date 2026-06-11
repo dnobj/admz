@@ -192,7 +192,16 @@ def _audit_dev_approval(session: Any, *, success: bool, detail: str) -> None:
 def _default_post(url: str, data: dict) -> Any:
     import httpx
 
-    return httpx.post(url, data=data, timeout=30.0)
+    # Under an enforcing auth backend (ADR-0033 windows-local etc.) the
+    # confirm endpoint requires an authenticated caller. Mint a lab API
+    # key (`python -m admz api-key create --name dev-auto-approver`) and
+    # export it as ADMZ_DEV_API_KEY; with no key set, requests go out
+    # unauthenticated (fine for ADMZ_AUTH_BACKEND=none).
+    headers = {}
+    dev_key = os.getenv("ADMZ_DEV_API_KEY")
+    if dev_key:
+        headers["Authorization"] = f"Bearer {dev_key}"
+    return httpx.post(url, data=data, timeout=30.0, headers=headers)
 
 
 def approve_token(

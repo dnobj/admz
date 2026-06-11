@@ -239,6 +239,37 @@ curl https://admz.example.com/api/devices \
     -H "Authorization: Bearer admz_aB1c2D3e..."
 ```
 
+## Alternative: single box / workgroup — `windows-local` (no IIS)
+
+For a machine that has no IIS front and possibly no domain (e.g. a
+Windows 11 Home workgroup host), use the **`windows-local`** backend
+(ADR-0033). ADMZ shows a `/login` page and validates the submitted
+credentials **against Windows itself** via `LogonUserW` — local SAM
+accounts, or domain accounts if the host is joined — then issues a
+server-side session cookie. The account's Windows **group memberships**
+are read from the logon token, so a member of the local
+`Administrators` group passes the credential-reveal gate with no LDAP.
+
+```powershell
+# Run with the windows-local backend (env var on the service/launcher):
+$env:ADMZ_AUTH_BACKEND = "windows-local"
+python -m admz api --host 127.0.0.1 --port 4242
+```
+
+- Browsers: any page load redirects to `/login`; sign in with a Windows
+  account of the box (`alice`, `DOMAIN\alice`, or `alice@domain.local`).
+- Agents: unchanged — `Authorization: Bearer admz_<key>`.
+- Voice/chat: the session cookie rides the WebSocket upgrade, so the
+  signed-in identity flows into the MCP tool calls and audit rows.
+- Logins are rate-limited (5/min/IP) and audited (`auth.login`); the
+  password is used only for the LogonUser call, never stored.
+- Caveats: serve on 127.0.0.1 (or front with TLS and set
+  `ADMZ_SESSION_COOKIE_SECURE=1`) — the cookie is plaintext-HTTP
+  otherwise (KL-AUTH-006). No SSO: that's what the IIS path above adds.
+- Unattended lab tooling (e.g. `tools/dev_auto_approve.py`): mint a key
+  (`python -m admz api-key create --name dev-auto-approver`) and export
+  it as `ADMZ_DEV_API_KEY`.
+
 ## Health probes
 
 IIS and load balancers should probe `https://admz.example.com/health`

@@ -14,17 +14,22 @@ Phase 4 implementation — closes [security.md](security.md) KG-SEC-001.
 ## Functional requirements
 
 ### FR-AUTH-001 — Pluggable auth backends ✅
-ADMZ supports four authentication backends, selectable via the
+ADMZ supports five authentication backends, selectable via the
 `ADMZ_AUTH_BACKEND` environment variable:
 - `none` (default) — synthetic anonymous principal; preserves the
   pre-Phase-4 zero-config behavior and keeps existing tests green.
 - `windows` — Windows IWA via reverse-proxy header.
 - `api-key` — `Authorization: Bearer admz_<...>` header.
-- `composite` — tries API key first, then Windows IWA. The recommended
-  production default — handles both browser-via-AJAX (Windows) and
-  programmatic-agent (API key) callers transparently.
+- `windows-local` — browser sign-in with the box's own Windows
+  credentials (`/login` → `LogonUserW` → session cookie) + Bearer keys
+  for agents. The recommended posture for single-box / workgroup
+  deployments without an IIS front (ADR-0033; FR-AUTH-013).
+- `composite` — tries API key, then session cookie, then Windows IWA.
+  The recommended production default behind IIS — handles browsers and
+  programmatic agents transparently.
 
-**Enforced at:** `admz/auth.py::build_auth_backend`. See ADR-0021, ADR-0022.
+**Enforced at:** `admz/auth.py::build_auth_backend`. See ADR-0021,
+ADR-0022, ADR-0033.
 
 ### FR-AUTH-002 — Every non-exempt request is authenticated ✅
 A FastAPI middleware (`admz/auth.py::auth_middleware`) runs on every
@@ -33,7 +38,9 @@ short-circuit; everything else routes through the configured backend
 before reaching the route handler.
 
 **Exempt paths:** `/health`, `/api/health`, `/static/`, `/api/docs`,
-`/api/redoc`, `/api/openapi.json`.
+`/api/redoc`, `/api/openapi.json`, `/login`, `/logout` (the login flow
+is where a caller *becomes* authenticated; logout must work for expired
+sessions so the cookie can be cleared).
 
 ### FR-AUTH-003 — Principal carries display info + groups ✅
 The authenticated identity is exposed as a `Principal` dataclass with:
@@ -111,6 +118,34 @@ carries real principal data instead of being silently ignored. Closes
 `GET /api/audit?limit=&action=&requester=&since=` returns recent entries
 newest-first, with filters by action, requester, and since-timestamp.
 
+### FR-AUTH-013 — `windows-local` backend: sign in with the box's Windows credentials ✅
+A fifth backend (ADR-0033) for hosts without an IIS front (e.g. a
+workgroup Windows 11 machine). `/login` validates the submitted
+username + password **against Windows itself** via `LogonUserW`
+(`admz/win_auth.py`) — local SAM accounts, or domain accounts when the
+host is joined — and reads the logon token's **group memberships**
+(`GetTokenInformation(TokenGroups)`), so local `Administrators` drives
+the reveal gate with no LDAP. The password exists only for the duration
+of the Win32 call — never stored, logged, or echoed.
+`ADMZ_AUTH_BACKEND=windows-local` = composite `[api-key, session]`:
+agents keep Bearer keys, browsers carry the session cookie.
+
+### FR-AUTH-014 — Server-side web sessions ✅
+`admz/session_store.py`: `web_sessions` table in `admz.db`; the
+`admz_session` cookie (HttpOnly, SameSite=Lax) holds a 256-bit random
+bearer token stored as a SHA-256 hash. TTL `ADMZ_SESSION_TTL_SECONDS`
+(default 12 h) with sliding expiry; revoked on logout; the row
+snapshots the Principal (groups frozen at login, like API-key
+snapshots). The cookie rides WebSocket upgrades, so voice authenticates
+with the same session. Unauthenticated *page* loads 303-redirect to
+`/login?next=…` (same-site targets only); API calls keep JSON 401.
+
+### FR-AUTH-015 — Login attempts are rate-limited and audited ✅
+`POST /login` consumes the shared token-bucket limiter (`login` policy:
+5 instant, then 1/12 s sustained per client IP → 429) and writes
+`auth.login` audit rows for success, bad-credentials, rate-limited, and
+unavailable outcomes. Failure responses are deliberately generic.
+
 ## Non-functional requirements
 
 ### NFR-AUTH-001 — Startup refuses unsafe binds ✅
@@ -179,6 +214,18 @@ LDAP bind credentials live in `ADMZ_LDAP_BIND_PASSWORD` (visible to
 anyone with shell access on the ADMZ host). Acceptable for typical
 threat models; high-security deployments should consider DPAPI-encrypted
 config files or a future Vault-integration path.
+
+### KL-AUTH-006 — Session cookie over plain HTTP ⚠️
+ADMZ serves plain HTTP; TLS is the reverse proxy's job (NFR-API-003).
+With `windows-local` on the default 127.0.0.1 bind the cookie never
+leaves the box; serving the UI over plain HTTP across a LAN would expose
+it. A TLS-fronted deployment should set `ADMZ_SESSION_COOKIE_SECURE=1`.
+
+### KL-AUTH-007 — CSRF tokens still deferred ⚠️
+Cookie-based sessions make auth ambient; the baseline mitigation is
+`SameSite=Lax` + HttpOnly (blocks cross-site POSTs in modern browsers).
+Per-form CSRF tokens remain the documented gap (same item the
+security-conscious-operator persona already tracks for capture/confirm).
 
 ## References
 

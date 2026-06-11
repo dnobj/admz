@@ -214,6 +214,8 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **Serial number** — Often equal to or derivable from the MAC address on Axis devices. Used as the primary device identifier in some flows.
 
+**Session (web)** — A server-side login session minted by `/login` under the `windows-local` backend (ADR-0033): Windows credentials validated in-process via `LogonUserW`, a 256-bit bearer token in the `admz_session` cookie (stored hashed in `web_sessions`), sliding TTL, revoked on logout. The session snapshots the Principal incl. the account's Windows group memberships.
+
 **Site** — The second level of the device hierarchy: *which site (usually a local network) the cameras are installed on*. Belongs to exactly one Organization; every device belongs to exactly one Site. The sidebar's site switcher scopes the fleet view. Below Site there is no Group level — devices are organized with **tags** (ADR-0032).
 
 **Service-affecting** — Risk classification for operations that may interrupt service but are recoverable. E.g. restart, network reconfiguration. Default confirm level: `llm_confirm`.

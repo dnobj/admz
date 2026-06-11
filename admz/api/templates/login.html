@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+{# Standalone on purpose — does NOT extend base.html, so no sidebar/nav
+   (device counts, sites, tags) is rendered for unauthenticated visitors. #}
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · ADMZ</title>
+  <link rel="stylesheet" href="/static/css/admz.css">
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+  <style>
+    .login-wrap {
+      min-height: 100vh; display: flex; align-items: center;
+      justify-content: center; padding: 24px;
+    }
+    .login-card {
+      width: 100%; max-width: 380px; padding: 32px 28px;
+      background: var(--bg-raised, #16181d);
+      border: 1px solid var(--border, #2a2d34); border-radius: 14px;
+    }
+    .login-brand {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
+      font-weight: 700; font-size: 18px;
+    }
+    .login-sub { font-size: 12.5px; color: var(--text-faint, #8b8f98);
+      margin-bottom: 22px; }
+    .login-field { margin-bottom: 14px; }
+    .login-field label { display: block; font-size: 12px;
+      color: var(--text-faint, #8b8f98); margin-bottom: 6px; }
+    .login-field input {
+      width: 100%; padding: 9px 11px; font-size: 14px;
+      background: var(--bg, #0e1013); color: inherit;
+      border: 1px solid var(--border, #2a2d34); border-radius: 8px;
+    }
+    .login-error {
+      padding: 9px 12px; margin-bottom: 14px; font-size: 13px;
+      border-radius: 8px; background: rgba(244, 63, 94, 0.12);
+      color: #f87181; border: 1px solid rgba(244, 63, 94, 0.35);
+    }
+    .login-note { margin-top: 16px; font-size: 12px;
+      color: var(--text-faint, #8b8f98); line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <div class="login-brand">
+        <i data-lucide="shield-check"></i> ADMZ
+      </div>
+      <div class="login-sub">Axis Device Manager · sign in to continue</div>
+
+      {% if error %}<div class="login-error">{{ error }}</div>{% endif %}
+
+      <form method="POST" action="/login">
+        <input type="hidden" name="next" value="{{ next }}">
+        <div class="login-field">
+          <label for="username">Windows username</label>
+          <input id="username" name="username" type="text" required
+                 autocomplete="username" autofocus
+                 placeholder="alice  ·  DOMAIN\alice">
+        </div>
+        <div class="login-field">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" required
+                 autocomplete="current-password">
+        </div>
+        <button class="btn primary" type="submit" style="width:100%">
+          Sign in
+        </button>
+      </form>
+
+      <div class="login-note">
+        Use the Windows account of this machine (local account, or a
+        domain account if the server is domain-joined). Your password is
+        verified by Windows and never stored by ADMZ.
+      </div>
+    </div>
+  </div>
+  <script>lucide.createIcons();</script>
+</body>
+</html>

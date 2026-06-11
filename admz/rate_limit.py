@@ -69,6 +69,10 @@ class RateLimiter:
             "capture": (10, 1.0 / 6.0),
             # /confirm/{token} POST — same shape.
             "confirm": (10, 1.0 / 6.0),
+            # /login POST — Windows credential attempts (ADR-0033).
+            # 5 instant tries, then 1 per 12s sustained (5/minute):
+            # roomy for a typo'd password, hostile to a guesser.
+            "login": (5, 1.0 / 12.0),
         }
 
     def configure(self, route: str, capacity: float, refill_per_s: float) -> None:

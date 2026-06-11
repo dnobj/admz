@@ -116,6 +116,18 @@ async def voice_ws(websocket: WebSocket):
         return
 
     principal = await _ws_principal(websocket)
+    # Under an enforcing backend (anything but `none`), an unauthenticated
+    # WS is rejected like any other surface — the browser session cookie
+    # rides the upgrade, so a signed-in user passes (ADR-0033).
+    from admz.auth import NoAuth, get_active_backend
+    if getattr(principal, "is_anonymous", False) and not isinstance(
+        get_active_backend(), NoAuth
+    ):
+        await websocket.send_json(
+            {"type": "error", "error": "Sign in to use voice (session required)."}
+        )
+        await websocket.close(code=4401)
+        return
     requested_model = websocket.query_params.get("model")
     requested_voice = websocket.query_params.get("voice")
 

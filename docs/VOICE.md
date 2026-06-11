@@ -128,6 +128,8 @@ With no key, voice (and chat) are disabled.
 - Browser mic/playback is best-effort v1 (no barge-in tuning, no device picker).
 - Voice transcripts are not persisted to the chat session history (the text
   chat's `previous_interaction_id` continuity doesn't span voice yet).
-- WebSocket auth resolves the principal best-effort and falls back to anonymous
-  (matching the default `ADMZ_AUTH_BACKEND=none`); production behind Windows IWA
-  would carry the proxy headers on the WS upgrade.
+- WebSocket auth resolves the principal via the active backend. Under an
+  enforcing backend (e.g. `windows-local`, ADR-0033) the session cookie rides
+  the WS upgrade, so the signed-in identity flows into voice tool calls; an
+  anonymous connection is refused with a "sign in" error. Only the default
+  `ADMZ_AUTH_BACKEND=none` still falls back to anonymous.

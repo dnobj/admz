@@ -347,7 +347,11 @@ class TestCompositeAuth:
         with pytest.raises(ValueError):
             CompositeAuth([])
 
-    def test_from_env_builds_api_key_then_windows(self):
+    def test_from_env_builds_api_key_then_session_then_windows(self):
+        # ADR-0033: SessionAuth (browser login cookie) sits between the
+        # explicit Bearer check and the trusted-header IWA check.
+        from admz.auth import SessionAuth
         composite = CompositeAuth.from_env()
         assert isinstance(composite.backends[0], ApiKeyAuth)
-        assert isinstance(composite.backends[1], ReverseProxyAuth)
+        assert isinstance(composite.backends[1], SessionAuth)
+        assert isinstance(composite.backends[2], ReverseProxyAuth)

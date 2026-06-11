@@ -21,6 +21,7 @@ from admz.api.context import init_context
 from admz.api.routes import (
     api_keys as api_keys_route,
     audit as audit_route,
+    auth_web as auth_web_route,
     capture,
     catalog,
     chat as chat_route,
@@ -177,6 +178,7 @@ app.include_router(drift_route.router, prefix="/api", tags=["drift"])
 app.include_router(health_route.router, tags=["health"])
 
 # Capture, confirm, chatbot, and web UI — no /api prefix because they are user-facing
+app.include_router(auth_web_route.router, tags=["auth"])
 app.include_router(capture.router, tags=["capture"])
 app.include_router(confirm.router, tags=["confirm"])
 app.include_router(chat_route.router, tags=["chat"])
