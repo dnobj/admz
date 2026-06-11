@@ -1,6 +1,6 @@
 # ADMZ MCP Tools Reference
 
-Complete reference for the **45 tools** the ADMZ MCP server exposes.
+Complete reference for the **46 tools** the ADMZ MCP server exposes.
 
 > Note: a `get_credentials` MCP tool used to exist. It was **removed**
 > (CR-1) because returning plaintext passwords into LLM context violates
@@ -331,10 +331,26 @@ Snapshot many devices in parallel into a single commit.
 - **Returns:** `{success, count, results: [...]}`
 
 ### `restore_device`
-Build a plan that restores a device to a previous configuration.
-- **Args:** `device_id`, `ref` (default `"HEAD"`), `facets` (array, optional)
+Build a plan that restores a device to a previous configuration. **Omit
+`ref` to revert the device to its blessed baseline** (the usual "undo this
+drift" case, ADR-0031); pass a ref to restore another point in history.
+- **Args:** `device_id`, `ref` (optional — default: the device's
+  `baseline_sha`), `facets` (array, optional)
 - **Returns:** `{success, plan_id, steps, warnings, source_ref}`
 - Does **not** execute — call `execute_plan` after review.
+
+### `accept_baseline`
+Accept/promote an observed configuration as a device's new blessed
+**baseline** (ADR-0031). Use after `check_drift` when the user confirms the
+drift is intentional. Metadata-only (no device traffic), but it re-points
+what drift means and what restore replays — anonymous-blocked like the
+other destructive tools.
+- **Args:** `device_id`, `commit_sha` (optional — default: the device's
+  latest recorded observation)
+- **Returns:** `{success, device_id, baseline_sha, previous_baseline_sha,
+  facets, message}`
+- Errors when there is no observation to accept, or when the target commit
+  holds no config for the device.
 
 ### `diff_device`
 Show config changes for a device between two refs.
@@ -343,12 +359,16 @@ Show config changes for a device between two refs.
 
 ### `check_drift`
 Compare a device's live state against its **baseline** (`baseline_sha`), not
-git HEAD (ADR-0031).
+git HEAD (ADR-0031). Each check also **records what it observed** into the git
+config repo as an `Audit:` commit (commit-on-change — an unchanged device
+records nothing new) and advances the device's `latest_observed_sha`; an audit
+never moves the baseline pointer.
 - **Args:** `device_id` (optional — if omitted, scans whole fleet),
   `tag_filter` (string, optional)
 - **Returns:** single device: `{success, device_id, has_drift, no_baseline,
-  facets_checked, facets_drifted, drifted_fields}` (`no_baseline=true` when the
-  device has no blessed baseline yet — that is *not* "in sync")
+  observed_sha, facets_checked, facets_drifted, drifted_fields}`
+  (`no_baseline=true` when the device has no blessed baseline yet — that is
+  *not* "in sync"; the observation is still recorded and promotable later)
 - Returns fleet: `{success, count, drifted, reports: [...]}`
 
 ### `get_drift_alerts`

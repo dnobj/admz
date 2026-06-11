@@ -515,11 +515,14 @@ async def _run_drift_audit_job(
 
     Runs ``DriftDetector.check_fleet_drift`` over the schedule's
     scope (``device_ids`` / ``tag_filter`` for now; hierarchy fields
-    land under FR-SCH-012). Each report is passed through
-    ``DriftAlertStore.process_report`` which emits an ``appeared`` /
-    ``changed`` / ``cleared`` transition row when the device's
-    drift state has actually changed since last check — the cron-
-    spam-of-the-same-drift problem is handled there, not here.
+    land under FR-SCH-012). Each check records an *observation* of the
+    live config into the git repo (ADR-0031 slice 2; commit-on-change)
+    and feeds the alert store inside ``check_drift`` itself — the
+    transition (if any) rides back on each report's
+    ``alert_transition``. (Previously this handler re-ran
+    ``process_report`` on reports the detector had already processed,
+    so the second pass always saw "no change" and the job's alert
+    count was perpetually zero.)
     """
     if ctx.drift_detector is None:
         return {
@@ -532,23 +535,22 @@ async def _run_drift_audit_job(
         tag_filter=schedule.tag_filter,
     )
 
-    # KL-DRF-004 — feed each report through the alert store. Devices
-    # whose drift signature is unchanged emit no alert; new drift,
-    # changed drift, and cleared drift each emit one row.
-    from admz.snapshot import drift_alerts as _da_mod
-    new_alerts = []
-    for report in reports:
-        alert = _da_mod.drift_alerts.process_report(report)
-        if alert is not None:
-            new_alerts.append(alert)
+    # KL-DRF-004 — count the transitions the detector's alert store
+    # recorded for this sweep (devices with unchanged drift state
+    # contribute none).
+    new_alerts = [
+        r.alert_transition
+        for r in reports
+        if getattr(r, "alert_transition", None)
+    ]
 
     drifted = sum(1 for r in reports if r.has_drift)
     clean = len(reports) - drifted
     transitions = {
         "appeared": 0, "changed": 0, "cleared": 0,
     }
-    for a in new_alerts:
-        transitions[a.transition] = transitions.get(a.transition, 0) + 1
+    for t in new_alerts:
+        transitions[t] = transitions.get(t, 0) + 1
     summary = (
         f"checked {len(reports)} device(s): "
         f"{drifted} drifted / {clean} clean, "

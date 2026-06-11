@@ -383,6 +383,17 @@ class SnapshotEngine:
             logger.exception("Facet %s failed for snapshot", facet.name)
             return FacetResult(name=facet.name, success=False, error=str(e))
 
+    # Keys never written to fleet/<id>/device.yaml. Secrets (ADR-0014) plus
+    # registry-managed bookkeeping: the config pointers are DB state ABOUT
+    # the git repo — writing them into the repo would make every audit
+    # change device.yaml (last_observed_at advances), defeating
+    # commit-on-change and creating a commit per audit.
+    _DEVICE_YAML_EXCLUDE = (
+        "password", "secret", "token", "credentials",
+        "baseline_sha", "latest_observed_sha", "last_observed_at",
+        "created_at",
+    )
+
     def _write_files(
         self,
         device_id: str,
@@ -392,7 +403,7 @@ class SnapshotEngine:
         safe_info = {
             k: v
             for k, v in device_info.items()
-            if k not in ("password", "secret", "token", "credentials")
+            if k not in self._DEVICE_YAML_EXCLUDE
         }
         self.git.write_device_yaml(device_id, safe_info)
 

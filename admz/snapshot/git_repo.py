@@ -151,7 +151,14 @@ class GitRepo:
         self,
         device_id: str,
         message: Optional[str] = None,
+        auto_push: bool = True,
     ) -> Optional[str]:
+        """Commit working-tree changes for one device (commit-on-change).
+
+        ``auto_push=False`` skips the best-effort origin push — used for
+        audit *observation* commits (ADR-0031) so frequent audits don't
+        churn the remote; baselines/snapshots keep the default push.
+        """
         if not self.has_changes():
             return None
         self._run_git("add", "-A")
@@ -159,7 +166,8 @@ class GitRepo:
         self._run_git("commit", "-m", msg)
         result = self._run_git("rev-parse", "HEAD")
         sha = result.stdout.strip()
-        self._maybe_push()
+        if auto_push:
+            self._maybe_push()
         return sha
 
     def commit_fleet_snapshot(
@@ -355,6 +363,27 @@ class GitRepo:
             return []
         return sorted(
             d.name for d in fleet_dir.iterdir() if d.is_dir()
+        )
+
+    def list_facets_at(self, device_id: str, ref: str) -> List[str]:
+        """Facet names committed for ``device_id`` at ``ref`` ([] if none).
+
+        Used to validate accept/promote targets: a commit can only become a
+        device's baseline if it actually holds config for that device.
+        """
+        from admz.validators import validate_git_ref, validate_identifier
+        validate_identifier(device_id, "device_id")
+        validate_git_ref(ref)
+        result = self._run_git(
+            "ls-tree", "--name-only",
+            f"{ref}:fleet/{device_id}/config", check=False,
+        )
+        if result.returncode != 0:
+            return []
+        return sorted(
+            name[:-5]
+            for name in result.stdout.split()
+            if name.endswith(".yaml")
         )
 
     def head_sha(self) -> Optional[str]:

@@ -95,7 +95,7 @@ browser  ──WebSocket /api/chat/voice──►  ADMZ (FastAPI)  ──►  Ge
   transcripts / tool notices / status.
 - **Bridge** (`admz/chatbot/voice.py::VoiceSession`): opens the MCP tool session
   + the Gemini Live session (audio response + input/output transcription + the
-  ADMZ system prompt + the 45 tools as `FunctionDeclaration`s). Handles
+  ADMZ system prompt + the 46 tools as `FunctionDeclaration`s). Handles
   `tool_call` → `_call_mcp_tool` (through the gate) → `send_tool_response`.
   `send_text()` is a test/typed-input seam so the bridge is exercisable without
   a microphone.

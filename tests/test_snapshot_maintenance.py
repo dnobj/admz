@@ -14,6 +14,7 @@ from admz.snapshot.git_repo import GitRepo
 from admz.snapshot.maintenance import (
     GcResult,
     RepoStats,
+    commit_intent_stats,
     get_repo_stats,
     is_gc_aggressive,
     is_gc_enabled,
@@ -50,6 +51,37 @@ def populated_repo(empty_repo):
         )
         empty_repo.commit_snapshot(device_id)
     return empty_repo
+
+
+# ---------------------------------------------------------------------------
+# commit_intent_stats (ADR-0031 slice 4 — observation-growth visibility)
+# ---------------------------------------------------------------------------
+
+
+class TestCommitIntentStats:
+
+    def test_empty_repo_all_zero(self, empty_repo):
+        assert commit_intent_stats(empty_repo) == {
+            "audit": 0, "snapshot": 0, "baseline": 0, "other": 0,
+        }
+
+    def test_counts_by_prefix(self, empty_repo):
+        cases = [
+            ("Audit: cam-01", "a1"),
+            ("Audit: cam-02", "a2"),
+            ("Snapshot cam-01", "s1"),
+            ("Fleet snapshot: cam-01, cam-02", "s2"),
+            ("Scheduled: Nightly backup", "s3"),
+            ("Baseline - initial capture", "b1"),
+            ("manual operator tweak", "o1"),
+        ]
+        for message, marker in cases:
+            empty_repo.write_device_yaml(
+                "cam-01", {"device_id": "cam-01", "marker": marker}
+            )
+            empty_repo.commit_snapshot("cam-01", message=message)
+        stats = commit_intent_stats(empty_repo)
+        assert stats == {"audit": 2, "snapshot": 3, "baseline": 1, "other": 1}
 
 
 # ---------------------------------------------------------------------------

@@ -72,6 +72,13 @@ class DriftReport:
     # True when the device has no blessed baseline to compare against, so
     # ``has_drift=False`` means "nothing to compare", NOT "in sync".
     no_baseline: bool = False
+    # Git commit holding what this audit observed (ADR-0031 slice 2).
+    # Commit-on-change: an unchanged device points at the existing commit.
+    # None when observation recording failed/was unavailable.
+    observed_sha: Optional[str] = None
+    # The drift-alert transition this check produced ("appeared"/"changed"/
+    # "cleared"), or None when the drift state didn't change.
+    alert_transition: Optional[str] = None
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -81,6 +88,7 @@ class DriftReport:
             "device_id": self.device_id,
             "has_drift": self.has_drift,
             "no_baseline": self.no_baseline,
+            "observed_sha": self.observed_sha,
             "facets_checked": self.facets_checked,
             "facets_drifted": self.facets_drifted,
             "timestamp": self.timestamp,

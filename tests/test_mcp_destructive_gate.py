@@ -41,12 +41,14 @@ class TestDestructiveToolSet:
 
     def test_expected_tools_are_in_the_set(self):
         # Parity with CR-3's REST destructive list:
-        #   DELETE /api/devices/{id}        → delete_device
-        #   POST /api/snapshot/restore      → restore_device
-        #   POST /api/plans/{id}/execute    → execute_plan
+        #   DELETE /api/devices/{id}             → delete_device
+        #   POST /api/snapshot/restore           → restore_device
+        #   POST /api/plans/{id}/execute         → execute_plan
+        #   POST /api/snapshot/accept-baseline   → accept_baseline (ADR-0031)
         assert "delete_device" in _DESTRUCTIVE_MCP_TOOLS
         assert "restore_device" in _DESTRUCTIVE_MCP_TOOLS
         assert "execute_plan" in _DESTRUCTIVE_MCP_TOOLS
+        assert "accept_baseline" in _DESTRUCTIVE_MCP_TOOLS
 
     def test_non_destructive_tools_are_not_in_the_set(self):
         # Common read-only + low-risk-write tools must NOT be gated.
@@ -187,6 +189,19 @@ class TestAnonymousBlockedFromDestructive:
         assert result.get("error") == "PermissionDenied"
 
     @pytest.mark.asyncio
+    async def test_anonymous_accept_baseline_refused(self, anon_mcp_server):
+        anon_mcp_server.registry.add_device(
+            "test-cam", {"host": "192.0.2.10"},
+        )
+        result = await _call_tool(
+            anon_mcp_server, "accept_baseline", {"device_id": "test-cam"},
+        )
+        assert result.get("error") == "PermissionDenied"
+        # Gate stopped it before the handler: no baseline was set.
+        info = anon_mcp_server.registry.get_device_info("test-cam")
+        assert "baseline_sha" not in info
+
+    @pytest.mark.asyncio
     async def test_denial_is_audited(self, anon_mcp_server):
         anon_mcp_server.registry.add_device(
             "test-cam", {"host": "192.0.2.10"},
@@ -314,3 +329,93 @@ class TestNonDestructiveToolsUnaffected:
         # The handler will report some other error (network failure,
         # facet failure) — but NOT PermissionDenied from our new gate.
         assert result.get("error") != "PermissionDenied"
+
+
+# ---------------------------------------------------------------------------
+# accept_baseline handler behavior (ADR-0031 slice 3)
+# ---------------------------------------------------------------------------
+
+
+def _commit_facet(server, device_id, facet, data, message):
+    """Write + commit a facet through the server's own git repo,
+    configuring a git identity on first use (GitRepo doesn't set one)."""
+    import subprocess
+    for key, val in [
+        ("user.email", "test@test.com"),
+        ("user.name", "Test"),
+        ("commit.gpgsign", "false"),
+    ]:
+        subprocess.run(
+            ["git", "config", key, val],
+            cwd=server.git_repo.repo_path, check=True,
+        )
+    server.git_repo.write_facet(device_id, facet, data)
+    return server.git_repo.commit_snapshot(device_id, message=message)
+
+
+class TestAcceptBaseline:
+    """accept_baseline re-points baseline_sha to an observed commit —
+    defaulting to the latest observation — and validates the target
+    actually holds config for the device."""
+
+    @pytest.mark.asyncio
+    async def test_accept_explicit_commit(self, auth_mcp_server):
+        auth_mcp_server.registry.add_device("test-cam", {"host": "192.0.2.10"})
+        sha = _commit_facet(
+            auth_mcp_server, "test-cam", "image",
+            {"I0.Resolution": "1920x1080"}, "Audit: test-cam",
+        )
+        result = await _call_tool(
+            auth_mcp_server, "accept_baseline",
+            {"device_id": "test-cam", "commit_sha": sha},
+        )
+        assert result.get("success") is True
+        assert result["baseline_sha"] == sha
+        assert "image" in result["facets"]
+        info = auth_mcp_server.registry.get_device_info("test-cam")
+        assert info["baseline_sha"] == sha
+
+    @pytest.mark.asyncio
+    async def test_accept_defaults_to_latest_observation(self, auth_mcp_server):
+        auth_mcp_server.registry.add_device("test-cam", {"host": "192.0.2.10"})
+        sha = _commit_facet(
+            auth_mcp_server, "test-cam", "image",
+            {"I0.Resolution": "1280x720"}, "Audit: test-cam",
+        )
+        auth_mcp_server.registry.set_config_pointers(
+            "test-cam", latest_observed_sha=sha,
+        )
+        result = await _call_tool(
+            auth_mcp_server, "accept_baseline", {"device_id": "test-cam"},
+        )
+        assert result.get("success") is True
+        assert result["baseline_sha"] == sha
+
+    @pytest.mark.asyncio
+    async def test_accept_without_observation_errors(self, auth_mcp_server):
+        auth_mcp_server.registry.add_device("test-cam", {"host": "192.0.2.10"})
+        result = await _call_tool(
+            auth_mcp_server, "accept_baseline", {"device_id": "test-cam"},
+        )
+        assert result.get("success") is False
+        assert "No commit to accept" in result.get("error", "")
+
+    @pytest.mark.asyncio
+    async def test_accept_commit_without_device_config_errors(
+        self, auth_mcp_server
+    ):
+        auth_mcp_server.registry.add_device("test-cam", {"host": "192.0.2.10"})
+        auth_mcp_server.registry.add_device("other", {"host": "192.0.2.11"})
+        # The commit holds config only for the OTHER device.
+        sha = _commit_facet(
+            auth_mcp_server, "other", "image",
+            {"I0.Resolution": "640x480"}, "Audit: other",
+        )
+        result = await _call_tool(
+            auth_mcp_server, "accept_baseline",
+            {"device_id": "test-cam", "commit_sha": sha},
+        )
+        assert result.get("success") is False
+        assert "no config" in result.get("error", "")
+        info = auth_mcp_server.registry.get_device_info("test-cam")
+        assert "baseline_sha" not in info
