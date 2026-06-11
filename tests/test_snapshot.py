@@ -216,6 +216,160 @@ class TestFacetSerialization:
         assert facet.deserialize({"admin_access": {}}) == []
 
 
+class TestRestoreSafety:
+    """Restore must never write back what the device can't (or must not)
+    accept: read-only mirrors, Volatile* runtime values, masked secrets.
+    Verified live on the P3288 (AXIS OS 12): param.cgi:update rejects
+    Time.NTP.Server even unchanged. Skipped keys stay serialized — drift
+    on them is real — and are reported via the op call's 'skipped' list."""
+
+    def test_time_excludes_ntp_mirror(self):
+        facet = TimeFacet()
+        ops = facet.deserialize({
+            "NTP.Server": "192.168.0.199 ntp.axis.com",
+            "NTP.VolatileServer": "216.239.35.0",
+            "POSIXTimeZone": "CST6CDT5,M3.2.0/2:00:00,M11.1.0/2:00:00",
+            "SyncSource": "NTP",
+        })
+        assert len(ops) == 1
+        params = ops[0]["params"]
+        assert "root.Time.POSIXTimeZone" in params
+        assert "root.Time.SyncSource" in params
+        assert not any("NTP" in k for k in params)
+        assert ops[0]["skipped"] == ["NTP.Server", "NTP.VolatileServer"]
+
+    def test_network_excludes_runtime_state(self):
+        facet = NetworkFacet()
+        ops = facet.deserialize({
+            "HostName": "axis-cam-01",
+            "DefaultRouter": "192.168.1.1",
+            "eth0.IPAddress": "192.168.1.105",
+            "eth0.MACAddress": "E8:27:25:1F:FB:8D",
+            "Routing.DefaultRouter": "192.168.1.1",
+            "Resolver.NameServerList": "192.168.1.1 8.8.8.8",
+            "Resolver.NameServer1": "192.168.1.1",
+            "Interface.I0.dot1x.Status": "Unauthorized",
+            "Interface.I0.Link.MTU": "1500",
+            "DHCP.VendorClass": "AXIS,Dome Camera",
+            "VolatileHostName.HostName": "axis-e827251ffb8d",
+        })
+        params = ops[0]["params"]
+        # Static config restores
+        assert "root.Network.HostName" in params
+        assert "root.Network.DefaultRouter" in params
+        assert "root.Network.Interface.I0.Link.MTU" in params
+        # Runtime/derived state does not
+        assert not any("eth0" in k for k in params)
+        assert not any("Routing" in k for k in params)
+        assert not any("Volatile" in k for k in params)
+        assert not any("Resolver" in k for k in params)
+        assert "root.Network.Interface.I0.dot1x.Status" not in params
+        assert "root.Network.DHCP.VendorClass" not in params
+
+    def test_masked_secret_never_written_back(self):
+        """param.cgi returns '******' for password-class values; restoring
+        the literal mask would corrupt the device's real secret."""
+        facet = NetworkFacet()
+        ops = facet.deserialize({
+            "HostName": "axis-cam-01",
+            "Interface.I0.dot1x.EAPTLS.PrivateKeyPassword": "******",
+        })
+        params = ops[0]["params"]
+        assert "root.Network.HostName" in params
+        assert not any("PrivateKeyPassword" in k for k in params)
+        assert ops[0]["skipped"] == [
+            "Interface.I0.dot1x.EAPTLS.PrivateKeyPassword"
+        ]
+
+    def test_events_skips_masked_and_volatile(self):
+        facet = EventsFacet()
+        ops = facet.deserialize({
+            "ioport": {
+                "I0.Input.Name": "Port 1",
+                "I0.VolatileState": "high",
+            },
+            "event": {"E0.Password": "******"},
+        })
+        params = ops[0]["params"]
+        assert params == {"root.IOPort.I0.Input.Name": "Port 1"}
+        assert ops[0]["skipped"] == [
+            "event.E0.Password", "ioport.I0.VolatileState"
+        ]
+
+    def test_image_excludes_structural_channel_params(self):
+        """Image I*.Source / I*.Type / NbrOfConfigs are factory wiring —
+        the device answers 401 when an admin writes them."""
+        facet = ImageFacet()
+        ops = facet.deserialize({
+            "I0.Source": "0",
+            "I0.Type": "fixed",
+            "I12.Source": "0",
+            "NbrOfConfigs": "8",
+            "I0.Appearance.Compression": "30",
+            # Glob is segment-wise: nested keys do NOT over-match
+            "I0.Overlay.Type": "text",
+        })
+        params = ops[0]["params"]
+        assert params == {
+            "root.Image.I0.Appearance.Compression": "30",
+            "root.Image.I0.Overlay.Type": "text",
+        }
+
+    def test_stream_profiles_excludes_max_groups(self):
+        facet = StreamProfilesFacet()
+        ops = facet.deserialize({
+            "MaxGroups": "26",
+            "S0.Name": "MainStream",
+        })
+        assert ops[0]["params"] == {
+            "root.StreamProfile.S0.Name": "MainStream"
+        }
+
+    def test_events_excludes_ioport_configurable(self):
+        facet = EventsFacet()
+        ops = facet.deserialize({
+            "ioport": {
+                "I0.Configurable": "no",
+                "I0.Input.Name": "Port 1",
+            },
+        })
+        assert ops[0]["params"] == {
+            "root.IOPort.I0.Input.Name": "Port 1"
+        }
+        assert ops[0]["skipped"] == ["ioport.I0.Configurable"]
+
+    def test_network_excludes_protected_constants(self):
+        facet = NetworkFacet()
+        ops = facet.deserialize({
+            "HostName": "axis-cam-01",
+            "LLDP.POE.Enabled": "no",          # writable config
+            "LLDP.POE.MaxPower": "12950",      # hw-negotiated
+            "QoS.Class1.Desc": "AxisLiveVideo",
+            "QoS.Class1.DSCP": "0",            # writable config
+            "RTP.NbrOfRTPGroups": "8",
+            "Resolver.NameServer1": "192.168.1.1",
+            "ZeroConf.Enabled": "yes",         # writable config
+            "ZeroConf.IPAddress": "169.254.1.2",
+            "Interface.I0.SystemDevice": "eth0",
+        })
+        params = ops[0]["params"]
+        assert set(params) == {
+            "root.Network.HostName",
+            "root.Network.LLDP.POE.Enabled",
+            "root.Network.QoS.Class1.DSCP",
+            "root.Network.ZeroConf.Enabled",
+        }
+
+    def test_all_keys_excluded_yields_no_op_call(self):
+        facet = TimeFacet()
+        assert facet.deserialize({"NTP.Server": "pool.ntp.org"}) == []
+
+    def test_clean_doc_has_no_skipped_key(self):
+        facet = ImageFacet()
+        ops = facet.deserialize({"I0.Resolution": "1920x1080"})
+        assert "skipped" not in ops[0]
+
+
 # ---------------------------------------------------------------------------
 # Test GitRepo
 # ---------------------------------------------------------------------------
@@ -666,6 +820,93 @@ class TestRestoreBuilder:
         )
         plan = builder.build_restore_plan("cam-01")
         assert any("dangerous" in w for w in plan["warnings"])
+
+    def test_restore_steps_declare_service_affecting_risk(self, tmp_repo):
+        """ADR-0034: every restore step carries a service-affecting floor
+        so execute_gated_plan always stops at the approval widget — even
+        though param.cgi:update alone is catalog-risk 'normal'."""
+        tmp_repo.write_facet("cam-01", "image", {"I0.Resolution": "1080p"})
+        tmp_repo.write_facet("cam-01", "network", {"HostName": "test"})
+        tmp_repo.commit_snapshot("cam-01")
+
+        builder = RestoreBuilder(
+            catalog=MockCatalog(),
+            registry=MockRegistry(),
+            git_repo=tmp_repo,
+        )
+        plan = builder.build_restore_plan("cam-01")
+        assert plan["steps"]
+        assert all(
+            s["risk_level"] == "service-affecting" for s in plan["steps"]
+        )
+
+    def test_large_facet_chunks_into_multiple_steps(self, tmp_repo):
+        """A whole-facet param.cgi:update overflows the device URI limit
+        (observed: HTTP 414 on a P3288 with ~344 image params) — big
+        updates split into budget-bounded steps that together carry
+        every param exactly once."""
+        from admz.snapshot.restore import _PARAM_UPDATE_BUDGET
+
+        big = {f"I0.Setting{i:03d}": f"value-{i}" for i in range(300)}
+        tmp_repo.write_facet("cam-01", "image", big)
+        tmp_repo.commit_snapshot("cam-01")
+
+        builder = RestoreBuilder(
+            catalog=MockCatalog(),
+            registry=MockRegistry(),
+            git_repo=tmp_repo,
+        )
+        plan = builder.build_restore_plan("cam-01")
+        assert len(plan["steps"]) > 1
+
+        merged = {}
+        for step in plan["steps"]:
+            assert step["operation_id"] == "param.cgi:update"
+            assert step["risk_level"] == "service-affecting"
+            raw = sum(len(k) + len(v) + 2 for k, v in step["params"].items())
+            assert raw <= _PARAM_UPDATE_BUDGET
+            assert not (set(merged) & set(step["params"]))  # no overlap
+            merged.update(step["params"])
+        assert merged == {
+            f"root.Image.{k}": v for k, v in big.items()
+        }
+        # Chunked steps are numbered in the description
+        assert "(1/" in plan["steps"][0]["description"]
+
+    def test_small_facet_stays_one_step(self, tmp_repo):
+        tmp_repo.write_facet("cam-01", "image", {"I0.Resolution": "1080p"})
+        tmp_repo.commit_snapshot("cam-01")
+
+        builder = RestoreBuilder(
+            catalog=MockCatalog(),
+            registry=MockRegistry(),
+            git_repo=tmp_repo,
+        )
+        plan = builder.build_restore_plan("cam-01")
+        assert len(plan["steps"]) == 1
+        assert "(1/" not in plan["steps"][0]["description"]
+
+    def test_restore_plan_warns_on_unrestorable_keys(self, tmp_repo):
+        tmp_repo.write_facet("cam-01", "time", {
+            "NTP.Server": "pool.ntp.org",
+            "SyncSource": "NTP",
+        })
+        tmp_repo.commit_snapshot("cam-01")
+
+        builder = RestoreBuilder(
+            catalog=MockCatalog(),
+            registry=MockRegistry(),
+            git_repo=tmp_repo,
+        )
+        plan = builder.build_restore_plan("cam-01")
+        assert any(
+            "not restorable" in w and "NTP.Server" in w
+            for w in plan["warnings"]
+        )
+        # The restorable key still becomes a step
+        assert any(
+            "root.Time.SyncSource" in s["params"] for s in plan["steps"]
+        )
 
 
 # ---------------------------------------------------------------------------

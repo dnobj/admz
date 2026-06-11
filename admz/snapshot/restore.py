@@ -11,6 +11,33 @@ from admz.snapshot.git_repo import GitRepo
 
 logger = logging.getLogger(__name__)
 
+# param.cgi:update goes out as a GET query string (legacy-cgi executor);
+# a whole-facet restore (image: ~340 params) overflows the device's URI
+# limit — observed live as HTTP 414 on a P3288. Chunk big updates into
+# multiple plan steps: ~1500 bytes of raw key=value per call keeps the
+# encoded URI comfortably under the ~8k device default. (A general fix —
+# POSTing long param.cgi updates — belongs in the executor; this keeps
+# restore working without touching the shared execution path.)
+_PARAM_UPDATE_BUDGET = 1500
+
+
+def _chunk_params(
+    params: Dict[str, str], budget: int = _PARAM_UPDATE_BUDGET
+) -> List[Dict[str, str]]:
+    chunks: List[Dict[str, str]] = []
+    current: Dict[str, str] = {}
+    size = 0
+    for key, value in params.items():
+        item = len(key) + len(str(value)) + 2  # '=' + '&'
+        if current and size + item > budget:
+            chunks.append(current)
+            current, size = {}, 0
+        current[key] = value
+        size += item
+    if current:
+        chunks.append(current)
+    return chunks
+
 
 class RestoreBuilder:
     """Reads config from git and builds an execution plan for the plan engine."""
@@ -76,6 +103,13 @@ class RestoreBuilder:
             for call in op_calls:
                 operation_id = call["operation_id"]
 
+                skipped = call.get("skipped")
+                if skipped:
+                    warnings.append(
+                        f"{facet.name}: not restorable (read-only/runtime/"
+                        f"secret-masked), skipping: {', '.join(skipped)}"
+                    )
+
                 risk = self.catalog.get_risk_level(family, operation_id)
                 if risk == "dangerous":
                     warnings.append(
@@ -83,15 +117,32 @@ class RestoreBuilder:
                         f"{operation_id} is dangerous — will require confirmation"
                     )
 
-                steps.append(
-                    {
-                        "operation_id": operation_id,
-                        "device_id": device_id,
-                        "params": call["params"],
-                        "description": f"Restore {facet.name} from {ref}",
-                    }
-                )
-                step_number += 1
+                if operation_id == "param.cgi:update":
+                    param_sets = _chunk_params(call["params"])
+                else:
+                    param_sets = [call["params"]]
+
+                total = len(param_sets)
+                for idx, chunk in enumerate(param_sets, 1):
+                    description = f"Restore {facet.name} from {ref}"
+                    if total > 1:
+                        description += f" ({idx}/{total})"
+                    steps.append(
+                        {
+                            "operation_id": operation_id,
+                            "device_id": device_id,
+                            "params": chunk,
+                            "description": description,
+                            # ADR-0034: a restore overwrites device config
+                            # wholesale — it must always stop at the approval
+                            # widget like a reboot, even though
+                            # param.cgi:update alone is catalog-risk
+                            # "normal". The engine treats this as a floor
+                            # (it can raise catalog risk, never lower it).
+                            "risk_level": "service-affecting",
+                        }
+                    )
+                    step_number += 1
 
         return {
             "description": f"Restore {device_id} to {ref}",
@@ -143,17 +194,35 @@ class RestoreBuilder:
                 continue
 
             for call in op_calls:
-                steps.append(
-                    {
-                        "operation_id": call["operation_id"],
-                        "device_id": device_id,
-                        "params": call["params"],
-                        "description": (
-                            f"Apply profile {profile_name}/{facet.name}"
-                        ),
-                    }
-                )
-                step_number += 1
+                skipped = call.get("skipped")
+                if skipped:
+                    warnings.append(
+                        f"{facet.name}: not restorable (read-only/runtime/"
+                        f"secret-masked), skipping: {', '.join(skipped)}"
+                    )
+
+                if call["operation_id"] == "param.cgi:update":
+                    param_sets = _chunk_params(call["params"])
+                else:
+                    param_sets = [call["params"]]
+
+                total = len(param_sets)
+                for idx, chunk in enumerate(param_sets, 1):
+                    description = f"Apply profile {profile_name}/{facet.name}"
+                    if total > 1:
+                        description += f" ({idx}/{total})"
+                    steps.append(
+                        {
+                            "operation_id": call["operation_id"],
+                            "device_id": device_id,
+                            "params": chunk,
+                            "description": description,
+                            # ADR-0034: bulk config overwrite — same widget
+                            # gate as a restore.
+                            "risk_level": "service-affecting",
+                        }
+                    )
+                    step_number += 1
 
         return {
             "description": f"Apply profile '{profile_name}' to {device_id}",

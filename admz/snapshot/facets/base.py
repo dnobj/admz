@@ -99,6 +99,45 @@ class FacetAdapter(ABC):
         ...
 
 
+# param.cgi returns this literal mask for password-class values. Restoring
+# it would overwrite the device's real secret with six asterisks.
+MASKED_SECRET = "******"
+
+
+def _matches_exclude(key: str, pattern: str) -> bool:
+    """Glob patterns ('I*.Source') match segment-wise — '*' never crosses
+    a dot, and the segment counts must agree, so 'I*.Source' matches
+    'I0.Source' but not 'I0.Overlay.Source'. Plain entries are prefix
+    matches ('NTP.', 'eth0.')."""
+    if "*" in pattern or "?" in pattern:
+        kseg, pseg = key.split("."), pattern.split(".")
+        return len(kseg) == len(pseg) and all(
+            fnmatch.fnmatchcase(k, p) for k, p in zip(kseg, pseg)
+        )
+    return key.startswith(pattern)
+
+
+def is_restorable(key: str, value: Any, exclude: tuple = ()) -> bool:
+    """Whether a serialized param may be written back during a restore.
+
+    Skips, in order:
+      * masked secrets (see MASKED_SECRET),
+      * ``Volatile*`` segments — Axis convention for runtime values the
+        system manages (e.g. Time.NTP.VolatileServer,
+        Network.VolatileHostName.*),
+      * per-facet ``exclude`` entries (read-only mirrors, structural
+        constants, live interface state, ...) — see _matches_exclude.
+
+    Everything skipped here is still *serialized* — drift on these keys is
+    real, observable change — it just can't be reverted via param.cgi.
+    """
+    if str(value) == MASKED_SECRET:
+        return False
+    if any(seg.startswith("Volatile") for seg in key.split(".")):
+        return False
+    return not any(_matches_exclude(key, p) for p in exclude)
+
+
 class SimpleParamFacet(FacetAdapter):
     """Base class for facets that filter a single param.cgi prefix and round-trip
     cleanly via param.cgi:update. Subclasses just declare name, prefix,
@@ -107,6 +146,9 @@ class SimpleParamFacet(FacetAdapter):
     PREFIX: str = ""
     NAME: str = ""
     RESTORE_ORDER: int = 50
+    #: Short-key prefixes (sans PREFIX) that must not be written back on
+    #: restore — read-only mirrors and runtime state. See is_restorable().
+    RESTORE_EXCLUDE: tuple = ()
     APPLIES_TO: List[DeviceCriteria] = [DeviceCriteria(families=["vapix"])]
 
     @property
@@ -140,9 +182,22 @@ class SimpleParamFacet(FacetAdapter):
 
     def deserialize(self, yaml_doc: Dict[str, Any]) -> List[Dict[str, Any]]:
         params = {}
+        skipped = []
         for key, value in yaml_doc.items():
+            if not is_restorable(key, value, self.RESTORE_EXCLUDE):
+                skipped.append(key)
+                continue
             params[f"{self.PREFIX}{key}"] = str(value)
-        return [{"operation_id": "param.cgi:update", "params": params}]
+        if not params:
+            return []
+        call: Dict[str, Any] = {
+            "operation_id": "param.cgi:update",
+            "params": params,
+        }
+        if skipped:
+            # Surfaced as plan warnings by the restore builder.
+            call["skipped"] = sorted(skipped)
+        return [call]
 
 
 _registry: List[Type[FacetAdapter]] = []

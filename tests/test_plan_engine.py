@@ -627,3 +627,93 @@ class TestContinuePolicyRunsDependents:
         assert len(executor.calls) == 1
         results_by_op = {r.operation_id: r for r in result.results}
         assert "dependency" in results_by_op["param.cgi:update"].error.lower()
+
+
+# ---------------------------------------------------------------------------
+# ADR-0034: per-step risk_level floor (raise-only)
+# ---------------------------------------------------------------------------
+
+
+class TestStepRiskFloor:
+    """A step dict may declare a risk_level that RAISES the catalog risk —
+    restore plans mark every step service-affecting so the plan-level gate
+    always yields the approval widget, even though param.cgi:update alone
+    is catalog-risk 'normal'. The declared level can never LOWER the
+    catalog risk (no self-degating), and unknown strings are ignored."""
+
+    def test_declared_risk_raises_catalog_risk(self, setup):
+        engine, _, _, _ = setup
+        plan = engine.create_plan(
+            description="Restore-style step",
+            steps=[{
+                "operation_id": "param.cgi:update",   # catalog: normal
+                "device_id": "cam-01",
+                "params": {"root.Image.I0.Compression": "30"},
+                "risk_level": "service-affecting",
+            }],
+        )
+        assert plan.steps[0].risk_level == "service-affecting"
+        assert plan.risk_summary == {"service-affecting": 1}
+
+    def test_declared_risk_cannot_lower_catalog_risk(self):
+        catalog = FakeCatalog(
+            ops={"factorydefault.cgi:reset": make_dangerous_op(
+                "factorydefault.cgi:reset"
+            )},
+        )
+        registry = FakeRegistry(
+            devices={"cam-01": {"host": "192.168.1.10"}}
+        )
+        engine = PlanEngine(
+            catalog=catalog, registry=registry,
+            executors={"vapix": RecordingExecutor()},
+        )
+        plan = engine.create_plan(
+            description="No self-degating",
+            steps=[{
+                "operation_id": "factorydefault.cgi:reset",
+                "device_id": "cam-01",
+                "params": {},
+                "risk_level": "read-only",            # ignored: lower
+            }],
+        )
+        assert plan.steps[0].risk_level == "dangerous"
+
+    def test_unknown_declared_risk_is_ignored(self, setup):
+        engine, _, _, _ = setup
+        plan = engine.create_plan(
+            description="Bogus declared risk",
+            steps=[{
+                "operation_id": "param.cgi:update",
+                "device_id": "cam-01",
+                "params": {},
+                "risk_level": "super-dangerous",      # not a real level
+            }],
+        )
+        assert plan.steps[0].risk_level == "normal"
+
+    @pytest.mark.asyncio
+    async def test_raised_risk_blocks_at_plan_gate(self, setup, monkeypatch):
+        """The end-to-end property the floor exists for: a restore-style
+        plan (all steps catalog-'normal' but declared service-affecting)
+        must return the url_only blocked envelope, not run."""
+        from admz import operations
+        monkeypatch.setattr(operations, "resolve_confirmation", _default_levels)
+        engine, executor, _, _ = setup
+        plan = engine.create_plan(
+            description="Restore cam-01 to baseline",
+            steps=[{
+                "operation_id": "param.cgi:update",
+                "device_id": "cam-01",
+                "params": {"root.IOPort.I0.Input.Name": "Port 1"},
+                "risk_level": "service-affecting",
+            }],
+        )
+        store = _FakeStore()
+        result = await operations.execute_gated_plan(
+            engine, plan.plan_id, store=store
+        )
+        assert result["blocked"] is True
+        assert result["confirmation_level"] == "url_only"
+        assert executor.calls == []           # nothing ran pre-approval
+        assert store.created                  # widget session was made

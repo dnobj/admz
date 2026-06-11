@@ -21,6 +21,15 @@ from admz.plans.models import (
 
 logger = logging.getLogger(__name__)
 
+# Severity order for risk levels — used to honor a step dict's declared
+# risk_level as a floor over the catalog's (raise-only).
+_RISK_ORDER = {
+    "read-only": 0,
+    "normal": 1,
+    "service-affecting": 2,
+    "dangerous": 3,
+}
+
 
 class PlanEngine:
     """
@@ -62,6 +71,12 @@ class PlanEngine:
                 - description: str (optional)
                 - depends_on: list of step numbers (optional)
                 - family: str (default "vapix")
+                - risk_level: str (optional) — a floor over the catalog's
+                  risk for this operation. It can only RAISE the risk
+                  (ADR-0034: restore plans mark every step
+                  service-affecting so the plan always gates at the
+                  approval widget); a declared level below the catalog's
+                  is ignored.
             on_failure: "stop" | "skip_dependents" | "continue"
             created_by: Who created the plan.
 
@@ -92,6 +107,14 @@ class PlanEngine:
                 risk_level = "normal"
             else:
                 risk_level = operation.risk_level
+
+            # Raise-only risk floor (ADR-0034): a declared per-step
+            # risk_level can escalate the catalog risk so the plan-level
+            # confirmation gate engages, but can never soften it. Unknown
+            # strings rank -1 and are ignored.
+            declared = str(step_data.get("risk_level", "") or "")
+            if _RISK_ORDER.get(declared, -1) > _RISK_ORDER.get(risk_level, 0):
+                risk_level = declared
 
             # Validate device exists in registry
             if not self.registry.device_exists(device_id):

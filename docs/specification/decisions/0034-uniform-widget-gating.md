@@ -42,6 +42,17 @@ widget path:
   blocks url_*-level plans with a confirm session (cross-process via
   `plan_steps_json`, C-1) and approval runs the plan. Removing the flat
   refusal simply lets callers reach that gate.
+  - *Live-verification addendum (2026-06-11):* the plan gate alone was
+    NOT enough for restores — `param.cgi:update` is catalog-risk
+    "normal", so a whole-config restore plan resolved to level "none"
+    and ran ungated. Fixed with a **raise-only per-step risk floor**:
+    `RestoreBuilder` declares `risk_level: "service-affecting"` on every
+    step, and `PlanEngine.create_plan` honors a declared step risk only
+    when it is *higher* than the catalog's (a declared lower risk is
+    ignored — plan authors cannot de-gate). The same live pass added
+    restore-safety filtering (masked secrets, `Volatile*`, per-facet
+    protected-param excludes) and URI-budget chunking — see
+    drift-detection FR-BAS-005 / KL-DRF-005.
 - **`accept_baseline` / `delete_device`** — these are *registry actions*,
   not catalog operations, so the per-op gate couldn't hold them. New
   **action sessions**: a nullable `action_json` column on
@@ -96,8 +107,18 @@ asymmetry with the reboot flow remains.
   `_ACTION_EXECUTORS`, `execute_approved_session`),
   `admz/api/confirm_store.py` (`action_json`, `is_action`),
   `admz/mcp/server.py` (`_accept_baseline`, `_delete_device`,
-  `_DESTRUCTIVE_MCP_TOOLS`), `admz/chatbot/system_prompt.py`
+  `_DESTRUCTIVE_MCP_TOOLS`), `admz/chatbot/system_prompt.py`,
+  `admz/plans/engine.py` (`_RISK_ORDER`, the raise-only step-risk floor),
+  `admz/snapshot/restore.py` (step risk + `_chunk_params`),
+  `admz/snapshot/facets/base.py` (`is_restorable`, `RESTORE_EXCLUDE`)
 - Tests: `tests/test_mcp_destructive_gate.py` (rewritten to pin the widget
-  semantics)
+  semantics), `tests/test_plan_engine.py::TestStepRiskFloor`,
+  `tests/test_snapshot.py::TestRestoreSafety`
 - Requirements: [mcp-server.md](../requirements/mcp-server.md),
-  [drift-detection.md](../requirements/drift-detection.md) FR-BAS-004
+  [drift-detection.md](../requirements/drift-detection.md) FR-BAS-004,
+  FR-BAS-005, KL-DRF-005
+- Live verification (2026-06-11, P3288-LVE): drifted `ioport.I0.Input.Name
+  "Port 1 TEMP"` → restore via chat-equivalent flow produced the url_only
+  widget; approval executed the 14-step chunked plan; the marker reverted
+  and ioport drift cleared. Residual drift was exactly the documented
+  non-restorable set (live-only ACS stream profiles, read-only NTP mirror).
