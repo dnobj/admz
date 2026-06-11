@@ -16,6 +16,19 @@ What we **do not** do:
 Schedules can call :func:`run_gc` periodically to keep loose
 object overhead bounded. The default is **off** — operators
 explicitly enable via the ``snapshot_gc_enabled`` fleet setting.
+
+Retention of audit observations (ADR-0031 slice 4): every commit in
+the config repo is an ancestor of HEAD, so old observations are never
+git-unreachable — "thinning" them would require history rewriting,
+which is exactly what this module refuses to automate (it would also
+silently invalidate any device's pinned ``baseline_sha``). The decided
+posture: observations are **append-only**; growth is bounded by
+commit-on-change (an unchanged device records nothing) and pack-only
+gc; :func:`commit_intent_stats` gives operators visibility into how
+much of the history is audits vs snapshots. If a repo ever genuinely
+outgrows its disk, compaction is a documented, human-led operation
+(archive the repo, re-init from current state, re-snapshot to
+establish fresh baselines) — never an automatic one.
 """
 
 from __future__ import annotations
@@ -138,6 +151,37 @@ def get_repo_stats(repo: GitRepo) -> RepoStats:
         oldest_commit_iso=oldest_iso,
         newest_commit_iso=newest_iso,
     )
+
+
+def commit_intent_stats(repo: GitRepo) -> Dict[str, int]:
+    """Count config-repo commits by intent prefix (ADR-0031).
+
+    Commit messages carry intent — ``Audit:`` (observation recorded by a
+    drift check), ``Snapshot``/``Fleet snapshot``/``Baseline:`` (explicit
+    captures), anything else (e.g. operator commits) is ``other``. Gives
+    operators a growth picture: a large ``audit`` share is normal and
+    cheap (commit-on-change means each one represents a real change).
+    """
+    counts = {"audit": 0, "snapshot": 0, "baseline": 0, "other": 0}
+    try:
+        result = repo._run_git("log", "--pretty=format:%s", check=False)
+        if result.returncode != 0:
+            return counts
+        for subject in result.stdout.splitlines():
+            s = subject.strip()
+            if not s:
+                continue
+            if s.startswith("Audit:"):
+                counts["audit"] += 1
+            elif s.startswith("Baseline"):
+                counts["baseline"] += 1
+            elif s.startswith(("Snapshot", "Fleet snapshot", "Scheduled:")):
+                counts["snapshot"] += 1
+            else:
+                counts["other"] += 1
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("commit_intent_stats: git log failed: %s", exc)
+    return counts
 
 
 def run_gc(repo: GitRepo, *, aggressive: bool = False) -> GcResult:

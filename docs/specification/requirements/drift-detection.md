@@ -201,6 +201,20 @@ the DB.
 A true push-based notifier (webhook, chat alert, Slack) is the
 next layer up — not in Phase 8.
 
+### KL-BAS-001 — Observation history is append-only ⚠️
+Audit observations accumulate in the config repo forever (ADR-0031
+slice 4 decision). Automated "thinning" of old observations was
+deliberately **rejected**: every commit is an ancestor of HEAD, so
+thinning means history rewriting — which would silently invalidate
+pinned `baseline_sha` pointers and violate the maintenance module's
+no-rewrite policy. Growth is bounded in practice by commit-on-change
+(an unchanged device records nothing) plus pack-only `git gc`
+(KL-SNP-004 tooling); `maintenance.commit_intent_stats` shows the
+audit/snapshot/baseline commit mix. If a repo genuinely outgrows its
+disk, compaction is a documented human-led operation (archive the
+repo, re-init from current state, re-snapshot fresh baselines) —
+never automatic.
+
 ## References
 
 - ADRs: [0012](../decisions/0012-snapshot-on-plans.md), [0014](../decisions/0014-config-in-git-creds-in-db.md), [0015](../decisions/0015-pluggable-facets.md), [0026](../decisions/0026-unified-job-scheduler.md)

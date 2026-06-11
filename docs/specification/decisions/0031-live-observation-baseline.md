@@ -1,7 +1,10 @@
 # ADR-0031: Live / Observation / Baseline — separating "what we saw" from "what we bless"
 
-**Status:** Accepted, in progress. Slice 1 (the baseline pointer) landed
-2026-06-11; observations, accept/revert, and retention follow as slices 2–4.
+**Status:** Accepted, in production. All four slices landed 2026-06-11:
+slice 1 (baseline pointer), slice 2 (audit observations), slice 3
+(`accept_baseline`; revert = `restore_device` with `ref` omitted — no
+separate tool), slice 4 (retention posture: append-only, automated
+thinning rejected).
 **Date:** 2026-06-11.
 **Relates to:** ADR-0014 (config in git, creds in DB), ADR-0012 (snapshot on
 plans), ADR-0013 (hybrid YAML + raw), ADR-0026 (unified job scheduler).
@@ -83,9 +86,14 @@ pointer yet, so existing baselines aren't orphaned.
   of "baseline".
 
 **Negative:**
-- Recording every audit grows git history. Mitigated by commit-on-change
-  (stable devices add nothing) and a retention pass (slice 4) that never
-  prunes a baseline commit and thins old observations.
+- Recording every audit grows git history — and it is **append-only**
+  (slice 4 decision, KL-BAS-001): automated thinning was rejected because
+  every commit is reachable from HEAD, so thinning means history rewriting,
+  which would invalidate pinned `baseline_sha` pointers and violate the
+  maintenance module's no-rewrite policy. Mitigations: commit-on-change
+  (stable devices add nothing), pack-only `git gc`, and
+  `maintenance.commit_intent_stats` for growth visibility; extreme cases
+  use a documented human-led compaction (archive + re-init + re-baseline).
 - One more migration on the `devices` table (three nullable columns) — cheap
   via the existing `_apply_device_extra_columns` idempotent ALTER.
 
