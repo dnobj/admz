@@ -76,9 +76,11 @@ _VOICE_PROMPT_NOTE = (
     "read out long MAC addresses, tokens, or URLs unless asked. You have the "
     "full ADMZ tool surface: use it to answer questions about the live fleet "
     "and to make changes. If a tool result comes back `blocked` (a "
-    "service-affecting or dangerous operation needs web confirmation), tell "
-    "the user out loud that it needs approval in the ADMZ web UI and stop — "
-    "you cannot approve it yourself."
+    "service-affecting or dangerous operation needs web confirmation), an "
+    "**approval card appears on the user's screen automatically** — say one "
+    "short sentence like 'I've put an approval up on screen — approve it there "
+    "and I'll continue.' Do NOT read out the URL or the token; just point them "
+    "to the on-screen card. You cannot approve it yourself."
 )
 
 
@@ -265,6 +267,10 @@ class VoiceSession:
                             "type": "tool_result", "name": fc.name,
                             "blocked": bool(result.get("blocked")),
                             "success": result.get("success"),
+                            # Surface the confirm token so the browser can show
+                            # the same approval card the text chat uses, instead
+                            # of the model reading the URL aloud.
+                            "confirm_token": result.get("confirm_token"),
                         }
                     continue
 

@@ -182,6 +182,15 @@
         setStatus("⚙ " + m.name + "…", true);
         appendTool(m.name);
         break;
+      case "tool_result":
+        // A gated op came back blocked — render the same on-screen approval
+        // card the text chat uses (instead of the model reading the URL aloud).
+        if (m.blocked && m.confirm_token && window.admzRenderApprovalCard) {
+          ensureTranscriptVisible();
+          window.admzRenderApprovalCard(m.confirm_token);
+          if (transcript) transcript.scrollIntoView({ block: "end" });
+        }
+        break;
       case "turn_complete":
         userBubble = null;
         asstBubble = null;

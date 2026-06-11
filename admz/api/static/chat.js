@@ -705,4 +705,22 @@
     pinnedActions.delete(key);
     hideActionsContainerIfEmpty();
   }
+
+  // Expose the approval/capture cards so voice mode (voice.js) can render the
+  // same inline confirmation widget instead of having the model read the
+  // /confirm URL aloud. Idempotent per token (skips if a card already exists).
+  window.admzRenderApprovalCard = function (token) {
+    if (!token) return;
+    if (transcript.querySelector('.approval-card[data-confirm-token="' + token + '"]')) return;
+    renderApprovalCard(token);
+    addPinnedAction("confirm", token);
+    icons();
+  };
+  window.admzRenderCaptureCard = function (token) {
+    if (!token) return;
+    if (transcript.querySelector('.capture-card[data-capture-token="' + token + '"]')) return;
+    renderCaptureCard(token);
+    addPinnedAction("capture", token);
+    icons();
+  };
 })();
