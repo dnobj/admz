@@ -17,7 +17,8 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ async def voice_models():
     from admz.chatbot.config import get_chatbot_config
     from admz.chatbot.voice import (
         VOICE_MODELS, DEFAULT_VOICE_MODEL, VOICE_NAMES, DEFAULT_VOICE_NAME,
-        voice_available,
+        STT_MODELS, DEFAULT_STT_MODEL, voice_available,
     )
 
     return {
@@ -38,7 +39,45 @@ async def voice_models():
         "models": VOICE_MODELS,
         "voices": VOICE_NAMES,
         "default_voice": DEFAULT_VOICE_NAME,
+        "stt_models": STT_MODELS,
+        "default_stt_model": DEFAULT_STT_MODEL,
     }
+
+
+@router.post("/api/chat/voice/transcribe", tags=["voice"])
+async def voice_transcribe(request: Request):
+    """Dictate mode: raw 16 kHz PCM body in → ``{transcript}`` out.
+
+    Query params: ``model`` (STT model) and ``rate`` (sample rate, default
+    16000). The browser submits the returned transcript to the normal text
+    chat, so tools + the approval widget apply unchanged.
+    """
+    from admz.chatbot.config import get_chatbot_config
+    from admz.chatbot.voice import transcribe_audio, voice_available
+
+    config = get_chatbot_config()
+    if not voice_available(config):
+        return JSONResponse(status_code=400, content={"error": "Voice is not configured."})
+
+    audio = await request.body()
+    if not audio:
+        return JSONResponse(status_code=400, content={"error": "No audio received."})
+
+    model = request.query_params.get("model")
+    try:
+        rate = int(request.query_params.get("rate", "16000"))
+    except (TypeError, ValueError):
+        rate = 16000
+
+    try:
+        text = await transcribe_audio(
+            api_key=config.api_key, audio=audio, model=model, sample_rate=rate
+        )
+    except Exception as exc:
+        logger.warning("Dictate transcription failed: %s", exc)
+        return JSONResponse(status_code=502, content={"error": "Transcription failed."})
+
+    return {"transcript": text}
 
 
 async def _ws_principal(websocket: WebSocket):

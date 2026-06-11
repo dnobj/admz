@@ -26,6 +26,30 @@ testing. (Discovering the right model names matters: an earlier guess
 listing the API's models is the reliable way — `client.models.list()` filtered
 to `bidiGenerateContent`.)
 
+## Two modes: Realtime vs Dictate
+
+The **mode** dropdown in the composer picks how the mic is used:
+
+- **🎙 Realtime** — the continuous, conversational **Live API** (everything
+  described above): stream audio, hear spoken replies, barge-in. Uses the
+  native-audio / `flash-live` models + a prebuilt **Voice**.
+- **✍ Dictate** — one-shot, non-realtime. Click the mic, **speak a request,
+  click again**; the clip is transcribed (STT) and dropped into the chat box +
+  submitted as a normal **text** turn. The reply stays **text on screen** (no
+  spoken output). Because it's just the text chat, the **inline approval
+  widget, tool cards, and full tool loop work unchanged**. The transcription
+  model is selectable (`gemini-2.5-flash` default; also `…-flash-lite`,
+  `…-pro`) via the dictate-model dropdown.
+
+  Server: `POST /api/chat/voice/transcribe` (raw 16 kHz PCM body → `{transcript}`).
+  Note: raw PCM is wrapped in a WAV container before transcription —
+  `generate_content` hallucinates on bare PCM but reads WAV cleanly
+  (`admz/chatbot/voice.py::_pcm_to_wav`).
+
+Use Realtime for a hands-free back-and-forth; use Dictate when you want the
+reliability of the text chat (and the on-screen approval card) but would rather
+talk than type.
+
 ## Real-time behavior: continuous streaming + barge-in
 
 The browser streams mic PCM continuously (not push-to-talk); Gemini's

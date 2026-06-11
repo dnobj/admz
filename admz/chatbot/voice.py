@@ -66,6 +66,69 @@ def resolve_voice_name(voice: Optional[str]) -> str:
     return voice if voice in VOICE_NAMES else DEFAULT_VOICE_NAME
 
 
+# --------------------------------------------------------------------------
+# One-shot "dictate" mode: transcribe a recorded clip with a non-realtime
+# multimodal model, then submit the text to the normal text chat (so the full
+# tool loop + the inline approval widget apply, unchanged). Speech-to-text only
+# — no spoken reply.
+# --------------------------------------------------------------------------
+
+STT_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"]
+DEFAULT_STT_MODEL = "gemini-2.5-flash"
+
+
+def resolve_stt_model(model: Optional[str]) -> str:
+    return model if model in STT_MODELS else DEFAULT_STT_MODEL
+
+
+def _pcm_to_wav(pcm: bytes, sample_rate: int) -> bytes:
+    """Wrap raw little-endian 16-bit mono PCM in a minimal WAV container.
+
+    One-shot ``generate_content`` transcription is unreliable on *raw* PCM
+    bytes (it hallucinates), but transcribes a proper WAV cleanly. The mic
+    worklet emits little-endian Int16, which is exactly WAV's PCM byte order.
+    """
+    import struct
+
+    ds = len(pcm)
+    return (
+        b"RIFF" + struct.pack("<I", 36 + ds) + b"WAVE"
+        + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, sample_rate, sample_rate * 2, 2, 16)
+        + b"data" + struct.pack("<I", ds) + pcm
+    )
+
+
+async def transcribe_audio(
+    *,
+    api_key: str,
+    audio: bytes,
+    model: Optional[str] = None,
+    sample_rate: int = 16000,
+) -> str:
+    """Transcribe 16-bit mono PCM to text via a multimodal model.
+
+    Used by dictate mode. The PCM is wrapped in a WAV container first (raw PCM
+    transcribes unreliably). Returns the transcript text (empty on no speech).
+    """
+    from google import genai
+    from google.genai import types
+
+    wav = _pcm_to_wav(audio, int(sample_rate))
+    client = genai.Client(api_key=api_key)
+    resp = await client.aio.models.generate_content(
+        model=resolve_stt_model(model),
+        contents=[
+            types.Part.from_bytes(data=wav, mime_type="audio/wav"),
+            types.Part(text=(
+                "Transcribe the spoken audio to text verbatim. Reply with ONLY "
+                "the transcript — no quotes, no commentary, no preamble. If "
+                "there is no clear speech, reply with an empty string."
+            )),
+        ],
+    )
+    return (getattr(resp, "text", "") or "").strip()
+
+
 INPUT_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
 INPUT_MIME = f"audio/pcm;rate={INPUT_SAMPLE_RATE}"

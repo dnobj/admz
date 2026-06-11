@@ -16,8 +16,14 @@
   const statusEl = document.getElementById("voice-status");
   const modelSel = document.getElementById("voice-model");
   const voiceSel = document.getElementById("voice-name");
+  const modeSel = document.getElementById("voice-mode");
+  const sttSel = document.getElementById("stt-model");
   const transcript = document.getElementById("chat-transcript");
   const emptyEl = document.getElementById("chat-empty");
+
+  function currentMode() {
+    return modeSel && modeSel.value ? modeSel.value : "realtime";
+  }
 
   const WS_BASE =
     (location.protocol === "https:" ? "wss://" : "ws://") +
@@ -32,6 +38,7 @@
   let playCtx = null,
     playHead = 0;
   let activeSources = []; // scheduled audio chunks, for barge-in interruption
+  let dictateChunks = []; // accumulated PCM frames for one-shot dictation
   let active = false;
   let listeningLabel = "Listening…";
   let userBubble = null,
@@ -62,9 +69,27 @@
             voiceSel.appendChild(opt);
           });
         }
+        if (sttSel) {
+          sttSel.innerHTML = "";
+          (d.stt_models || []).forEach((m) => {
+            const opt = document.createElement("option");
+            opt.value = m;
+            opt.textContent = m.replace("gemini-", "");
+            if (m === d.default_stt_model) opt.selected = true;
+            sttSel.appendChild(opt);
+          });
+        }
       })
       .catch(() => {});
   }
+
+  // Show the dropdowns relevant to the selected mode.
+  function syncModeUI() {
+    const dict = currentMode() === "dictate";
+    [modelSel, voiceSel].forEach((el) => { if (el) el.style.display = dict ? "none" : ""; });
+    if (sttSel) sttSel.style.display = dict ? "" : "none";
+  }
+  if (modeSel) { modeSel.addEventListener("change", syncModeUI); syncModeUI(); }
 
   function setStatus(text, recording) {
     active = !!recording;
@@ -202,6 +227,33 @@
     }
   }
 
+  // Mic capture at 16 kHz; each PCM frame goes to onFrame (shared by both modes).
+  async function setupMic(onFrame) {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
+    micCtx = new (window.AudioContext || window.webkitAudioContext)({
+      sampleRate: 16000,
+    });
+    await micCtx.audioWorklet.addModule("/static/voice-worklet.js");
+    const src = micCtx.createMediaStreamSource(micStream);
+    micNode = new AudioWorkletNode(micCtx, "pcm-capture");
+    micNode.port.onmessage = (e) => onFrame(e.data);
+    src.connect(micNode);
+    // A muted sink keeps the worklet's process() pumping.
+    micSink = micCtx.createGain();
+    micSink.gain.value = 0;
+    micNode.connect(micSink);
+    micSink.connect(micCtx.destination);
+  }
+
+  function teardownMic() {
+    try { if (micStream) micStream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+    try { if (micCtx) micCtx.close(); } catch (e) {}
+    micCtx = micNode = micStream = micSink = null;
+  }
+
+  // ---- realtime (Live API) --------------------------------------------
   async function start() {
     setStatus("Connecting…", true);
     activeSources = [];
@@ -218,65 +270,85 @@
       ws.onopen = res;
       ws.addEventListener("error", rej, { once: true });
     });
-
-    // Playback context (model speaks at 24 kHz).
     playCtx = new (window.AudioContext || window.webkitAudioContext)({
       sampleRate: 24000,
     });
     playHead = playCtx.currentTime;
-
-    // Mic capture context at 16 kHz (browser resamples the mic for us).
-    micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
-    });
-    micCtx = new (window.AudioContext || window.webkitAudioContext)({
-      sampleRate: 16000,
-    });
-    await micCtx.audioWorklet.addModule("/static/voice-worklet.js");
-    const src = micCtx.createMediaStreamSource(micStream);
-    micNode = new AudioWorkletNode(micCtx, "pcm-capture");
-    micNode.port.onmessage = (e) => {
-      if (ws && ws.readyState === 1) ws.send(e.data);
-    };
-    src.connect(micNode);
-    // A muted sink keeps the worklet's process() pumping.
-    micSink = micCtx.createGain();
-    micSink.gain.value = 0;
-    micNode.connect(micSink);
-    micSink.connect(micCtx.destination);
-
+    await setupMic((data) => { if (ws && ws.readyState === 1) ws.send(data); });
     setStatus("Listening… (click mic to stop)", true);
   }
 
   function stop(fromClose) {
     setStatus("", false);
     stopPlayback();
-    try {
-      if (micStream) micStream.getTracks().forEach((t) => t.stop());
-    } catch (e) {}
-    try {
-      if (micCtx) micCtx.close();
-    } catch (e) {}
-    try {
-      if (playCtx) playCtx.close();
-    } catch (e) {}
+    teardownMic();
+    try { if (playCtx) playCtx.close(); } catch (e) {}
     if (!fromClose && ws && ws.readyState === 1) {
-      try {
-        ws.close();
-      } catch (e) {}
+      try { ws.close(); } catch (e) {}
     }
-    ws = micCtx = playCtx = micNode = micStream = micSink = null;
+    ws = playCtx = null;
     userBubble = asstBubble = null;
   }
 
+  // ---- dictate (one-shot STT → text chat) -----------------------------
+  async function startDictate() {
+    dictateChunks = [];
+    await setupMic((data) => { dictateChunks.push(new Int16Array(data)); });
+    setStatus("🎙 Recording — click mic again to transcribe", true);
+  }
+
+  async function stopDictate() {
+    teardownMic();
+    setStatus("Transcribing…", false);
+    let total = 0;
+    dictateChunks.forEach((c) => (total += c.length));
+    const merged = new Int16Array(total);
+    let off = 0;
+    dictateChunks.forEach((c) => { merged.set(c, off); off += c.length; });
+    dictateChunks = [];
+    if (total === 0) { setStatus("", false); return; }
+    const model = sttSel && sttSel.value ? sttSel.value : "";
+    const url =
+      "/api/chat/voice/transcribe?rate=16000" +
+      (model ? "&model=" + encodeURIComponent(model) : "");
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: merged.buffer,
+      });
+      const body = await resp.json();
+      const text = (body && body.transcript) || "";
+      setStatus("", false);
+      if (!text) { setStatus("(no speech detected)", false); return; }
+      // Hand the transcript to the normal text chat — tools + the approval
+      // widget apply unchanged.
+      const ta = document.getElementById("message");
+      const form = document.getElementById("chat-form");
+      if (ta) {
+        ta.value = text;
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      if (form && form.requestSubmit) form.requestSubmit();
+      else { const send = document.getElementById("chat-send"); if (send) send.click(); }
+    } catch (e) {
+      setStatus("Transcription failed: " + (e && e.message ? e.message : e), false);
+    }
+  }
+
   btn.addEventListener("click", async () => {
-    if (active) {
-      stop(false);
+    if (currentMode() === "dictate") {
+      if (active) { await stopDictate(); return; }
+      try { await startDictate(); }
+      catch (e) {
+        setStatus("", false); teardownMic();
+        setStatus("Mic unavailable: " + (e && e.message ? e.message : e), false);
+      }
       return;
     }
-    try {
-      await start();
-    } catch (e) {
+    if (active) { stop(false); return; }
+    try { await start(); }
+    catch (e) {
       stop(true);
       setStatus("Voice unavailable: " + (e && e.message ? e.message : e), false);
     }
