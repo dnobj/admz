@@ -326,6 +326,46 @@ class ApiKeyAuth(AuthBackend):
         )
 
 
+class SessionAuth(AuthBackend):
+    """Authenticates browser requests via the ``admz_session`` cookie.
+
+    The session is minted by the ``/login`` flow (ADR-0033: Windows
+    credentials validated in-process via ``LogonUserW``) and stored
+    server-side (:mod:`admz.session_store`) — the cookie carries only a
+    random bearer token. Works for plain HTTP requests AND WebSocket
+    upgrades: both Starlette objects expose ``.cookies`` from the
+    handshake headers.
+    """
+
+    @classmethod
+    def from_env(cls) -> "SessionAuth":
+        return cls()
+
+    async def authenticate(self, request) -> Principal:
+        from admz.session_store import SESSION_COOKIE, get_session_store
+
+        token = (request.cookies or {}).get(SESSION_COOKIE, "")
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Not signed in.",
+            )
+        snapshot = get_session_store().resolve(token)
+        if snapshot is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session expired or revoked — sign in again.",
+            )
+        return Principal(
+            name=snapshot.name,
+            display_name=snapshot.display_name,
+            domain=snapshot.domain,
+            groups=list(snapshot.groups),
+            source=snapshot.source,
+            is_anonymous=False,
+        )
+
+
 class CompositeAuth(AuthBackend):
     """Try multiple backends in order; succeed if any succeeds.
 
@@ -347,10 +387,14 @@ class CompositeAuth(AuthBackend):
 
     @classmethod
     def from_env(cls) -> "CompositeAuth":
-        # Default composite: API key first, then Windows IWA.
-        # Operators can opt out of either side by selecting the bare
-        # ``api-key`` or ``windows`` backend instead.
-        return cls([ApiKeyAuth.from_env(), ReverseProxyAuth.from_env()])
+        # Default composite: API key first (explicit signal, cheap when
+        # absent), then session cookie (browser logins), then Windows IWA
+        # headers. Operators can opt out by selecting a bare backend.
+        return cls([
+            ApiKeyAuth.from_env(),
+            SessionAuth.from_env(),
+            ReverseProxyAuth.from_env(),
+        ])
 
     async def authenticate(self, request: Request) -> Principal:
         last_exc: Optional[HTTPException] = None
@@ -385,6 +429,11 @@ _EXEMPT_PATH_PREFIXES = (
     "/api/docs",
     "/api/redoc",
     "/api/openapi.json",
+    # The login flow must be reachable unauthenticated (it's where you
+    # BECOME authenticated). /logout is exempt so an expired session can
+    # still clear its cookie; the route reads the cookie itself.
+    "/login",
+    "/logout",
 )
 
 
@@ -403,7 +452,7 @@ def is_exempt(path: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-_VALID_BACKENDS = {"none", "windows", "api-key", "composite"}
+_VALID_BACKENDS = {"none", "windows", "api-key", "composite", "windows-local"}
 
 
 def _resolve_backend_name(env_value: Optional[str] = None) -> str:
@@ -443,6 +492,15 @@ def build_auth_backend(name: Optional[str] = None) -> AuthBackend:
             return ApiKeyAuth.from_env()
         if resolved == "composite":
             return CompositeAuth.from_env()
+        if resolved == "windows-local":
+            # ADR-0033: browsers sign in with Windows credentials at
+            # /login (LogonUserW) and carry a session cookie; agents
+            # keep Bearer API keys. No trusted-header backend in the
+            # chain, so no reverse proxy / bind restriction applies.
+            return CompositeAuth([
+                ApiKeyAuth.from_env(),
+                SessionAuth.from_env(),
+            ])
     except NameError:  # pragma: no cover — phase-gated
         logger.warning(
             "ADMZ_AUTH_BACKEND=%s requested but its implementation isn't "
@@ -516,11 +574,13 @@ async def auth_middleware(request: Request, call_next):
     so :func:`get_current_principal` can return it without re-running
     the backend.
 
-    On :class:`HTTPException` (typically 401), returns a JSON response
-    with the exception's headers (``WWW-Authenticate: Negotiate`` /
-    ``Bearer realm="ADMZ"``) so the browser knows to prompt.
+    On :class:`HTTPException` (typically 401): browser page loads (the
+    request prefers HTML and isn't an ``/api/`` call) are redirected to
+    the ``/login`` form with a ``next`` return path; API/agent requests
+    get the JSON 401 with the exception's headers
+    (``WWW-Authenticate: Negotiate`` / ``Bearer realm="ADMZ"``).
     """
-    from fastapi.responses import JSONResponse
+    from fastapi.responses import JSONResponse, RedirectResponse
 
     if is_exempt(request.url.path):
         return await call_next(request)
@@ -529,6 +589,18 @@ async def auth_middleware(request: Request, call_next):
     try:
         principal = await backend.authenticate(request)
     except HTTPException as exc:
+        path = request.url.path
+        accepts_html = "text/html" in request.headers.get("accept", "")
+        if (
+            exc.status_code == status.HTTP_401_UNAUTHORIZED
+            and accepts_html
+            and not path.startswith("/api/")
+        ):
+            from urllib.parse import quote
+            nxt = quote(path or "/", safe="/")
+            return RedirectResponse(
+                url=f"/login?next={nxt}", status_code=303
+            )
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": exc.detail},
@@ -545,6 +617,7 @@ __all__ = [
     "NoAuth",
     "ReverseProxyAuth",
     "ApiKeyAuth",
+    "SessionAuth",
     "CompositeAuth",
     "parse_windows_identity",
     "exempt_paths",

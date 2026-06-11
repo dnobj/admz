@@ -76,6 +76,13 @@
     </button>
     <button class="icon-btn" type="button" title="Notifications"><i data-lucide="bell"></i></button>
     <span class="avatar" title="{{ nav.principal.name or 'ADMZ operator' }}">{{ nav.principal.initials }}</span>
+    {% if nav.principal.name and nav.principal.name != 'anonymous' %}
+    <form method="POST" action="/logout" style="margin:0">
+      <button class="icon-btn" type="submit" title="Sign out {{ nav.principal.name }}">
+        <i data-lucide="log-out"></i>
+      </button>
+    </form>
+    {% endif %}
   </header>
 
   <!-- ── Body: sidebar + main + console dock ──────────────────────── -->
