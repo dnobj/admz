@@ -3,7 +3,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -356,3 +356,25 @@ class GitRepo:
         return sorted(
             d.name for d in fleet_dir.iterdir() if d.is_dir()
         )
+
+    def device_snapshot_status(self, device_id: str) -> Dict[str, Any]:
+        """Baseline + last-snapshot summary for one device.
+
+        Powers the Configuration roster. ``has_baseline`` is True when at
+        least one config facet is stored; ``last_snapshot`` is the ISO date
+        of the most recent commit touching the device's path (or None).
+        Reads the working tree (== HEAD after every snapshot commit),
+        matching :meth:`list_devices`.
+        """
+        cfg_dir = self.repo_path / "fleet" / device_id / "config"
+        facets = (
+            sorted(p.stem for p in cfg_dir.glob("*.yaml"))
+            if cfg_dir.is_dir()
+            else []
+        )
+        commits = self.log(path=f"fleet/{device_id}", max_count=1)
+        return {
+            "has_baseline": bool(facets),
+            "facets": facets,
+            "last_snapshot": commits[0]["date"] if commits else None,
+        }

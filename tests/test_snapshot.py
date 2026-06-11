@@ -266,6 +266,33 @@ class TestGitRepo:
         data = tmp_repo.read_facet("cam-01", "nonexistent")
         assert data is None
 
+    def test_device_snapshot_status_with_baseline(self, tmp_repo):
+        tmp_repo.write_facet("cam-01", "image", {"I0.Resolution": "1920x1080"})
+        tmp_repo.write_facet("cam-01", "network", {"Hostname": "cam-01"})
+        tmp_repo.commit_snapshot("cam-01", message="baseline")
+        status = tmp_repo.device_snapshot_status("cam-01")
+        assert status["has_baseline"] is True
+        assert status["facets"] == ["image", "network"]
+        assert status["last_snapshot"]  # ISO commit date present
+
+    def test_device_snapshot_status_no_baseline(self, tmp_repo, camera_device_info):
+        # Only device.yaml committed (the unreachable/auth-failed device case):
+        # identity exists but no config facets -> NOT a real baseline.
+        tmp_repo.write_device_yaml("cam-02", camera_device_info)
+        tmp_repo.commit_snapshot("cam-02")
+        status = tmp_repo.device_snapshot_status("cam-02")
+        assert status["has_baseline"] is False
+        assert status["facets"] == []
+        assert status["last_snapshot"]  # a commit exists, just no config
+
+    def test_device_snapshot_status_unknown_device(self, tmp_repo):
+        status = tmp_repo.device_snapshot_status("never-seen")
+        assert status == {
+            "has_baseline": False,
+            "facets": [],
+            "last_snapshot": None,
+        }
+
     def test_diff(self, tmp_repo):
         tmp_repo.write_facet("cam-01", "image", {"resolution": "1080p"})
         tmp_repo.commit_snapshot("cam-01", message="v1")

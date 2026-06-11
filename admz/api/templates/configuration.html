@@ -19,21 +19,31 @@
   <span class="page-sub" style="margin:0">is the everyday baseline. A branch is <em>main + a small set of intentional overrides</em> — never a full copy — so it inherits every change it doesn't pin. Switching a device or group to a branch is a service-affecting operation and passes the two-gate approval.</span>
 </div></div>
 
-{% if devices %}
+{% if rows %}
 <table class="data-table">
   <thead><tr><th>Device</th><th>Branch</th><th>Drift vs. baseline</th><th>Last snapshot</th><th></th></tr></thead>
   <tbody>
-    {% for d in devices %}
-    <tr onclick="window.location='/device/{{ d.device_id }}'">
+    {% for r in rows %}
+    <tr onclick="window.location='/device/{{ r.device_id }}'">
       <td>
         <div class="device-name-cell">
           <span class="type-tile"><i data-lucide="video"></i></span>
-          <div><div class="nm">{{ d.nickname or d.device_id }}</div><div class="sub">{{ d.model or '—' }}</div></div>
+          <div><div class="nm">{{ r.nickname or r.device_id }}</div><div class="sub">{{ r.model or '—' }}</div></div>
         </div>
       </td>
       <td><span class="mono">main</span></td>
-      <td><span class="drift-cell fg-grey"><span class="dot sem-grey"></span>No baseline</span></td>
-      <td class="mono">—</td>
+      <td>
+        {% if r.drift.state == 'in_sync' %}
+        <span class="drift-cell fg-green"><span class="dot sem-green"></span>In sync</span>
+        {% elif r.drift.state == 'drifted' %}
+        <span class="drift-cell fg-amber"><span class="dot sem-amber"></span>Drifted ({{ r.drift.count }} field{{ 's' if r.drift.count != 1 else '' }})</span>
+        {% elif r.drift.state == 'unchecked' %}
+        <span class="drift-cell fg-grey"><span class="dot sem-grey"></span>Baseline set · not checked</span>
+        {% else %}
+        <span class="drift-cell fg-grey"><span class="dot sem-grey"></span>No baseline</span>
+        {% endif %}
+      </td>
+      <td class="mono">{{ r.last_snapshot or '—' }}</td>
       <td style="text-align:right;color:var(--text-faint)"><i data-lucide="chevron-right"></i></td>
     </tr>
     {% endfor %}

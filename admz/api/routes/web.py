@@ -5,6 +5,7 @@ Web UI routes for device management.
 from fastapi import APIRouter, Request, Depends, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -15,6 +16,7 @@ from admz.exceptions import (
     BackendError,
 )
 from admz.device_registry import DeviceRegistry
+from admz.api.context import AppContext, get_context
 from admz.fleet_settings import fleet_settings
 from admz.api.confirm_store import (
     get_confirmation_level,
@@ -644,25 +646,69 @@ async def schedules_page(request: Request):
     )
 
 
+def _fmt_snapshot_date(iso: Optional[str]) -> Optional[str]:
+    """Render a git ISO commit date as a compact 'YYYY-MM-DD HH:MM'."""
+    if not iso:
+        return None
+    try:
+        return datetime.fromisoformat(iso).strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return iso[:16].replace("T", " ")
+
+
 @router.get("/configuration", response_class=HTMLResponse)
 async def configuration_page(
     request: Request,
-    registry: DeviceRegistry = Depends(get_registry),
+    ctx: AppContext = Depends(get_context),
 ):
     """Configuration / drift — per-device baseline + branch state.
 
-    v1 surfaces the active-branch indicator and a per-device drift roster.
-    The per-facet ConfigDiff + reconcile/rebase flow attaches here once a
-    device has a baseline (see the architecture note).
+    Builds a per-device roster from the git config repo (baseline presence
+    + last-snapshot date) and the drift-alert store (last-known drift state,
+    so the page never live-probes devices on load).
     """
     try:
-        devices = registry.list_devices()
+        devices = ctx.registry.list_devices()
         devices.sort(key=lambda d: d.get("nickname") or d.get("device_id", ""))
     except Exception:
         devices = []
+
+    from admz.snapshot.drift_alerts import drift_alerts as _drift_store
+
+    rows = []
+    for d in devices:
+        did = d.get("device_id", "")
+        try:
+            status = ctx.git_repo.device_snapshot_status(did)
+        except Exception:
+            status = {"has_baseline": False, "facets": [], "last_snapshot": None}
+
+        if not status["has_baseline"]:
+            drift = {"state": "none"}
+        else:
+            try:
+                sig = _drift_store.get_last_signature(did)
+            except Exception:
+                sig = None
+            if sig is None:
+                drift = {"state": "unchecked"}
+            elif (sig.get("field_count") or 0) == 0:
+                drift = {"state": "in_sync"}
+            else:
+                drift = {"state": "drifted", "count": sig["field_count"]}
+
+        rows.append({
+            "device_id": did,
+            "nickname": d.get("nickname"),
+            "model": d.get("model"),
+            "facet_count": len(status["facets"]),
+            "last_snapshot": _fmt_snapshot_date(status["last_snapshot"]),
+            "drift": drift,
+        })
+
     return templates.TemplateResponse(
         "configuration.html",
-        {"request": request, "title": "Configuration", "devices": devices},
+        {"request": request, "title": "Configuration", "rows": rows},
     )
 
 
