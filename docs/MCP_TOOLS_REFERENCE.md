@@ -343,12 +343,16 @@ Show config changes for a device between two refs.
 
 ### `check_drift`
 Compare a device's live state against its **baseline** (`baseline_sha`), not
-git HEAD (ADR-0031).
+git HEAD (ADR-0031). Each check also **records what it observed** into the git
+config repo as an `Audit:` commit (commit-on-change — an unchanged device
+records nothing new) and advances the device's `latest_observed_sha`; an audit
+never moves the baseline pointer.
 - **Args:** `device_id` (optional — if omitted, scans whole fleet),
   `tag_filter` (string, optional)
 - **Returns:** single device: `{success, device_id, has_drift, no_baseline,
-  facets_checked, facets_drifted, drifted_fields}` (`no_baseline=true` when the
-  device has no blessed baseline yet — that is *not* "in sync")
+  observed_sha, facets_checked, facets_drifted, drifted_fields}`
+  (`no_baseline=true` when the device has no blessed baseline yet — that is
+  *not* "in sync"; the observation is still recorded and promotable later)
 - Returns fleet: `{success, count, drifted, reports: [...]}`
 
 ### `get_drift_alerts`

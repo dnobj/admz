@@ -45,6 +45,20 @@ successful capture ("this state is good now"). `RestoreBuilder` and the
 explicit ref still overrides). Accept/promote + revert-to-baseline are
 slice 3.
 
+### FR-BAS-003 — Audits record observations ✅
+Every `check_drift` probes the device once and records what it observed
+into the git config repo as an `Audit: <device_id>` commit
+(commit-on-change — an unchanged device records nothing new; the commit
+skips the auto-push so frequent audits don't churn the remote). The
+observation advances `latest_observed_sha`/`last_observed_at` but NEVER
+`baseline_sha`. Observations are recorded even for devices with no
+baseline yet — they're promotable later. The drift diff then runs
+observation-vs-baseline, and the report carries `observed_sha` plus the
+alert transition (if any) so schedulers don't re-process the alert
+store. Registry-managed pointer fields are excluded from the committed
+`device.yaml` (they're DB state *about* the repo; writing them back
+would defeat commit-on-change).
+
 ### FR-DRF-003 — Field-level diffing via flatten ✅
 Both stored and live facet outputs are flattened to dotted-key
 strings (`network.dns.servers.0 = "8.8.8.8"`), which gives stable
@@ -63,11 +77,12 @@ across many devices concurrently — each compared against **its own**
 baseline — bounded by the same fleet semaphore as snapshot (FR-SNP-004).
 Returns a list of DriftReports; the caller filters to `has_drift=True`.
 
-### FR-DRF-006 — Drift report is read-only ✅
-`check_drift` never modifies the device or the git repo. It's
-safe to schedule against the whole fleet hourly. Acting on the
-report — restoring or accepting the new state — is an explicit
-follow-up.
+### FR-DRF-006 — Drift checks never modify the device ✅
+`check_drift` issues only read operations against the device — it's
+safe to schedule against the whole fleet hourly. (Since ADR-0031
+slice 2 it DOES append observation commits to the git repo —
+FR-BAS-003 — but never the baseline pointer.) Acting on the report —
+restoring or accepting the new state — is an explicit follow-up.
 
 ### FR-DRF-007 — Per-facet skip when unstored ✅
 If a facet has never been snapshotted (no file in git), it's

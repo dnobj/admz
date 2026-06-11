@@ -253,6 +253,24 @@ class TestGitRepo:
         sha2 = tmp_repo.commit_snapshot("cam-01")
         assert sha2 is None
 
+    def test_commit_snapshot_auto_push_flag(
+        self, tmp_repo, camera_device_info, monkeypatch
+    ):
+        """Observation commits (auto_push=False) skip the origin push;
+        default commits keep it."""
+        pushes = []
+        monkeypatch.setattr(
+            tmp_repo, "_maybe_push", lambda: pushes.append(1)
+        )
+        tmp_repo.write_device_yaml("cam-01", camera_device_info)
+        tmp_repo.commit_snapshot("cam-01", auto_push=False)
+        assert pushes == []
+        tmp_repo.write_device_yaml(
+            "cam-01", {**camera_device_info, "location": "x"}
+        )
+        tmp_repo.commit_snapshot("cam-01")
+        assert pushes == [1]
+
     def test_read_facet_after_commit(self, tmp_repo):
         normalized = {"I0.Resolution": "1920x1080", "I0.Compression": "30"}
         tmp_repo.write_facet("cam-01", "image", normalized)
