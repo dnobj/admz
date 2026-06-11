@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -137,6 +138,12 @@ class SnapshotEngine:
         sha = self.git.commit_snapshot(device_id, message=message)
         snapshot.git_sha = sha
 
+        # An explicit snapshot blesses the current config as the baseline.
+        # Pin to the committed sha, or HEAD when nothing changed (the device
+        # is already at its baseline). Only when we actually captured config.
+        if snapshot.succeeded_facets:
+            self._set_baseline_pointers(device_id, sha or self.git.head_sha())
+
         if snapshot.failed_facets and snapshot.succeeded_facets:
             snapshot.status = SnapshotStatus.PARTIAL
         elif snapshot.failed_facets:
@@ -206,11 +213,37 @@ class SnapshotEngine:
 
         if committed_ids:
             sha = self.git.commit_fleet_snapshot(committed_ids, message=message)
+            baseline = sha or self.git.head_sha()
             for snap in results:
                 if snap.device_id in committed_ids:
                     snap.git_sha = sha
+                    self._set_baseline_pointers(snap.device_id, baseline)
 
         return results
+
+    def _set_baseline_pointers(self, device_id: str, sha: Optional[str]) -> None:
+        """Bless ``sha`` as the device's baseline + latest observation.
+
+        Called after an explicit snapshot ("this state is good now"). The
+        write is best-effort: a backend without config-pointer support (the
+        stubbed Vault backend, per the H-4 deferral) degrades to a no-op
+        rather than failing the snapshot.
+        """
+        if not sha:
+            return
+        try:
+            self.registry.set_config_pointers(
+                device_id,
+                baseline_sha=sha,
+                latest_observed_sha=sha,
+                last_observed_at=time.time(),
+            )
+        except NotImplementedError:
+            pass
+        except Exception:  # pragma: no cover — must not break the snapshot
+            logger.warning(
+                "could not set baseline pointer for %s", device_id, exc_info=True
+            )
 
     async def _snapshot_device_no_commit(
         self, device_id: str, family: str

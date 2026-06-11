@@ -342,11 +342,13 @@ Show config changes for a device between two refs.
 - **Returns:** `{success, device_id, ref_a, ref_b, diff, recent_history}`
 
 ### `check_drift`
-Compare live device state against git HEAD.
+Compare a device's live state against its **baseline** (`baseline_sha`), not
+git HEAD (ADR-0031).
 - **Args:** `device_id` (optional — if omitted, scans whole fleet),
   `tag_filter` (string, optional)
-- **Returns:** single device: `{success, device_id, has_drift,
-  facets_checked, facets_drifted, drifted_fields}`
+- **Returns:** single device: `{success, device_id, has_drift, no_baseline,
+  facets_checked, facets_drifted, drifted_fields}` (`no_baseline=true` when the
+  device has no blessed baseline yet — that is *not* "in sync")
 - Returns fleet: `{success, count, drifted, reports: [...]}`
 
 ### `get_drift_alerts`

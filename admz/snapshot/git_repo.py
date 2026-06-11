@@ -357,6 +357,18 @@ class GitRepo:
             d.name for d in fleet_dir.iterdir() if d.is_dir()
         )
 
+    def head_sha(self) -> Optional[str]:
+        """Current repo HEAD commit SHA, or None on an empty repo.
+
+        Used to pin a baseline/observation pointer even when a snapshot
+        produced no new commit (commit-on-change) — HEAD still contains the
+        device's current config at that ref.
+        """
+        result = self._run_git("rev-parse", "HEAD", check=False)
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip() or None
+
     def device_snapshot_status(self, device_id: str) -> Dict[str, Any]:
         """Baseline + last-snapshot summary for one device.
 

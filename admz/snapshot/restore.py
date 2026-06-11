@@ -28,12 +28,19 @@ class RestoreBuilder:
     def build_restore_plan(
         self,
         device_id: str,
-        ref: str = "HEAD",
+        ref: Optional[str] = None,
         facet_names: Optional[List[str]] = None,
         family: str = "vapix",
     ) -> Dict[str, Any]:
         device_info = self.registry.get_device_info(device_id)
         device_info["device_id"] = device_id
+
+        # Restore targets the device's blessed baseline by default (ADR-0031),
+        # NOT git HEAD — audits now advance HEAD to the latest observation, so
+        # "restore" to HEAD could replay a drifted state. An explicit ref
+        # overrides; if no baseline is set yet, fall back to HEAD.
+        if ref is None:
+            ref = device_info.get("baseline_sha") or "HEAD"
 
         facets = get_facets_for_device(device_info)
         if facet_names:

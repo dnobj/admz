@@ -17,6 +17,7 @@ currently exposed via the REST API.
 import logging
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Dict, Optional
 
@@ -184,6 +185,46 @@ def _bootstrap_default_hierarchy(
         )
 
 
+def _backfill_baselines(registry: DeviceRegistry, git_repo) -> None:
+    """One-time migration: pin a baseline for devices that have committed
+    config but no ``baseline_sha`` yet (snapshotted before the pointer landed).
+
+    Sets baseline_sha + latest_observed_sha to the current HEAD — HEAD holds
+    each device's current config, so it's the correct baseline. Idempotent:
+    devices that already have a pointer are skipped before any git work, so
+    this is a cheap no-op on every subsequent start. Best-effort: a backend
+    without pointer support (the stubbed Vault) bails out quietly.
+    """
+    head = git_repo.head_sha()
+    if not head:
+        return
+    try:
+        devices = registry.list_devices()
+    except Exception:  # pragma: no cover — defensive
+        return
+    now = time.time()
+    for d in devices:
+        did = d.get("device_id")
+        if not did or d.get("baseline_sha"):
+            continue
+        try:
+            if not git_repo.device_snapshot_status(did).get("has_baseline"):
+                continue
+            registry.set_config_pointers(
+                did,
+                baseline_sha=head,
+                latest_observed_sha=head,
+                last_observed_at=now,
+            )
+            logger.info("Backfilled baseline for %s -> %s", did, head[:10])
+        except NotImplementedError:
+            return  # backend can't store pointers (Vault) — nothing to do
+        except Exception:  # pragma: no cover — best effort
+            logger.debug(
+                "baseline backfill skipped for %s", did, exc_info=True
+            )
+
+
 def build_components(
     registry: DeviceRegistry,
     *,
@@ -226,6 +267,12 @@ def build_components(
     )
 
     git_repo = GitRepo(config_repo_path, remote_url=config_repo_remote)
+
+    # One-time backfill: devices snapshotted before the baseline-pointer
+    # migration have committed config but a NULL baseline_sha. Pin them so
+    # drift/restore have a baseline. Idempotent no-op once every config-bearing
+    # device has a pointer.
+    _backfill_baselines(registry, git_repo)
 
     snapshot_engine = SnapshotEngine(
         catalog=catalog,

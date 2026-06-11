@@ -683,7 +683,9 @@ async def configuration_page(
         except Exception:
             status = {"has_baseline": False, "facets": [], "last_snapshot": None}
 
-        if not status["has_baseline"]:
+        # "Has a baseline" now means the device has a blessed baseline_sha
+        # pointer (ADR-0031) — not merely that config files exist in git.
+        if not d.get("baseline_sha"):
             drift = {"state": "none"}
         else:
             try:

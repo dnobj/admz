@@ -110,7 +110,7 @@ class TestDriftDetector:
         tmp_repo.commit_snapshot("cam-01")
 
         registry = FakeRegistry({
-            "cam-01": {"host": "1.2.3.4", "api_family": "vapix"}
+            "cam-01": {"host": "1.2.3.4", "api_family": "vapix", "baseline_sha": "HEAD"}
         })
         engine = FakeSnapshotEngine(
             registry,
@@ -129,7 +129,7 @@ class TestDriftDetector:
         tmp_repo.commit_snapshot("cam-01")
 
         registry = FakeRegistry({
-            "cam-01": {"host": "1.2.3.4", "api_family": "vapix"}
+            "cam-01": {"host": "1.2.3.4", "api_family": "vapix", "baseline_sha": "HEAD"}
         })
         engine = FakeSnapshotEngine(
             registry,
@@ -152,7 +152,7 @@ class TestDriftDetector:
         tmp_repo.commit_snapshot("cam-01")
 
         registry = FakeRegistry({
-            "cam-01": {"host": "1.2.3.4", "api_family": "vapix"}
+            "cam-01": {"host": "1.2.3.4", "api_family": "vapix", "baseline_sha": "HEAD"}
         })
         engine = FakeSnapshotEngine(registry, live_params={})
         detector = DriftDetector(engine, tmp_repo)
@@ -166,7 +166,7 @@ class TestDriftDetector:
         """If a facet has no committed YAML, it's not checked at all."""
         # No commits at all
         registry = FakeRegistry({
-            "cam-01": {"host": "1.2.3.4", "api_family": "vapix"}
+            "cam-01": {"host": "1.2.3.4", "api_family": "vapix", "baseline_sha": "HEAD"}
         })
         engine = FakeSnapshotEngine(
             registry,
@@ -185,7 +185,7 @@ class TestDriftDetector:
         tmp_repo.commit_snapshot("cam-01")
 
         registry = FakeRegistry({
-            "cam-01": {"host": "1.2.3.4", "api_family": "vapix"}
+            "cam-01": {"host": "1.2.3.4", "api_family": "vapix", "baseline_sha": "HEAD"}
         })
         engine = FakeSnapshotEngine(
             registry,
@@ -209,8 +209,8 @@ class TestDriftDetector:
         tmp_repo.commit_snapshot("fleet")
 
         registry = FakeRegistry({
-            "cam-01": {"host": "1.2.3.4", "api_family": "vapix"},
-            "cam-02": {"host": "1.2.3.5", "api_family": "vapix"},
+            "cam-01": {"host": "1.2.3.4", "api_family": "vapix", "baseline_sha": "HEAD"},
+            "cam-02": {"host": "1.2.3.5", "api_family": "vapix", "baseline_sha": "HEAD"},
         })
         engine = FakeSnapshotEngine(
             registry,
@@ -224,6 +224,47 @@ class TestDriftDetector:
         by_id = {r.device_id: r for r in reports}
         assert by_id["cam-01"].has_drift is False
         assert by_id["cam-02"].has_drift is True
+
+    @pytest.mark.asyncio
+    async def test_drift_measured_vs_baseline_sha_not_head(self, tmp_repo):
+        """Drift compares against the pinned baseline_sha, NOT git HEAD —
+        even when a later observation has advanced HEAD to match live."""
+        # Baseline commit: 1920x1080.
+        tmp_repo.write_facet("cam-01", "image", {"I0.Resolution": "1920x1080"})
+        baseline = tmp_repo.commit_snapshot("cam-01")
+        # A later observation moves HEAD to 1280x720 (== live, below).
+        tmp_repo.write_facet("cam-01", "image", {"I0.Resolution": "1280x720"})
+        tmp_repo.commit_snapshot("cam-01", message="Audit: cam-01")
+
+        registry = FakeRegistry({
+            "cam-01": {"host": "1.2.3.4", "api_family": "vapix",
+                       "baseline_sha": baseline},
+        })
+        engine = FakeSnapshotEngine(
+            registry, live_params={"root.Image.I0.Resolution": "1280x720"},
+        )
+        report = await DriftDetector(engine, tmp_repo).check_drift("cam-01")
+
+        # Live matches HEAD but differs from the baseline -> drift vs baseline.
+        assert report.has_drift is True
+        assert report.fields[0].expected == "1920x1080"
+        assert report.fields[0].actual == "1280x720"
+
+    @pytest.mark.asyncio
+    async def test_no_baseline_reports_no_baseline(self, tmp_repo):
+        """A device without a baseline_sha reports no_baseline, not 'in sync'."""
+        tmp_repo.write_facet("cam-01", "image", {"I0.Resolution": "1920x1080"})
+        tmp_repo.commit_snapshot("cam-01")
+        registry = FakeRegistry({
+            "cam-01": {"host": "1.2.3.4", "api_family": "vapix"},  # no baseline_sha
+        })
+        engine = FakeSnapshotEngine(
+            registry, live_params={"root.Image.I0.Resolution": "9999x9999"},
+        )
+        report = await DriftDetector(engine, tmp_repo).check_drift("cam-01")
+        assert report.no_baseline is True
+        assert report.has_drift is False
+        assert report.facets_checked == 0
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +282,7 @@ class TestRestoreBuilderProfile:
         tmp_repo.commit_snapshot("profile-setup")
 
         registry = FakeRegistry({
-            "cam-01": {"host": "1.2.3.4", "api_family": "vapix"}
+            "cam-01": {"host": "1.2.3.4", "api_family": "vapix", "baseline_sha": "HEAD"}
         })
         builder = RestoreBuilder(
             catalog=FakeCatalog(),
@@ -262,7 +303,7 @@ class TestRestoreBuilderProfile:
         tmp_repo.commit_snapshot("init")
 
         registry = FakeRegistry({
-            "cam-01": {"host": "1.2.3.4", "api_family": "vapix"}
+            "cam-01": {"host": "1.2.3.4", "api_family": "vapix", "baseline_sha": "HEAD"}
         })
         builder = RestoreBuilder(
             catalog=FakeCatalog(),
@@ -281,7 +322,7 @@ class TestRestoreBuilderProfile:
         tmp_repo.commit_snapshot("profile-setup")
 
         registry = FakeRegistry({
-            "cam-01": {"host": "1.2.3.4", "api_family": "vapix"}
+            "cam-01": {"host": "1.2.3.4", "api_family": "vapix", "baseline_sha": "HEAD"}
         })
         builder = RestoreBuilder(
             catalog=FakeCatalog(),

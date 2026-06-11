@@ -69,6 +69,9 @@ class DriftReport:
     fields: List[DriftField] = field(default_factory=list)
     facets_checked: int = 0
     facets_drifted: int = 0
+    # True when the device has no blessed baseline to compare against, so
+    # ``has_drift=False`` means "nothing to compare", NOT "in sync".
+    no_baseline: bool = False
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -77,6 +80,7 @@ class DriftReport:
         return {
             "device_id": self.device_id,
             "has_drift": self.has_drift,
+            "no_baseline": self.no_baseline,
             "facets_checked": self.facets_checked,
             "facets_drifted": self.facets_drifted,
             "timestamp": self.timestamp,

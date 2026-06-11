@@ -28,6 +28,8 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **BaseExecutor** — The abstract base class for API-family executors. Concrete: `VapixExecutor`. Each defines `family` and async `execute(operation, device, credentials, params)`.
 
+**Baseline** — The commit an operator has *blessed* as a device's intended configuration, named by the device's `baseline_sha` pointer (ADR-0031). Drift is measured against it and `restore` replays it by default. Distinct from the latest snapshot (which moves git HEAD) and from an [observation](#o) (what an audit merely recorded). Set by `snapshot` or by an explicit accept/promote.
+
 **Bonjour** — Apple's name for the mDNS+DNS-SD service-discovery stack. ADMZ uses mDNS discovery to find Axis devices that announce `_axis-video._tcp.local.`.
 
 ## C
@@ -64,9 +66,9 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **DiscoveryOrchestrator** — Runs the seven protocols in two phases (broadcast then HTTP/SNMP enrichment) and merges results.
 
-**DriftDetector** — Compares live device state against the configuration in git HEAD. Produces a `DriftReport`.
+**DriftDetector** — Compares a device's live state against its **baseline** (the commit named by the device's `baseline_sha`), not git HEAD (ADR-0031). Produces a `DriftReport`; `no_baseline=True` when the device has no blessed baseline yet.
 
-**Drift** — A device whose live state has diverged from its committed configuration. Caused by manual edits at the device's own web UI, third-party tools, or restore failures.
+**Drift** — A device whose live state has diverged from its **baseline** configuration. Caused by manual edits at the device's own web UI, third-party tools, or restore failures.
 
 ## E
 
@@ -126,6 +128,8 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **legacy-cgi** — The first generation of VAPIX APIs. GET with query parameters, or POST with form data.
 
+**Live** — A device's *current* on-the-wire configuration, obtained by probing it. Ephemeral — known only at the moment of a snapshot/audit/drift check. Compared against the [baseline](#b) to detect [drift](#d).
+
 **LLM agent** — Any AI consumer of the MCP server (Claude, GPT-driven agent, custom Anthropic SDK client, etc.). One of the six personas.
 
 **LLM-confirm** — The default confirmation level for `service-affecting` operations. The LLM presents the change and waits for the user's natural-language "yes."
@@ -149,6 +153,8 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 **Normalized YAML** — The diff-friendly, alphabetically-ordered, serialization of a facet's configuration. Stored under `fleet/{device_id}/config/`.
 
 ## O
+
+**Observation** — The configuration an audit (or snapshot) actually *saw* and recorded to git, named by a device's `latest_observed_sha` (ADR-0031). Audits append observations (commit-on-change) **without** moving the [baseline](#b); any observation can later be promoted to baseline. Contrast [live](#l) (not yet recorded) and [baseline](#b) (blessed).
 
 **Operation** — A single thing the system can do against a device. Defined by one YAML file in the catalog. Identified by `cgi:action` (e.g. `param.cgi:update`, `cert:listCertificates`).
 
