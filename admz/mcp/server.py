@@ -211,14 +211,17 @@ def _validate_tool_args(name: str, arguments: Any) -> Optional[str]:
 # duplicated here. delete_account is intentionally NOT in this set —
 # the REST equivalent isn't in CR-3's destructive list either
 # (it's audited but not gated; accounts are re-addable).
-_DESTRUCTIVE_MCP_TOOLS = frozenset({
-    "delete_device",
-    "restore_device",
-    "execute_plan",
-    # Re-pointing a device's blessed baseline changes what drift means and
-    # what restore replays — metadata-only, but consequential (ADR-0031).
-    "accept_baseline",
-})
+# ADR-0034 superseded the flat anonymous refusal: every destructive tool now
+# takes the SAME deterministic human/widget approval path as device writes —
+#   restore_device  → builds a plan (no device writes by itself)
+#   execute_plan    → the plan-level url_* gate (execute_gated_plan) blocks
+#                     with a confirm widget; approval runs the plan
+#   accept_baseline / delete_device → url_only ACTION sessions
+#                     (operations.create_action_session) executed on approval
+# The gate mechanism below is retained (empty) in case a future tool is truly
+# unsuitable for widget approval; with ADR-0033 (windows-local auth) callers
+# are authenticated anyway, so audit rows carry a real identity either way.
+_DESTRUCTIVE_MCP_TOOLS = frozenset()
 
 
 def _annotate_snapshot_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
@@ -653,8 +656,12 @@ class ADMZMCPServer:
                 Tool(
                     name="delete_device",
                     description=(
-                        "Remove a device from the registry. This will delete all device "
-                        "information and associated accounts. Use with caution."
+                        "Request removing a device from the registry (deletes "
+                        "its stored information and accounts; the physical "
+                        "device is untouched). Returns blocked:true with a "
+                        "confirm_token — the deletion executes only after the "
+                        "user approves the on-screen confirmation card, like "
+                        "any other destructive step."
                     ),
                     inputSchema={
                         "type": "object",
@@ -1155,15 +1162,14 @@ class ADMZMCPServer:
                     description=(
                         "Accept/promote an observed configuration as a "
                         "device's new blessed BASELINE (ADR-0031). Use after "
-                        "check_drift reports drift the user has confirmed is "
-                        "intentional ('yes, keep it that way'). Defaults to "
-                        "the device's latest recorded observation; pass "
-                        "commit_sha to bless a specific historical commit. "
-                        "Metadata-only (no device traffic), but it changes "
-                        "what drift means and what restore replays — confirm "
-                        "with the user before calling. The opposite action "
-                        "(reject the drift) is restore_device with ref "
-                        "omitted."
+                        "check_drift reports drift the user wants to keep "
+                        "('yes, keep it that way'). Defaults to the device's "
+                        "latest recorded observation; pass commit_sha to "
+                        "bless a specific historical commit. Returns "
+                        "blocked:true with a confirm_token — the re-pointing "
+                        "executes only after the user approves the on-screen "
+                        "confirmation card. The opposite action (reject the "
+                        "drift) is restore_device with ref omitted."
                     ),
                     inputSchema={
                         "type": "object",
@@ -2061,13 +2067,29 @@ class ADMZMCPServer:
         }
 
     async def _delete_device(self, device_id: str) -> Dict[str, Any]:
-        """Delete a device."""
-        self.registry.remove_device(device_id)
-        return {
-            "success": True,
-            "message": f"Device '{device_id}' deleted successfully",
-            "device_id": device_id,
-        }
+        """Request deleting a device (ADR-0034: widget-gated action).
+
+        The registry row (and its accounts/credentials) is removed only
+        after the user approves the link/widget confirmation.
+        """
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+        info = self.registry.get_device_info(device_id)
+        label = info.get("nickname") or info.get("model") or device_id
+        from admz import operations
+        session = operations.create_action_session(
+            action="delete_device",
+            device_id=device_id,
+            payload={"device_id": device_id},
+            reason=(
+                f"Remove {label} ({device_id}) from the registry, including "
+                "its stored accounts/credentials. The device itself is not "
+                "touched; its git config history is retained."
+            ),
+        )
+        env = operations.blocked_envelope(session)
+        env["success"] = False
+        return env
 
     async def _delete_account(
         self,
@@ -2580,11 +2602,12 @@ class ADMZMCPServer:
     async def _accept_baseline(
         self, device_id: str, commit_sha: Optional[str]
     ) -> Dict[str, Any]:
-        """Bless a commit as the device's baseline (ADR-0031 slice 3).
+        """Request blessing a commit as the device's baseline (ADR-0031/0034).
 
-        Defaults to the latest recorded observation. Metadata-only — no
-        device traffic — but it re-points what drift compares against and
-        what restore replays, so the tool is in _DESTRUCTIVE_MCP_TOOLS.
+        Defaults to the latest recorded observation. Validation happens here;
+        the re-pointing itself executes only after the user approves the
+        link/widget confirmation (a url_only ACTION session) — the same human
+        gate every other destructive step takes.
         """
         if not self.registry.device_exists(device_id):
             raise DeviceNotFoundError(f"Device not found: {device_id}")
@@ -2615,19 +2638,24 @@ class ADMZMCPServer:
             }
 
         previous = device_info.get("baseline_sha")
-        self.registry.set_config_pointers(device_id, baseline_sha=target)
-        return {
-            "success": True,
-            "device_id": device_id,
-            "baseline_sha": target,
-            "previous_baseline_sha": previous,
-            "facets": facets,
-            "message": (
-                f"Baseline for {device_id} is now {target[:12]} "
-                f"({len(facets)} facet(s)). Drift is measured against it; "
-                "restore_device (ref omitted) replays it."
+        from admz import operations
+        session = operations.create_action_session(
+            action="accept_baseline",
+            device_id=device_id,
+            payload={
+                "device_id": device_id,
+                "baseline_sha": target,
+                "previous_baseline_sha": previous,
+            },
+            reason=(
+                f"Re-point {device_id}'s blessed baseline to {target[:12]} "
+                f"({len(facets)} facet(s)). Drift will be measured against "
+                "it and restore will replay it."
             ),
-        }
+        )
+        env = operations.blocked_envelope(session)
+        env["success"] = False
+        return env
 
     async def _diff_device(
         self, device_id: str, ref_a: str, ref_b: str

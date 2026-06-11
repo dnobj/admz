@@ -46,13 +46,15 @@ explicit ref still overrides) — so "revert the drift" is `restore_device`
 with `ref` omitted. The accept path is `accept_baseline` (FR-BAS-004).
 
 ### FR-BAS-004 — Accept/promote a baseline ✅
-`accept_baseline(device_id, commit_sha?)` (MCP, anonymous-blocked via
-`_DESTRUCTIVE_MCP_TOOLS`) and `POST /api/snapshot/accept-baseline`
-(REST, authenticated like restore) re-point `baseline_sha` to a chosen
-commit — default: the device's latest recorded observation. The target
-must hold committed config for the device (`git_repo.list_facets_at`),
-else the call is rejected. Metadata-only: no device traffic, no git
-writes; audited as `snapshot.accept_baseline`.
+`accept_baseline(device_id, commit_sha?)` (MCP) and
+`POST /api/snapshot/accept-baseline` (REST, authenticated like restore)
+re-point `baseline_sha` to a chosen commit — default: the device's
+latest recorded observation. The target must hold committed config for
+the device (`git_repo.list_facets_at`), else the call is rejected
+immediately. The MCP tool is **widget-gated** (ADR-0034): it returns a
+blocked envelope with a `confirm_token`; the re-pointing executes only
+when the user approves `/confirm/{token}` (a url_only ACTION session).
+Metadata-only: no device traffic, no git writes; audited.
 
 ### FR-BAS-003 — Audits record observations ✅
 Every `check_drift` probes the device once and records what it observed
