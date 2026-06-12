@@ -654,6 +654,38 @@ class ADMZMCPServer:
                     },
                 ),
                 Tool(
+                    name="update_device_tags",
+                    description=(
+                        "Add and/or remove tags on a device — the ergonomic "
+                        "way to edit tags (don't fetch-mutate-write via "
+                        "update_device). Tags are free-form labels used to "
+                        "group/filter the fleet. Pass `add` and/or `remove` "
+                        "lists; the device's other tags are preserved. "
+                        "Returns the resulting tag set. Metadata-only — no "
+                        "confirmation needed."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID",
+                            },
+                            "add": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Tags to add (deduped against existing).",
+                            },
+                            "remove": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Tags to remove (no error if absent).",
+                            },
+                        },
+                        "required": ["device_id"],
+                    },
+                ),
+                Tool(
                     name="delete_device",
                     description=(
                         "Request removing a device from the registry (deletes "
@@ -1662,6 +1694,12 @@ class ADMZMCPServer:
                         arguments["device_id"],
                         arguments["updates"],
                     )
+                elif name == "update_device_tags":
+                    result = await self._update_device_tags(
+                        arguments["device_id"],
+                        arguments.get("add") or [],
+                        arguments.get("remove") or [],
+                    )
                 elif name == "delete_device":
                     result = await self._delete_device(arguments["device_id"])
                 elif name == "delete_account":
@@ -2064,6 +2102,35 @@ class ADMZMCPServer:
             "message": f"Device '{device_id}' updated successfully",
             "device_id": device_id,
             "updates": updates,
+        }
+
+    async def _update_device_tags(
+        self,
+        device_id: str,
+        add: List[str],
+        remove: List[str],
+    ) -> Dict[str, Any]:
+        """Add/remove tags on a device, preserving the rest.
+
+        Order-preserving and deduped; removing an absent tag is a no-op.
+        Metadata only — not gated.
+        """
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+        info = self.registry.get_device_info(device_id)
+        current = list(info.get("tags") or [])
+        remove_set = {t for t in remove}
+        new_tags = [t for t in current if t not in remove_set]
+        for t in add:
+            if t and t not in new_tags:
+                new_tags.append(t)
+        self.registry.update_device(device_id, {"tags": new_tags})
+        return {
+            "success": True,
+            "device_id": device_id,
+            "tags": new_tags,
+            "added": [t for t in add if t and t not in current],
+            "removed": [t for t in current if t in remove_set],
         }
 
     async def _delete_device(self, device_id: str) -> Dict[str, Any]:
