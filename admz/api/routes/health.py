@@ -110,3 +110,41 @@ async def trigger_health_sweep(ctx: AppContext = Depends(get_context)):
     """
     n = await ctx.health_monitor.sweep_once()
     return {"checked": n}
+
+
+@router.get("/api/fleet/drift", tags=["health"])
+async def get_fleet_drift(
+    registry: DeviceRegistry = Depends(_get_registry),
+):
+    """Last-known drift status for every device — the Fleet glance.
+
+    Sibling of ``/api/fleet/health``: a pure cache read (the baseline
+    pointer + the last ``drift_signatures`` row per device, via the shared
+    :func:`admz.snapshot.drift_status.drift_status_for`), so it's instant
+    and never probes a device. ``checked_at`` is the freshness stamp; a
+    live recheck is ``GET /api/snapshot/drift`` (which warms this cache).
+    Devices never drift-checked show ``state='unchecked'`` (or ``'none'``
+    if they have no baseline yet).
+    """
+    from admz.snapshot.drift_alerts import drift_alerts
+    from admz.snapshot.drift_status import STATES, drift_status_for
+
+    counts: Dict[str, int] = {s: 0 for s in STATES}
+    entries: List[Dict[str, Any]] = []
+    for d in registry.list_devices():
+        did = d.get("device_id")
+        if not did:
+            continue
+        try:
+            sig = drift_alerts.get_last_signature(did)
+        except Exception:
+            sig = None
+        status = drift_status_for(d, sig)
+        counts[status["state"]] = counts.get(status["state"], 0) + 1
+        entries.append({"device_id": did, **status})
+
+    return {
+        "total": len(entries),
+        "counts": counts,
+        "devices": entries,
+    }
