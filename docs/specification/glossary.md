@@ -214,11 +214,13 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **Serial number** — Often equal to or derivable from the MAC address on Axis devices. Used as the primary device identifier in some flows.
 
-**Session (web)** — A server-side login session minted by `/login` under the `windows-local` backend (ADR-0033): Windows credentials validated in-process via `LogonUserW`, a 256-bit bearer token in the `admz_session` cookie (stored hashed in `web_sessions`), sliding TTL, revoked on logout. The session snapshots the Principal incl. the account's Windows group memberships.
+**Session (web)** — A server-side login session minted by `/login` under the `windows-local` backend (ADR-0033): Windows credentials validated in-process via `LogonUserW`, a 256-bit bearer token in the `admz_session` cookie (stored hashed in `web_sessions`), sliding TTL, revoked on logout. The session snapshots the Principal incl. the account's Windows group memberships. SSO sign-ins (see **SSO (Negotiate)**) mint the identical session.
+
+**SSO (Negotiate)** — "Continue as the signed-in Windows user" on the login page (ADR-0035): the browser and Windows complete a Kerberos/NTLM handshake over HTTP `Negotiate` at `GET /login/sso`, handled in-process by SSPI (`admz/win_sspi.py`) — no password typed, no IIS, no new dependencies. Falls back to the credential form on any failure; disable with `ADMZ_SSO_NEGOTIATE=0`.
 
 **Site** — The second level of the device hierarchy: *which site (usually a local network) the cameras are installed on*. Belongs to exactly one Organization; every device belongs to exactly one Site. The sidebar's site switcher scopes the fleet view. Below Site there is no Group level — devices are organized with **tags** (ADR-0032).
 
-**Service-affecting** — Risk classification for operations that may interrupt service but are recoverable. E.g. restart, network reconfiguration. Default confirm level: `llm_confirm`.
+**Service-affecting** — Risk classification for operations that may interrupt service but are recoverable. E.g. restart, network reconfiguration, baseline restore. Default confirm level: `url_only` (the on-screen approval widget).
 
 **SOAP** — Simple Object Access Protocol. The fourth generation of VAPIX APIs (WSDL-based web services under `/vapix/services`).
 

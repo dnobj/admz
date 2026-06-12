@@ -133,9 +133,10 @@ REST endpoint groups:
 
 > ⚠️ **Authentication is optional and defaults to off.** Set
 > `ADMZ_AUTH_BACKEND` to `windows-local` (sign in with the box's own
-> Windows accounts via the `/login` page — ADR-0033; the recommended
-> posture for single-box / workgroup installs), `windows` (Windows IWA
-> via a reverse proxy — ADR-0021), or `composite` to require auth; the
+> Windows accounts via the `/login` page — ADR-0033 — including
+> one-click "continue as the signed-in Windows user" SSO, ADR-0035; the
+> recommended posture for single-box / workgroup installs), `windows`
+> (Windows IWA via a reverse proxy — ADR-0021), or `composite` to require auth; the
 > default `none` leaves the web UI / REST API open. LLM agents can
 > authenticate with API keys
 > (ADR-0022). Regardless of backend, bind to `127.0.0.1` and front it with

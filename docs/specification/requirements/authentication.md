@@ -144,7 +144,25 @@ with the same session. Unauthenticated *page* loads 303-redirect to
 `POST /login` consumes the shared token-bucket limiter (`login` policy:
 5 instant, then 1/12 s sustained per client IP → 429) and writes
 `auth.login` audit rows for success, bad-credentials, rate-limited, and
-unavailable outcomes. Failure responses are deliberately generic.
+unavailable outcomes (with a `method: form|negotiate` detail since
+ADR-0035). Failure responses are deliberately generic. `GET /login/sso`
+has its own roomier policy (`login-sso`: 15 instant, 1/4 s — one
+sign-in legitimately makes 2–3 handshake legs).
+
+### FR-AUTH-016 — Negotiate SSO: continue as the signed-in Windows user ✅
+ACS Pro parity (ADR-0035): the login page offers a **"Continue as the
+signed-in Windows user"** button above the credential form. It points at
+`GET /login/sso`, the only endpoint that ever issues an HTTP `Negotiate`
+challenge; the browser and Windows complete the Kerberos/NTLM handshake
+(`admz/win_sspi.py` shuttles the token blobs to `AcceptSecurityContext`
+— the OS owns the protocol state machine, zero new dependencies). The
+completed context's access token yields the username and group
+memberships through the same helpers the form login uses, then the same
+session/cookie/audit tail (`_establish_session`). NTLM's multi-leg
+exchange parks partial contexts per client connection (TTL 30 s).
+Failures — unsupporting browser, disabled via `ADMZ_SSO_NEGOTIATE=0`,
+handshake error — fall back to the form with a gentle notice
+(`/login?sso=failed`); nothing else in the auth chain changes.
 
 ## Non-functional requirements
 
@@ -227,13 +245,36 @@ Cookie-based sessions make auth ambient; the baseline mitigation is
 Per-form CSRF tokens remain the documented gap (same item the
 security-conscious-operator persona already tracks for capture/confirm).
 
+### KL-AUTH-008 — Negotiate SSO depends on browser zone policy ⚠️
+Browsers only answer a `Negotiate` challenge automatically for hosts
+they trust: Edge/Chrome use the Windows Local-Intranet zone (which
+includes `localhost` by default — the reference deployment Just Works);
+reaching ADMZ by LAN hostname needs the site added to the intranet zone
+(or the `AuthServerAllowlist` policy). Firefox requires
+`network.negotiate-auth.trusted-uris` in `about:config`. Unsupporting
+browsers land on the fallback link to the credential form. On a
+workgroup box Negotiate selects NTLM (KL-AUTH-004's caveat applies);
+NTLM's multi-leg handshake also requires connection affinity — direct
+connections or an affinity-preserving proxy.
+
+### KL-AUTH-009 — UAC token filtering can hide Administrators ⚠️
+Network-type logons of *local* admin accounts (both `LogonUserW
+NETWORK` form logins and NTLM SSO) may yield a UAC-filtered token
+without the `Administrators` SID unless `LocalAccountTokenFilterPolicy`
+is set. If the reveal gate unexpectedly denies a known admin, check the
+session's group snapshot; the contingency (not yet built — see
+ADR-0035) is group enrichment via `NetUserGetLocalGroups`.
+
 ## References
 
 - ADRs: [0021](../decisions/0021-windows-iwa-via-reverse-proxy.md),
   [0022](../decisions/0022-api-keys-for-agents.md),
-  [0023](../decisions/0023-ldap-group-enrichment.md)
+  [0023](../decisions/0023-ldap-group-enrichment.md),
+  [0033](../decisions/0033-windows-local-credential-auth.md),
+  [0035](../decisions/0035-negotiate-sso-login.md)
 - Cross-cutting: [security.md](security.md), [configuration.md](configuration.md)
 - Deployment: [`docs/DEPLOYMENT_WINDOWS.md`](../../DEPLOYMENT_WINDOWS.md)
 - Code: `admz/auth.py`, `admz/api_keys.py`, `admz/audit.py`,
-  `admz/ldap_groups.py`, `admz/api/routes/api_keys.py`,
-  `admz/api/routes/audit.py`
+  `admz/ldap_groups.py`, `admz/win_auth.py`, `admz/win_sspi.py`,
+  `admz/session_store.py`, `admz/api/routes/auth_web.py`,
+  `admz/api/routes/api_keys.py`, `admz/api/routes/audit.py`
