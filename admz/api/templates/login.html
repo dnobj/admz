@@ -96,6 +96,17 @@
         Use the Windows account of this machine (local account, or a
         domain account if the server is domain-joined). Your password is
         verified by Windows and never stored by ADMZ.
+        {# Loopback-IP footgun (KL-AUTH-008): browsers never treat a
+           literal IP as intranet zone, so single sign-on prompts for
+           credentials instead of using the Windows session. Only shown
+           when the visitor is actually on the IP origin. #}
+        {% if sso_available and request.url.hostname in ("127.0.0.1", "::1") %}
+        For silent single sign-on, use
+        <a href="http://localhost{{ (":" ~ request.url.port) if request.url.port else "" }}{{ request.url.path }}{{ ("?" ~ request.url.query) if request.url.query else "" }}">localhost</a>
+        instead of <code>{{ request.url.hostname }}</code> — on a literal
+        IP the browser asks for credentials rather than using your
+        Windows session.
+        {% endif %}
       </div>
     </div>
   </div>

@@ -261,8 +261,11 @@ python -m admz api --host 127.0.0.1 --port 4242
   Negotiate handled in-process by Windows SSPI (ADR-0035; no IIS) — or
   sign in as a different user with the credential form (`alice`,
   `DOMAIN\alice`, or `alice@domain.local`). Edge/Chrome do SSO to
-  `localhost` out of the box; for a LAN hostname add the site to the
-  Local Intranet zone, and Firefox needs
+  `localhost` out of the box — **use the `localhost` name, not
+  `127.0.0.1`**: literal IPs are never in the Local Intranet zone, so
+  the browser prompts for credentials instead of silently signing you
+  in (and remembers whatever account you type). For a LAN hostname add
+  the site to the Local Intranet zone, and Firefox needs
   `network.negotiate-auth.trusted-uris`. Disable the SSO button with
   `ADMZ_SSO_NEGOTIATE=0`.
 - Agents: unchanged — `Authorization: Bearer admz_<key>`.
