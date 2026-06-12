@@ -79,7 +79,12 @@
           <label for="firmware_version">Firmware version</label>
           <input type="text" id="firmware_version" class="mono" value="{{ device.firmware_version|default('') }}">
         </div>
-        {% if sites %}
+        {# Site is implicit on a single-install deployment (one site). Only
+           surface the selector once there's more than one site to move
+           between — i.e. when a multi-site app layer is in play. The model,
+           the registry assignment, and PUT /api/devices/{id}/site stay
+           regardless, so this lights up automatically when that day comes. #}
+        {% if sites and sites|length > 1 %}
         <div class="field">
           <label for="site_id">Site</label>
           <select id="site_id" data-current="{{ current_site_id or '' }}">
