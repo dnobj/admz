@@ -257,13 +257,17 @@ workgroup box Negotiate selects NTLM (KL-AUTH-004's caveat applies);
 NTLM's multi-leg handshake also requires connection affinity — direct
 connections or an affinity-preserving proxy.
 
-### KL-AUTH-009 — UAC token filtering can hide Administrators ⚠️
-Network-type logons of *local* admin accounts (both `LogonUserW
-NETWORK` form logins and NTLM SSO) may yield a UAC-filtered token
-without the `Administrators` SID unless `LocalAccountTokenFilterPolicy`
-is set. If the reveal gate unexpectedly denies a known admin, check the
-session's group snapshot; the contingency (not yet built — see
-ADR-0035) is group enrichment via `NetUserGetLocalGroups`.
+### KL-AUTH-009 — UAC token filtering hides Administrators (mitigated) ✅
+Network-type logons of *local* admin accounts (both `LogonUserW NETWORK`
+form logins and NTLM SSO) yield a UAC-filtered token carrying
+`Administrators` deny-only — **observed live** on the first SSO sign-in.
+Mitigation (built the same day): both sign-in paths union the token
+groups with the account's directory memberships via
+`NetUserGetLocalGroups` (`win_auth.local_group_memberships` /
+`enriched_groups`) — ADMZ authorizes on group *membership* (the ACS Pro
+semantics), not on the token's elevation state. The lookup is
+best-effort: a failure leaves the token groups as-is and never breaks a
+login.
 
 ## References
 

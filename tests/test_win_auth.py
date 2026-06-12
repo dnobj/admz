@@ -106,3 +106,49 @@ class TestTokenGroupsLive:
         assert any(
             g in ("Users", "Administrators", "Everyone") for g in groups
         ), groups
+
+
+class TestGroupMerging:
+    def test_merge_strips_authority_and_dedupes(self):
+        from admz.win_auth import merge_group_names
+
+        merged = merge_group_names(
+            ["Users", "docker-users"],
+            ["BUILTIN\\Administrators", "BUILTIN\\Users", "Administrators"],
+        )
+        assert merged == ["Users", "docker-users", "Administrators"]
+
+    def test_merge_preserves_token_order_first(self):
+        from admz.win_auth import merge_group_names
+
+        assert merge_group_names(["B", "A"], ["C"]) == ["B", "A", "C"]
+
+    def test_enriched_groups_survives_lookup_failure(self, monkeypatch):
+        """Directory lookup failing must never break a login."""
+        import admz.win_auth as win_auth
+
+        def boom(username, domain=None):
+            raise RuntimeError("netapi32 unavailable")
+
+        monkeypatch.setattr(win_auth, "local_group_memberships", boom)
+        assert win_auth.enriched_groups(["Users"], "alice", None) == ["Users"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+class TestLocalGroupMembershipsLive:
+    def test_current_user_memberships(self):
+        """The UAC-filtering workaround (KL-AUTH-009): the directory view
+        must include the local groups even when a network-logon token
+        would carry them deny-only."""
+        import os
+
+        from admz.win_auth import local_group_memberships
+
+        groups = local_group_memberships(os.environ["USERNAME"])
+        assert isinstance(groups, list) and groups
+        assert any(g in ("Users", "Administrators") for g in groups), groups
+
+    def test_unknown_user_returns_empty(self):
+        from admz.win_auth import local_group_memberships
+
+        assert local_group_memberships("no-such-user-zzz-12345") == []

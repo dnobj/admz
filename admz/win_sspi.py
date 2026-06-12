@@ -41,7 +41,7 @@ from admz.win_auth import (
     WindowsIdentity,
     _declare_prototypes,
     _groups_from_token,
-    _lookup_sid,
+    enriched_groups,
 )
 
 logger = logging.getLogger(__name__)
@@ -344,7 +344,12 @@ class NegotiateHandshake:
             if domain and machine and domain.upper() == machine.upper():
                 domain = None
             return WindowsIdentity(
-                username=user, domain=domain or None, groups=groups
+                username=user,
+                domain=domain or None,
+                # Union with directory memberships — the NTLM network
+                # logon's token is UAC-filtered for admin accounts
+                # (Administrators deny-only; observed live, KL-AUTH-009).
+                groups=enriched_groups(groups, user, domain or None),
             )
         finally:
             self._kernel32.CloseHandle(token)
