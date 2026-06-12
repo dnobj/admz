@@ -87,6 +87,16 @@ class DeviceUpdate(BaseModel):
     )
 
 
+class DeviceSiteUpdate(BaseModel):
+    """Request model for moving a device to a different Site.
+
+    The owning Org is derived from the Site (a Site belongs to exactly
+    one Org), so the caller only supplies the target ``site_id``.
+    """
+
+    site_id: str = Field(..., description="Target Site id to move the device to")
+
+
 class DeviceResponse(BaseModel):
     """Response model for device information."""
 

@@ -1,102 +1,197 @@
 {% extends "base.html" %}
+{% block nav_active %}fleet{% endblock %}
+{% block title %}Edit · {{ device.nickname or device.device_id }}{% endblock %}
+{% block crumb_tail %}Edit{% endblock %}
 
 {% block content %}
+<div class="breadcrumb">
+  <a href="/devices">Fleet</a>
+  <span class="sep"><i data-lucide="chevron-right"></i></span>
+  <a href="/device/{{ device.device_id }}">{{ device.nickname or device.device_id }}</a>
+  <span class="sep"><i data-lucide="chevron-right"></i></span>
+  <span class="last">Edit</span>
+</div>
+
 <div class="page-header">
-    <h1>Edit Device: {{ device.nickname|default(device.device_id) }}</h1>
+  <div class="pt" style="display:flex;align-items:center;gap:14px">
+    <span class="type-tile" style="width:40px;height:40px"><i data-lucide="pencil"></i></span>
+    <div>
+      <h1 class="page-title">Edit device</h1>
+      <p class="page-sub mono">{{ device.device_id }}</p>
+    </div>
+  </div>
 </div>
 
-<div class="form-container">
-    <form id="edit-device-form" action="/api/devices/{{ device.device_id }}" method="PUT">
-        <div class="form-group">
-            <label for="device_id">Device ID</label>
-            <input type="text" id="device_id" name="device_id" value="{{ device.device_id }}" disabled>
-            <small>Device ID cannot be changed</small>
-        </div>
+<style>
+  .edit-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; }
+  .field { display:flex; flex-direction:column; gap:6px; }
+  .field label { font-size:12px; color:var(--text-faint); }
+  .field input, .field select { width:100%; }
+  .field .hint { font-size:11.5px; color:var(--text-faint); }
+  .field input:disabled { opacity:.6; cursor:not-allowed; }
+  .tag-chips { display:flex; flex-wrap:wrap; gap:6px; align-items:center;
+    padding:6px; border:1px solid var(--border); border-radius:var(--radius);
+    background:var(--input-bg); min-height:38px; }
+  .tag-chip { display:inline-flex; align-items:center; gap:5px; padding:3px 6px 3px 9px;
+    background:var(--bg-raised,#1b1e24); border:1px solid var(--border); border-radius:99px;
+    font-size:12px; }
+  .tag-chip button { all:unset; cursor:pointer; display:inline-flex; color:var(--text-faint);
+    border-radius:99px; padding:1px; }
+  .tag-chip button:hover { color:#f87181; }
+  .tag-chips input.tag-add { border:none; background:transparent; padding:4px; min-width:90px;
+    flex:1; font-size:12.5px; }
+  .tag-chips input.tag-add:focus { border:none; }
+  #edit-msg { margin-top:14px; padding:9px 12px; border-radius:8px; font-size:13px;
+    background:rgba(244,63,94,.12); color:#f87181; border:1px solid rgba(244,63,94,.35); }
+</style>
 
-        <div class="form-group">
-            <label for="nickname">Nickname</label>
-            <input type="text" id="nickname" name="nickname" value="{{ device.nickname|default('') }}">
+<div class="card" style="max-width:760px">
+  <div class="card-header"><i data-lucide="settings-2"></i><span class="title">Details</span></div>
+  <div class="card-body">
+    <form id="edit-device-form">
+      <div class="edit-grid">
+        <div class="field">
+          <label for="device_id">Device ID</label>
+          <input type="text" id="device_id" value="{{ device.device_id }}" disabled>
+          <span class="hint">The device ID can't be changed.</span>
         </div>
+        <div class="field">
+          <label for="nickname">Nickname</label>
+          <input type="text" id="nickname" value="{{ device.nickname|default('') }}" placeholder="Friendly name">
+        </div>
+        <div class="field">
+          <label for="host">Host *</label>
+          <input type="text" id="host" class="mono" value="{{ device.host|default('') }}" required>
+        </div>
+        <div class="field">
+          <label for="model">Model</label>
+          <input type="text" id="model" value="{{ device.model|default('') }}">
+        </div>
+        <div class="field">
+          <label for="serial_number">Serial number</label>
+          <input type="text" id="serial_number" class="mono" value="{{ device.serial_number|default('') }}">
+        </div>
+        <div class="field">
+          <label for="location">Location</label>
+          <input type="text" id="location" value="{{ device.location|default('') }}">
+        </div>
+        <div class="field">
+          <label for="firmware_version">Firmware version</label>
+          <input type="text" id="firmware_version" class="mono" value="{{ device.firmware_version|default('') }}">
+        </div>
+        {% if sites %}
+        <div class="field">
+          <label for="site_id">Site</label>
+          <select id="site_id" data-current="{{ current_site_id or '' }}">
+            {% for s in sites %}
+            <option value="{{ s.site_id }}" {% if s.site_id == current_site_id %}selected{% endif %}>{{ s.name or s.site_id }}</option>
+            {% endfor %}
+          </select>
+          <span class="hint">Every device belongs to exactly one site. Pick another to move it.</span>
+        </div>
+        {% endif %}
+      </div>
 
-        <div class="form-group">
-            <label for="host">Host *</label>
-            <input type="text" id="host" name="host" value="{{ device.host }}" required>
-        </div>
+      <div class="nav-divider"></div>
 
-        <div class="form-group">
-            <label for="model">Model</label>
-            <input type="text" id="model" name="model" value="{{ device.model|default('') }}">
+      <div class="field">
+        <label>Tags</label>
+        <div class="tag-chips" id="tag-chips">
+          <input type="text" class="tag-add" id="tag-add" placeholder="Add a tag, press Enter">
         </div>
+        <span class="hint">Press Enter or comma to add. Click × on a chip to remove it.</span>
+      </div>
 
-        <div class="form-group">
-            <label for="serial_number">Serial Number</label>
-            <input type="text" id="serial_number" name="serial_number" value="{{ device.serial_number|default('') }}">
-        </div>
-
-        <div class="form-group">
-            <label for="location">Location</label>
-            <input type="text" id="location" name="location" value="{{ device.location|default('') }}">
-        </div>
-
-        <div class="form-group">
-            <label for="firmware_version">Firmware Version</label>
-            <input type="text" id="firmware_version" name="firmware_version" value="{{ device.firmware_version|default('') }}">
-        </div>
-
-        <div class="form-group">
-            <label for="tags">Tags (comma-separated)</label>
-            <input type="text" id="tags" name="tags" value="{{ device.tags|join(', ') if device.tags else '' }}">
-        </div>
-
-        <div class="form-actions">
-            <button type="submit" class="button">Save Changes</button>
-            <a href="/device/{{ device.device_id }}" class="button button-secondary">Cancel</a>
-        </div>
+      <div style="display:flex;gap:10px;margin-top:18px">
+        <button type="submit" class="btn primary"><i data-lucide="check"></i> Save changes</button>
+        <a href="/device/{{ device.device_id }}" class="btn ghost">Cancel</a>
+      </div>
     </form>
+    <div id="edit-msg" style="display:none"></div>
+  </div>
 </div>
-
-<div id="message" class="message" style="display: none;"></div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
-document.getElementById('edit-device-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
+const DEVICE_ID = {{ device.device_id|tojson }};
+let tags = {{ (device.tags or [])|tojson }};
 
-    const formData = new FormData(e.target);
-    const data = {
-        host: formData.get('host'),
-        nickname: formData.get('nickname') || undefined,
-        model: formData.get('model') || undefined,
-        serial_number: formData.get('serial_number') || undefined,
-        location: formData.get('location') || undefined,
-        firmware_version: formData.get('firmware_version') || undefined,
-        tags: formData.get('tags') ? formData.get('tags').split(',').map(t => t.trim()) : []
-    };
+// ── Tag chips ──
+const chipBox = document.getElementById('tag-chips');
+const addInput = document.getElementById('tag-add');
 
-    try {
-        const response = await fetch('/api/devices/{{ device.device_id }}', {
-            method: 'PUT',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(data)
-        });
-
-        if (response.ok) {
-            window.location.href = '/device/{{ device.device_id }}';
-        } else {
-            const error = await response.json();
-            showMessage('Error: ' + error.detail, 'error');
-        }
-    } catch (error) {
-        showMessage('Error: ' + error.message, 'error');
-    }
-});
-
-function showMessage(text, type) {
-    const msg = document.getElementById('message');
-    msg.textContent = text;
-    msg.className = 'message ' + type;
-    msg.style.display = 'block';
+function renderTags() {
+  // Remove existing chips (keep the input).
+  chipBox.querySelectorAll('.tag-chip').forEach(c => c.remove());
+  tags.forEach((t, i) => {
+    const chip = document.createElement('span');
+    chip.className = 'tag-chip';
+    chip.append(document.createTextNode(t));
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.setAttribute('aria-label', 'Remove tag ' + t);
+    x.innerHTML = '<i data-lucide="x" style="width:13px;height:13px"></i>';
+    x.addEventListener('click', () => { tags.splice(i, 1); renderTags(); });
+    chip.appendChild(x);
+    chipBox.insertBefore(chip, addInput);
+  });
+  if (window.lucide) lucide.createIcons();
 }
+function addTag(raw) {
+  const t = (raw || '').trim();
+  if (t && !tags.includes(t)) { tags.push(t); renderTags(); }
+}
+addInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ',') {
+    e.preventDefault(); addTag(addInput.value); addInput.value = '';
+  } else if (e.key === 'Backspace' && !addInput.value && tags.length) {
+    tags.pop(); renderTags();
+  }
+});
+addInput.addEventListener('blur', () => { addTag(addInput.value); addInput.value = ''; });
+renderTags();
+
+// ── Save ──
+function showError(text) {
+  const m = document.getElementById('edit-msg');
+  m.textContent = text; m.style.display = 'block';
+}
+
+document.getElementById('edit-device-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const $ = id => document.getElementById(id);
+  const body = {
+    host: $('host').value,
+    nickname: $('nickname').value || undefined,
+    model: $('model').value || undefined,
+    serial_number: $('serial_number').value || undefined,
+    location: $('location').value || undefined,
+    firmware_version: $('firmware_version').value || undefined,
+    tags: tags,
+  };
+  try {
+    const r = await fetch('/api/devices/' + encodeURIComponent(DEVICE_ID), {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) { showError('Save failed: ' + ((await r.json()).detail || r.status)); return; }
+
+    // Move site if it changed.
+    const sel = $('site_id');
+    if (sel && sel.value && sel.value !== sel.getAttribute('data-current')) {
+      const rs = await fetch('/api/devices/' + encodeURIComponent(DEVICE_ID) + '/site', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({site_id: sel.value}),
+      });
+      if (!rs.ok) { showError('Saved details, but moving site failed: ' + ((await rs.json()).detail || rs.status)); return; }
+    }
+    window.location.href = '/device/' + encodeURIComponent(DEVICE_ID);
+  } catch (err) {
+    showError('Error: ' + err.message);
+  }
+});
 </script>
 {% endblock %}
