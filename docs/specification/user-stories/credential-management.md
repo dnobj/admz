@@ -50,13 +50,12 @@ How device credentials are captured, stored, retrieved, and rotated — with spe
 
 ## US-CR-004 — `get_credentials` is opt-in
 
-**As a** security-conscious operator, **I want** plaintext credential retrieval **disabled by default** on both the MCP and REST surfaces **so that** a hostile LLM prompt cannot exfiltrate device passwords.
+**As a** security-conscious operator, **I want** device passwords to be **un-viewable through the web/REST UI** and LLM retrieval **disabled by default** **so that** neither a casual UI visitor nor a hostile LLM prompt can exfiltrate device passwords.
 
 **Acceptance criteria:**
-1. The MCP `get_credentials` tool is filtered out of `list_tools()` unless `fleet_settings["tool_get_credentials_enabled"] == "true"`.
-2. With the flag off, calling the tool returns `{success: false, error: "ToolDisabled", ...}`.
-3. The REST endpoint `GET /api/devices/{id}/credentials` returns HTTP 403 with a hint pointing at `/confirm-settings` when the flag is off.
-4. The flag itself is **protected**: `set_fleet_setting("tool_get_credentials_enabled", …)` from MCP is rejected. Only the web UI at `/confirm-settings` can change it.
+1. Device-account passwords are never displayed in the web UI (the account page shows a "stored · never displayed" lock) and there is no device-credential reveal endpoint — `GET /api/devices/{id}/credentials` returns 404 (route removed).
+2. The MCP `get_credentials` tool is filtered out of `list_tools()` unless `fleet_settings["tool_get_credentials_enabled"] == "true"`; with the flag off, calling it returns `{success: false, error: "ToolDisabled", ...}`.
+3. The flag itself is **protected**: `set_fleet_setting("tool_get_credentials_enabled", …)` from MCP is rejected. Only the web UI at `/confirm-settings` can change it.
 
 **Related requirements:** [security](../requirements/security.md), [mcp-server](../requirements/mcp-server.md), [web-api](../requirements/web-api.md).
 

@@ -1,157 +1,72 @@
 {% extends "base.html" %}
+{% block nav_active %}fleet{% endblock %}
+{% block title %}{{ account.account_id }} · {{ device.nickname or device.device_id }}{% endblock %}
+{% block crumb_tail %}{{ account.account_id }}{% endblock %}
 
 {% block content %}
+<div class="breadcrumb">
+  <a href="/devices">Fleet</a>
+  <span class="sep"><i data-lucide="chevron-right"></i></span>
+  <a href="/device/{{ device.device_id }}">{{ device.nickname or device.device_id }}</a>
+  <span class="sep"><i data-lucide="chevron-right"></i></span>
+  <span class="last">{{ account.account_id }}</span>
+</div>
+
 <div class="page-header">
-    <h1>Account: {{ account.account_id }}</h1>
-    <p>Device: <a href="/device/{{ device.device_id }}">{{ device.nickname|default(device.device_id) }}</a></p>
-</div>
-
-<div class="account-info">
-    <h2>Account Information</h2>
-    <table>
-        <tr>
-            <th>Account ID</th>
-            <td>{{ account.account_id }}</td>
-        </tr>
-        <tr>
-            <th>Username</th>
-            <td>{{ account.username }}</td>
-        </tr>
-        <tr>
-            <th>Password</th>
-            <td>
-                <div class="password-reveal">
-                    <code class="password-value" id="password-value">••••••••</code>
-                    <button class="button-small" id="reveal-btn" onclick="togglePassword()">Reveal</button>
-                    <button class="button-small button-secondary" id="copy-btn" onclick="copyPassword()" style="display:none;">Copy</button>
-                </div>
-            </td>
-        </tr>
-        {% if account.account_type %}
-        <tr>
-            <th>Account Type</th>
-            <td>{{ account.account_type }}</td>
-        </tr>
-        {% endif %}
-        {% if account.purpose %}
-        <tr>
-            <th>Purpose</th>
-            <td>{{ account.purpose }}</td>
-        </tr>
-        {% endif %}
-        {% if account.permissions %}
-        <tr>
-            <th>Permissions</th>
-            <td>
-                <ul>
-                    {% for permission in account.permissions %}
-                    <li>{{ permission }}</li>
-                    {% endfor %}
-                </ul>
-            </td>
-        </tr>
-        {% endif %}
-    </table>
-</div>
-
-<div class="actions-footer">
+  <div class="pt" style="display:flex;align-items:center;gap:14px">
+    <span class="type-tile" style="width:40px;height:40px"><i data-lucide="key"></i></span>
+    <div>
+      <h1 class="page-title">{{ account.account_id }}</h1>
+      <p class="page-sub">Credential account on
+        <a href="/device/{{ device.device_id }}">{{ device.nickname or device.device_id }}</a></p>
+    </div>
+  </div>
+  <div class="page-actions">
     <form method="POST"
           action="/device/{{ device.device_id }}/account/{{ account.account_id }}/rotate-password"
-          style="display:inline;">
-        <button type="submit" class="button"
-                title="Open the out-of-band capture form to enter a new password (per ADR-0009).">
-            Change password
-        </button>
+          style="display:inline">
+      <button type="submit" class="btn primary"
+              title="Open the out-of-band capture form to set a new password (ADR-0009).">
+        <i data-lucide="rotate-cw"></i> Change password
+      </button>
     </form>
-    <a href="/device/{{ device.device_id }}" class="button">Back to Device</a>
-    <a href="/" class="button">Back to Devices</a>
+    <a href="/device/{{ device.device_id }}" class="btn ghost"><i data-lucide="arrow-left"></i> Back to device</a>
+  </div>
 </div>
-{% endblock %}
 
-{% block extra_js %}
-<script>
-let passwordRevealed = false;
-let cachedPassword = null;
+<div class="card" style="max-width:720px">
+  <div class="card-header"><i data-lucide="id-card"></i><span class="title">Account</span></div>
+  <div class="card-body">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px">
+      <div class="keyval"><span class="k">Account ID</span><span class="v mono">{{ account.account_id }}</span></div>
+      <div class="keyval"><span class="k">Username</span><span class="v mono">{{ account.username or '—' }}</span></div>
+      <div class="keyval"><span class="k">Type</span><span class="v"><span class="badge grey">{{ account.account_type|default('admin') }}</span></span></div>
+      {% if account.purpose %}
+      <div class="keyval"><span class="k">Purpose</span><span class="v">{{ account.purpose }}</span></div>
+      {% endif %}
+    </div>
 
-async function togglePassword() {
-    const el = document.getElementById('password-value');
-    const btn = document.getElementById('reveal-btn');
-    const copyBtn = document.getElementById('copy-btn');
+    {% if account.permissions %}
+    <div class="nav-divider"></div>
+    <div class="keyval"><span class="k">Permissions</span><span class="v">
+      {% for permission in account.permissions %}<span class="badge grey" style="margin-right:4px">{{ permission }}</span>{% endfor %}
+    </span></div>
+    {% endif %}
 
-    if (passwordRevealed) {
-        el.textContent = '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022';
-        btn.textContent = 'Reveal';
-        copyBtn.style.display = 'none';
-        passwordRevealed = false;
-        return;
-    }
+    <div class="nav-divider"></div>
 
-    if (cachedPassword) {
-        el.textContent = cachedPassword;
-        btn.textContent = 'Hide';
-        copyBtn.style.display = '';
-        passwordRevealed = true;
-        return;
-    }
-
-    btn.textContent = 'Loading...';
-    btn.disabled = true;
-    try {
-        const deviceId = encodeURIComponent('{{ device.device_id }}');
-        const accountId = encodeURIComponent('{{ account.account_id }}');
-        const resp = await fetch(
-            `/api/devices/${deviceId}/credentials?account_id=${accountId}`
-        );
-        if (!resp.ok) {
-            // Surface the actual API error to the user. The /credentials
-            // endpoint returns helpful details when the fleet gate
-            // (tool_get_credentials_enabled) is off — we want the
-            // operator to see exactly how to enable it, not a generic
-            // "Failed to fetch" message.
-            let apiMessage = `HTTP ${resp.status}`;
-            try {
-                const body = await resp.json();
-                if (body.detail) apiMessage = body.detail;
-            } catch (_) { /* not JSON */ }
-
-            const errEl = document.createElement('span');
-            errEl.style.color = '#991b1b';
-            errEl.textContent = apiMessage;
-            // If the failure was the standard "feature disabled"
-            // 403, add a one-click link to the settings page.
-            if (resp.status === 403 && apiMessage.toLowerCase().includes('disabled')) {
-                const a = document.createElement('a');
-                a.href = '/confirm-settings';
-                a.textContent = ' Open Confirmation Settings →';
-                a.style.marginLeft = '8px';
-                errEl.appendChild(a);
-            }
-            el.innerHTML = '';
-            el.appendChild(errEl);
-            btn.textContent = 'Retry';
-            btn.disabled = false;
-            return;
-        }
-        const data = await resp.json();
-        cachedPassword = data.password || '(empty)';
-        el.textContent = cachedPassword;
-        btn.textContent = 'Hide';
-        copyBtn.style.display = '';
-        passwordRevealed = true;
-    } catch (err) {
-        el.textContent = 'Error: ' + err.message;
-        btn.textContent = 'Retry';
-    }
-    btn.disabled = false;
-}
-
-async function copyPassword() {
-    if (cachedPassword) {
-        await navigator.clipboard.writeText(cachedPassword);
-        const btn = document.getElementById('copy-btn');
-        btn.textContent = 'Copied!';
-        setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
-    }
-}
-</script>
+    <!-- Password: stored, never displayed (ADR-0009). -->
+    <div class="keyval"><span class="k">Password</span>
+      <span class="v" style="display:inline-flex;align-items:center;gap:8px">
+        <span class="locked-pill"><i data-lucide="lock"></i> stored · never displayed</span>
+      </span>
+    </div>
+    <p class="page-sub" style="margin:10px 0 0">
+      Passwords are captured out-of-band via a single-use link and stored
+      encrypted. ADMZ uses them only at execution time to reach the device —
+      they are never shown in the UI or passed to the AI. Use
+      <strong>Change password</strong> to set a new one.
+    </p>
+  </div>
+</div>
 {% endblock %}

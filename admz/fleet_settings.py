@@ -59,10 +59,6 @@ PROTECTED_SETTING_KEYS = {
     # MCP set_fleet_setting must never read or change it. See ADR-0025.
     "gemini_api_key",
     "gemini_default_model",
-    # Plaintext-credential access gates. The LLM tool gate is separate
-    # from the web-UI reveal gate so operators can keep the LLM strict
-    # while still using the Reveal button + REST endpoint themselves.
-    "web_reveal_credentials_enabled",
     # Device health monitor: opt-in background poller. Protected
     # because letting the LLM toggle a background loop that contacts
     # devices would be a sneak path around the safety gates.
