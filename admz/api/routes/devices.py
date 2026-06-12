@@ -2,10 +2,11 @@
 REST API routes for device management.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, Depends, Request
 from fastapi.responses import JSONResponse
 
+from admz.api.context import AppContext, get_context
 from admz.fleet_settings import (
     fleet_settings,
     is_sensitive_setting_key,
@@ -246,6 +247,124 @@ async def update_device(
         record_event(principal, "device.update", resource=resource,
                      success=False, error_message=str(e))
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+def _extract_device_facts(parsed: Any) -> Dict[str, str]:
+    """Pull model / serial / firmware out of a basicdeviceinfo response.
+
+    Robust to shape: the props can sit under ``data.propertyList``,
+    ``data.properties``, or at the top level, and the payload may arrive as
+    a dict (json-rpc) or a ``key=value`` string (legacy). Keys are matched
+    case-insensitively (ProdNbr / SerialNumber / Version)."""
+    import json as _json
+
+    props: Dict[str, str] = {}
+
+    def _walk(obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if isinstance(v, (dict, list)):
+                    _walk(v)
+                else:
+                    props.setdefault(str(k).lower(), v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item)
+
+    if isinstance(parsed, str):
+        try:
+            _walk(_json.loads(parsed))
+        except Exception:
+            for line in parsed.splitlines():
+                if "=" in line:
+                    k, _, v = line.partition("=")
+                    props.setdefault(k.strip().lower(), v.strip())
+    else:
+        _walk(parsed)
+
+    facts: Dict[str, str] = {}
+    if props.get("prodnbr"):
+        facts["model"] = str(props["prodnbr"])
+    if props.get("serialnumber"):
+        facts["serial_number"] = str(props["serialnumber"])
+    if props.get("version"):
+        facts["firmware_version"] = str(props["version"])
+    return facts
+
+
+@router.post("/devices/{device_id}/refresh-info")
+async def refresh_device_info(
+    request: Request,
+    device_id: str,
+    ctx: AppContext = Depends(get_context),
+):
+    """Re-read the device's observed facts (model, serial, firmware) from
+    the device itself and update the registry.
+
+    These fields describe what the hardware *is* — they're discovered, not
+    operator-set, and feed facet selection, capability checks, and atlas
+    contributions. The correct way to change them is to re-read reality
+    (this endpoint), not to hand-edit. Runs ``basicdeviceinfo.cgi`` through
+    the executor (which knows the device's scheme/auth and self-heals);
+    credentials never leave the server.
+    """
+    from admz import operations
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+    resource = f"device:{device_id}"
+
+    if not ctx.registry.device_exists(device_id):
+        raise HTTPException(status_code=404, detail=f"Device not found: {device_id}")
+
+    status = "ok"
+    facts: Dict[str, str] = {}
+    try:
+        result = await operations.run_execution_tail(
+            device_id=device_id,
+            operation_id="basicdeviceinfo.cgi:getAllProperties",
+            family="vapix",
+            params={},
+            catalog=ctx.catalog,
+            registry=ctx.registry,
+            executors=ctx.executors,
+        )
+        if result.success:
+            facts = _extract_device_facts(result.parsed_data)
+        else:
+            status = "unreachable"
+    except operations.OperationNotFoundError:
+        raise HTTPException(
+            status_code=501,
+            detail="basicdeviceinfo operation not in the catalog.",
+        )
+    except Exception as exc:
+        status = f"error: {exc}"
+
+    if facts:
+        try:
+            ctx.registry.update_device_info(device_id, facts)
+        except NotImplementedError:
+            pass
+
+    record_event(principal, "device.refresh_info", resource=resource,
+                 success=bool(facts),
+                 details={"status": status, "updated": list(facts)})
+
+    if not facts:
+        return {
+            "device_id": device_id,
+            "status": status,
+            "updated": {},
+            "message": (
+                "Couldn't read device facts — check the device is reachable "
+                "and its credentials are stored."
+            ),
+        }
+    return {"device_id": device_id, "status": status, "updated": facts}
 
 
 @router.put("/devices/{device_id}/site")
