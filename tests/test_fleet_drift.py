@@ -161,3 +161,21 @@ class TestFleetDriftEndpoint:
         page = c.get("/configuration").text
         assert api_state == "drifted"
         assert "Drifted (2 field" in page
+
+    def test_device_detail_drift_card_reflects_state(self, client):
+        """Regression: the detail page's drift card was a hardcoded
+        'No baseline yet' stub; it must now show the real last-known state."""
+        c, reg, store = client
+        reg.add_device("cam-d", {"host": "192.0.2.20"})
+        reg.set_config_pointers("cam-d", baseline_sha="bd")
+        _set_signature(store, "cam-d", 5)
+
+        page = c.get("/device/cam-d").text
+        assert "Drifted (5 field" in page
+        assert "No baseline yet" not in page
+
+    def test_device_detail_no_baseline_still_prompts_snapshot(self, client):
+        c, reg, _ = client
+        reg.add_device("cam-nb", {"host": "192.0.2.21"})
+        page = c.get("/device/cam-nb").text
+        assert "No baseline yet" in page
