@@ -395,11 +395,24 @@ async def edit_device_form(
     try:
         device = registry.get_device_info(device_id)
 
+        # Sites the device can be moved to (ADR-0032: a device belongs to
+        # exactly one Site). Defensive — backends may not support sites.
+        try:
+            sites = registry.list_sites()
+        except Exception:
+            sites = []
+        try:
+            current_site_id = (registry.get_device_org_site(device_id) or {}).get("site_id")
+        except Exception:
+            current_site_id = None
+
         return templates.TemplateResponse(
             "edit_device.html",
             {
                 "request": request,
                 "device": device,
+                "sites": sites,
+                "current_site_id": current_site_id,
                 "title": f"Edit Device: {device.get('nickname', device_id)}",
             },
         )

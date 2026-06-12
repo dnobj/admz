@@ -18,6 +18,7 @@ from admz.api.models import (
     DeviceResponse,
     AccountCreate,
     AccountResponse,
+    DeviceSiteUpdate,
     ErrorResponse,
 )
 from admz.exceptions import (
@@ -245,6 +246,53 @@ async def update_device(
         record_event(principal, "device.update", resource=resource,
                      success=False, error_message=str(e))
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.put("/devices/{device_id}/site")
+async def move_device_to_site(
+    request: Request,
+    device_id: str,
+    body: DeviceSiteUpdate,
+    registry: DeviceRegistry = Depends(get_registry),
+):
+    """Move a device to a different Site (ADR-0032).
+
+    A device always belongs to exactly one Site — there's no "site-less"
+    state — so this reassigns it. The owning Org is derived from the
+    target Site. To remove a device from ADMZ entirely, delete it
+    (``DELETE /api/devices/{id}``).
+    """
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+    resource = f"device:{device_id}"
+
+    try:
+        site = registry.get_site(body.site_id)
+        if site is None:
+            raise HTTPException(status_code=404, detail=f"Site '{body.site_id}' not found")
+        registry.set_device_org_site(device_id, site["org_id"], body.site_id)
+        record_event(principal, "device.move_site", resource=resource,
+                     details={"site_id": body.site_id, "org_id": site["org_id"]})
+        return {"device_id": device_id, "site_id": body.site_id,
+                "org_id": site["org_id"]}
+    except DeviceNotFoundError as e:
+        record_event(principal, "device.move_site", resource=resource,
+                     success=False, error_message=str(e))
+        raise HTTPException(status_code=404, detail=str(e))
+    except NotImplementedError:
+        record_event(principal, "device.move_site", resource=resource,
+                     success=False, error_message="sites-unsupported")
+        raise HTTPException(
+            status_code=501, detail="This registry does not support sites"
+        )
+    except BackendError as e:
+        record_event(principal, "device.move_site", resource=resource,
+                     success=False, error_message=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/devices/{device_id}", status_code=204)
