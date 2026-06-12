@@ -18,7 +18,6 @@ from admz.api.models import (
     DeviceResponse,
     AccountCreate,
     AccountResponse,
-    CredentialsResponse,
     ErrorResponse,
 )
 from admz.exceptions import (
@@ -140,129 +139,13 @@ async def list_device_accounts(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.get(
-    "/devices/{device_id}/credentials", response_model=CredentialsResponse
-)
-async def get_device_credentials(
-    request: Request,
-    device_id: str,
-    registry: DeviceRegistry = Depends(get_registry),
-    account_id: str = Query("default", description="Account identifier"),
-    requester: Optional[str] = Query(
-        None, description="Requester identifier for audit logging"
-    ),
-):
-    """
-    Get credentials for a device account.
-
-    WARNING: This endpoint returns sensitive credentials including passwords.
-    Disabled by default; enable by setting the fleet setting
-    ``tool_get_credentials_enabled = "true"`` via the ``/confirm-settings``
-    web UI. Mirrors the gating of the MCP ``get_credentials`` tool —
-    the LLM and REST surfaces must agree on whether credential retrieval
-    is allowed.
-
-    Every call is audit-logged with the authenticated principal as
-    requester (Phase 4D).
-    """
-    from admz.audit import record_event
-    from admz.auth import get_current_principal
-    from admz.authz import principal_can_reveal, reveal_groups
-
-    principal = await get_current_principal(request)
-    audit_requester = requester or principal.name
-    resource = f"device:{device_id}/account:{account_id}"
-
-    # Two-layer gate:
-    #   1. Authenticated principals: must be in one of the configured
-    #      reveal groups (ADMZ_REVEAL_GROUPS — default Administrators
-    #      + ADMZ-Admins). This is the Phase-4 RBAC path: trust real
-    #      identity, not a fleet-wide on/off flag.
-    #   2. Anonymous principals (ADMZ_AUTH_BACKEND=none — the default
-    #      for local single-user installs): fall back to the existing
-    #      web_reveal_credentials_enabled / tool_get_credentials_enabled
-    #      flag pair. Without this fallback the Reveal button would
-    #      stop working entirely for every dev who hasn't stood up IIS.
-    allowed, reason = principal_can_reveal(principal)
-    flag_fallback_used = False
-    if not allowed:
-        if reason == "anonymous-fallback":
-            web_enabled = fleet_settings.get("web_reveal_credentials_enabled") == "true"
-            llm_enabled = fleet_settings.get("tool_get_credentials_enabled") == "true"
-            if web_enabled or llm_enabled:
-                allowed = True
-                reason = (
-                    "flag:web_reveal_credentials_enabled"
-                    if web_enabled
-                    else "flag:tool_get_credentials_enabled"
-                )
-                flag_fallback_used = True
-
-    if not allowed:
-        # Build a message that's actionable for both deployment shapes.
-        if reason == "anonymous-fallback":
-            detail = (
-                "Plaintext credential retrieval is disabled. Enable the "
-                "Reveal button via 'Allow web UI to reveal passwords' at "
-                "/confirm-settings (preferred — does not expose passwords "
-                "to LLMs), or — for LLM access too — 'Allow LLMs to "
-                "retrieve plaintext'. Underlying fleet settings: "
-                "'web_reveal_credentials_enabled' (web only) or "
-                "'tool_get_credentials_enabled' (also exposes the MCP tool)."
-            )
-        else:
-            detail = (
-                "Reveal denied: your account is authenticated but not in "
-                f"any of the configured reveal groups ({', '.join(reveal_groups())}). "
-                f"Decision: {reason}. Ask an administrator to add you to "
-                "one of those groups, or override the list via the "
-                "ADMZ_REVEAL_GROUPS environment variable."
-            )
-        record_event(
-            principal, "get_credentials",
-            resource=resource,
-            success=False,
-            error_message=f"reveal-denied:{reason}",
-            details={
-                "requester_override": requester,
-                "decision": reason,
-            },
-        )
-        raise HTTPException(status_code=403, detail=detail)
-
-    try:
-        credentials = registry.get_credentials(device_id, account_id, audit_requester)
-        record_event(
-            principal, "get_credentials",
-            resource=resource,
-            details={
-                "requester_override": requester,
-                "decision": reason,
-                "flag_fallback": flag_fallback_used,
-            },
-        )
-        return credentials
-
-    except DeviceNotFoundError as e:
-        record_event(principal, "get_credentials", resource=resource,
-                     success=False, error_message=str(e))
-        raise HTTPException(status_code=404, detail=str(e))
-    except AccountNotFoundError as e:
-        record_event(principal, "get_credentials", resource=resource,
-                     success=False, error_message=str(e))
-        raise HTTPException(status_code=404, detail=str(e))
-    except PermissionDeniedError as e:
-        record_event(principal, "get_credentials", resource=resource,
-                     success=False, error_message=str(e))
-        raise HTTPException(status_code=403, detail=str(e))
-    except BackendError as e:
-        record_event(principal, "get_credentials", resource=resource,
-                     success=False, error_message=str(e))
-        raise HTTPException(status_code=503, detail=str(e))
-    except Exception as e:
-        record_event(principal, "get_credentials", resource=resource,
-                     success=False, error_message=str(e))
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+# NOTE: the device-credential reveal endpoint (GET
+# /api/devices/{id}/credentials) was removed — device-account passwords are
+# never displayed through the web/REST surface. ADMZ reads them from the
+# secrets backend only at execution time. The LLM path (`get_credentials`
+# MCP tool, gated by tool_get_credentials_enabled) and the short-lived
+# `create_temp_credentials` flow are unaffected. Fleet-setting reveal (admin
+# secrets like API keys) lives at GET /api/fleet/settings/{key}/reveal.
 
 
 @router.post("/devices", response_model=DeviceResponse, status_code=201)
@@ -560,12 +443,13 @@ async def get_fleet_setting(key: str):
 
 @router.get("/fleet/settings/{key}/reveal")
 async def reveal_fleet_setting(key: str, request: Request):
-    """Return the plaintext value of a fleet setting.
+    """Return the plaintext value of a fleet setting (admin secrets like
+    API keys — NOT device-account passwords, which are never revealable).
 
-    Uses the same RBAC gate as the per-account Reveal: caller must be
-    in one of the configured ADMZ_REVEAL_GROUPS (default
-    ``Administrators`` + ``ADMZ-Admins``). For ``ADMZ_AUTH_BACKEND=none``
-    deployments, falls back to the ``web_reveal_credentials_enabled``
+    Gate: the caller must be in one of the configured ADMZ_REVEAL_GROUPS
+    (default ``Administrators`` + ``ADMZ-Admins``). For
+    ``ADMZ_AUTH_BACKEND=none`` deployments — where there's no identity to
+    group-check — it falls back to the ``tool_get_credentials_enabled``
     fleet flag so local single-user installs still work.
 
     Non-sensitive keys are returned without any gate — there's nothing
@@ -595,25 +479,19 @@ async def reveal_fleet_setting(key: str, request: Request):
     allowed, reason = principal_can_reveal(principal)
     flag_fallback_used = False
     if not allowed and reason == "anonymous-fallback":
-        web_enabled = fleet_settings.get("web_reveal_credentials_enabled") == "true"
-        llm_enabled = fleet_settings.get("tool_get_credentials_enabled") == "true"
-        if web_enabled or llm_enabled:
+        if fleet_settings.get("tool_get_credentials_enabled") == "true":
             allowed = True
-            reason = (
-                "flag:web_reveal_credentials_enabled"
-                if web_enabled
-                else "flag:tool_get_credentials_enabled"
-            )
+            reason = "flag:tool_get_credentials_enabled"
             flag_fallback_used = True
 
     if not allowed:
         if reason == "anonymous-fallback":
             detail = (
-                "Reveal denied: fleet-setting plaintext is gated. Enable "
-                "the Reveal button via 'Allow web UI to reveal passwords' "
-                "at /confirm-settings, or configure ADMZ_AUTH_BACKEND so "
-                "your Windows identity can be checked against the reveal "
-                "groups."
+                "Reveal denied: fleet-setting plaintext is gated. Configure "
+                "ADMZ_AUTH_BACKEND so your Windows identity can be checked "
+                "against the reveal groups, or (for a single-user install) "
+                "enable 'Allow LLMs to retrieve plaintext' at "
+                "/confirm-settings."
             )
         else:
             detail = (

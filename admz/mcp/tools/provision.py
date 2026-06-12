@@ -14,8 +14,9 @@ TOOLS: List[Tool] = [
             "(2) Legacy default password (root/pass): stores creds, suggests rotation. "
             "(3) Unknown password: returns error — use capture_credentials instead. "
             "Password priority: explicit param > fleet default_password setting > auto-generated. "
-            "Generated passwords are stored in the registry and NEVER returned in the response. "
-            "Use get_credentials to retrieve them afterward. "
+            "Generated passwords are stored in the registry and NEVER returned in the response "
+            "or exposed to the LLM, and are never displayed in the web UI; ADMZ uses them only "
+            "at execution time to reach the device. Rotate via the out-of-band capture flow. "
             "If only host is provided (no device_id), auto-registers the device using "
             "its MAC address (= serial number) as the device_id."
         ),

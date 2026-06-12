@@ -72,22 +72,26 @@ is that the LLM uses these creds directly for a brief window).
 Max 3 temp creds per device. TTL 60–3600s. Background loop cleans
 expired ones via `pwdgrp.cgi:remove-user`.
 
-### FR-CRED-009 — Plaintext retrieval is opt-in (two independent gates) ✅
-Two separate fleet flags gate plaintext password access, both
-default off, both in `PROTECTED_SETTING_KEYS`, both flipped only
-via `/confirm-settings`. See
+### FR-CRED-009 — Device passwords are never displayed; LLM access is opt-in ✅
+Device-account passwords are **never displayed** through any web/REST
+surface — the account page shows only a "stored · never displayed" lock,
+and the device-credential reveal endpoint (`GET /api/devices/{id}/credentials`)
+and its `web_reveal_credentials_enabled` flag were **removed entirely**.
+ADMZ reads the plaintext from the secrets backend only at execution time
+to reach the device.
+
+One opt-in flag remains, default off, in `PROTECTED_SETTING_KEYS`,
+flipped only via `/confirm-settings`. See
 [ADR-0020](../decisions/0020-protected-fleet-settings.md).
 
 | Flag | What it gates |
 |---|---|
-| `web_reveal_credentials_enabled` | Web UI **Reveal** button + REST `GET /api/devices/{id}/credentials` (authenticated humans / API-key clients). **Recommended** when an operator wants to inspect stored credentials without exposing them to LLMs. |
-| `tool_get_credentials_enabled` | MCP `get_credentials` tool. Adds the password to the LLM's conversation context. Stricter — most operators should leave this off and rely on `create_temp_credentials` for ad-hoc LLM access. |
+| `tool_get_credentials_enabled` | MCP `get_credentials` tool. Adds the password to the LLM's conversation context. Most operators should leave this off and rely on `create_temp_credentials` for ad-hoc LLM access. |
 
-The REST endpoint accepts EITHER flag (so enabling the LLM-tool
-flag implicitly also enables Reveal — useful when an operator
-explicitly wants both surfaces open). The MCP tool only checks
-its own flag, so enabling Reveal does NOT silently expose
-`get_credentials` to LLMs.
+Reveal of **fleet-level** secrets (admin values like API keys, NOT device
+passwords) is a separate surface — `GET /api/fleet/settings/{key}/reveal`,
+gated by membership in `ADMZ_REVEAL_GROUPS` (with the LLM flag as the
+anonymous-mode fallback).
 
 ### FR-CRED-010 — Per-protocol detection on every probe ✅
 `_detect_auth_schemes()` parses `WWW-Authenticate` from 401 responses
@@ -100,10 +104,13 @@ Tested in `tests/test_sqlite_backend.py::test_password_is_encrypted_at_rest`
 — the SQLite file is inspected for the plaintext password string,
 which must not appear.
 
-### NFR-CRED-002 — Audit log records every credential retrieval ✅
-`GET /api/devices/{id}/credentials` writes an `audit_log` row with
-the authenticated principal as requester, the device_id + account_id
-as resource, success/failure, error message.
+### NFR-CRED-002 — Audit log records every credential access ✅
+Internal credential reads (`registry.get_credentials`, used by the
+executor/plan engine at execution time) and fleet-setting reveals
+(`GET /api/fleet/settings/{key}/reveal`) write `audit_log` rows with the
+authenticated principal as requester, the resource, success/failure, and
+error message. (The device-credential reveal endpoint itself was removed —
+device passwords are never returned over web/REST.)
 
 ### NFR-CRED-003 — Capture tokens are 256-bit single-use ✅
 `secrets.token_urlsafe(32)`. SQLite `UPDATE … WHERE status='pending'`

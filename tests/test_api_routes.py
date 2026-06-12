@@ -321,7 +321,6 @@ class TestRoutesAreMounted:
             "/api/devices/{device_id}",
             "/api/devices/{device_id}/accounts",
             "/api/devices/{device_id}/accounts/{account_id}",
-            "/api/devices/{device_id}/credentials",
             # Catalog
             "/api/catalog/query",
             "/api/catalog/execute",
@@ -391,13 +390,13 @@ class TestFleetSettingsMasking:
         assert r.json()["value"] == "operator"
 
 
-class TestCredentialsEndpointGated:
-    """The /api/devices/{id}/credentials REST endpoint is gated behind
-    the ``tool_get_credentials_enabled`` fleet flag (or the newer
-    ``web_reveal_credentials_enabled`` — see test_reveal_group_gate.py
-    for the full gate matrix). The MCP equivalent of this tool no
-    longer exists (CR-1); plaintext credentials never enter LLM
-    context."""
+class TestCredentialsEndpointRemoved:
+    """The device-credential reveal endpoint (GET
+    /api/devices/{id}/credentials) was removed: device-account passwords
+    are never displayed through any web/REST surface. ADMZ reads them from
+    the secrets backend only at execution time; the LLM path
+    (`get_credentials` MCP tool) and `create_temp_credentials` are
+    separate and unaffected."""
 
     def _register_device_with_creds(self, client):
         client.post(
@@ -418,32 +417,21 @@ class TestCredentialsEndpointGated:
             },
         )
 
-    def test_credentials_endpoint_disabled_by_default(self, client):
-        self._register_device_with_creds(client)
-        r = client.get("/api/devices/cam-01/credentials")
-        assert r.status_code == 403
-        assert "tool_get_credentials_enabled" in r.json()["detail"]
+    def test_endpoint_is_not_mounted(self):
+        from admz.api.main import app
+        paths = {r.path for r in app.routes if hasattr(r, "path")}
+        assert "/api/devices/{device_id}/credentials" not in paths
 
-    def test_credentials_endpoint_works_when_enabled(self, client):
+    def test_endpoint_returns_404_even_with_llm_flag_on(self, client):
+        # Even with the LLM creds flag enabled, the web/REST reveal of a
+        # device password does not exist — the password never leaks here.
         self._register_device_with_creds(client)
         from admz.fleet_settings import fleet_settings as fs
         fs.set("tool_get_credentials_enabled", "true")
         try:
             r = client.get("/api/devices/cam-01/credentials")
-            assert r.status_code == 200
-            creds = r.json()
-            assert creds["username"] == "root"
-            assert creds["password"] == "topsecret"
-        finally:
-            fs.delete("tool_get_credentials_enabled")
-
-    def test_credentials_endpoint_disabled_with_false_value(self, client):
-        self._register_device_with_creds(client)
-        from admz.fleet_settings import fleet_settings as fs
-        fs.set("tool_get_credentials_enabled", "false")
-        try:
-            r = client.get("/api/devices/cam-01/credentials")
-            assert r.status_code == 403
+            assert r.status_code == 404
+            assert "topsecret" not in r.text
         finally:
             fs.delete("tool_get_credentials_enabled")
 

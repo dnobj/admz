@@ -116,30 +116,12 @@
 
     <h2 style="font-size:18px;margin-bottom:8px;">Plaintext credential access</h2>
     <p style="color:#666;font-size:14px;margin-bottom:16px;">
-      Two independent flags control plaintext password retrieval.
-      Both are off by default. Toggling either one cannot be done
-      by the LLM &mdash; only through this web UI.
+      Device-account passwords are <strong>never displayed</strong> in the
+      web UI or via REST. ADMZ reads them from the secrets backend only at
+      execution time. The single flag below controls whether the LLM may
+      retrieve plaintext; it is off by default and cannot be toggled by the
+      LLM &mdash; only through this web UI.
     </p>
-
-    <div style="margin-bottom:18px;">
-      <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
-        <input type="checkbox" name="web_reveal_credentials_enabled" value="1"
-               {% if web_reveal_enabled %}checked{% endif %}
-               style="margin-top:3px;">
-        <span>
-          <strong style="display:block;margin-bottom:2px;">Allow web UI to reveal passwords</strong>
-          <span style="color:#666;font-size:13px;">
-            Enables the <strong>Reveal</strong> button on the account
-            detail page (and the underlying
-            <code>GET&nbsp;/api/devices/&hellip;/credentials</code>
-            endpoint for authenticated humans / API-key clients).
-            Recommended for operators who need to see their own
-            stored credentials &mdash; <strong>does not</strong>
-            expose passwords to LLMs.
-          </span>
-        </span>
-      </label>
-    </div>
 
     <div style="margin-bottom:24px;">
       <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
@@ -150,14 +132,13 @@
           <strong style="display:block;margin-bottom:2px;">Allow LLMs to retrieve plaintext passwords</strong>
           <span style="color:#666;font-size:13px;">
             Exposes the <code>get_credentials</code> MCP tool to
-            LLMs. Stricter than the web-reveal flag &mdash; the
-            password goes into the LLM's context (where it persists
-            across tool calls in that conversation). <strong>Most
-            operators should leave this off</strong> and instead use
+            LLMs &mdash; the password goes into the LLM's context
+            (where it persists across tool calls in that
+            conversation). <strong>Most operators should leave this
+            off</strong> and instead use
             <code>create_temp_credentials</code>, which mints a
             short-lived device-side account whose plaintext is safe
-            to pass through chat. The Reveal button works
-            independently of this flag.
+            to pass through chat.
           </span>
         </span>
       </label>

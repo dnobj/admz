@@ -1,25 +1,26 @@
 """Tests for the group-membership Reveal gate (Pattern A).
 
-Background: previously, the per-account /credentials endpoint and the
-new /api/fleet/settings/{key}/reveal endpoint were gated only by
-fleet-wide flags. With Phase-4 authentication producing real
-Principals carrying group memberships, sensitive operations now check
+Background: the /api/fleet/settings/{key}/reveal endpoint (admin secrets
+like API keys) is gated by group membership. With Phase-4 authentication
+producing real Principals carrying group memberships, it checks
 membership in ADMZ_REVEAL_GROUPS (default: Administrators, ADMZ-Admins).
 
-For ``ADMZ_AUTH_BACKEND=none`` deployments (anonymous principal),
-the endpoints fall back to the existing
-``web_reveal_credentials_enabled`` / ``tool_get_credentials_enabled``
-flag pair so local single-user installs keep working without IIS.
+For ``ADMZ_AUTH_BACKEND=none`` deployments (anonymous principal), it
+falls back to the ``tool_get_credentials_enabled`` flag so local
+single-user installs keep working without IIS.
+
+(The per-account device-credential reveal endpoint was removed entirely
+— device-account passwords are never displayed through any web/REST
+surface; see test_api_routes.py::TestCredentialsEndpointRemoved.)
 
 This file pins:
   - reveal_groups() env-var parsing + defaults
   - principal_can_reveal() decision matrix (anonymous, no-groups,
     mismatch, match by Administrators, match by ADMZ-Admins,
     domain-prefixed group, case-insensitive comparison)
-  - /api/devices/{id}/credentials endpoint: gate matrix end-to-end
   - /api/fleet/settings/{key}/reveal endpoint: non-sensitive bypass,
     sensitive gate, plaintext on allow
-  - Audit-log entries on both allow and deny paths
+  - Audit-log entries on the fleet-setting reveal path
 """
 
 from __future__ import annotations
@@ -272,85 +273,6 @@ def _set_principal(client, principal: Principal) -> None:
     app.state._stub_backend.principal = principal
 
 
-# --- per-account /credentials endpoint -------------------------------------
-
-
-class TestAccountRevealGate:
-    def test_anonymous_flag_off_403(self, client):
-        # Default principal is anonymous + no flag set → flag fallback
-        # produces 403 with the existing helpful message.
-        from admz.fleet_settings import fleet_settings
-        fleet_settings.delete("web_reveal_credentials_enabled")
-        fleet_settings.delete("tool_get_credentials_enabled")
-
-        r = client.get("/api/devices/cam-gate-test/credentials?account_id=default")
-        assert r.status_code == 403
-        detail = r.json()["detail"].lower()
-        assert "/confirm-settings" in detail
-
-    def test_anonymous_web_flag_on_returns_creds(self, client):
-        """The 'local dev' path: ADMZ_AUTH_BACKEND=none + web flag on."""
-        from admz.fleet_settings import fleet_settings
-        fleet_settings.set("web_reveal_credentials_enabled", "true")
-
-        r = client.get("/api/devices/cam-gate-test/credentials?account_id=default")
-        assert r.status_code == 200
-        assert r.json()["password"] == "topsecret"
-
-    def test_authenticated_administrators_allowed_without_flag(self, client):
-        """The 'production' path: authenticated Windows user in
-        Administrators → allowed regardless of fleet flag."""
-        from admz.fleet_settings import fleet_settings
-        fleet_settings.delete("web_reveal_credentials_enabled")
-        fleet_settings.delete("tool_get_credentials_enabled")
-
-        _set_principal(client, _windows("alice", ["Administrators"]))
-        r = client.get("/api/devices/cam-gate-test/credentials?account_id=default")
-        assert r.status_code == 200
-        assert r.json()["password"] == "topsecret"
-
-    def test_authenticated_admz_admins_allowed(self, client):
-        from admz.fleet_settings import fleet_settings
-        fleet_settings.delete("web_reveal_credentials_enabled")
-
-        _set_principal(client, _windows("bob", ["ADMZ-Admins"]))
-        r = client.get("/api/devices/cam-gate-test/credentials?account_id=default")
-        assert r.status_code == 200
-
-    def test_authenticated_non_admin_denied_even_with_flag_on(self, client):
-        """Once you're authenticated, the group gate is authoritative.
-        Turning on the flag does NOT grant access to a non-admin Windows
-        user — the flag is the *anonymous* fallback only."""
-        from admz.fleet_settings import fleet_settings
-        fleet_settings.set("web_reveal_credentials_enabled", "true")
-
-        _set_principal(client, _windows("carol", ["Users"]))
-        r = client.get("/api/devices/cam-gate-test/credentials?account_id=default")
-        assert r.status_code == 403
-        detail = r.json()["detail"]
-        assert "not in any of the configured reveal groups" in detail
-
-    def test_authenticated_no_groups_denied(self, client):
-        # IWA without LDAP enrichment → empty groups → denied.
-        from admz.fleet_settings import fleet_settings
-        fleet_settings.set("web_reveal_credentials_enabled", "true")
-
-        _set_principal(client, _windows("dave", []))
-        r = client.get("/api/devices/cam-gate-test/credentials?account_id=default")
-        assert r.status_code == 403
-
-    def test_custom_reveal_groups_via_env(self, client, monkeypatch):
-        monkeypatch.setenv("ADMZ_REVEAL_GROUPS", "CredAdmins")
-        # Administrators no longer counts when the custom list overrides
-        _set_principal(client, _windows("alice", ["Administrators"]))
-        r = client.get("/api/devices/cam-gate-test/credentials?account_id=default")
-        assert r.status_code == 403
-        # CredAdmins does.
-        _set_principal(client, _windows("eve", ["CredAdmins"]))
-        r = client.get("/api/devices/cam-gate-test/credentials?account_id=default")
-        assert r.status_code == 200
-
-
 # --- /api/fleet/settings/{key}/reveal endpoint -----------------------------
 
 
@@ -372,15 +294,17 @@ class TestFleetSettingReveal:
     def test_sensitive_anonymous_flag_off_403(self, client):
         from admz.fleet_settings import fleet_settings
         fleet_settings.set("default_password", "pass")
-        fleet_settings.delete("web_reveal_credentials_enabled")
+        fleet_settings.delete("tool_get_credentials_enabled")
 
         r = client.get("/api/fleet/settings/default_password/reveal")
         assert r.status_code == 403
 
     def test_sensitive_anonymous_flag_on_returns_plaintext(self, client):
+        # The single-user fallback: ADMZ_AUTH_BACKEND=none + the LLM-creds
+        # flag on (the only remaining "creds enabled" signal).
         from admz.fleet_settings import fleet_settings
         fleet_settings.set("default_password", "pass")
-        fleet_settings.set("web_reveal_credentials_enabled", "true")
+        fleet_settings.set("tool_get_credentials_enabled", "true")
 
         r = client.get("/api/fleet/settings/default_password/reveal")
         assert r.status_code == 200
@@ -389,7 +313,7 @@ class TestFleetSettingReveal:
     def test_sensitive_admin_returns_plaintext_without_flag(self, client):
         from admz.fleet_settings import fleet_settings
         fleet_settings.set("default_password", "pass")
-        fleet_settings.delete("web_reveal_credentials_enabled")
+        fleet_settings.delete("tool_get_credentials_enabled")
 
         _set_principal(client, _windows("alice", ["Administrators"]))
         r = client.get("/api/fleet/settings/default_password/reveal")
@@ -399,7 +323,7 @@ class TestFleetSettingReveal:
     def test_sensitive_non_admin_denied(self, client):
         from admz.fleet_settings import fleet_settings
         fleet_settings.set("default_password", "pass")
-        fleet_settings.set("web_reveal_credentials_enabled", "true")
+        fleet_settings.set("tool_get_credentials_enabled", "true")
 
         _set_principal(client, _windows("carol", ["Users"]))
         r = client.get("/api/fleet/settings/default_password/reveal")
@@ -410,34 +334,6 @@ class TestFleetSettingReveal:
 
 
 class TestRevealAuditing:
-    def test_successful_reveal_is_audited(self, client):
-        from admz.fleet_settings import fleet_settings
-        fleet_settings.set("web_reveal_credentials_enabled", "true")
-
-        r = client.get("/api/devices/cam-gate-test/credentials?account_id=default")
-        assert r.status_code == 200
-
-        from admz.audit import AuditLog
-        entries = AuditLog().list_recent(action="get_credentials", limit=5)
-        assert entries, "expected an audit entry"
-        # The most recent entry should be the success path.
-        assert entries[0].success is True
-        assert "decision" in entries[0].details
-
-    def test_denied_reveal_is_audited(self, client):
-        from admz.fleet_settings import fleet_settings
-        fleet_settings.delete("web_reveal_credentials_enabled")
-        fleet_settings.delete("tool_get_credentials_enabled")
-
-        r = client.get("/api/devices/cam-gate-test/credentials?account_id=default")
-        assert r.status_code == 403
-
-        from admz.audit import AuditLog
-        entries = AuditLog().list_recent(action="get_credentials", limit=5)
-        assert entries
-        assert entries[0].success is False
-        assert "reveal-denied" in entries[0].error_message
-
     def test_fleet_setting_reveal_is_audited(self, client):
         from admz.fleet_settings import fleet_settings
         fleet_settings.set("default_password", "pass")

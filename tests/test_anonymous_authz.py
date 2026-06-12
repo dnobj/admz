@@ -131,7 +131,7 @@ class TestDestructiveEndpointsRefuseAnonymous:
         r = client.post(
             "/confirm-settings",
             data={"action": "tool_toggle",
-                  "web_reveal_credentials_enabled": "1"},
+                  "get_credentials_enabled": "1"},
         )
         assert r.status_code == 403
 

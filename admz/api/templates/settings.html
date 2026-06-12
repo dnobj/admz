@@ -59,12 +59,9 @@
         <div class="sr-control"><span class="locked-pill"><i data-lucide="lock"></i> enforced</span></div>
       </div>
       <div class="setting-row">
-        <div class="sr-text"><div class="sr-label">Web "Reveal" button</div>
-          <div class="sr-desc">Allow operators (group-gated) to reveal a stored plaintext credential in the web UI.</div></div>
-        <div class="sr-control flex items-center gap-8">
-          <span class="toggle {{ 'on' if web_reveal_enabled }}"><span class="knob"></span></span>
-          <a href="/confirm-settings" class="btn ghost sm">Change</a>
-        </div>
+        <div class="sr-text"><div class="sr-label">Device passwords never displayed</div>
+          <div class="sr-desc">Device-account passwords are never shown in the web UI or via REST — only used at execution time to reach the device.</div></div>
+        <div class="sr-control"><span class="locked-pill"><i data-lucide="lock"></i> enforced</span></div>
       </div>
       <div class="setting-row">
         <div class="sr-text"><div class="sr-label">Out-of-band credential capture</div>

@@ -579,9 +579,9 @@ class ADMZMCPServer:
                 # to a device on the user's behalf; that returns a
                 # short-lived, scoped account on the device itself rather
                 # than leaking the long-lived admin password into the
-                # model's context window. The REST endpoint
-                # ``GET /api/devices/{id}/credentials`` remains, gated by
-                # the group-membership Reveal check + audit log.
+                # model's context window. The web/REST device-credential
+                # reveal endpoint was also removed — device-account
+                # passwords are never displayed through any web surface.
                 Tool(
                     name="register_device",
                     description=(

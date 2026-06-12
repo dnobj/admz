@@ -35,10 +35,16 @@ The SQLite backend encrypts the `password` field of each account with Fernet (AE
 
 **Enforced at:** `backends/sqlite_backend.py::_store_account_data` and `_encrypt`/`_decrypt`. Tested in `tests/test_sqlite_backend.py::TestEncryption`.
 
-### FR-SEC-006 — `get_credentials` is opt-in ✅
-The MCP `get_credentials` tool and the REST `GET /api/devices/{id}/credentials` endpoint return plaintext passwords. Both are gated by the `tool_get_credentials_enabled` fleet flag (default: disabled). The flag is in `PROTECTED_SETTING_KEYS` — MCP cannot write it; only the `/confirm-settings` web UI can.
+### FR-SEC-006 — device passwords never displayed; LLM access is opt-in ✅
+Device-account passwords are never returned over web/REST — the
+device-credential reveal endpoint and its `web_reveal_credentials_enabled`
+flag were removed. ADMZ reads the plaintext from the secrets backend only
+at execution time. The MCP `get_credentials` tool (which would place the
+password in LLM context) is gated by `tool_get_credentials_enabled`
+(default: disabled), which is in `PROTECTED_SETTING_KEYS` — MCP cannot
+write it; only the `/confirm-settings` web UI can.
 
-**Enforced at:** `mcp/server.py::_register_handlers` (filters tool out of `list_tools()`), `api/routes/devices.py::get_device_credentials` (returns 403). See [0020](../decisions/0020-protected-fleet-settings.md).
+**Enforced at:** `mcp/server.py::_register_handlers` (filters tool out of `list_tools()`); the device-credential REST endpoint no longer exists. See [0020](../decisions/0020-protected-fleet-settings.md).
 
 ### FR-SEC-007 — Password values masked when listing fleet settings ✅
 `get_fleet_settings` (MCP) and `GET /api/fleet/settings` (REST) both mask any setting whose key contains "password" — displayed as `****** (N chars)` — never plaintext. Shared helper `mask_settings_for_display` in `admz/fleet_settings.py` enforces a single rule across both surfaces.
