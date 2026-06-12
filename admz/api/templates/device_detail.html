@@ -172,6 +172,38 @@
     </div>
   </div>
 </div>
+
+<!-- Danger zone -->
+<div class="card" style="margin-top:18px;border-color:rgba(244,63,94,.35)">
+  <div class="card-header"><i data-lucide="triangle-alert" style="color:#f87181"></i><span class="title">Danger zone</span></div>
+  <div class="card-body">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">
+      <div class="page-sub" style="margin:0;max-width:560px">
+        <strong>Remove this device from ADMZ.</strong> Deletes its registry entry,
+        all credential accounts, and stored passwords. The physical device is
+        untouched, and its config snapshot history in git is kept.
+      </div>
+      <button id="delete-device-btn" class="btn" type="button"
+              style="border-color:rgba(244,63,94,.45);color:#f87181">
+        <i data-lucide="trash-2"></i> Delete device
+      </button>
+    </div>
+    <div id="delete-confirm" style="display:none;margin-top:14px;padding:14px;
+         border:1px solid rgba(244,63,94,.35);border-radius:10px;background:rgba(244,63,94,.07)">
+      <div style="margin-bottom:12px">Permanently remove
+        <strong>{{ device.nickname or device.device_id }}</strong>
+        (<span class="mono">{{ device.device_id }}</span>)? This can't be undone.</div>
+      <div id="delete-error" style="display:none;margin-bottom:12px;color:#f87181;font-size:13px"></div>
+      <div style="display:flex;gap:10px">
+        <button id="delete-confirm-btn" class="btn" type="button"
+                style="background:#b91c1c;border-color:#b91c1c;color:#fff">
+          <i data-lucide="trash-2"></i> Yes, delete
+        </button>
+        <button id="delete-cancel-btn" class="btn ghost" type="button">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -194,5 +226,40 @@ const HEALTH = {
     });
   } catch(_) {}
 })();
+
+// ── Danger zone: delete device (authenticated operator, direct + audited) ──
+const DEVICE_ID = {{ device.device_id|tojson }};
+const delBtn = document.getElementById('delete-device-btn');
+const delPanel = document.getElementById('delete-confirm');
+const delConfirm = document.getElementById('delete-confirm-btn');
+const delCancel = document.getElementById('delete-cancel-btn');
+const delError = document.getElementById('delete-error');
+if (delBtn) {
+  delBtn.addEventListener('click', () => {
+    delPanel.style.display = 'block'; delBtn.style.display = 'none';
+    if (window.lucide) lucide.createIcons();
+  });
+  delCancel.addEventListener('click', () => {
+    delPanel.style.display = 'none'; delBtn.style.display = '';
+    delError.style.display = 'none';
+  });
+  delConfirm.addEventListener('click', async () => {
+    delConfirm.disabled = true;
+    delConfirm.innerHTML = '<i data-lucide="loader"></i> Deleting…';
+    if (window.lucide) lucide.createIcons();
+    try {
+      const r = await fetch('/api/devices/' + encodeURIComponent(DEVICE_ID), {method: 'DELETE'});
+      if (r.status === 204) { window.location.href = '/devices'; return; }
+      let msg = 'HTTP ' + r.status;
+      try { const b = await r.json(); if (b.detail) msg = b.detail; } catch (_) {}
+      delError.textContent = 'Delete failed: ' + msg; delError.style.display = 'block';
+    } catch (err) {
+      delError.textContent = 'Error: ' + err.message; delError.style.display = 'block';
+    }
+    delConfirm.disabled = false;
+    delConfirm.innerHTML = '<i data-lucide="trash-2"></i> Yes, delete';
+    if (window.lucide) lucide.createIcons();
+  });
+}
 </script>
 {% endblock %}

@@ -1,6 +1,6 @@
 # ADMZ MCP Tools Reference
 
-Complete reference for the **46 tools** the ADMZ MCP server exposes.
+Complete reference for the **47 tools** the ADMZ MCP server exposes.
 
 > Note: a `get_credentials` MCP tool used to exist. It was **removed**
 > (CR-1) because returning plaintext passwords into LLM context violates
@@ -51,6 +51,14 @@ Add a new device.
 Merge updates into a device's information.
 - **Args:** `device_id`, `updates` (object)
 - **Returns:** `{success, device_id, updates}`
+- **Errors:** `DeviceNotFound`
+
+### `update_device_tags`
+Add and/or remove tags on a device — the ergonomic way to edit tags
+(preserves the device's other tags; deduped, order-preserving). Metadata
+only, not gated.
+- **Args:** `device_id`, `add` (array, optional), `remove` (array, optional)
+- **Returns:** `{success, device_id, tags, added, removed}`
 - **Errors:** `DeviceNotFound`
 
 ### `delete_device`
