@@ -246,11 +246,16 @@ Per-form CSRF tokens remain the documented gap (same item the
 security-conscious-operator persona already tracks for capture/confirm).
 
 ### KL-AUTH-008 — Negotiate SSO depends on browser zone policy ⚠️
-Browsers only answer a `Negotiate` challenge automatically for hosts
-they trust: Edge/Chrome use the Windows Local-Intranet zone (which
-includes `localhost` by default — the reference deployment Just Works);
-reaching ADMZ by LAN hostname needs the site added to the intranet zone
-(or the `AuthServerAllowlist` policy). Firefox requires
+Browsers only answer a `Negotiate` challenge *silently* for hosts they
+trust: Edge/Chrome use the Windows Local-Intranet zone, which includes
+the `localhost` **name** by default but **never literal IPs** —
+observed live: visiting `127.0.0.1:4242` made the browser prompt for
+credentials instead, and whatever account is typed there (it
+authenticated as the box's `acs` account on first test) is what ADMZ
+signs in and the browser then remembers for that origin. **Browse via
+`http://localhost:4242`** for true one-click SSO. Reaching ADMZ by LAN
+hostname needs the site added to the intranet zone (or the
+`AuthServerAllowlist` policy). Firefox requires
 `network.negotiate-auth.trusted-uris` in `about:config`. Unsupporting
 browsers land on the fallback link to the credential form. On a
 workgroup box Negotiate selects NTLM (KL-AUTH-004's caveat applies);

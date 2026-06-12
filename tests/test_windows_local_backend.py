@@ -265,6 +265,22 @@ class TestSsoLogin:
         page = client.get("/login", headers={"Accept": "text/html"})
         assert "/login/sso" not in page.text
 
+    def test_loopback_ip_origin_gets_localhost_hint(self, sso):
+        """KL-AUTH-008, observed live: browsers never treat a literal IP
+        as intranet zone, so SSO prompts instead of being silent. The
+        page steers 127.0.0.1 visitors to localhost — and only them."""
+        on_ip = sso.get(
+            "http://127.0.0.1/login?next=/devices",
+            headers={"Accept": "text/html"},
+        )
+        assert "rather than using your" in on_ip.text
+        assert "http://localhost/login?next=/devices" in on_ip.text
+
+        on_name = sso.get(
+            "http://localhost/login", headers={"Accept": "text/html"},
+        )
+        assert "rather than using your" not in on_name.text
+
     def test_bare_get_issues_negotiate_challenge(self, sso):
         resp = sso.get("/login/sso", follow_redirects=False)
         assert resp.status_code == 401
