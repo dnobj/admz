@@ -73,6 +73,10 @@ class RateLimiter:
             # 5 instant tries, then 1 per 12s sustained (5/minute):
             # roomy for a typo'd password, hostile to a guesser.
             "login": (5, 1.0 / 12.0),
+            # /login/sso GET — Negotiate handshake legs (ADR-0035). One
+            # sign-in legitimately makes 2-3 requests (NTLM is multi-leg),
+            # so roomier than "login": 15 instant, then 1 per 4s.
+            "login-sso": (15, 1.0 / 4.0),
         }
 
     def configure(self, route: str, capacity: float, refill_per_s: float) -> None:

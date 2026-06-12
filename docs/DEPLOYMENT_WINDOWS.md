@@ -256,16 +256,26 @@ $env:ADMZ_AUTH_BACKEND = "windows-local"
 python -m admz api --host 127.0.0.1 --port 4242
 ```
 
-- Browsers: any page load redirects to `/login`; sign in with a Windows
-  account of the box (`alice`, `DOMAIN\alice`, or `alice@domain.local`).
+- Browsers: any page load redirects to `/login`. The page offers
+  **"Continue as the signed-in Windows user"** — single sign-on via HTTP
+  Negotiate handled in-process by Windows SSPI (ADR-0035; no IIS) — or
+  sign in as a different user with the credential form (`alice`,
+  `DOMAIN\alice`, or `alice@domain.local`). Edge/Chrome do SSO to
+  `localhost` out of the box; for a LAN hostname add the site to the
+  Local Intranet zone, and Firefox needs
+  `network.negotiate-auth.trusted-uris`. Disable the SSO button with
+  `ADMZ_SSO_NEGOTIATE=0`.
 - Agents: unchanged — `Authorization: Bearer admz_<key>`.
 - Voice/chat: the session cookie rides the WebSocket upgrade, so the
   signed-in identity flows into the MCP tool calls and audit rows.
-- Logins are rate-limited (5/min/IP) and audited (`auth.login`); the
-  password is used only for the LogonUser call, never stored.
+- Logins are rate-limited (form 5/min/IP; SSO has a roomier bucket for
+  its handshake legs) and audited (`auth.login`, with a
+  `method: form|negotiate` detail); the password is used only for the
+  LogonUser call, never stored — SSO never sees a password at all.
 - Caveats: serve on 127.0.0.1 (or front with TLS and set
   `ADMZ_SESSION_COOKIE_SECURE=1`) — the cookie is plaintext-HTTP
-  otherwise (KL-AUTH-006). No SSO: that's what the IIS path above adds.
+  otherwise (KL-AUTH-006). On a workgroup, Negotiate SSO uses NTLM
+  (KL-AUTH-004/008).
 - Unattended lab tooling (e.g. `tools/dev_auto_approve.py`): mint a key
   (`python -m admz api-key create --name dev-auto-approver`) and export
   it as `ADMZ_DEV_API_KEY`.

@@ -201,3 +201,144 @@ class TestAgentsKeepBearer:
         body = resp.json()
         assert body["name"] == "api-key:ci-bot"
         assert body["is_anonymous"] is False
+
+
+# ---------------------------------------------------------------------------
+# Negotiate SSO (ADR-0035) — route flow with a mocked SSPI handshake
+# ---------------------------------------------------------------------------
+
+_LEG1 = b"\x01leg1"      # browser's opening token  → server challenges
+_LEG2 = b"\x03leg2"      # browser's answer         → handshake completes
+_CHALLENGE = b"\x02challenge"
+
+
+def _negotiate_header(blob: bytes) -> dict:
+    import base64
+    return {"Authorization": f"Negotiate {base64.b64encode(blob).decode()}"}
+
+
+@pytest.fixture
+def sso(client, monkeypatch):
+    """The windows-local client with Negotiate SSO mocked: a deterministic
+    two-leg (NTLM-shaped) handshake that signs in alice."""
+    import admz.win_sspi as win_sspi
+
+    monkeypatch.setattr(win_sspi, "sso_available", lambda: True)
+    # Fresh parking lot so tests can't see each other's partial handshakes.
+    monkeypatch.setattr(
+        win_sspi, "pending_handshakes", win_sspi.PendingHandshakes()
+    )
+
+    class FakeHandshake:
+        def step(self, blob):
+            if blob == _LEG1:
+                return win_sspi.CONTINUE, _CHALLENGE, None
+            if blob == _LEG2:
+                return win_sspi.COMPLETE, b"", WindowsIdentity(
+                    username="alice", domain=None,
+                    groups=["Administrators", "Users"],
+                )
+            return win_sspi.FAILED, b"", None
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(win_sspi, "NegotiateHandshake", FakeHandshake)
+
+    from admz.rate_limit import rate_limiter
+    rate_limiter.reset()
+    return client
+
+
+class TestSsoLogin:
+    def test_login_page_offers_sso_button(self, sso):
+        page = sso.get("/login", headers={"Accept": "text/html"})
+        assert page.status_code == 200
+        assert "/login/sso" in page.text
+        assert "Continue as the signed-in Windows user" in page.text
+        # The "different user" form is still there (ACS parity).
+        assert "Windows username" in page.text
+
+    def test_login_page_hides_button_when_unavailable(self, client, monkeypatch):
+        import admz.win_sspi as win_sspi
+        monkeypatch.setattr(win_sspi, "sso_available", lambda: False)
+        page = client.get("/login", headers={"Accept": "text/html"})
+        assert "/login/sso" not in page.text
+
+    def test_bare_get_issues_negotiate_challenge(self, sso):
+        resp = sso.get("/login/sso", follow_redirects=False)
+        assert resp.status_code == 401
+        assert resp.headers["www-authenticate"] == "Negotiate"
+        # Unsupporting browsers render the body — it must route back.
+        assert "/login?sso=failed" in resp.text
+
+    def test_full_dance_signs_in(self, sso):
+        import base64
+
+        # Leg 1: browser's opening token → challenge comes back.
+        leg1 = sso.get(
+            "/login/sso?next=/devices", headers=_negotiate_header(_LEG1),
+            follow_redirects=False,
+        )
+        assert leg1.status_code == 401
+        challenge = leg1.headers["www-authenticate"]
+        assert challenge.startswith("Negotiate ")
+        assert base64.b64decode(challenge.split(" ", 1)[1]) == _CHALLENGE
+
+        # Leg 2: browser answers → session established, redirected.
+        leg2 = sso.get(
+            "/login/sso?next=/devices", headers=_negotiate_header(_LEG2),
+            follow_redirects=False,
+        )
+        assert leg2.status_code == 303
+        assert leg2.headers["location"] == "/devices"
+        assert "admz_session" in leg2.cookies
+
+        who = sso.get("/api/whoami")
+        assert who.status_code == 200
+        body = who.json()
+        assert body["name"] == "alice"
+        assert body["source"] == "windows-local"
+        assert "Administrators" in body["groups"]
+
+    def test_failed_handshake_redirects_to_form(self, sso):
+        resp = sso.get(
+            "/login/sso", headers=_negotiate_header(b"junk-token"),
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"].startswith("/login?sso=failed")
+        assert "admz_session" not in resp.cookies
+        # The form page explains, gently.
+        page = sso.get(resp.headers["location"], headers={"Accept": "text/html"})
+        assert "Single sign-on didn" in page.text
+
+    def test_sso_unavailable_redirects_to_form(self, client, monkeypatch):
+        import admz.win_sspi as win_sspi
+        monkeypatch.setattr(win_sspi, "sso_available", lambda: False)
+        resp = client.get("/login/sso", follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"].startswith("/login?sso=failed")
+
+    def test_next_redirect_only_same_site(self, sso):
+        resp = sso.get(
+            "/login/sso?next=https://evil.example/phish",
+            headers=_negotiate_header(_LEG2),
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/devices"
+
+    def test_sso_login_audited_with_method(self, sso):
+        sso.get(
+            "/login/sso", headers=_negotiate_header(_LEG2),
+            follow_redirects=False,
+        )
+        from admz import audit as audit_module
+        entries = audit_module.audit_log.list_recent(
+            action="auth.login", limit=5,
+        )
+        assert any(
+            e.success and e.details.get("method") == "negotiate"
+            for e in entries
+        )
