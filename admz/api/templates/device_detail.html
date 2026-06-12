@@ -122,12 +122,23 @@
       </div>
     </div>
 
-    <!-- Configuration drift -->
+    <!-- Configuration drift (last-known; shared with Fleet/Configuration) -->
     <div class="card">
       <div class="card-header"><i data-lucide="layers"></i><span class="title">Configuration drift</span></div>
       <div class="card-body">
+        {% if drift.state == 'in_sync' %}
+        <span class="drift-cell fg-green"><span class="dot sem-green"></span>In sync{% if drift_age %} <span class="drift-age">· {{ drift_age }}</span>{% endif %}</span>
+        <p class="page-sub" style="margin:8px 0 0">Live config matched the baseline at the last check. <a href="/configuration">Audit</a> to recheck.</p>
+        {% elif drift.state == 'drifted' %}
+        <span class="drift-cell fg-amber"><span class="dot sem-amber"></span>Drifted ({{ drift.count }} field{{ 's' if drift.count != 1 else '' }}){% if drift_age %} <span class="drift-age">· {{ drift_age }}</span>{% endif %}</span>
+        <p class="page-sub" style="margin:8px 0 0">Live config differs from the baseline. Review on the <a href="/configuration">Configuration</a> screen — accept the change or restore the baseline.</p>
+        {% elif drift.state == 'unchecked' %}
+        <span class="drift-cell fg-grey"><span class="dot sem-grey"></span>Baseline set · not checked</span>
+        <p class="page-sub" style="margin:8px 0 0">A baseline is blessed but drift hasn't been checked yet. Run “Check drift” on the <a href="/configuration">Configuration</a> screen.</p>
+        {% else %}
         <span class="drift-cell fg-grey"><span class="dot sem-grey"></span>No baseline yet</span>
         <p class="page-sub" style="margin:8px 0 0">Snapshot this device to establish a baseline, then audit it for drift.</p>
+        {% endif %}
       </div>
     </div>
 

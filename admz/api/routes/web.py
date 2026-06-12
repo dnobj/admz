@@ -179,6 +179,16 @@ async def device_detail(
         except Exception:
             pass
 
+        # Last-known drift (same shared, cache-only source the Fleet glance
+        # and Configuration workbench read — never a live probe on load).
+        from admz.snapshot.drift_alerts import drift_alerts as _drift_store
+        from admz.snapshot.drift_status import drift_status_for
+        try:
+            sig = _drift_store.get_last_signature(device_id)
+        except Exception:
+            sig = None
+        drift = drift_status_for(device, sig)
+
         return templates.TemplateResponse(
             "device_detail.html",
             {
@@ -186,6 +196,8 @@ async def device_detail(
                 "device": device,
                 "accounts": accounts,
                 "site_name": site_name,
+                "drift": drift,
+                "drift_age": _time_ago(drift.get("checked_at")),
                 "title": device.get("nickname", device_id),
             },
         )
