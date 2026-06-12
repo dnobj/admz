@@ -7,21 +7,16 @@
 <div class="page-header">
   <div class="pt">
     <h1 class="page-title">Configuration</h1>
-    <p class="page-sub">Per-device baseline, drift, and branches. Config is snapshotted to git — versioned, diffable, restorable.</p>
+    <p class="page-sub">Per-device baseline &amp; drift. Config is snapshotted to git — versioned, diffable, restorable. The Fleet view shows the drift glance; this is where you review and act.</p>
   </div>
   <div class="page-actions">
-    <span class="badge grey mono"><i data-lucide="git-branch" style="width:13px;height:13px"></i> main</span>
+    <button id="check-drift-btn" class="btn ghost" type="button"><i data-lucide="radar"></i> Check drift</button>
   </div>
 </div>
 
-<div class="card" style="margin-bottom:18px"><div class="card-body" style="display:flex;align-items:center;gap:12px">
-  <span class="mono ink"><i data-lucide="git-branch" style="width:14px;height:14px;vertical-align:-2px"></i> main</span>
-  <span class="page-sub" style="margin:0">is the everyday baseline. A branch is <em>main + a small set of intentional overrides</em> — never a full copy — so it inherits every change it doesn't pin. Switching a device or tag selection to a branch is a service-affecting operation and passes the two-gate approval.</span>
-</div></div>
-
 {% if rows %}
 <table class="data-table">
-  <thead><tr><th>Device</th><th>Branch</th><th>Drift vs. baseline</th><th>Last snapshot</th><th></th></tr></thead>
+  <thead><tr><th>Device</th><th>Baseline</th><th>Drift vs. baseline</th><th>Last snapshot</th><th></th></tr></thead>
   <tbody>
     {% for r in rows %}
     <tr onclick="window.location='/device/{{ r.device_id }}'">
@@ -31,12 +26,18 @@
           <div><div class="nm">{{ r.nickname or r.device_id }}</div><div class="sub">{{ r.model or '—' }}</div></div>
         </div>
       </td>
-      <td><span class="mono">main</span></td>
+      <td>
+        {% if r.drift.state == 'none' %}
+        <span class="page-sub" style="margin:0">none</span>
+        {% else %}
+        <span class="badge grey mono" style="font-size:11px"><i data-lucide="check" style="width:12px;height:12px"></i> set</span>
+        {% endif %}
+      </td>
       <td>
         {% if r.drift.state == 'in_sync' %}
-        <span class="drift-cell fg-green"><span class="dot sem-green"></span>In sync</span>
+        <span class="drift-cell fg-green"><span class="dot sem-green"></span>In sync{% if r.drift_age %} <span class="drift-age">· {{ r.drift_age }}</span>{% endif %}</span>
         {% elif r.drift.state == 'drifted' %}
-        <span class="drift-cell fg-amber"><span class="dot sem-amber"></span>Drifted ({{ r.drift.count }} field{{ 's' if r.drift.count != 1 else '' }})</span>
+        <span class="drift-cell fg-amber"><span class="dot sem-amber"></span>Drifted ({{ r.drift.count }} field{{ 's' if r.drift.count != 1 else '' }}){% if r.drift_age %} <span class="drift-age">· {{ r.drift_age }}</span>{% endif %}</span>
         {% elif r.drift.state == 'unchecked' %}
         <span class="drift-cell fg-grey"><span class="dot sem-grey"></span>Baseline set · not checked</span>
         {% else %}
@@ -52,4 +53,20 @@
 {% else %}
 <div class="empty-state"><i data-lucide="layers"></i><div style="margin-top:10px">No devices to audit yet.</div></div>
 {% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// "Check drift" — live fleet sweep, then reload to repaint from the cache.
+const checkBtn = document.getElementById('check-drift-btn');
+if (checkBtn) {
+  checkBtn.addEventListener('click', async () => {
+    checkBtn.disabled = true;
+    checkBtn.innerHTML = '<i data-lucide="loader"></i> Checking…';
+    if (window.lucide) lucide.createIcons();
+    try { await fetch('/api/snapshot/drift'); } catch (_) {}
+    window.location.reload();
+  });
+}
+</script>
 {% endblock %}

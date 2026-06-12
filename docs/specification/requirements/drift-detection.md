@@ -135,6 +135,34 @@ surface and `check_device_drift` tool that never shipped):
 Both surface the DriftReport JSON; agents typically narrow the
 result to `fields` matching a particular path before acting.
 
+### FR-DRF-011 — Fleet drift glance + freshness stamp ✅
+The roster surfaces show **last-known** drift, not a live probe (a
+genuine check costs a per-device round-trip — too slow to run when a
+roster of N devices loads). One shared helper,
+`admz/snapshot/drift_status.py::drift_status_for(device_info, signature)`,
+maps the `baseline_sha` pointer + the cached `drift_signatures` row to
+`{state, count, checked_at}` (state ∈ `none|unchecked|in_sync|drifted`),
+so the two views can never disagree:
+- **Fleet** (`/devices`) reads `GET /api/fleet/drift` — a pure cache
+  read sibling of `/api/fleet/health` (`{total, counts, devices[]}`) —
+  client-side, painting a compact badge per device, an "as of …"
+  freshness stamp from `checked_at`, the real **Drifted** stat, and a
+  drift filter. This is the *glance* ("should I care?").
+- **Configuration** (`/configuration`) renders the same badge + stamp
+  alongside the config-governance columns (baseline presence, last
+  snapshot) it alone shows — the *workbench* ("what changed, what do I
+  do?"). The Fleet "Audit all" link is the glance→workbench handoff.
+
+Both expose a **"Check drift"** button that runs the live
+`GET /api/snapshot/drift` fleet sweep (which warms the signature cache
+via `process_report`) and repaints — the on-demand path to "make it
+current" without a background poller. Keeping the cache warm
+automatically remains the opt-in `drift_audit` scheduler job (FR-DRF-009).
+
+Earlier the Fleet drift column was a hardcoded `No baseline` placeholder
+with a hardcoded `0` Drifted stat (never wired to any source); this
+replaced both with the real cache read + freshness.
+
 ### FR-DRF-009 — Scheduled configuration audit 🚧
 A recurring, unattended configuration audit — the operator-facing
 framing of a scheduled fleet drift sweep. Rather than a bespoke drift

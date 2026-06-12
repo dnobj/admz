@@ -641,6 +641,30 @@ def _fmt_snapshot_date(iso: Optional[str]) -> Optional[str]:
         return iso[:16].replace("T", " ")
 
 
+def _time_ago(epoch: Optional[float]) -> Optional[str]:
+    """Compact 'as of' stamp for a drift check — matches the Fleet
+    view's JS timeAgo() so the two surfaces read the same."""
+    if not epoch:
+        return None
+    import time as _t
+    s = max(0, int(_t.time() - epoch))
+    if s < 60:
+        return "just now"
+    m = s // 60
+    if m < 60:
+        return f"{m}m ago"
+    h = m // 60
+    if h < 24:
+        return f"{h}h ago"
+    d = h // 24
+    if d < 30:
+        return f"{d}d ago"
+    mo = d // 30
+    if mo < 12:
+        return f"{mo}mo ago"
+    return f"{mo // 12}y ago"
+
+
 @router.get("/configuration", response_class=HTMLResponse)
 async def configuration_page(
     request: Request,
@@ -659,6 +683,7 @@ async def configuration_page(
         devices = []
 
     from admz.snapshot.drift_alerts import drift_alerts as _drift_store
+    from admz.snapshot.drift_status import drift_status_for
 
     rows = []
     for d in devices:
@@ -668,21 +693,15 @@ async def configuration_page(
         except Exception:
             status = {"has_baseline": False, "facets": [], "last_snapshot": None}
 
-        # "Has a baseline" now means the device has a blessed baseline_sha
-        # pointer (ADR-0031) — not merely that config files exist in git.
-        if not d.get("baseline_sha"):
-            drift = {"state": "none"}
-        else:
-            try:
-                sig = _drift_store.get_last_signature(did)
-            except Exception:
-                sig = None
-            if sig is None:
-                drift = {"state": "unchecked"}
-            elif (sig.get("field_count") or 0) == 0:
-                drift = {"state": "in_sync"}
-            else:
-                drift = {"state": "drifted", "count": sig["field_count"]}
+        # Drift state is the shared, cache-only answer (same source the
+        # Fleet glance reads via /api/fleet/drift), so the two views can't
+        # disagree. "Has a baseline" = a blessed baseline_sha pointer
+        # (ADR-0031), not merely config files in git.
+        try:
+            sig = _drift_store.get_last_signature(did)
+        except Exception:
+            sig = None
+        drift = drift_status_for(d, sig)
 
         rows.append({
             "device_id": did,
@@ -691,6 +710,7 @@ async def configuration_page(
             "facet_count": len(status["facets"]),
             "last_snapshot": _fmt_snapshot_date(status["last_snapshot"]),
             "drift": drift,
+            "drift_age": _time_ago(drift.get("checked_at")),
         })
 
     return templates.TemplateResponse(

@@ -13,6 +13,7 @@
     </p>
   </div>
   <div class="page-actions">
+    <button id="check-drift-btn" class="btn ghost" type="button"><i data-lucide="radar"></i> Check drift</button>
     <a href="/configuration" class="btn ghost"><i data-lucide="shield"></i> Audit all</a>
     <a href="/add-device" class="btn primary"><i data-lucide="plus"></i> Add device</a>
   </div>
@@ -31,6 +32,10 @@
   <button class="chip active" data-health="all"><i data-lucide="filter"></i> All health</button>
   <button class="chip" data-health="online">Online</button>
   <button class="chip" data-health="attention">Needs attention</button>
+  <span class="filter-sep"></span>
+  <button class="chip active" data-drift="all">All config</button>
+  <button class="chip" data-drift="drifted">Drifted</button>
+  <button class="chip" data-drift="unchecked">Unchecked</button>
   {% if tag_filter %}
   <a class="chip active" href="/devices"><i data-lucide="tag"></i> Tag: {{ tag_filter }} <i data-lucide="x"></i></a>
   {% endif %}
@@ -68,7 +73,9 @@
       <td class="mono">{{ device.host or '—' }}</td>
       <td class="mono">{{ device.firmware_version or device.firmware or '—' }}</td>
       <td>
-        <span class="drift-cell fg-grey"><span class="dot sem-grey"></span>No baseline</span>
+        <span class="drift-cell fg-grey" data-drift-cell="{{ device.device_id }}">
+          <span class="dot sem-grey"></span>—
+        </span>
       </td>
       <td>
         {% for tag in device.tags|default([]) %}<a class="tag" href="/devices?tag={{ tag }}" onclick="event.stopPropagation()">{{ tag }}</a> {% endfor %}
@@ -121,20 +128,115 @@ const HEALTH = {
   } catch (_) {}
 })();
 
-// Health chip filter.
+// ── Drift glance (cache read; freshness-stamped). Mirrors health. ──
+const DRIFT = {
+  drifted:   { sem: 'amber', bucket: 'drifted'   },
+  in_sync:   { sem: 'green', bucket: 'ok'        },
+  unchecked: { sem: 'grey',  bucket: 'unchecked' },
+  none:      { sem: 'grey',  bucket: 'none'      },
+};
+
+function timeAgo(epochSeconds) {
+  if (!epochSeconds) return '';
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - epochSeconds));
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60); if (m < 60) return m + 'm ago';
+  const h = Math.floor(m / 60); if (h < 24) return h + 'h ago';
+  const d = Math.floor(h / 24); if (d < 30) return d + 'd ago';
+  const mo = Math.floor(d / 30); if (mo < 12) return mo + 'mo ago';
+  return Math.floor(mo / 12) + 'y ago';
+}
+
+function paintDriftCell(cell, rec) {
+  const state = (rec && rec.state) || 'none';
+  const d = DRIFT[state] || DRIFT.none;
+  let label;
+  if (state === 'drifted') label = 'Drifted (' + (rec.count || 0) + ')';
+  else if (state === 'in_sync') label = 'In sync';
+  else if (state === 'unchecked') label = 'Unchecked';
+  else label = 'No baseline';
+  const ago = rec ? timeAgo(rec.checked_at) : '';
+  cell.className = 'drift-cell fg-' + d.sem;
+  cell.innerHTML = '<span class="dot sem-' + d.sem + '"></span>' + label
+    + (ago ? ' <span class="drift-age">· ' + ago + '</span>' : '');
+  if (rec && rec.checked_at) {
+    cell.title = 'Last checked ' + new Date(rec.checked_at * 1000).toLocaleString();
+  } else if (state === 'unchecked') {
+    cell.title = 'Baseline set, never drift-checked — use “Check drift”.';
+  } else if (state === 'none') {
+    cell.title = 'No blessed baseline yet — snapshot the device to set one.';
+  }
+  const row = cell.closest('tr');
+  if (row) row.setAttribute('data-drift', d.bucket);
+}
+
+async function loadDrift() {
+  try {
+    const resp = await fetch('/api/fleet/drift');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const byId = {};
+    (data.devices || []).forEach(d => { byId[d.device_id] = d; });
+    document.querySelectorAll('[data-drift-cell]').forEach(cell => {
+      paintDriftCell(cell, byId[cell.getAttribute('data-drift-cell')]);
+    });
+    const sd = document.getElementById('stat-drifted');
+    if (sd) sd.textContent = (data.counts && data.counts.drifted) || 0;
+    if (window.lucide) lucide.createIcons();
+    applyFilters();
+  } catch (_) {}
+}
+loadDrift();
+
+// "Check drift" — run a real fleet sweep, then repaint from cache.
+const checkBtn = document.getElementById('check-drift-btn');
+if (checkBtn) {
+  checkBtn.addEventListener('click', async () => {
+    const original = checkBtn.innerHTML;
+    checkBtn.disabled = true;
+    checkBtn.innerHTML = '<i data-lucide="loader"></i> Checking…';
+    if (window.lucide) lucide.createIcons();
+    try {
+      await fetch('/api/snapshot/drift');   // live fleet sweep; warms the cache
+    } catch (_) {}
+    await loadDrift();
+    checkBtn.disabled = false;
+    checkBtn.innerHTML = original;
+    if (window.lucide) lucide.createIcons();
+  });
+}
+
+// ── Combined filter (health bucket × drift bucket) ──
+let wantHealth = 'all', wantDrift = 'all';
+function applyFilters() {
+  let shown = 0;
+  document.querySelectorAll('#fleet-table tbody tr').forEach(row => {
+    const hb = row.getAttribute('data-health');
+    const db = row.getAttribute('data-drift');
+    const okH = wantHealth === 'all' || hb === wantHealth;
+    const okD = wantDrift === 'all' || db === wantDrift;
+    const vis = okH && okD;
+    row.style.display = vis ? '' : 'none';
+    if (vis) shown++;
+  });
+  const sc = document.getElementById('shown-count');
+  if (sc) sc.textContent = shown + ' shown';
+}
+
 document.querySelectorAll('.chip[data-health]').forEach(chip => {
   chip.addEventListener('click', () => {
     document.querySelectorAll('.chip[data-health]').forEach(c => c.classList.remove('active'));
     chip.classList.add('active');
-    const want = chip.getAttribute('data-health');
-    let shown = 0;
-    document.querySelectorAll('#fleet-table tbody tr').forEach(row => {
-      const b = row.getAttribute('data-health');
-      const vis = want === 'all' || b === want || (want === 'online' && b === 'online') || (want === 'attention' && b === 'attention');
-      row.style.display = vis ? '' : 'none';
-      if (vis) shown++;
-    });
-    const sc = document.getElementById('shown-count'); if (sc) sc.textContent = shown + ' shown';
+    wantHealth = chip.getAttribute('data-health');
+    applyFilters();
+  });
+});
+document.querySelectorAll('.chip[data-drift]').forEach(chip => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('.chip[data-drift]').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    wantDrift = chip.getAttribute('data-drift');
+    applyFilters();
   });
 });
 </script>
