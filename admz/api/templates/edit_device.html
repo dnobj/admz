@@ -62,22 +62,7 @@
         <div class="field">
           <label for="host">Host *</label>
           <input type="text" id="host" class="mono" value="{{ device.host|default('') }}" required>
-        </div>
-        <div class="field">
-          <label for="model">Model</label>
-          <input type="text" id="model" value="{{ device.model|default('') }}">
-        </div>
-        <div class="field">
-          <label for="serial_number">Serial number</label>
-          <input type="text" id="serial_number" class="mono" value="{{ device.serial_number|default('') }}">
-        </div>
-        <div class="field">
-          <label for="location">Location</label>
-          <input type="text" id="location" value="{{ device.location|default('') }}">
-        </div>
-        <div class="field">
-          <label for="firmware_version">Firmware version</label>
-          <input type="text" id="firmware_version" class="mono" value="{{ device.firmware_version|default('') }}">
+          <span class="hint">The address ADMZ connects to. Discovery may auto-correct it from the MAC.</span>
         </div>
         {# Site is implicit on a single-install deployment (one site). Only
            surface the selector once there's more than one site to move
@@ -96,6 +81,25 @@
         </div>
         {% endif %}
       </div>
+
+      <div class="nav-divider"></div>
+
+      <!-- Observed facts — read from the device, not operator-set. Editing
+           these by hand would desync ADMZ's record from reality and break
+           facet/capability logic, so they're read-only here; refresh by
+           re-reading the device. -->
+      <div class="flex items-center gap-8" style="margin-bottom:10px">
+        <span class="section-label">Observed · from the device</span>
+        <button id="refresh-info-btn" type="button" class="btn ghost sm">
+          <i data-lucide="refresh-cw"></i> Refresh from device
+        </button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px">
+        <div class="keyval"><span class="k">Model</span><span class="v" id="ob-model">{{ device.model or '—' }}</span></div>
+        <div class="keyval"><span class="k">Serial number</span><span class="v mono" id="ob-serial">{{ device.serial_number or '—' }}</span></div>
+        <div class="keyval"><span class="k">Firmware version</span><span class="v mono" id="ob-firmware">{{ device.firmware_version or device.firmware or '—' }}</span></div>
+      </div>
+      <div id="refresh-msg" class="hint" style="margin-top:8px;display:none"></div>
 
       <div class="nav-divider"></div>
 
@@ -166,13 +170,11 @@ function showError(text) {
 document.getElementById('edit-device-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const $ = id => document.getElementById(id);
+  // Only operator-owned fields are saved. Model/serial/firmware are
+  // observed facts (read-only, refreshed from the device).
   const body = {
     host: $('host').value,
     nickname: $('nickname').value || undefined,
-    model: $('model').value || undefined,
-    serial_number: $('serial_number').value || undefined,
-    location: $('location').value || undefined,
-    firmware_version: $('firmware_version').value || undefined,
     tags: tags,
   };
   try {
@@ -198,5 +200,35 @@ document.getElementById('edit-device-form').addEventListener('submit', async (e)
     showError('Error: ' + err.message);
   }
 });
+
+// ── Refresh observed facts from the device ──
+const refreshBtn = document.getElementById('refresh-info-btn');
+const refreshMsg = document.getElementById('refresh-msg');
+if (refreshBtn) {
+  refreshBtn.addEventListener('click', async () => {
+    refreshBtn.disabled = true;
+    refreshBtn.innerHTML = '<i data-lucide="loader"></i> Reading…';
+    if (window.lucide) lucide.createIcons();
+    refreshMsg.style.display = 'none';
+    try {
+      const r = await fetch('/api/devices/' + encodeURIComponent(DEVICE_ID) + '/refresh-info', {method: 'POST'});
+      const b = await r.json();
+      if (r.ok && b.updated && Object.keys(b.updated).length) {
+        if (b.updated.model) document.getElementById('ob-model').textContent = b.updated.model;
+        if (b.updated.serial_number) document.getElementById('ob-serial').textContent = b.updated.serial_number;
+        if (b.updated.firmware_version) document.getElementById('ob-firmware').textContent = b.updated.firmware_version;
+        refreshMsg.textContent = 'Updated from the device (' + (b.status || 'ok') + ').';
+      } else {
+        refreshMsg.textContent = (b.message || b.detail || 'No facts read from the device.');
+      }
+      refreshMsg.style.display = 'block';
+    } catch (err) {
+      refreshMsg.textContent = 'Error: ' + err.message; refreshMsg.style.display = 'block';
+    }
+    refreshBtn.disabled = false;
+    refreshBtn.innerHTML = '<i data-lucide="refresh-cw"></i> Refresh from device';
+    if (window.lucide) lucide.createIcons();
+  });
+}
 </script>
 {% endblock %}
