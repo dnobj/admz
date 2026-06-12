@@ -72,6 +72,94 @@ def _strip_authority(name: str) -> str:
     return name.split("\\")[-1].strip()
 
 
+def local_group_memberships(
+    username: str, domain: Optional[str] = None
+) -> List[str]:
+    """Local-machine group memberships via ``NetUserGetLocalGroups``.
+
+    Token-derived groups (``_groups_from_token``) reflect the *logon
+    token*, which UAC filters for network-type logons of admin accounts:
+    ``Administrators`` rides along deny-only, so it vanishes from the
+    enabled set (observed live — KL-AUTH-009). This asks the directory
+    instead: ADMZ's gates key on group *membership*, the same semantics
+    ACS Pro uses, not on the token's elevation state.
+
+    Returns bare group names; raises :class:`WinAuthUnavailable`
+    off-Windows; any API failure returns ``[]`` (callers enrich
+    best-effort).
+    """
+    if sys.platform != "win32":  # pragma: no cover — exercised via mock
+        raise WinAuthUnavailable(
+            "Local group lookup requires Windows (NetUserGetLocalGroups)."
+        )
+    if not username:
+        return []
+
+    import ctypes
+    from ctypes import wintypes
+
+    netapi32 = ctypes.WinDLL("netapi32")
+    netapi32.NetUserGetLocalGroups.argtypes = [
+        wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p), wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
+    ]
+    netapi32.NetUserGetLocalGroups.restype = wintypes.DWORD
+    netapi32.NetApiBufferFree.argtypes = [ctypes.c_void_p]
+    netapi32.NetApiBufferFree.restype = wintypes.DWORD
+
+    class LOCALGROUP_USERS_INFO_0(ctypes.Structure):
+        _fields_ = [("lgrui0_name", wintypes.LPWSTR)]
+
+    account = (
+        f"{domain}\\{username}" if domain and domain != "." else username
+    )
+    buf = ctypes.c_void_p()
+    entries = wintypes.DWORD(0)
+    total = wintypes.DWORD(0)
+    _LG_INCLUDE_INDIRECT = 1
+    _MAX_PREFERRED_LENGTH = 0xFFFFFFFF
+    status = netapi32.NetUserGetLocalGroups(
+        None, account, 0, _LG_INCLUDE_INDIRECT,
+        ctypes.byref(buf), _MAX_PREFERRED_LENGTH,
+        ctypes.byref(entries), ctypes.byref(total),
+    )
+    if status != 0 or not buf:  # 0 = NERR_Success
+        logger.info(
+            "NetUserGetLocalGroups(%r) returned %s", account, status
+        )
+        return []
+    try:
+        array_type = LOCALGROUP_USERS_INFO_0 * entries.value
+        rows = ctypes.cast(buf, ctypes.POINTER(array_type)).contents
+        return [r.lgrui0_name for r in rows if r.lgrui0_name]
+    finally:
+        netapi32.NetApiBufferFree(buf)
+
+
+def merge_group_names(token_groups: List[str], extra: List[str]) -> List[str]:
+    """Token groups + directory memberships, authority-stripped, deduped,
+    original order preserved."""
+    names: List[str] = []
+    for raw in list(token_groups) + list(extra):
+        bare = _strip_authority(raw)
+        if bare and bare not in names:
+            names.append(bare)
+    return names
+
+
+def enriched_groups(
+    token_groups: List[str], username: str, domain: Optional[str]
+) -> List[str]:
+    """Best-effort union of token groups and local-machine memberships
+    (the UAC-filtering workaround — see local_group_memberships)."""
+    try:
+        extra = local_group_memberships(username, domain)
+    except Exception:
+        extra = []
+    return merge_group_names(token_groups, extra)
+
+
 def validate_windows_credentials(
     username: str, password: str, domain: Optional[str] = None
 ) -> Optional[WindowsIdentity]:
@@ -142,10 +230,14 @@ def validate_windows_credentials(
     finally:
         kernel32.CloseHandle(token)
 
+    domain = None if dom in (".", None) else dom
     return WindowsIdentity(
         username=user,
-        domain=None if dom in (".", None) else dom,
-        groups=groups,
+        domain=domain,
+        # Union with directory memberships: a NETWORK logon of a local
+        # admin gets a UAC-filtered token (Administrators deny-only) —
+        # membership, not elevation, is what ADMZ authorizes on.
+        groups=enriched_groups(groups, user, domain),
     )
 
 

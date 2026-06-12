@@ -82,11 +82,13 @@ credential form (ACS Pro parity: current user *or* a different user).
 - NTLM connection affinity: a proxy that doesn't preserve connections
   would break the multi-leg exchange (no proxy in the reference
   deployment; direct uvicorn).
-- UAC token filtering can strip `Administrators` from network-type
-  logons of local accounts (`LocalAccountTokenFilterPolicy`). Applies to
-  the form login equally. Contingency if observed live: group
-  enrichment via `NetUserGetLocalGroups` — deliberately not built until
-  needed.
+- UAC token filtering strips `Administrators` from network-type logons
+  of local accounts — **observed on the first live SSO sign-in** (the
+  token carried Users/docker-users but Administrators rode deny-only).
+  Mitigated the same day: both sign-in paths union token groups with the
+  account's directory memberships (`NetUserGetLocalGroups`,
+  best-effort) — ADMZ authorizes on group *membership*, ACS Pro's
+  semantics, not the token's elevation state (KL-AUTH-009).
 - Login CSRF surface of a GET sign-in endpoint is acceptable: it can
   only sign the browser's *own* user in, and `_safe_next` blocks
   redirect abuse.
