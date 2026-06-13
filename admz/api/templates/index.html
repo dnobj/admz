@@ -24,7 +24,7 @@
   <div class="stat"><div class="sl">Devices</div><div class="sv">{{ devices|length }}</div></div>
   <div class="stat"><div class="sl"><span class="status-dot sem-green"><span class="core"></span></span> Online</div><div class="sv" id="stat-online">—</div></div>
   <div class="stat"><div class="sl"><span class="status-dot sem-amber"><span class="core"></span></span> Needs attention</div><div class="sv" id="stat-attention">—</div></div>
-  <a class="stat" href="/configuration?filter=drifted" style="text-decoration:none;color:inherit" title="View all drifted devices"><div class="sl"><span class="status-dot sem-red"><span class="core"></span></span> Drifted</div><div class="sv" id="stat-drifted">0</div></a>
+  <a class="stat stat-action" href="/configuration?filter=drifted" title="Review &amp; act on drifted devices"><div class="sl"><span class="status-dot sem-red"><span class="core"></span></span> Drifted <i data-lucide="arrow-up-right" class="stat-go"></i></div><div class="sv" id="stat-drifted">0</div></a>
 </div>
 
 <!-- Filter bar -->
@@ -40,6 +40,7 @@
   <a class="chip active" href="/devices"><i data-lucide="tag"></i> Tag: {{ tag_filter }} <i data-lucide="x"></i></a>
   {% endif %}
   <div class="right">
+    <a class="btn primary sm" id="drift-review-cta" href="/configuration?filter=drifted" style="display:none"><i data-lucide="list-checks"></i> Review &amp; bulk-act</a>
     <span class="shown-count" id="shown-count">{{ devices|length }} shown</span>
   </div>
 </div>
@@ -94,6 +95,12 @@
 {% endblock %}
 
 {% block extra_js %}
+<style>
+.stat-action { text-decoration: none; color: inherit; transition: background .12s, border-color .12s; }
+.stat-action:hover { background: var(--accent-soft); border-color: var(--accent-bd); }
+.stat-go { width: 13px; height: 13px; color: var(--text-faint); margin-left: auto; }
+.stat-action:hover .stat-go { color: var(--accent-ink); }
+</style>
 <script>
 // Health cells + stat strip from the cached health table.
 const HEALTH = {
@@ -221,6 +228,17 @@ function applyFilters() {
   });
   const sc = document.getElementById('shown-count');
   if (sc) sc.textContent = shown + ' shown';
+  updateDriftCta();
+}
+
+// Surface the "Review & bulk-act" CTA when the Drifted filter is active
+// and at least one device is actually drifted. The drift-review page
+// (/configuration?filter=drifted) is where bulk accept/revert lives.
+function updateDriftCta() {
+  const cta = document.getElementById('drift-review-cta');
+  if (!cta) return;
+  const anyDrift = document.querySelectorAll('#fleet-table tbody tr[data-drift="drifted"]').length > 0;
+  cta.style.display = (wantDrift === 'drifted' && anyDrift) ? '' : 'none';
 }
 
 document.querySelectorAll('.chip[data-health]').forEach(chip => {
