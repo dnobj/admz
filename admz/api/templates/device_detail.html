@@ -67,7 +67,17 @@
           {% if device.warranty_expiration %}<div class="keyval"><span class="k">Warranty</span><span class="v">{{ device.warranty_expiration }}</span></div>{% endif %}
         </div>
         <div style="margin-top:14px">
-          <button class="btn subtle sm" type="button" title="Re-bind a replacement unit to this slot (coming soon)" disabled><i data-lucide="repeat"></i> Replace hardware</button>
+          <button id="replace-hw-btn" class="btn subtle sm" type="button"
+                  title="Rebind a replacement unit to this slot — keeps the device's identity, config, and history."><i data-lucide="repeat"></i> Replace hardware</button>
+        </div>
+        <div id="replace-hw-panel" style="display:none;margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:10px">
+          <div class="page-sub" style="margin:0 0 8px">Point this slot at a replacement unit. Its config and baseline stay with the slot; ADMZ re-reads the new unit's MAC/serial/firmware.</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input type="text" id="replace-hw-host" class="mono" placeholder="New unit IP / host" style="flex:1;min-width:160px">
+            <button id="replace-hw-go" class="btn primary sm" type="button"><i data-lucide="repeat"></i> Rebind</button>
+            <button id="replace-hw-cancel" class="btn ghost sm" type="button">Cancel</button>
+          </div>
+          <div id="replace-hw-msg" class="page-sub" style="display:none;margin-top:10px"></div>
         </div>
       </div>
     </div>
@@ -227,8 +237,56 @@ const HEALTH = {
   } catch(_) {}
 })();
 
-// ── Danger zone: delete device (authenticated operator, direct + audited) ──
 const DEVICE_ID = {{ device.device_id|tojson }};
+
+// ── Replace hardware: rebind this slot to a new unit (ADR-0036) ──
+const rhBtn = document.getElementById('replace-hw-btn');
+const rhPanel = document.getElementById('replace-hw-panel');
+const rhHost = document.getElementById('replace-hw-host');
+const rhGo = document.getElementById('replace-hw-go');
+const rhCancel = document.getElementById('replace-hw-cancel');
+const rhMsg = document.getElementById('replace-hw-msg');
+if (rhBtn) {
+  rhBtn.addEventListener('click', () => {
+    rhPanel.style.display = 'block'; rhBtn.style.display = 'none';
+    rhHost.focus(); if (window.lucide) lucide.createIcons();
+  });
+  rhCancel.addEventListener('click', () => {
+    rhPanel.style.display = 'none'; rhBtn.style.display = '';
+    rhMsg.style.display = 'none';
+  });
+  rhGo.addEventListener('click', async () => {
+    const host = rhHost.value.trim();
+    if (!host) { rhHost.focus(); return; }
+    rhGo.disabled = true;
+    rhGo.innerHTML = '<i data-lucide="loader"></i> Rebinding…';
+    if (window.lucide) lucide.createIcons();
+    rhMsg.style.display = 'none';
+    try {
+      const r = await fetch('/api/devices/' + encodeURIComponent(DEVICE_ID) + '/replace-hardware', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({host}),
+      });
+      const b = await r.json();
+      rhMsg.innerHTML = (b.message || (r.ok ? 'Rebound.' : 'Failed.'));
+      if (r.ok && b.rebound && b.has_baseline) {
+        rhMsg.innerHTML += ' <a href="/configuration">Restore the baseline onto the new unit →</a>';
+      }
+      rhMsg.style.display = 'block';
+      if (r.ok && b.rebound) {
+        // Reflect the new unit + reload so the read-only facts refresh.
+        setTimeout(() => window.location.reload(), 1500);
+      }
+    } catch (err) {
+      rhMsg.textContent = 'Error: ' + err.message; rhMsg.style.display = 'block';
+    }
+    rhGo.disabled = false;
+    rhGo.innerHTML = '<i data-lucide="repeat"></i> Rebind';
+    if (window.lucide) lucide.createIcons();
+  });
+}
+
+// ── Danger zone: delete device (authenticated operator, direct + audited) ──
 const delBtn = document.getElementById('delete-device-btn');
 const delPanel = document.getElementById('delete-confirm');
 const delConfirm = document.getElementById('delete-confirm-btn');

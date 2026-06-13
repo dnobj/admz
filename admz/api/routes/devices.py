@@ -19,6 +19,7 @@ from admz.api.models import (
     DeviceResponse,
     AccountCreate,
     AccountResponse,
+    DeviceReplaceRequest,
     DeviceSiteUpdate,
     ErrorResponse,
 )
@@ -367,6 +368,107 @@ async def refresh_device_info(
     return {"device_id": device_id, "status": status, "updated": facts}
 
 
+@router.post("/devices/{device_id}/replace-hardware")
+async def replace_device_hardware(
+    request: Request,
+    device_id: str,
+    body: DeviceReplaceRequest,
+    ctx: AppContext = Depends(get_context),
+):
+    """Rebind a stable slot (``device_id``) to a replacement unit (ADR-0036).
+
+    Points the slot at the new unit's host, re-probes ``basicdeviceinfo``
+    through the executor to read the new MAC/serial/firmware/model, and
+    updates those *unit* attributes — keeping ``device_id`` (the slot). The
+    slot's git config + baseline follow automatically, so the response flags
+    whether a baseline is available to restore onto the new unit.
+    """
+    from admz import operations
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+    from admz.device_registry import canonical_mac
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+    registry = ctx.registry
+    resource = f"device:{device_id}"
+
+    if not registry.device_exists(device_id):
+        raise HTTPException(status_code=404, detail=f"Device not found: {device_id}")
+
+    # Point the slot at the new unit so we can probe it.
+    new_host = body.host.strip()
+    if not new_host:
+        raise HTTPException(status_code=400, detail="A replacement host is required.")
+    registry.update_device_info(device_id, {"host": new_host, "ip_address": new_host})
+
+    facts: Dict[str, str] = {}
+    status = "ok"
+    try:
+        result = await operations.run_execution_tail(
+            device_id=device_id,
+            operation_id="basicdeviceinfo.cgi:getAllProperties",
+            family="vapix",
+            params={},
+            catalog=ctx.catalog,
+            registry=registry,
+            executors=ctx.executors,
+        )
+        if result.success:
+            facts = _extract_device_facts(result.parsed_data)
+        else:
+            status = "unreachable"
+    except operations.OperationNotFoundError:
+        raise HTTPException(
+            status_code=501, detail="basicdeviceinfo operation not in the catalog.",
+        )
+    except Exception as exc:
+        status = f"error: {exc}"
+
+    # The new unit's MAC is its serial (Axis), normalized to the stored form.
+    unit: Dict[str, str] = dict(facts)
+    if facts.get("serial_number"):
+        mac = canonical_mac(facts["serial_number"])
+        if len(mac) == 12:
+            unit["mac_address"] = mac
+    if unit:
+        try:
+            registry.update_device_info(device_id, unit)
+        except NotImplementedError:
+            pass
+
+    info = registry.get_device_info(device_id)
+    has_baseline = bool(info.get("baseline_sha"))
+
+    record_event(principal, "device.replace_hardware", resource=resource,
+                 success=status == "ok",
+                 details={"status": status, "host": new_host,
+                          "updated": list(unit)})
+
+    if status != "ok":
+        return {
+            "device_id": device_id, "rebound": False, "status": status,
+            "host": new_host, "has_baseline": has_baseline,
+            "message": (
+                f"Pointed the slot at {new_host}, but couldn't read the new "
+                "unit's facts (it may be unreachable or need credentials "
+                "captured). The slot's config is unchanged and still "
+                "restorable."
+            ),
+        }
+    return {
+        "device_id": device_id, "rebound": True, "status": status,
+        "host": new_host, "unit": unit, "has_baseline": has_baseline,
+        "message": (
+            f"Slot {device_id} rebound to the new unit. Its saved "
+            "configuration is unchanged"
+            + (" — restore the baseline onto the new unit when ready."
+               if has_baseline else "; snapshot it to set a baseline.")
+        ),
+    }
+
+
 @router.put("/devices/{device_id}/site")
 async def move_device_to_site(
     request: Request,
@@ -418,7 +520,7 @@ async def move_device_to_site(
 async def delete_device(
     request: Request,
     device_id: str,
-    registry: DeviceRegistry = Depends(get_registry),
+    ctx: AppContext = Depends(get_context),
 ):
     """
     Delete a device from the registry.
@@ -427,18 +529,26 @@ async def delete_device(
     too easy to do by accident in shared-host setups. Mint an API
     key (ADMZ_AUTH_BACKEND=api-key) or use Windows IWA to invoke.
 
-    This also deletes all accounts associated with the device.
-    Note: not supported by all backends.
+    This also deletes all accounts associated with the device. A git
+    tombstone (``Removed: <id>``) records the deliberate removal while
+    keeping the config history. Note: not supported by all backends.
     """
+    from admz import operations
     from admz.audit import record_event
     from admz.auth import get_current_principal
     from admz.authz import require_authenticated_principal
 
     principal = await get_current_principal(request)
     require_authenticated_principal(principal)
+    registry = ctx.registry
     resource = f"device:{device_id}"
 
     try:
+        if not registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device '{device_id}' not found")
+        operations.tombstone_device(
+            device_id, ctx.git_repo, removed_by=principal.name,
+        )
         registry.remove_device(device_id)
         record_event(principal, "device.delete", resource=resource)
         return None

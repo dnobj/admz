@@ -20,7 +20,10 @@ import cycle. ``get_confirmation_level`` already lazy-imports ``fleet_settings``
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+
+logger = logging.getLogger(__name__)
 
 from admz.api.confirm_store import (
     ConfirmSession,
@@ -449,7 +452,43 @@ def _register_plan_from_session(plan_engine: Any, session: "ConfirmSession") -> 
 # blocked envelope; the confirm route's approval path dispatches here.
 
 
-def _action_accept_baseline(action: Mapping[str, Any], registry: Any) -> Dict[str, Any]:
+def tombstone_device(device_id: str, git_repo: Any, *, removed_by: str = "") -> None:
+    """Record a deliberate device removal in the git config repo.
+
+    Writes ``fleet/{device_id}/REMOVED.yaml`` and commits it (reusing the
+    ADR-0031 Audit-commit pattern) so the repo shows the device was retired
+    on purpose, distinct from a device that merely went stale. The config
+    history is kept. Best-effort: a tombstone failure must never block the
+    deletion, so callers wrap this loosely and it swallows its own errors.
+    """
+    if git_repo is None:
+        return
+    try:
+        import time as _t
+        import yaml as _yaml
+        device_dir = git_repo.device_path(device_id)
+        device_dir.mkdir(parents=True, exist_ok=True)
+        (device_dir / "REMOVED.yaml").write_text(
+            _yaml.safe_dump(
+                {
+                    "removed": True,
+                    "removed_at": _t.time(),
+                    "removed_by": removed_by or "",
+                    "reason": "device deleted from the registry",
+                },
+                default_flow_style=False, sort_keys=True,
+            )
+        )
+        git_repo.commit_snapshot(
+            device_id, message=f"Removed: {device_id}", auto_push=True,
+        )
+    except Exception:  # pragma: no cover — tombstone is best-effort
+        logger.warning("tombstone commit failed for %s", device_id, exc_info=True)
+
+
+def _action_accept_baseline(
+    action: Mapping[str, Any], registry: Any, git_repo: Any = None,
+) -> Dict[str, Any]:
     device_id = action["device_id"]
     target = action["baseline_sha"]
     previous = action.get("previous_baseline_sha")
@@ -467,7 +506,9 @@ def _action_accept_baseline(action: Mapping[str, Any], registry: Any) -> Dict[st
     }
 
 
-def _action_delete_device(action: Mapping[str, Any], registry: Any) -> Dict[str, Any]:
+def _action_delete_device(
+    action: Mapping[str, Any], registry: Any, git_repo: Any = None,
+) -> Dict[str, Any]:
     device_id = action["device_id"]
     if not registry.device_exists(device_id):
         return {
@@ -475,6 +516,9 @@ def _action_delete_device(action: Mapping[str, Any], registry: Any) -> Dict[str,
             "action": "delete_device",
             "error": f"Device not found: {device_id}",
         }
+    # Record the deliberate removal in git (history retained), then remove
+    # the registry row + accounts.
+    tombstone_device(device_id, git_repo, removed_by=action.get("removed_by", ""))
     registry.remove_device(device_id)
     return {
         "success": True,
@@ -527,6 +571,7 @@ async def execute_approved_session(
     registry: Any,
     executors: Mapping[str, Any],
     plan_engine: Any = None,
+    git_repo: Any = None,
 ) -> Dict[str, Any]:
     """Run the op/plan/action held by an ALREADY-completed confirm session.
 
@@ -544,7 +589,7 @@ async def execute_approved_session(
                 "error": f"Unknown action in session: {action.get('action')!r}",
             }
         try:
-            return executor(action, registry)
+            return executor(action, registry, git_repo=git_repo)
         except Exception as exc:  # noqa: BLE001 — surface, don't crash the route
             return {
                 "success": False,
