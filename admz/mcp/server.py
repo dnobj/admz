@@ -2119,6 +2119,10 @@ class ADMZMCPServer:
             raise DeviceNotFoundError(f"Device not found: {device_id}")
         info = self.registry.get_device_info(device_id)
         current = list(info.get("tags") or [])
+        _RESERVED = frozenset({"untagged"})
+        bad = [t for t in add if t and t.lower() in _RESERVED]
+        if bad:
+            raise ValueError(f"Tag name(s) are reserved and cannot be used: {bad}")
         remove_set = {t for t in remove}
         new_tags = [t for t in current if t not in remove_set]
         for t in add:

@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 {% block nav_active %}fleet{% endblock %}
 {% block title %}Fleet{% endblock %}
-{% block crumb_tail %}{{ ('Tag: ' + tag_filter) if tag_filter else 'Fleet' }}{% endblock %}
+{% block crumb_tail %}{{ ('Tag: ' + tag_filter) if tag_filter else 'All Devices' }}{% endblock %}
 
 {% block content %}
 <div class="page-header">
   <div class="pt">
-    <h1 class="page-title">{{ ('Tag: ' + tag_filter) if tag_filter else 'Fleet' }}</h1>
+    <h1 class="page-title">{{ ('Tag: ' + tag_filter) if tag_filter else 'All Devices' }}</h1>
     <p class="page-sub">
       {% if site %}{{ site.name }} · {% endif %}{{ devices|length }} device{{ '' if devices|length == 1 else 's' }}
       {% if tag_filter %}· filtered by tag{% endif %}
@@ -181,7 +181,7 @@ async function loadDrift() {
       paintDriftCell(cell, byId[cell.getAttribute('data-drift-cell')]);
     });
     const sd = document.getElementById('stat-drifted');
-    if (sd) sd.textContent = (data.counts && data.counts.drifted) || 0;
+    if (sd) sd.textContent = document.querySelectorAll('#fleet-table tbody tr[data-drift="drifted"]').length;
     if (window.lucide) lucide.createIcons();
     applyFilters();
   } catch (_) {}

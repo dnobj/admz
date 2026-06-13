@@ -220,6 +220,11 @@ async def update_device(
     try:
         updates = device_update.model_dump(exclude_none=True)
         updates.pop("device_id", None)
+        if "tags" in updates:
+            _RESERVED = frozenset({"untagged"})
+            bad = [t for t in updates["tags"] if t.lower() in _RESERVED]
+            if bad:
+                raise HTTPException(status_code=422, detail=f"Reserved tag names cannot be used: {bad}")
         registry.update_device(device_id, updates)
         result = registry.get_device_info(device_id)
         record_event(principal, "device.update", resource=resource,
