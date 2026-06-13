@@ -14,16 +14,52 @@
   </div>
 </div>
 
+{% if filter_drift %}
+<!-- Bulk action bar (shown only when ?filter=drifted) -->
+<div class="bulk-bar" id="drift-bulk-bar" style="display:none">
+  <span id="bulk-drifted-count" style="color:var(--text-faint);font-size:13px"></span>
+  <input type="text" id="bulk-note" placeholder="Note for all (optional)…"
+         style="flex:1;min-width:0;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:13px">
+  <button class="btn primary sm" id="bulk-accept-btn" type="button">
+    <i data-lucide="check-circle"></i> Accept all drifted
+  </button>
+</div>
+{% endif %}
+
 {% if rows %}
-<table class="data-table">
-  <thead><tr><th>Device</th><th>Baseline</th><th>Drift vs. baseline</th><th>Last snapshot</th><th></th></tr></thead>
+<table class="data-table" id="config-table">
+  <thead>
+    <tr>
+      <th></th>
+      <th>Device</th>
+      <th>Baseline</th>
+      <th>Drift vs. baseline</th>
+      <th>Last snapshot</th>
+      <th></th>
+    </tr>
+  </thead>
   <tbody>
     {% for r in rows %}
-    <tr onclick="window.location='/device/{{ r.device_id }}'">
+    {% set is_drifted = r.drift.state == 'drifted' %}
+    <tr class="config-row{% if is_drifted %} drifted-row{% endif %}"
+        data-device-id="{{ r.device_id }}"
+        data-drift-state="{{ r.drift.state }}"
+        {% if not is_drifted %}onclick="window.location='/device/{{ r.device_id }}'"{% endif %}>
+      <td style="width:32px;padding-right:0">
+        {% if is_drifted %}
+        <button class="expand-btn" data-for="{{ r.device_id }}" title="Show diff"
+                onclick="event.stopPropagation();toggleDrift('{{ r.device_id }}')">
+          <i data-lucide="chevron-right" style="transition:transform .15s"></i>
+        </button>
+        {% endif %}
+      </td>
       <td>
         <div class="device-name-cell">
           <span class="type-tile"><i data-lucide="video"></i></span>
-          <div><div class="nm">{{ r.nickname or r.device_id }}</div><div class="sub">{{ r.model or '—' }}</div></div>
+          <div>
+            <div class="nm">{{ r.nickname or r.device_id }}</div>
+            <div class="sub">{{ r.model or '—' }}</div>
+          </div>
         </div>
       </td>
       <td>
@@ -45,8 +81,65 @@
         {% endif %}
       </td>
       <td class="mono">{{ r.last_snapshot or '—' }}</td>
-      <td style="text-align:right;color:var(--text-faint)"><i data-lucide="chevron-right"></i></td>
+      <td style="text-align:right;color:var(--text-faint)">
+        {% if is_drifted %}
+        <i data-lucide="chevron-right" class="row-chevron" id="chev-{{ r.device_id }}" style="transition:transform .15s"></i>
+        {% else %}
+        <i data-lucide="chevron-right"></i>
+        {% endif %}
+      </td>
     </tr>
+    {% if is_drifted %}
+    <!-- Drift detail panel — lazy-loaded on first expand -->
+    <tr class="drift-detail-row hidden" id="detail-{{ r.device_id }}" data-loaded="false">
+      <td colspan="6" style="padding:0">
+        <div class="drift-detail-panel" id="panel-{{ r.device_id }}">
+          <div class="drift-loading" id="loading-{{ r.device_id }}">
+            <i data-lucide="loader" style="animation:spin 1s linear infinite"></i> Loading diff…
+          </div>
+          <div class="drift-diff-wrap hidden" id="diff-{{ r.device_id }}">
+            <!-- diff table injected by JS -->
+          </div>
+          <div class="drift-actions-wrap" id="actions-{{ r.device_id }}" style="display:none">
+            <!-- Accept section -->
+            <div class="drift-action-group">
+              <div class="drift-action-label">
+                <i data-lucide="check-circle" style="color:var(--fg-green)"></i>
+                <strong>Accept drift</strong>
+                <span class="page-sub" style="margin:0">Bless the current state as the new baseline.</span>
+              </div>
+              <div class="drift-action-controls">
+                <input type="text" class="drift-note-input" id="note-accept-{{ r.device_id }}"
+                       placeholder="Add a note (optional)…">
+                <button class="btn primary sm" id="btn-accept-{{ r.device_id }}"
+                        onclick="submitAccept('{{ r.device_id }}')">
+                  <i data-lucide="check"></i> Accept drift
+                </button>
+              </div>
+            </div>
+            <!-- Revert section -->
+            <div class="drift-action-group" style="border-top:1px solid var(--border);padding-top:12px">
+              <div class="drift-action-label">
+                <i data-lucide="rotate-ccw" style="color:var(--fg-red,#f87171)"></i>
+                <strong>Revert to baseline</strong>
+                <span class="page-sub" style="margin:0">Push the baseline config back to the device. Requires confirmation.</span>
+              </div>
+              <div class="drift-action-controls">
+                <input type="text" class="drift-note-input" id="note-revert-{{ r.device_id }}"
+                       placeholder="Add a note (optional)…">
+                <button class="btn ghost sm" style="color:var(--fg-red,#f87171)"
+                        id="btn-revert-{{ r.device_id }}"
+                        onclick="submitRevert('{{ r.device_id }}')">
+                  <i data-lucide="rotate-ccw"></i> Revert to baseline
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="drift-result hidden" id="result-{{ r.device_id }}"></div>
+        </div>
+      </td>
+    </tr>
+    {% endif %}
     {% endfor %}
   </tbody>
 </table>
@@ -56,7 +149,231 @@
 {% endblock %}
 
 {% block extra_js %}
+<style>
+.expand-btn {
+  background: none; border: none; cursor: pointer; padding: 4px;
+  color: var(--text-faint); display: flex; align-items: center;
+}
+.expand-btn:hover { color: var(--text); }
+.drifted-row { cursor: pointer; }
+.drifted-row:hover { background: var(--row-hover, rgba(255,180,0,.05)); }
+.drift-detail-row { background: var(--surface-alt, var(--surface)); }
+.drift-detail-panel {
+  padding: 16px 20px 20px 52px;
+  border-bottom: 1px solid var(--border);
+}
+.drift-loading { color: var(--text-faint); font-size: 13px; display: flex; align-items: center; gap: 6px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.drift-diff-table {
+  width: 100%; border-collapse: collapse; font-size: 12px;
+  margin-bottom: 16px;
+}
+.drift-diff-table th {
+  text-align: left; padding: 4px 8px; font-weight: 600;
+  color: var(--text-faint); border-bottom: 1px solid var(--border);
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+}
+.drift-diff-table td {
+  padding: 5px 8px; border-bottom: 1px solid var(--border-light, var(--border));
+  vertical-align: top;
+}
+.drift-diff-table tr:last-child td { border-bottom: none; }
+.drift-diff-table .col-path { font-family: monospace; color: var(--text); }
+.drift-diff-table .col-base { font-family: monospace; color: var(--fg-green, #4ade80); }
+.drift-diff-table .col-live { font-family: monospace; color: var(--fg-amber, #fbbf24); }
+.drift-diff-table .facet-chip {
+  display: inline-block; padding: 1px 5px; border-radius: 4px;
+  background: var(--surface); border: 1px solid var(--border);
+  font-size: 10px; color: var(--text-faint); margin-right: 4px; vertical-align: middle;
+}
+.drift-actions-wrap { margin-top: 4px; }
+.drift-action-group { display: flex; align-items: flex-start; gap: 16px; padding-bottom: 12px; }
+.drift-action-label { display: flex; align-items: flex-start; gap: 6px; flex-direction: column; min-width: 260px; }
+.drift-action-label > * { margin: 0; }
+.drift-action-controls { display: flex; gap: 8px; align-items: center; flex: 1; flex-wrap: wrap; }
+.drift-note-input {
+  flex: 1; min-width: 180px; padding: 6px 10px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); color: var(--text); font-size: 13px;
+}
+.drift-result { padding: 8px 0; font-size: 13px; }
+.bulk-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; margin-bottom: 14px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px;
+}
+</style>
 <script>
+const _driftCache = {};
+
+function toggleDrift(did) {
+  const detailRow = document.getElementById('detail-' + did);
+  const chevron = document.getElementById('chev-' + did);
+  const expandChevs = document.querySelectorAll('.expand-btn[data-for="' + did + '"] i');
+  const isOpen = !detailRow.classList.contains('hidden');
+  if (isOpen) {
+    detailRow.classList.add('hidden');
+    if (chevron) chevron.style.transform = '';
+    expandChevs.forEach(c => c.style.transform = '');
+  } else {
+    detailRow.classList.remove('hidden');
+    if (chevron) chevron.style.transform = 'rotate(90deg)';
+    expandChevs.forEach(c => c.style.transform = 'rotate(90deg)');
+    if (detailRow.getAttribute('data-loaded') !== 'true') {
+      loadDiff(did);
+    }
+  }
+}
+
+async function loadDiff(did) {
+  const loadingEl = document.getElementById('loading-' + did);
+  const diffWrap = document.getElementById('diff-' + did);
+  const actionsWrap = document.getElementById('actions-' + did);
+  try {
+    if (_driftCache[did]) {
+      renderDiff(did, _driftCache[did]);
+      return;
+    }
+    const resp = await fetch('/api/snapshot/drift?device_id=' + encodeURIComponent(did));
+    if (!resp.ok) throw new Error(resp.status);
+    const data = await resp.json();
+    _driftCache[did] = data;
+    document.getElementById('detail-' + did).setAttribute('data-loaded', 'true');
+    renderDiff(did, data);
+  } catch (e) {
+    if (loadingEl) loadingEl.innerHTML = '<span style="color:var(--fg-red,#f87171)">Failed to load diff.</span>';
+  }
+}
+
+function renderDiff(did, data) {
+  const loadingEl = document.getElementById('loading-' + did);
+  const diffWrap = document.getElementById('diff-' + did);
+  const actionsWrap = document.getElementById('actions-' + did);
+  const fields = data.drifted_fields || [];
+  if (loadingEl) loadingEl.style.display = 'none';
+  if (diffWrap) {
+    if (fields.length === 0) {
+      diffWrap.innerHTML = '<span style="color:var(--text-faint);font-size:13px">No drifted fields returned.</span>';
+    } else {
+      let rows = fields.map(f => {
+        const chip = f.facet ? '<span class="facet-chip">' + esc(f.facet) + '</span>' : '';
+        return '<tr><td class="col-path">' + chip + esc(f.path) + '</td>'
+          + '<td class="col-base">' + esc(f.expected) + '</td>'
+          + '<td class="col-live">' + esc(f.actual) + '</td></tr>';
+      }).join('');
+      diffWrap.innerHTML = '<table class="drift-diff-table">'
+        + '<thead><tr><th>Parameter</th><th style="color:var(--fg-green,#4ade80)">Baseline</th>'
+        + '<th style="color:var(--fg-amber,#fbbf24)">Live (drifted)</th></tr></thead>'
+        + '<tbody>' + rows + '</tbody></table>';
+    }
+    diffWrap.classList.remove('hidden');
+  }
+  if (actionsWrap) actionsWrap.style.display = '';
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function submitAccept(did) {
+  const note = (document.getElementById('note-accept-' + did) || {}).value || '';
+  const btn = document.getElementById('btn-accept-' + did);
+  const resultEl = document.getElementById('result-' + did);
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i> Accepting…'; }
+  if (window.lucide) lucide.createIcons();
+  try {
+    const resp = await fetch('/api/snapshot/accept-baseline', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({device_id: did, note: note || null}),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.success) {
+      if (resultEl) {
+        resultEl.innerHTML = '<span style="color:var(--fg-green,#4ade80)"><i data-lucide="check-circle"></i> Baseline accepted. Drift cleared.</span>';
+        resultEl.classList.remove('hidden');
+        if (window.lucide) lucide.createIcons();
+      }
+      // Update the row's drift cell to in_sync
+      const detailRow = document.getElementById('detail-' + did);
+      if (detailRow) {
+        const mainRow = detailRow.previousElementSibling;
+        if (mainRow) {
+          const driftCell = mainRow.querySelector('[class*="drift-cell"]');
+          if (driftCell) {
+            driftCell.className = 'drift-cell fg-green';
+            driftCell.innerHTML = '<span class="dot sem-green"></span>In sync';
+          }
+          mainRow.classList.remove('drifted-row');
+          mainRow.setAttribute('data-drift-state', 'in_sync');
+          mainRow.setAttribute('onclick', "window.location='/device/" + did + "'");
+        }
+        setTimeout(() => { detailRow.classList.add('hidden'); }, 1200);
+      }
+      updateBulkBar();
+    } else {
+      if (resultEl) {
+        const msg = (data.detail || data.message || JSON.stringify(data));
+        resultEl.innerHTML = '<span style="color:var(--fg-red,#f87171)">Error: ' + esc(msg) + '</span>';
+        resultEl.classList.remove('hidden');
+      }
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="check"></i> Accept drift'; }
+      if (window.lucide) lucide.createIcons();
+    }
+  } catch (e) {
+    if (resultEl) {
+      resultEl.innerHTML = '<span style="color:var(--fg-red,#f87171)">Request failed.</span>';
+      resultEl.classList.remove('hidden');
+    }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="check"></i> Accept drift'; }
+    if (window.lucide) lucide.createIcons();
+  }
+}
+
+async function submitRevert(did) {
+  const note = (document.getElementById('note-revert-' + did) || {}).value || '';
+  const btn = document.getElementById('btn-revert-' + did);
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i> Building plan…'; }
+  if (window.lucide) lucide.createIcons();
+  try {
+    const resp = await fetch('/api/snapshot/restore', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({device_id: did, note: note || null}),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.confirm_url) {
+      window.location = data.confirm_url;
+    } else if (resp.ok && data.message) {
+      const resultEl = document.getElementById('result-' + did);
+      if (resultEl) {
+        resultEl.innerHTML = '<span style="color:var(--text-faint)">' + esc(data.message) + '</span>';
+        resultEl.classList.remove('hidden');
+      }
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="rotate-ccw"></i> Revert to baseline'; }
+      if (window.lucide) lucide.createIcons();
+    } else {
+      const msg = (data.detail || data.message || JSON.stringify(data));
+      const resultEl = document.getElementById('result-' + did);
+      if (resultEl) {
+        resultEl.innerHTML = '<span style="color:var(--fg-red,#f87171)">Error: ' + esc(msg) + '</span>';
+        resultEl.classList.remove('hidden');
+      }
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="rotate-ccw"></i> Revert to baseline'; }
+      if (window.lucide) lucide.createIcons();
+    }
+  } catch (e) {
+    const resultEl = document.getElementById('result-' + did);
+    if (resultEl) {
+      resultEl.innerHTML = '<span style="color:var(--fg-red,#f87171)">Request failed.</span>';
+      resultEl.classList.remove('hidden');
+    }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="rotate-ccw"></i> Revert to baseline'; }
+    if (window.lucide) lucide.createIcons();
+  }
+}
+
 // "Check drift" — live fleet sweep, then reload to repaint from the cache.
 const checkBtn = document.getElementById('check-drift-btn');
 if (checkBtn) {
@@ -68,5 +385,81 @@ if (checkBtn) {
     window.location.reload();
   });
 }
+
+// ── Filter: hide non-drifted rows when ?filter=drifted ──
+{% if filter_drift %}
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('#config-table tbody .config-row').forEach(row => {
+    if (row.getAttribute('data-drift-state') !== 'drifted') {
+      row.style.display = 'none';
+    }
+  });
+  updateBulkBar();
+});
+{% endif %}
+
+function updateBulkBar() {
+  const bar = document.getElementById('drift-bulk-bar');
+  if (!bar) return;
+  const drifted = Array.from(
+    document.querySelectorAll('#config-table tbody .drifted-row')
+  ).filter(r => r.style.display !== 'none' && r.getAttribute('data-drift-state') === 'drifted');
+  const count = drifted.length;
+  const countEl = document.getElementById('bulk-drifted-count');
+  if (countEl) countEl.textContent = count + ' device' + (count !== 1 ? 's' : '') + ' drifted';
+  bar.style.display = count > 0 ? '' : 'none';
+}
+
+const bulkBtn = document.getElementById('bulk-accept-btn');
+if (bulkBtn) {
+  bulkBtn.addEventListener('click', async () => {
+    const note = (document.getElementById('bulk-note') || {}).value || '';
+    const driftedRows = Array.from(
+      document.querySelectorAll('#config-table tbody .drifted-row')
+    ).filter(r => r.style.display !== 'none' && r.getAttribute('data-drift-state') === 'drifted');
+    const ids = driftedRows.map(r => r.getAttribute('data-device-id')).filter(Boolean);
+    if (ids.length === 0) return;
+    bulkBtn.disabled = true;
+    bulkBtn.innerHTML = '<i data-lucide="loader"></i> Accepting ' + ids.length + '…';
+    if (window.lucide) lucide.createIcons();
+    let ok = 0, fail = 0;
+    for (const did of ids) {
+      try {
+        const resp = await fetch('/api/snapshot/accept-baseline', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({device_id: did, note: note || null}),
+        });
+        const data = await resp.json();
+        if (resp.ok && data.success) {
+          ok++;
+          // Update row state
+          const detailRow = document.getElementById('detail-' + did);
+          const mainRow = document.querySelector('[data-device-id="' + did + '"].drifted-row');
+          if (mainRow) {
+            const driftCell = mainRow.querySelector('[class*="drift-cell"]');
+            if (driftCell) {
+              driftCell.className = 'drift-cell fg-green';
+              driftCell.innerHTML = '<span class="dot sem-green"></span>In sync';
+            }
+            mainRow.classList.remove('drifted-row');
+            mainRow.setAttribute('data-drift-state', 'in_sync');
+            {% if filter_drift %}mainRow.style.display = 'none';{% endif %}
+          }
+          if (detailRow) detailRow.classList.add('hidden');
+        } else {
+          fail++;
+        }
+      } catch (_) { fail++; }
+    }
+    bulkBtn.disabled = false;
+    bulkBtn.innerHTML = '<i data-lucide="check-circle"></i> '
+      + ok + ' accepted' + (fail > 0 ? ', ' + fail + ' failed' : '');
+    if (window.lucide) lucide.createIcons();
+    updateBulkBar();
+  });
+}
+
+updateBulkBar();
 </script>
 {% endblock %}

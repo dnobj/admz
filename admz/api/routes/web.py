@@ -2,7 +2,7 @@
 Web UI routes for device management.
 """
 
-from fastapi import APIRouter, Request, Depends, Form, HTTPException
+from fastapi import APIRouter, Request, Depends, Form, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from datetime import datetime
@@ -691,6 +691,7 @@ def _time_ago(epoch: Optional[float]) -> Optional[str]:
 @router.get("/configuration", response_class=HTMLResponse)
 async def configuration_page(
     request: Request,
+    filter: Optional[str] = Query(None),
     ctx: AppContext = Depends(get_context),
 ):
     """Configuration / drift — per-device baseline + branch state.
@@ -738,7 +739,8 @@ async def configuration_page(
 
     return templates.TemplateResponse(
         "configuration.html",
-        {"request": request, "title": "Configuration", "rows": rows},
+        {"request": request, "title": "Configuration", "rows": rows,
+         "filter_drift": filter == "drifted"},
     )
 
 

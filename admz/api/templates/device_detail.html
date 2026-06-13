@@ -140,8 +140,51 @@
         <span class="drift-cell fg-green"><span class="dot sem-green"></span>In sync{% if drift_age %} <span class="drift-age">· {{ drift_age }}</span>{% endif %}</span>
         <p class="page-sub" style="margin:8px 0 0">Live config matched the baseline at the last check. <a href="/configuration">Audit</a> to recheck.</p>
         {% elif drift.state == 'drifted' %}
-        <span class="drift-cell fg-amber"><span class="dot sem-amber"></span>Drifted ({{ drift.count }} field{{ 's' if drift.count != 1 else '' }}){% if drift_age %} <span class="drift-age">· {{ drift_age }}</span>{% endif %}</span>
-        <p class="page-sub" style="margin:8px 0 0">Live config differs from the baseline. Review on the <a href="/configuration">Configuration</a> screen — accept the change or restore the baseline.</p>
+        <span class="drift-cell fg-amber" id="dd-drift-badge"><span class="dot sem-amber"></span>Drifted ({{ drift.count }} field{{ 's' if drift.count != 1 else '' }}){% if drift_age %} <span class="drift-age">· {{ drift_age }}</span>{% endif %}</span>
+        <p class="page-sub" style="margin:8px 0 4px">Live config differs from the baseline.</p>
+        <div id="dd-action-btns" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+          <button class="btn primary sm" onclick="ddShowPanel('accept')">
+            <i data-lucide="check-circle"></i> Accept drift
+          </button>
+          <button class="btn ghost sm" onclick="ddShowPanel('revert')">
+            <i data-lucide="rotate-ccw"></i> Revert to baseline
+          </button>
+          <a href="/configuration" class="btn ghost sm">
+            <i data-lucide="table"></i> View full diff
+          </a>
+        </div>
+        <!-- Accept panel -->
+        <div id="dd-accept-panel" style="display:none;margin-top:12px;padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:8px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px">
+            <i data-lucide="check-circle" style="color:var(--fg-green,#4ade80)"></i> Accept drift
+          </div>
+          <p class="page-sub" style="margin:0 0 8px">Blesses the current live config as the new baseline. Drift will clear.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <input type="text" id="dd-note-accept" placeholder="Add a note (optional)…"
+                   style="flex:1;min-width:160px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px">
+            <button class="btn primary sm" id="dd-btn-accept" onclick="ddSubmitAccept()">
+              <i data-lucide="check"></i> Confirm accept
+            </button>
+            <button class="btn ghost sm" onclick="ddHidePanel()">Cancel</button>
+          </div>
+          <div id="dd-accept-result" style="display:none;margin-top:8px;font-size:13px"></div>
+        </div>
+        <!-- Revert panel -->
+        <div id="dd-revert-panel" style="display:none;margin-top:12px;padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:8px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px">
+            <i data-lucide="rotate-ccw" style="color:var(--fg-red,#f87171)"></i> Revert to baseline
+          </div>
+          <p class="page-sub" style="margin:0 0 8px">Pushes the saved baseline config back to the device. This is service-affecting and requires approval.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <input type="text" id="dd-note-revert" placeholder="Add a note (optional)…"
+                   style="flex:1;min-width:160px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px">
+            <button class="btn ghost sm" style="color:var(--fg-red,#f87171)" id="dd-btn-revert" onclick="ddSubmitRevert()">
+              <i data-lucide="rotate-ccw"></i> Confirm revert
+            </button>
+            <button class="btn ghost sm" onclick="ddHidePanel()">Cancel</button>
+          </div>
+          <div id="dd-revert-result" style="display:none;margin-top:8px;font-size:13px"></div>
+        </div>
         {% elif drift.state == 'unchecked' %}
         <span class="drift-cell fg-grey"><span class="dot sem-grey"></span>Baseline set · not checked</span>
         <p class="page-sub" style="margin:8px 0 0">A baseline is blessed but drift hasn't been checked yet. Run “Check drift” on the <a href="/configuration">Configuration</a> screen.</p>
@@ -284,6 +327,84 @@ if (rhBtn) {
     rhGo.innerHTML = '<i data-lucide="repeat"></i> Rebind';
     if (window.lucide) lucide.createIcons();
   });
+}
+
+// ── Drift actions: accept / revert from device detail page ──
+function ddEsc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function ddShowPanel(which) {
+  document.getElementById('dd-accept-panel').style.display = which === 'accept' ? '' : 'none';
+  document.getElementById('dd-revert-panel').style.display = which === 'revert' ? '' : 'none';
+  document.getElementById('dd-action-btns').style.display = 'none';
+  if (window.lucide) lucide.createIcons();
+}
+function ddHidePanel() {
+  document.getElementById('dd-accept-panel').style.display = 'none';
+  document.getElementById('dd-revert-panel').style.display = 'none';
+  document.getElementById('dd-action-btns').style.display = '';
+  ['dd-accept-result','dd-revert-result'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.style.display = 'none';
+  });
+}
+async function ddSubmitAccept() {
+  const note = (document.getElementById('dd-note-accept') || {}).value || '';
+  const btn = document.getElementById('dd-btn-accept');
+  const resultEl = document.getElementById('dd-accept-result');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i> Accepting…'; }
+  if (window.lucide) lucide.createIcons();
+  try {
+    const resp = await fetch('/api/snapshot/accept-baseline', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({device_id: DEVICE_ID, note: note || null}),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.success) {
+      const badge = document.getElementById('dd-drift-badge');
+      if (badge) { badge.className = 'drift-cell fg-green'; badge.innerHTML = '<span class="dot sem-green"></span>In sync'; }
+      document.getElementById('dd-action-btns').style.display = 'none';
+      document.getElementById('dd-accept-panel').style.display = 'none';
+      if (resultEl) {
+        resultEl.innerHTML = '<span style="color:var(--fg-green,#4ade80)"><i data-lucide="check-circle"></i> Baseline accepted. Drift cleared.</span>';
+        resultEl.style.display = ''; if (window.lucide) lucide.createIcons();
+      }
+    } else {
+      const msg = data.detail || data.message || JSON.stringify(data);
+      if (resultEl) { resultEl.innerHTML = '<span style="color:var(--fg-red,#f87171)">Error: ' + ddEsc(msg) + '</span>'; resultEl.style.display = ''; }
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="check"></i> Confirm accept'; }
+      if (window.lucide) lucide.createIcons();
+    }
+  } catch (e) {
+    if (resultEl) { resultEl.innerHTML = '<span style="color:var(--fg-red,#f87171)">Request failed.</span>'; resultEl.style.display = ''; }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="check"></i> Confirm accept'; }
+    if (window.lucide) lucide.createIcons();
+  }
+}
+async function ddSubmitRevert() {
+  const note = (document.getElementById('dd-note-revert') || {}).value || '';
+  const btn = document.getElementById('dd-btn-revert');
+  const resultEl = document.getElementById('dd-revert-result');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i> Building plan…'; }
+  if (window.lucide) lucide.createIcons();
+  try {
+    const resp = await fetch('/api/snapshot/restore', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({device_id: DEVICE_ID, note: note || null}),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.confirm_url) {
+      window.location = data.confirm_url;
+    } else {
+      const msg = data.detail || data.message || JSON.stringify(data);
+      if (resultEl) { resultEl.innerHTML = '<span style="color:var(--fg-red,#f87171)">Error: ' + ddEsc(msg) + '</span>'; resultEl.style.display = ''; }
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="rotate-ccw"></i> Confirm revert'; }
+      if (window.lucide) lucide.createIcons();
+    }
+  } catch (e) {
+    if (resultEl) { resultEl.innerHTML = '<span style="color:var(--fg-red,#f87171)">Request failed.</span>'; resultEl.style.display = ''; }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="rotate-ccw"></i> Confirm revert'; }
+    if (window.lucide) lucide.createIcons();
+  }
 }
 
 // ── Danger zone: delete device (authenticated operator, direct + audited) ──

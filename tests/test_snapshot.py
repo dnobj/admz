@@ -1055,3 +1055,127 @@ class TestBaselinePointers:
 
         # Must swallow — a pointer-less backend can't fail the snapshot.
         self._engine(_Reg())._set_baseline_pointers("cam-01", "abc")
+
+
+# ---------------------------------------------------------------------------
+# Drift note: _action_accept_baseline + request models
+# ---------------------------------------------------------------------------
+
+class TestDriftNoteField:
+    """Note field on accept-baseline and restore — Slice 1 of drift visualization."""
+
+    def test_accept_baseline_request_accepts_note(self):
+        from admz.api.routes.snapshot import AcceptBaselineRequest
+        req = AcceptBaselineRequest(device_id="cam-01", note="firmware update")
+        assert req.note == "firmware update"
+
+    def test_accept_baseline_request_note_optional(self):
+        from admz.api.routes.snapshot import AcceptBaselineRequest
+        req = AcceptBaselineRequest(device_id="cam-01")
+        assert req.note is None
+
+    def test_restore_request_accepts_note(self):
+        from admz.api.routes.snapshot import RestoreRequest
+        req = RestoreRequest(device_id="cam-01", note="revert after failed deploy")
+        assert req.note == "revert after failed deploy"
+
+    def test_restore_request_note_optional(self):
+        from admz.api.routes.snapshot import RestoreRequest
+        req = RestoreRequest(device_id="cam-01")
+        assert req.note is None
+
+    def test_action_accept_baseline_writes_baseline_yaml_when_note(self, tmp_repo):
+        """_action_accept_baseline writes BASELINE.yaml to git when note is given."""
+        import time
+        import yaml as _yaml
+        from admz.operations import _action_accept_baseline
+
+        # Seed a facet so the device directory exists
+        device_id = "cam-note-01"
+        device_dir = tmp_repo.device_path(device_id)
+        device_dir.mkdir(parents=True, exist_ok=True)
+        config_dir = device_dir / "config"
+        config_dir.mkdir(exist_ok=True)
+        (config_dir / "image.yaml").write_text(_yaml.safe_dump({"I0.Resolution": "1280x720"}))
+        sha = tmp_repo.commit_snapshot(device_id, message=f"Audit: {device_id}", auto_push=False)
+
+        class _Reg:
+            def __init__(self):
+                self._baseline = None
+            def set_config_pointers(self, did, *, baseline_sha):
+                self._baseline = baseline_sha
+
+        reg = _Reg()
+        result = _action_accept_baseline(
+            {"device_id": device_id, "baseline_sha": sha,
+             "note": "new params due to firmware update", "accepted_by": "test"},
+            reg,
+            git_repo=tmp_repo,
+        )
+        assert result["success"] is True
+        assert reg._baseline == sha
+
+        # BASELINE.yaml should exist and contain the note
+        baseline_file = device_dir / "BASELINE.yaml"
+        assert baseline_file.exists(), "BASELINE.yaml not written"
+        data = _yaml.safe_load(baseline_file.read_text())
+        assert data["note"] == "new params due to firmware update"
+        assert data["baseline_sha"] == sha
+        assert data["accepted_by"] == "test"
+
+    def test_action_accept_baseline_no_yaml_when_no_note(self, tmp_repo):
+        """No BASELINE.yaml written when note is empty."""
+        from admz.operations import _action_accept_baseline
+
+        device_id = "cam-no-note"
+        device_dir = tmp_repo.device_path(device_id)
+        device_dir.mkdir(parents=True, exist_ok=True)
+        config_dir = device_dir / "config"
+        config_dir.mkdir(exist_ok=True)
+        import yaml as _yaml
+        (config_dir / "image.yaml").write_text(_yaml.safe_dump({"I0.Resolution": "640x480"}))
+        sha = tmp_repo.commit_snapshot(device_id, message=f"Audit: {device_id}", auto_push=False)
+
+        class _Reg:
+            def set_config_pointers(self, did, *, baseline_sha):
+                pass
+
+        _action_accept_baseline(
+            {"device_id": device_id, "baseline_sha": sha},
+            _Reg(),
+            git_repo=tmp_repo,
+        )
+        assert not (device_dir / "BASELINE.yaml").exists()
+
+    def test_action_accept_baseline_note_survives_missing_git_repo(self):
+        """No error when git_repo=None even if note is provided."""
+        from admz.operations import _action_accept_baseline
+
+        class _Reg:
+            def set_config_pointers(self, did, *, baseline_sha):
+                pass
+
+        result = _action_accept_baseline(
+            {"device_id": "cam-x", "baseline_sha": "abc123",
+             "note": "some note"},
+            _Reg(),
+            git_repo=None,
+        )
+        assert result["success"] is True
+
+    def test_restore_note_included_in_plan_description(self, tmp_repo, tmp_path):
+        """RestoreBuilder.build_restore_plan description is unchanged; note added at route level."""
+        from admz.snapshot.restore import RestoreBuilder
+        from unittest.mock import MagicMock
+
+        catalog = MagicMock()
+        catalog.get_risk_level.return_value = "normal"
+
+        class _Reg:
+            def get_device_info(self, did):
+                return {"device_id": did, "baseline_sha": None}
+
+        builder = RestoreBuilder(catalog, _Reg(), tmp_repo)
+        spec = builder.build_restore_plan("cam-01", ref="HEAD")
+        # The description is from build_restore_plan — note is appended at route level
+        assert "cam-01" in spec["description"]

@@ -493,6 +493,26 @@ def _action_accept_baseline(
     target = action["baseline_sha"]
     previous = action.get("previous_baseline_sha")
     registry.set_config_pointers(device_id, baseline_sha=target)
+    note = (action.get("note") or "").strip()
+    if git_repo and note:
+        try:
+            import time as _t
+            import yaml as _yaml
+            device_dir = git_repo.device_path(device_id)
+            device_dir.mkdir(parents=True, exist_ok=True)
+            (device_dir / "BASELINE.yaml").write_text(
+                _yaml.safe_dump({
+                    "accepted_at": _t.time(),
+                    "accepted_by": action.get("accepted_by", ""),
+                    "baseline_sha": target,
+                    "note": note,
+                }, default_flow_style=False, sort_keys=True)
+            )
+            git_repo.commit_snapshot(
+                device_id, message=f"Accept baseline: {device_id}", auto_push=True,
+            )
+        except Exception:
+            logger.warning("baseline note commit failed for %s", device_id, exc_info=True)
     return {
         "success": True,
         "action": "accept_baseline",

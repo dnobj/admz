@@ -33,6 +33,7 @@ class RestoreRequest(BaseModel):
     # ref restores from that commit/tag/branch instead.
     ref: Optional[str] = None
     facets: Optional[List[str]] = None
+    note: Optional[str] = None
 
     @field_validator("device_id")
     @classmethod
@@ -106,6 +107,7 @@ class AcceptBaselineRequest(BaseModel):
     device_id: str
     # None -> accept the device's latest recorded observation.
     commit_sha: Optional[str] = None
+    note: Optional[str] = None
 
     @field_validator("device_id")
     @classmethod
@@ -172,8 +174,34 @@ async def accept_baseline(
 
     previous = device_info.get("baseline_sha")
     ctx.registry.set_config_pointers(req.device_id, baseline_sha=target)
+    note = (req.note or "").strip()
     record_event(principal, "snapshot.accept_baseline", resource=resource,
-                 details={"baseline_sha": target, "previous": previous})
+                 details={"baseline_sha": target, "previous": previous,
+                          **({"note": note} if note else {})})
+    if note:
+        try:
+            import time as _t
+            import yaml as _yaml
+            device_dir = ctx.git_repo.device_path(req.device_id)
+            device_dir.mkdir(parents=True, exist_ok=True)
+            (device_dir / "BASELINE.yaml").write_text(
+                _yaml.safe_dump({
+                    "accepted_at": _t.time(),
+                    "accepted_by": str(principal),
+                    "baseline_sha": target,
+                    "note": note,
+                }, default_flow_style=False, sort_keys=True)
+            )
+            ctx.git_repo.commit_snapshot(
+                req.device_id,
+                message=f"Accept baseline: {req.device_id}",
+                auto_push=True,
+            )
+        except Exception:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "baseline note commit failed for %s", req.device_id, exc_info=True
+            )
     return {
         "success": True,
         "device_id": req.device_id,
@@ -217,9 +245,13 @@ async def restore_device(
             "message": f"No config found for {req.device_id} at {resolved_ref}",
             "warnings": plan_spec.get("warnings", []),
         }
+    note = (req.note or "").strip()
+    description = plan_spec["description"]
+    if note:
+        description = f"{description} — {note}"
     try:
         plan = ctx.plan_engine.create_plan(
-            description=plan_spec["description"],
+            description=description,
             steps=plan_spec["steps"],
             on_failure=plan_spec["on_failure"],
         )
