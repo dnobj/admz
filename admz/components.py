@@ -182,6 +182,38 @@ def _bootstrap_default_hierarchy(
         )
 
 
+def _backfill_mac_addresses(registry: DeviceRegistry) -> None:
+    """One-time migration for the slot/unit identity model (ADR-0036).
+
+    `device_id` is the stable ADMZ *slot*; the currently-installed *unit*'s
+    MAC lives in the `mac_address` field. For legacy rows whose `device_id`
+    is a MAC (the historical auto-registration default) but whose
+    `mac_address` is empty, copy the MAC across so discovery IP-reconcile
+    and the collision check key on the authoritative `mac_address` (and so a
+    later hardware swap, which changes `mac_address`, doesn't desync them).
+    Idempotent; best-effort.
+    """
+    from admz.device_registry import canonical_mac
+    try:
+        devices = registry.list_devices()
+    except Exception:  # pragma: no cover — defensive
+        return
+    for d in devices:
+        did = d.get("device_id")
+        if not did or d.get("mac_address"):
+            continue
+        # Only when the device_id itself is a 12-hex MAC.
+        if len(canonical_mac(did)) != 12:
+            continue
+        try:
+            registry.update_device_info(did, {"mac_address": did})
+            logger.info("Backfilled mac_address for slot %s", did)
+        except NotImplementedError:
+            return  # backend can't update info (stubbed Vault)
+        except Exception:  # pragma: no cover — best effort
+            logger.debug("mac_address backfill skipped for %s", did, exc_info=True)
+
+
 def _backfill_baselines(registry: DeviceRegistry, git_repo) -> None:
     """One-time migration: pin a baseline for devices that have committed
     config but no ``baseline_sha`` yet (snapshotted before the pointer landed).
@@ -270,6 +302,8 @@ def build_components(
     # drift/restore have a baseline. Idempotent no-op once every config-bearing
     # device has a pointer.
     _backfill_baselines(registry, git_repo)
+    # ADR-0036: ensure each slot's installed-unit MAC is in `mac_address`.
+    _backfill_mac_addresses(registry)
 
     snapshot_engine = SnapshotEngine(
         catalog=catalog,

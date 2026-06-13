@@ -87,6 +87,16 @@ class DeviceUpdate(BaseModel):
     )
 
 
+class DeviceReplaceRequest(BaseModel):
+    """Request model for rebinding a slot to a replacement unit (ADR-0036).
+
+    Only the new unit's reachable address is required; ADMZ re-probes it to
+    read the new MAC/serial/firmware/model. The slot's device_id is kept.
+    """
+
+    host: str = Field(..., description="The replacement unit's IP or hostname")
+
+
 class DeviceSiteUpdate(BaseModel):
     """Request model for moving a device to a different Site.
 

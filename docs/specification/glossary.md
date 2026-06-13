@@ -224,6 +224,10 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **SOAP** — Simple Object Access Protocol. The fourth generation of VAPIX APIs (WSDL-based web services under `/vapix/services`).
 
+**Slot / Unit** — The device-identity model (ADR-0036). The **slot** is the stable ADMZ identity (`device_id`) — git config is keyed by it, so it survives hardware replacement; the **unit** is the currently-installed physical device, identified by `mac_address`. "Replace hardware" rebinds a slot to a new unit (`POST /api/devices/{id}/replace-hardware`) and the slot's config/baseline follow automatically. `device_id`'s value is historically the first unit's MAC, but is semantically the slot — there is no separate `slot_id` surrogate.
+
+**Tombstone (config)** — A `Removed: <device_id>` commit (writing `fleet/{device_id}/REMOVED.yaml`) that records a deliberate device deletion in the git config repo while keeping its history, distinct from a device that merely went stale (ADR-0036, reusing the ADR-0031 Audit-commit pattern).
+
 **SnapshotEngine** — Orchestrates per-device snapshots: runs facet reads, sanitizes, writes to git.
 
 **SnapshotScheduler** — The asyncio-driven scheduler for recurring snapshots.

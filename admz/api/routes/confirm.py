@@ -154,6 +154,7 @@ async def _approve_session(
         registry=ctx.registry,
         executors=ctx.executors,
         plan_engine=ctx.plan_engine,
+        git_repo=ctx.git_repo,
     )
 
     record_event(

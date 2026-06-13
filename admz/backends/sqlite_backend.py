@@ -29,7 +29,7 @@ import base64
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
-from admz.device_registry import DeviceRegistry
+from admz.device_registry import DeviceRegistry, canonical_mac
 from admz.exceptions import (
     DeviceNotFoundError,
     AccountNotFoundError,
@@ -412,6 +412,11 @@ class SQLiteDeviceRegistry(DeviceRegistry):
     ) -> None:
         if self.device_exists(device_id):
             raise BackendError(f"Device '{device_id}' already exists")
+        # Slot/unit (ADR-0036): if the slot's device_id is a MAC (the
+        # auto-registration default) and no installed-unit MAC was given,
+        # record it so discovery-reconcile/collision key on `mac_address`.
+        if not device_info.get("mac_address") and len(canonical_mac(device_id)) == 12:
+            device_info = {**device_info, "mac_address": device_id}
         self._assert_no_mac_collision(device_id, device_info)
 
         with self._connect() as conn:
