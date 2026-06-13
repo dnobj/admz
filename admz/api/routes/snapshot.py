@@ -270,6 +270,214 @@ async def restore_device(
     }
 
 
+class RevertRequest(BaseModel):
+    """One or more devices to revert to their blessed baseline.
+
+    A single combined plan is built across every device and gated ONCE at
+    the confirm widget (the plan engine already serializes multi-device
+    plans — ``device_id="multiple"``). ``note`` is an audit annotation:
+    revert re-applies the existing baseline to the device and makes NO git
+    change, so the note lives only in the plan description + audit log.
+    """
+    device_ids: List[str]
+    note: Optional[str] = None
+    facets: Optional[List[str]] = None
+
+    @field_validator("device_ids")
+    @classmethod
+    def _check_ids(cls, v: List[str]) -> List[str]:
+        if not v:
+            raise ValueError("device_ids must not be empty")
+        return [validate_identifier(d, "device_id") for d in v]
+
+    @field_validator("facets")
+    @classmethod
+    def _check_facets(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return v
+        for f in v:
+            validate_identifier(f, "facet_name")
+        return v
+
+
+@router.post("/snapshot/revert")
+async def revert_devices(
+    request: Request,
+    req: RevertRequest,
+    ctx: AppContext = Depends(get_context),
+):
+    """Revert one or more devices to their blessed baseline in a single
+    gated plan. CR-3: authenticated principal required (data-loss). The
+    response is the standard blocked envelope — approve at ``confirm_url``
+    to run the whole plan at once."""
+    from admz import operations
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+
+    all_steps: List[dict] = []
+    warnings: List[str] = []
+    missing: List[str] = []
+    no_config: List[str] = []
+    for did in req.device_ids:
+        if not ctx.registry.device_exists(did):
+            missing.append(did)
+            continue
+        spec = ctx.restore_builder.build_restore_plan(
+            did, ref=None, facet_names=req.facets
+        )
+        if not spec["steps"]:
+            no_config.append(did)
+        all_steps.extend(spec["steps"])
+        warnings.extend(spec.get("warnings", []))
+
+    if not all_steps:
+        record_event(principal, "snapshot.revert", resource="device:multiple",
+                     details={"device_ids": req.device_ids, "outcome": "no-steps"})
+        return {
+            "message": "No restorable baseline config for the selected device(s).",
+            "warnings": warnings,
+            "missing": missing,
+            "no_config": no_config,
+        }
+
+    device_count = len({s["device_id"] for s in all_steps})
+    note = (req.note or "").strip()
+    description = (
+        f"Revert {device_count} device" + ("s" if device_count != 1 else "")
+        + " to baseline"
+    )
+    if note:
+        description = f"{description} — {note}"
+
+    try:
+        plan = ctx.plan_engine.create_plan(
+            description=description, steps=all_steps, on_failure="stop",
+        )
+    except ValueError as e:
+        record_event(principal, "snapshot.revert", resource="device:multiple",
+                     success=False, error_message=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+
+    record_event(
+        principal, "snapshot.revert", resource="device:multiple",
+        details={"device_ids": req.device_ids, "plan_id": plan.plan_id,
+                 "step_count": len(all_steps), "device_count": device_count,
+                 **({"note": note} if note else {})},
+    )
+    result = await operations.execute_gated_plan(ctx.plan_engine, plan.plan_id)
+    # url_* plans come back blocked with confirm_url; pass through extras.
+    result.setdefault("warnings", warnings)
+    if missing:
+        result["missing"] = missing
+    return result
+
+
+class AcceptBaselineBulkRequest(BaseModel):
+    """Bless the current observed state of several devices as their new
+    baselines in one combined git commit (Slice: drift visualization)."""
+    device_ids: List[str]
+    note: Optional[str] = None
+
+    @field_validator("device_ids")
+    @classmethod
+    def _check_ids(cls, v: List[str]) -> List[str]:
+        if not v:
+            raise ValueError("device_ids must not be empty")
+        return [validate_identifier(d, "device_id") for d in v]
+
+
+@router.post("/snapshot/accept-baseline-bulk")
+async def accept_baseline_bulk(
+    request: Request,
+    req: AcceptBaselineBulkRequest,
+    ctx: AppContext = Depends(get_context),
+):
+    """Accept the latest observation as baseline for many devices at once.
+
+    Metadata-only (re-points each baseline pointer); when a ``note`` is
+    given, every device's ``BASELINE.yaml`` is written and the whole set
+    lands in a SINGLE commit (``Accept baseline: N devices — <note>``).
+    CR-3 parity with single accept: authenticated principal required."""
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+
+    note = (req.note or "").strip()
+    accepted: List[dict] = []
+    skipped: List[dict] = []
+    for did in req.device_ids:
+        if not ctx.registry.device_exists(did):
+            skipped.append({"device_id": did, "reason": "not-found"})
+            continue
+        info = ctx.registry.get_device_info(did)
+        target = info.get("latest_observed_sha")
+        if not target:
+            skipped.append({"device_id": did, "reason": "no-observation"})
+            continue
+        facets = ctx.git_repo.list_facets_at(did, target)
+        if not facets:
+            skipped.append({"device_id": did, "reason": "no-config-at-commit"})
+            continue
+        ctx.registry.set_config_pointers(did, baseline_sha=target)
+        if note:
+            try:
+                import time as _t
+                import yaml as _yaml
+                device_dir = ctx.git_repo.device_path(did)
+                device_dir.mkdir(parents=True, exist_ok=True)
+                (device_dir / "BASELINE.yaml").write_text(
+                    _yaml.safe_dump({
+                        "accepted_at": _t.time(),
+                        "accepted_by": str(principal),
+                        "baseline_sha": target,
+                        "note": note,
+                    }, default_flow_style=False, sort_keys=True)
+                )
+            except Exception:
+                import logging as _log
+                _log.getLogger(__name__).warning(
+                    "baseline note write failed for %s", did, exc_info=True
+                )
+        accepted.append({"device_id": did, "baseline_sha": target})
+
+    # One combined commit for the whole accepted set (only if a note made
+    # BASELINE.yaml files dirty; pointer moves alone touch no git state).
+    committed_sha = None
+    if accepted and note:
+        try:
+            ids = [a["device_id"] for a in accepted]
+            committed_sha = ctx.git_repo.commit_fleet_snapshot(
+                ids,
+                message=f"Accept baseline: {len(ids)} device"
+                        + ("s" if len(ids) != 1 else "") + f" — {note}",
+            )
+        except Exception:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "bulk baseline commit failed", exc_info=True
+            )
+
+    record_event(
+        principal, "snapshot.accept_baseline_bulk", resource="device:multiple",
+        details={"accepted": [a["device_id"] for a in accepted],
+                 "skipped": skipped, "commit": committed_sha,
+                 **({"note": note} if note else {})},
+    )
+    return {
+        "success": True,
+        "accepted": accepted,
+        "skipped": skipped,
+        "commit": committed_sha,
+    }
+
+
 @router.get("/snapshot/diff/{device_id}")
 async def diff_device(
     device_id: str,

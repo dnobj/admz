@@ -174,9 +174,9 @@
           <div style="font-size:13px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px">
             <i data-lucide="rotate-ccw" style="color:var(--fg-red,#f87171)"></i> Revert to baseline
           </div>
-          <p class="page-sub" style="margin:0 0 8px">Pushes the saved baseline config back to the device. This is service-affecting and requires approval.</p>
+          <p class="page-sub" style="margin:0 0 8px">Pushes the saved baseline config back to the device. Service-affecting; requires approval. The note is recorded to the audit log (no git change).</p>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <input type="text" id="dd-note-revert" placeholder="Add a note (optional)…"
+            <input type="text" id="dd-note-revert" placeholder="Audit note (optional)…"
                    style="flex:1;min-width:160px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px">
             <button class="btn ghost sm" style="color:var(--fg-red,#f87171)" id="dd-btn-revert" onclick="ddSubmitRevert()">
               <i data-lucide="rotate-ccw"></i> Confirm revert
@@ -387,9 +387,9 @@ async function ddSubmitRevert() {
   if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i> Building plan…'; }
   if (window.lucide) lucide.createIcons();
   try {
-    const resp = await fetch('/api/snapshot/restore', {
+    const resp = await fetch('/api/snapshot/revert', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({device_id: DEVICE_ID, note: note || null}),
+      body: JSON.stringify({device_ids: [DEVICE_ID], note: note || null}),
     });
     const data = await resp.json();
     if (resp.ok && data.confirm_url) {
