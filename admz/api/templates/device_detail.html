@@ -5,7 +5,7 @@
 
 {% block content %}
 <div class="breadcrumb">
-  <a href="/devices">Fleet</a>
+  <a href="/devices">Devices</a>
   {% if device.tags %}<span class="sep"><i data-lucide="chevron-right"></i></span><a href="/devices?tag={{ device.tags[0] }}">{{ device.tags[0] }}</a>{% endif %}
   <span class="sep"><i data-lucide="chevron-right"></i></span>
   <span class="last">{{ device.nickname or device.device_id }}</span>
@@ -27,7 +27,7 @@
   <div class="page-actions">
     <a href="/device/{{ device.device_id }}/edit" class="btn ghost"><i data-lucide="pencil"></i> Edit</a>
     <a href="/chat" class="btn ghost"><i data-lucide="camera"></i> Snapshot</a>
-    <a href="/configuration" class="btn ghost"><i data-lucide="shield"></i> Audit</a>
+    <a href="/devices?filter=drifted" class="btn ghost"><i data-lucide="shield"></i> Audit</a>
   </div>
 </div>
 
@@ -114,7 +114,7 @@
     <div class="card">
       <div class="card-header"><i data-lucide="git-commit-horizontal"></i><span class="title">Snapshot history</span></div>
       <div class="card-body">
-        <p class="page-sub" style="margin:0">Configuration is snapshotted to git — versioned, diffable, restorable. View the per-facet diff and baselines on the <a href="/configuration">Configuration</a> screen.</p>
+        <p class="page-sub" style="margin:0">Configuration is snapshotted to git — versioned, diffable, restorable. View the per-facet diff and baselines on the <a href="/devices?filter=drifted">Configuration</a> screen.</p>
       </div>
     </div>
   </div>
@@ -138,7 +138,7 @@
       <div class="card-body">
         {% if drift.state == 'in_sync' %}
         <span class="drift-cell fg-green"><span class="dot sem-green"></span>In sync{% if drift_age %} <span class="drift-age">· {{ drift_age }}</span>{% endif %}</span>
-        <p class="page-sub" style="margin:8px 0 0">Live config matched the baseline at the last check. <a href="/configuration">Audit</a> to recheck.</p>
+        <p class="page-sub" style="margin:8px 0 0">Live config matched the baseline at the last check. <a href="/devices?filter=drifted">Audit</a> to recheck.</p>
         {% elif drift.state == 'drifted' %}
         <span class="drift-cell fg-amber" id="dd-drift-badge"><span class="dot sem-amber"></span>Drifted ({{ drift.count }} field{{ 's' if drift.count != 1 else '' }}){% if drift_age %} <span class="drift-age">· {{ drift_age }}</span>{% endif %}</span>
         <p class="page-sub" style="margin:8px 0 4px">Live config differs from the baseline.</p>
@@ -149,7 +149,7 @@
           <button class="btn ghost sm" onclick="ddShowPanel('revert')">
             <i data-lucide="rotate-ccw"></i> Revert to baseline
           </button>
-          <a href="/configuration" class="btn ghost sm">
+          <a href="/devices?filter=drifted" class="btn ghost sm">
             <i data-lucide="table"></i> View full diff
           </a>
         </div>
@@ -187,7 +187,7 @@
         </div>
         {% elif drift.state == 'unchecked' %}
         <span class="drift-cell fg-grey"><span class="dot sem-grey"></span>Baseline set · not checked</span>
-        <p class="page-sub" style="margin:8px 0 0">A baseline is blessed but drift hasn't been checked yet. Run “Check drift” on the <a href="/configuration">Configuration</a> screen.</p>
+        <p class="page-sub" style="margin:8px 0 0">A baseline is blessed but drift hasn't been checked yet. Run “Check drift” on the <a href="/devices?filter=drifted">Configuration</a> screen.</p>
         {% else %}
         <span class="drift-cell fg-grey"><span class="dot sem-grey"></span>No baseline yet</span>
         <p class="page-sub" style="margin:8px 0 0">Snapshot this device to establish a baseline, then audit it for drift.</p>
@@ -313,7 +313,7 @@ if (rhBtn) {
       const b = await r.json();
       rhMsg.innerHTML = (b.message || (r.ok ? 'Rebound.' : 'Failed.'));
       if (r.ok && b.rebound && b.has_baseline) {
-        rhMsg.innerHTML += ' <a href="/configuration">Restore the baseline onto the new unit →</a>';
+        rhMsg.innerHTML += ' <a href="/devices?filter=drifted">Restore the baseline onto the new unit →</a>';
       }
       rhMsg.style.display = 'block';
       if (r.ok && b.rebound) {

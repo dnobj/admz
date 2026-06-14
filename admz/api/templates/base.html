@@ -98,12 +98,8 @@
       <div style="height:6px"></div>
       <a class="nav-item {{ 'active' if active == 'fleet' }}" href="/devices">
         <span class="ico"><i data-lucide="layout-grid"></i></span>
-        <span class="label">Fleet</span>
+        <span class="label">Devices</span>
         {% if nav.active_site %}<span class="badge-mini">{{ nav.active_site.count }}</span>{% endif %}
-      </a>
-      <a class="nav-item {{ 'active' if active == 'configuration' }}" href="/configuration">
-        <span class="ico"><i data-lucide="layers"></i></span>
-        <span class="label">Configuration</span>
       </a>
       <a class="nav-item {{ 'active' if active == 'schedules' }}" href="/schedules">
         <span class="ico"><i data-lucide="clock"></i></span>

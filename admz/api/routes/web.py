@@ -76,11 +76,13 @@ async def devices_page(
     registry: DeviceRegistry = Depends(get_registry),
 ):
     """
-    Fleet dashboard — health, model, IP, drift, tags for the active
-    site. Filters to the cookie-selected site and (optionally) a ?tag=
-    filter, mirroring the sidebar tag list (ADR-0032: tags are the
-    device-grouping primitive; `untagged` is the reserved value for
-    devices with no tags).
+    Devices — the unified roster: health, model, IP, drift, tags for the
+    active site, with the drift diff + accept/revert actions inline (the
+    old Configuration page folded in here). ``?filter=drifted`` switches
+    into the bulk drift-review mode. Filters to the cookie-selected site
+    and (optionally) a ?tag= filter, mirroring the sidebar tag list
+    (ADR-0032: tags are the device-grouping primitive; `untagged` is the
+    reserved value for devices with no tags).
     """
     try:
         devices = registry.list_devices()
@@ -125,6 +127,23 @@ async def devices_page(
                     d for d in devices if tag_filter in (d.get("tags") or [])
                 ]
 
+        # ── Drift state, rendered server-side so the roster can show the
+        # diff/accept/revert inline (cache-only; same source the Fleet
+        # glance + the old Configuration page read). ──
+        from admz.snapshot.drift_alerts import drift_alerts as _drift_store
+        from admz.snapshot.drift_status import drift_status_for
+        for d in devices:
+            did = d.get("device_id", "")
+            try:
+                sig = _drift_store.get_last_signature(did)
+            except Exception:
+                sig = None
+            drift = drift_status_for(d, sig)
+            d["drift"] = drift
+            d["drift_age"] = _time_ago(drift.get("checked_at"))
+
+        filter_drift = request.query_params.get("filter") == "drifted"
+
         return templates.TemplateResponse(
             "index.html",
             {
@@ -132,7 +151,8 @@ async def devices_page(
                 "devices": devices,
                 "site": site_obj,
                 "tag_filter": tag_filter,
-                "title": "Fleet",
+                "filter_drift": filter_drift,
+                "title": "Devices",
             },
         )
 
@@ -688,60 +708,15 @@ def _time_ago(epoch: Optional[float]) -> Optional[str]:
     return f"{mo // 12}y ago"
 
 
-@router.get("/configuration", response_class=HTMLResponse)
-async def configuration_page(
-    request: Request,
-    filter: Optional[str] = Query(None),
-    ctx: AppContext = Depends(get_context),
-):
-    """Configuration / drift — per-device baseline + branch state.
-
-    Builds a per-device roster from the git config repo (baseline presence
-    + last-snapshot date) and the drift-alert store (last-known drift state,
-    so the page never live-probes devices on load).
-    """
-    try:
-        devices = ctx.registry.list_devices()
-        devices.sort(key=lambda d: d.get("nickname") or d.get("device_id", ""))
-    except Exception:
-        devices = []
-
-    from admz.snapshot.drift_alerts import drift_alerts as _drift_store
-    from admz.snapshot.drift_status import drift_status_for
-
-    rows = []
-    for d in devices:
-        did = d.get("device_id", "")
-        try:
-            status = ctx.git_repo.device_snapshot_status(did)
-        except Exception:
-            status = {"has_baseline": False, "facets": [], "last_snapshot": None}
-
-        # Drift state is the shared, cache-only answer (same source the
-        # Fleet glance reads via /api/fleet/drift), so the two views can't
-        # disagree. "Has a baseline" = a blessed baseline_sha pointer
-        # (ADR-0031), not merely config files in git.
-        try:
-            sig = _drift_store.get_last_signature(did)
-        except Exception:
-            sig = None
-        drift = drift_status_for(d, sig)
-
-        rows.append({
-            "device_id": did,
-            "nickname": d.get("nickname"),
-            "model": d.get("model"),
-            "facet_count": len(status["facets"]),
-            "last_snapshot": _fmt_snapshot_date(status["last_snapshot"]),
-            "drift": drift,
-            "drift_age": _time_ago(drift.get("checked_at")),
-        })
-
-    return templates.TemplateResponse(
-        "configuration.html",
-        {"request": request, "title": "Configuration", "rows": rows,
-         "filter_drift": filter == "drifted"},
-    )
+@router.get("/configuration")
+async def configuration_redirect(request: Request):
+    """The Configuration page was merged into the unified Devices roster
+    (drift diff + accept/revert now live inline on /devices). Preserve any
+    query string — e.g. ?filter=drifted lands on the bulk drift-review
+    mode — so old links and bookmarks keep working."""
+    qs = request.url.query
+    target = "/devices" + (f"?{qs}" if qs else "")
+    return RedirectResponse(url=target, status_code=307)
 
 
 @router.get("/fleet-settings", response_class=HTMLResponse)

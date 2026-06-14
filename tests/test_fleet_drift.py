@@ -144,9 +144,9 @@ class TestFleetDriftEndpoint:
         assert body["counts"]["drifted"] == 0
         assert body["devices"] == []
 
-    def test_fleet_and_configuration_agree(self, client):
-        """The de-dup guarantee: the Configuration page and the Fleet API
-        derive the same state for the same device from the same source."""
+    def test_fleet_and_devices_page_agree(self, client):
+        """The de-dup guarantee: the unified Devices roster and the Fleet
+        API derive the same state for the same device from the same source."""
         c, reg, store = client
         reg.add_device("cam-x", {"host": "192.0.2.9"})
         reg.set_config_pointers("cam-x", baseline_sha="bx")
@@ -157,10 +157,21 @@ class TestFleetDriftEndpoint:
             for d in c.get("/api/fleet/drift").json()["devices"]
         }["cam-x"]
 
-        # Configuration page renders the badge label from the same helper.
-        page = c.get("/configuration").text
+        # The Devices roster renders drift server-side from the same helper.
+        page = c.get("/devices?filter=drifted").text
         assert api_state == "drifted"
-        assert "Drifted (2 field" in page
+        assert "Drifted (2)" in page
+
+    def test_configuration_redirects_to_devices(self, client):
+        """The Configuration page was merged into /devices; the old route
+        307-redirects, preserving the query string."""
+        c, _, _ = client
+        r = c.get("/configuration")
+        assert r.status_code == 307
+        assert r.headers["location"] == "/devices"
+        r2 = c.get("/configuration?filter=drifted")
+        assert r2.status_code == 307
+        assert r2.headers["location"] == "/devices?filter=drifted"
 
     def test_device_detail_drift_card_reflects_state(self, client):
         """Regression: the detail page's drift card was a hardcoded
