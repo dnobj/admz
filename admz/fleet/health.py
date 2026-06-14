@@ -141,6 +141,10 @@ class DeviceHealthRecord:
     # Bonus fields we get from systemReady when authenticated probe works:
     uptime_seconds: Optional[int] = None
     bootid: Optional[str] = None
+    # Transient: model/serial/firmware lifted from the basicdeviceinfo
+    # credential-check response (when it ran). Not persisted to the health
+    # store — the sweep flushes it to the device registry instead.
+    observed_facts: Optional[Dict[str, str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -345,15 +349,19 @@ async def _confirm_credentials(
     device_id: str,
     credentials: Dict[str, Any],
     timeout_seconds: float,
-) -> Optional[bool]:
+) -> "tuple[Optional[bool], Dict[str, str]]":
     """Confirm the stored credentials actually authenticate.
 
-    Calls an auth-required op (``basicdeviceinfo``). Returns:
+    Calls an auth-required op (``basicdeviceinfo``). Returns a
+    ``(creds_ok, facts)`` pair where ``creds_ok`` is:
       - ``False`` when the device explicitly rejects the credentials (401/403),
       - ``True`` when they're accepted (2xx) or the device answers some other
         way (a non-auth error doesn't implicate the password),
       - ``None`` when we can't tell (op missing, transient error) — caller
         should not flip status on ``None``.
+    ``facts`` carries model/serial/firmware lifted from the same response on
+    the success path (empty otherwise), so the monitor can self-populate the
+    device record without a second probe.
     """
     op = None
     try:
@@ -361,7 +369,7 @@ async def _confirm_credentials(
     except Exception:
         op = None
     if op is None:
-        return None
+        return None, {}
     try:
         result = await asyncio.wait_for(
             executor.execute(
@@ -373,11 +381,18 @@ async def _confirm_credentials(
             timeout=timeout_seconds + 2,
         )
     except Exception:
-        return None  # transient — don't flap the status on a second-call hiccup
+        return None, {}  # transient — don't flap the status on a second-call hiccup
     sc = getattr(result, "status_code", None)
     if sc in (401, 403):
-        return False
-    return True
+        return False, {}
+    # Accepted (or non-auth answer): mine the body for identity facts.
+    facts: Dict[str, str] = {}
+    try:
+        from admz.device_facts import extract_device_facts
+        facts = extract_device_facts(getattr(result, "parsed_data", None))
+    except Exception:
+        facts = {}
+    return True, facts
 
 
 async def probe_device(
@@ -515,8 +530,9 @@ async def probe_device(
             # systemready 200 proves reachability but NOT valid credentials on
             # some firmware. Confirm with an auth-required call so a wrong/stale
             # password surfaces as auth_failed instead of a misleading "online".
+            observed: Dict[str, str] = {}
             if _verify_credentials_enabled():
-                creds_ok = await _confirm_credentials(
+                creds_ok, observed = await _confirm_credentials(
                     catalog=catalog, executor=executor, device_info=device_info,
                     device_id=device_id, credentials=credentials,
                     timeout_seconds=timeout_seconds,
@@ -543,6 +559,7 @@ async def probe_device(
                 consecutive_failures=0,
                 uptime_seconds=uptime_int,
                 bootid=bootid_str,
+                observed_facts=observed or None,
             )
 
     # ---- Tier 2: TCP connect probe ----
@@ -718,6 +735,24 @@ class HealthMonitor:
                     # last_seen_online already set to now.
 
                 self.store.upsert(record)
+
+                # Opportunistic fact refresh: the credential check already
+                # fetched basicdeviceinfo, so flush any model/serial/firmware
+                # that changed (or was missing) to the device registry — no
+                # extra probe. Only writes on an actual delta to avoid churn.
+                if record.observed_facts:
+                    changed = {
+                        k: v for k, v in record.observed_facts.items()
+                        if v and str(device.get(k) or "") != str(v)
+                    }
+                    if changed:
+                        try:
+                            self.registry.update_device_info(device_id, changed)
+                        except Exception:
+                            logger.debug(
+                                "health: fact refresh skipped for %s",
+                                device_id, exc_info=True,
+                            )
 
         await asyncio.gather(*(_check(d) for d in devices))
         return len(devices)

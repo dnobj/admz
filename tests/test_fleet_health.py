@@ -222,6 +222,37 @@ class TestProbeAuthenticated:
         assert rec.last_seen_online is not None
 
     @pytest.mark.asyncio
+    async def test_probe_captures_firmware_facts(self):
+        """The credential check fetches basicdeviceinfo; probe_device lifts
+        model/serial/firmware off that response into observed_facts."""
+        catalog = MagicMock()
+        op = MagicMock()
+        op.to_executor_dict.return_value = {"id": "x"}
+        catalog.get_operation.return_value = op
+        executor = MagicMock()
+        result = MagicMock(
+            success=True, status_code=200, error=None,
+            parsed_data={"data": {"propertyList": {
+                "ProdNbr": "AXIS P3245-V",
+                "SerialNumber": "ACCC8E000001",
+                "Version": "11.9.65",
+            }}},
+        )
+        executor.execute = AsyncMock(return_value=result)
+        with patch("admz.fleet.health._verify_credentials_enabled", return_value=True):
+            rec = await probe_device(
+                device_id="cam-01",
+                device_info={"host": "192.0.2.1"},
+                credentials={"username": "root", "password": "x"},
+                catalog=catalog, executor=executor,
+            )
+        assert rec.status == DeviceHealthStatus.ONLINE
+        assert rec.observed_facts is not None
+        assert rec.observed_facts["firmware_version"] == "11.9.65"
+        assert rec.observed_facts["model"] == "AXIS P3245-V"
+        assert rec.observed_facts["serial_number"] == "ACCC8E000001"
+
+    @pytest.mark.asyncio
     async def test_connect_timeout_in_systemready_marks_unreachable(self):
         catalog = MagicMock()
         op = MagicMock()
@@ -286,6 +317,67 @@ class TestMonitorSweep:
             rec = store.get(did)
             assert rec is not None
             assert rec.status == DeviceHealthStatus.ONLINE
+
+    @pytest.mark.asyncio
+    async def test_sweep_flushes_changed_facts_to_registry(self, tmp_path):
+        """When a probe surfaces new firmware/model, the sweep writes the
+        changed subset back to the device registry (no extra probe)."""
+        registry = MagicMock()
+        registry.list_devices.return_value = [
+            {"device_id": "cam-01", "host": "192.0.2.1",
+             "firmware_version": "11.0.0"},  # stale; no model yet
+        ]
+        registry.get_credentials.return_value = {"username": "root", "password": "x"}
+        store = DeviceHealthStore(str(tmp_path / "admz.db"))
+        monitor = HealthMonitor(
+            registry=registry, catalog=MagicMock(),
+            executors={"vapix": MagicMock()}, store=store,
+        )
+
+        async def fake_probe(*, device_id, **kwargs):
+            return DeviceHealthRecord(
+                device_id=device_id, status=DeviceHealthStatus.ONLINE,
+                last_check=time.time(), last_seen_online=time.time(),
+                observed_facts={"firmware_version": "11.9.65",
+                                "model": "AXIS P3245-V"},
+            )
+
+        with patch("admz.fleet.health.probe_device", side_effect=fake_probe):
+            await monitor.sweep_once()
+
+        registry.update_device_info.assert_called_once()
+        did_arg, facts_arg = registry.update_device_info.call_args.args
+        assert did_arg == "cam-01"
+        assert facts_arg["firmware_version"] == "11.9.65"  # changed
+        assert facts_arg["model"] == "AXIS P3245-V"        # was missing
+
+    @pytest.mark.asyncio
+    async def test_sweep_skips_unchanged_facts(self, tmp_path):
+        """No registry write when the probed facts already match the record."""
+        registry = MagicMock()
+        registry.list_devices.return_value = [
+            {"device_id": "cam-01", "host": "192.0.2.1",
+             "firmware_version": "11.9.65", "model": "AXIS P3245-V"},
+        ]
+        registry.get_credentials.return_value = {"username": "root", "password": "x"}
+        store = DeviceHealthStore(str(tmp_path / "admz.db"))
+        monitor = HealthMonitor(
+            registry=registry, catalog=MagicMock(),
+            executors={"vapix": MagicMock()}, store=store,
+        )
+
+        async def fake_probe(*, device_id, **kwargs):
+            return DeviceHealthRecord(
+                device_id=device_id, status=DeviceHealthStatus.ONLINE,
+                last_check=time.time(), last_seen_online=time.time(),
+                observed_facts={"firmware_version": "11.9.65",
+                                "model": "AXIS P3245-V"},
+            )
+
+        with patch("admz.fleet.health.probe_device", side_effect=fake_probe):
+            await monitor.sweep_once()
+
+        registry.update_device_info.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_sweep_preserves_last_seen_online_after_failure(self, tmp_path):
