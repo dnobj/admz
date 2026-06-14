@@ -486,6 +486,37 @@ def tombstone_device(device_id: str, git_repo: Any, *, removed_by: str = "") -> 
         logger.warning("tombstone commit failed for %s", device_id, exc_info=True)
 
 
+def refresh_drift_after_accept(
+    device_id: str, accepted_sha: Any, latest_observed_sha: Any,
+) -> None:
+    """Reconcile the drift cache right after a baseline is blessed, so the
+    UI shows the new state immediately instead of lingering on the stale
+    "drifted" signature until the next manual/scheduled Check drift.
+
+    Accepting the *latest observation* means the last live read now equals
+    the baseline → zero drift by construction; record an in-sync signature
+    (this also logs a "cleared" transition if it had been drifting). When an
+    older/specific commit is accepted we can't claim in-sync, so the cached
+    signature is dropped and the next check recomputes. Best-effort: a cache
+    hiccup must never fail the accept itself.
+    """
+    try:
+        from admz.snapshot import drift_alerts as _da
+        if latest_observed_sha and accepted_sha == latest_observed_sha:
+            from admz.snapshot.models import DriftReport
+            _da.drift_alerts.process_report(
+                DriftReport(device_id=device_id, has_drift=False,
+                            fields=[], observed_sha=accepted_sha)
+            )
+        else:
+            _da.drift_alerts.clear_baseline(device_id)
+    except Exception:  # pragma: no cover — cache refresh is best-effort
+        logger.warning(
+            "drift-cache refresh after accept failed for %s",
+            device_id, exc_info=True,
+        )
+
+
 def _action_accept_baseline(
     action: Mapping[str, Any], registry: Any, git_repo: Any = None,
 ) -> Dict[str, Any]:
@@ -513,6 +544,12 @@ def _action_accept_baseline(
             )
         except Exception:
             logger.warning("baseline note commit failed for %s", device_id, exc_info=True)
+    latest = None
+    try:
+        latest = registry.get_device_info(device_id).get("latest_observed_sha")
+    except Exception:
+        latest = None
+    refresh_drift_after_accept(device_id, target, latest)
     return {
         "success": True,
         "action": "accept_baseline",

@@ -174,6 +174,10 @@ async def accept_baseline(
 
     previous = device_info.get("baseline_sha")
     ctx.registry.set_config_pointers(req.device_id, baseline_sha=target)
+    from admz import operations as _ops
+    _ops.refresh_drift_after_accept(
+        req.device_id, target, device_info.get("latest_observed_sha")
+    )
     note = (req.note or "").strip()
     record_event(principal, "snapshot.accept_baseline", resource=resource,
                  details={"baseline_sha": target, "previous": previous,
@@ -426,6 +430,10 @@ async def accept_baseline_bulk(
             skipped.append({"device_id": did, "reason": "no-config-at-commit"})
             continue
         ctx.registry.set_config_pointers(did, baseline_sha=target)
+        # Bulk accept always blesses the latest observation → the cache can
+        # be marked in-sync deterministically (no re-probe needed).
+        from admz import operations as _ops
+        _ops.refresh_drift_after_accept(did, target, target)
         if note:
             try:
                 import time as _t

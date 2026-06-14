@@ -53,6 +53,13 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("ADMZ_AUTH_BACKEND", "none")
     monkeypatch.setenv("ADMZ_AUTO_PUSH", "false")
 
+    # Isolate the drift-signature cache on the temp DB so accept can write
+    # in-sync signatures the test can read back (the endpoints resolve the
+    # singleton at call time, so a monkeypatch is seen).
+    from admz.snapshot import drift_alerts as da_module
+    fresh_da = da_module.DriftAlertStore(str(tmp_path / "admz.db"))
+    monkeypatch.setattr(da_module, "drift_alerts", fresh_da)
+
     from admz.api.main import app
     with TestClient(app, follow_redirects=False) as c:
         repo = str(tmp_path / "config-repo")
@@ -70,6 +77,34 @@ def _ctx():
 # ---------------------------------------------------------------------------
 # Request-model validation
 # ---------------------------------------------------------------------------
+
+def test_refresh_drift_after_accept_branches(tmp_path, monkeypatch):
+    """Accepting the latest observation marks in-sync; accepting an older
+    commit drops the signature (forces the next check to recompute)."""
+    from admz.snapshot import drift_alerts as da_module
+    from admz.snapshot.models import DriftField, DriftReport
+    from admz import operations
+
+    store = da_module.DriftAlertStore(str(tmp_path / "drift.db"))
+    monkeypatch.setattr(da_module, "drift_alerts", store)
+
+    def _seed_drift(did):
+        store.process_report(DriftReport(
+            device_id=did, has_drift=True,
+            fields=[DriftField(facet="f", path="p", expected="a", actual="b")],
+        ))
+
+    # Accept the latest observation → in-sync (field_count 0).
+    _seed_drift("dev-latest")
+    assert store.get_last_signature("dev-latest")["field_count"] == 1
+    operations.refresh_drift_after_accept("dev-latest", "sha1", "sha1")
+    assert store.get_last_signature("dev-latest")["field_count"] == 0
+
+    # Accept an older/specific commit (target != latest) → cache cleared.
+    _seed_drift("dev-old")
+    operations.refresh_drift_after_accept("dev-old", "older-sha", "latest-sha")
+    assert store.get_last_signature("dev-old") is None
+
 
 class TestRequestModels:
     def test_revert_rejects_empty_device_ids(self):
@@ -172,6 +207,36 @@ class TestBulkAccept:
         assert reasons["cam-noobs"] == "no-observation"
         # No note + nothing committable → no combined commit.
         assert body["commit"] is None
+
+    def test_accept_refreshes_drift_cache_to_in_sync(self, client):
+        """After bulk accept, the cached drift signature is in-sync — no
+        manual Check drift needed for the UI to stop showing 'drifted'."""
+        from admz.snapshot import drift_alerts as da
+        from admz.snapshot.models import DriftField, DriftReport
+
+        ctx = _ctx()
+        ctx.registry.add_device("cam-d", {"host": "192.0.2.7"})
+        ctx.git_repo.write_facet("cam-d", "image", {"I0.Resolution": "1920x1080"})
+        sha = ctx.git_repo.commit_snapshot("cam-d", message="Audit: cam-d", auto_push=False)
+        ctx.registry.set_config_pointers(
+            "cam-d", baseline_sha="oldbaseline", latest_observed_sha=sha
+        )
+        # Seed a drifted signature, as a prior Check drift would have left.
+        da.drift_alerts.process_report(DriftReport(
+            device_id="cam-d", has_drift=True,
+            fields=[DriftField(facet="image", path="I0.Resolution",
+                               expected="640x480", actual="1920x1080")],
+        ))
+        assert da.drift_alerts.get_last_signature("cam-d")["field_count"] == 1
+
+        with _with_admin():
+            r = client.post(
+                "/api/snapshot/accept-baseline-bulk", json={"device_ids": ["cam-d"]}
+            )
+        assert r.status_code == 200
+        # Cache now reads in-sync, and a "cleared" transition was logged.
+        assert da.drift_alerts.get_last_signature("cam-d")["field_count"] == 0
+        assert da.drift_alerts.list_alerts(device_id="cam-d", transitions=["cleared"])
 
     def test_accept_no_note_moves_pointer_without_commit(self, client):
         ctx = _ctx()
