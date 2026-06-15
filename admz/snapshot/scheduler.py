@@ -179,6 +179,13 @@ def parse_interval(text: str) -> int:
         )
 
 
+# How often the running (uvicorn) scheduler syncs its in-memory task set
+# with the on-disk file, so schedules created/removed by another process
+# (e.g. the chatbot's MCP-pool subprocess) are adopted/dropped without a
+# restart (KL-SCH-006).
+_RECONCILE_INTERVAL_SECONDS = 30
+
+
 class SnapshotScheduler:
 
     def __init__(
@@ -197,6 +204,7 @@ class SnapshotScheduler:
         # which acquires the per-job lock before doing any work.
         self._job_locks: Dict[str, asyncio.Lock] = {}
         self._running = False
+        self._reconcile_task: Optional[asyncio.Task] = None
 
     # JobScheduler alias matches ADR-0026's preferred name.
     # Operators / contributors can use either at the call site.
@@ -259,17 +267,31 @@ class SnapshotScheduler:
 
     def remove_schedule(self, schedule_id: str) -> bool:
         self._cancel_task(schedule_id)
-        if schedule_id in self.schedules:
-            del self.schedules[schedule_id]
-            self._save()
-            return True
-        return False
+        in_mem = self.schedules.pop(schedule_id, None) is not None
+        # Explicit on-disk delete — a merge-save keeps entries it doesn't own,
+        # so a delete has to remove the row itself (else another process could
+        # resurrect it on its next save).
+        data = self._read_raw()
+        on_disk = data.pop(schedule_id, None) is not None
+        if on_disk:
+            self._write_raw(data)
+        return in_mem or on_disk
 
     def get_schedule(self, schedule_id: str) -> Optional[SnapshotSchedule]:
         return self.schedules.get(schedule_id)
 
     def list_schedules(self) -> List[SnapshotSchedule]:
-        return list(self.schedules.values())
+        # Reload from disk so schedules created by another process (e.g. the
+        # chatbot's MCP subprocess) show up without a restart.
+        merged: Dict[str, SnapshotSchedule] = {}
+        for sid, sdata in self._read_raw().items():
+            try:
+                merged[sid] = SnapshotSchedule.from_dict(sdata)
+            except Exception:
+                continue
+        for sid, s in self.schedules.items():
+            merged.setdefault(sid, s)
+        return list(merged.values())
 
     async def start(self):
         self._load()
@@ -277,6 +299,7 @@ class SnapshotScheduler:
         for schedule in self.schedules.values():
             if schedule.enabled:
                 self._start_task(schedule)
+        self._reconcile_task = asyncio.create_task(self._reconcile_loop())
         logger.info(
             "Scheduler started with %d schedule(s)",
             sum(1 for s in self.schedules.values() if s.enabled),
@@ -284,10 +307,59 @@ class SnapshotScheduler:
 
     async def stop(self):
         self._running = False
+        if self._reconcile_task is not None:
+            self._reconcile_task.cancel()
+            self._reconcile_task = None
         for task in self._tasks.values():
             task.cancel()
         self._tasks.clear()
         logger.info("Scheduler stopped")
+
+    async def _reconcile_loop(self) -> None:
+        """Sync the in-memory task set with the on-disk file on a timer so
+        schedules another process created/removed are adopted/dropped without
+        a restart. Only the running scheduler runs this."""
+        try:
+            while self._running:
+                await asyncio.sleep(_RECONCILE_INTERVAL_SECONDS)
+                if not self._running:
+                    break
+                try:
+                    self._reconcile_from_disk()
+                except Exception:  # pragma: no cover — never let it kill the loop
+                    logger.exception("schedule reconcile failed")
+        except asyncio.CancelledError:
+            pass
+
+    def _reconcile_from_disk(self) -> None:
+        raw = self._read_raw()
+        disk_ids = set(raw.keys())
+        mem_ids = set(self.schedules.keys())
+
+        for sid in disk_ids - mem_ids:        # created elsewhere → adopt + run
+            try:
+                s = SnapshotSchedule.from_dict(raw[sid])
+            except Exception:
+                continue
+            self.schedules[sid] = s
+            if self._running and s.enabled:
+                self._start_task(s)
+            logger.info("Adopted externally-created schedule %s", sid)
+
+        for sid in mem_ids - disk_ids:        # removed elsewhere → cancel + drop
+            self._cancel_task(sid)
+            self.schedules.pop(sid, None)
+            logger.info("Dropped externally-removed schedule %s", sid)
+
+        for sid in disk_ids & mem_ids:        # enabled flipped elsewhere
+            want = bool(raw[sid].get("enabled", True))
+            s = self.schedules[sid]
+            if want != s.enabled:
+                s.enabled = want
+                if self._running:
+                    self._cancel_task(sid)
+                    if want:
+                        self._start_task(s)
 
     async def run_now(self, schedule_id: str) -> Dict[str, Any]:
         schedule = self.schedules.get(schedule_id)
@@ -440,24 +512,48 @@ class SnapshotScheduler:
         except (ValueError, TypeError):
             return 0
 
-    def _save(self):
-        self.schedule_path.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            sid: s.to_dict() for sid, s in self.schedules.items()
-        }
-        with open(self.schedule_path, "w") as f:
-            json.dump(data, f, indent=2)
+    # ----- Persistence (cross-process safe; KL-SCH-006) -----
+    #
+    # The schedules file is shared by every process that builds Components —
+    # the uvicorn web/API server AND each chatbot MCP-pool subprocess
+    # (ADMZ_MCP_NO_SCHEDULER=1). Writes therefore MERGE rather than overwrite:
+    # a process upserts the schedules it owns and preserves the rest, so a
+    # subprocess creating a schedule can't clobber the server's (which is
+    # exactly the bug this fixes), and the server's frequent post-run saves
+    # can't drop a chat-created one. Deletes are explicit (remove_schedule).
 
-    def _load(self):
+    def _read_raw(self) -> Dict[str, Any]:
         if not self.schedule_path.exists():
-            return
+            return {}
         try:
             with open(self.schedule_path) as f:
-                data = json.load(f)
-            for sid, sdata in data.items():
-                self.schedules[sid] = SnapshotSchedule.from_dict(sdata)
+                return json.load(f) or {}
         except Exception:
-            logger.exception("Failed to load schedules from %s", self.schedule_path)
+            logger.exception("Failed to read schedules file %s", self.schedule_path)
+            return {}
+
+    def _write_raw(self, data: Dict[str, Any]) -> None:
+        self.schedule_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.schedule_path.with_name(self.schedule_path.name + ".tmp")
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+        tmp.replace(self.schedule_path)  # atomic rename on the same filesystem
+
+    def _save(self):
+        # Merge: keep on-disk entries we don't own, upsert the ones we do.
+        data = self._read_raw()
+        for sid, s in self.schedules.items():
+            data[sid] = s.to_dict()
+        self._write_raw(data)
+
+    def _load(self):
+        for sid, sdata in self._read_raw().items():
+            try:
+                self.schedules[sid] = SnapshotSchedule.from_dict(sdata)
+            except Exception:
+                logger.exception(
+                    "Skipping bad schedule %s in %s", sid, self.schedule_path
+                )
 
 
 # ---------------------------------------------------------------------------

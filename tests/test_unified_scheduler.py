@@ -359,6 +359,65 @@ class TestMigration:
         s2._load()
         assert s2.schedules["da"].job_type == "drift_audit"
 
+    def test_merge_save_does_not_clobber_other_process(self, tmp_path):
+        """Regression (KL-SCH-006): the chatbot's MCP subprocess starts with
+        an empty scheduler (ADMZ_MCP_NO_SCHEDULER skips _load). Creating a
+        schedule there must NOT wipe the server's existing schedules — the
+        bug where chat's 'drift-check-4h' clobbered the nightly jobs."""
+        path = str(tmp_path / "schedules.json")
+        # Process A (the web/API server) persists two schedules.
+        a = SnapshotScheduler(snapshot_engine=MagicMock(), schedule_path=path)
+        a.add_schedule(SnapshotSchedule(
+            id="nightly", description="n", interval_seconds=86400))
+        a.add_schedule(SnapshotSchedule(
+            id="hourly-drift", description="d", interval_seconds=3600,
+            job_type="drift_audit"))
+        # Process B (a fresh pool subprocess) starts EMPTY and adds one.
+        b = SnapshotScheduler(snapshot_engine=MagicMock(), schedule_path=path)
+        assert b.schedules == {}  # never loaded (NO_SCHEDULER)
+        b.add_schedule(SnapshotSchedule(
+            id="drift-4h", description="4h", interval_seconds=14400,
+            job_type="drift_audit"))
+        # The file must hold ALL THREE — B's write merged, didn't clobber.
+        on_disk = json.loads(Path(path).read_text())
+        assert set(on_disk) == {"nightly", "hourly-drift", "drift-4h"}
+
+    def test_list_schedules_reloads_from_disk(self, tmp_path):
+        """A schedule written by another process shows up in list_schedules
+        without a restart."""
+        path = str(tmp_path / "schedules.json")
+        a = SnapshotScheduler(snapshot_engine=MagicMock(), schedule_path=path)
+        a.add_schedule(SnapshotSchedule(
+            id="x", description="x", interval_seconds=3600))
+        b = SnapshotScheduler(snapshot_engine=MagicMock(), schedule_path=path)
+        b.add_schedule(SnapshotSchedule(
+            id="y", description="y", interval_seconds=3600))
+        assert {s.id for s in a.list_schedules()} == {"x", "y"}
+
+    def test_remove_deletes_from_disk(self, tmp_path):
+        path = str(tmp_path / "schedules.json")
+        s = SnapshotScheduler(snapshot_engine=MagicMock(), schedule_path=path)
+        s.add_schedule(SnapshotSchedule(id="a", description="a", interval_seconds=60))
+        s.add_schedule(SnapshotSchedule(id="b", description="b", interval_seconds=60))
+        assert s.remove_schedule("a") is True
+        assert set(json.loads(Path(path).read_text())) == {"b"}
+        assert s.remove_schedule("ghost") is False  # unknown id → no-op
+
+    def test_reconcile_adopts_and_drops(self, tmp_path):
+        """_reconcile_from_disk adopts schedules created by another process
+        and drops ones it removed (the running server's pickup path)."""
+        path = str(tmp_path / "schedules.json")
+        server = SnapshotScheduler(snapshot_engine=MagicMock(), schedule_path=path)
+        server.add_schedule(SnapshotSchedule(
+            id="keep", description="k", interval_seconds=3600))
+        other = SnapshotScheduler(snapshot_engine=MagicMock(), schedule_path=path)
+        other.add_schedule(SnapshotSchedule(
+            id="new", description="n", interval_seconds=3600))
+        other.remove_schedule("keep")
+        server._reconcile_from_disk()  # not running → updates the set only
+        assert "new" in server.schedules
+        assert "keep" not in server.schedules
+
     def test_scheduled_job_alias_works(self):
         """ScheduledJob is the ADR-0026 name; SnapshotSchedule is the
         legacy name. They should be the same class."""
