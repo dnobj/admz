@@ -98,6 +98,20 @@ class FacetAdapter(ABC):
         """
         ...
 
+    def revert_param(
+        self, path: str, baseline_value: Any
+    ) -> Optional["tuple[str, str]"]:
+        """For a single drifted field — its flattened ``path`` within this
+        facet + its ``baseline_value`` — return ``(full_param_key, value)`` to
+        write back for a TARGETED revert (only the drifted fields, not the
+        whole baseline), or None if this facet can't param.cgi-revert it:
+        read-only facets (other/users/action_rules) and non-restorable keys
+        (masked secrets, ``Volatile*``, per-facet excludes).
+
+        Default: not revertable. ``SimpleParamFacet`` + ``EventsFacet`` override.
+        """
+        return None
+
 
 # param.cgi returns this literal mask for password-class values. Restoring
 # it would overwrite the device's real secret with six asterisks.
@@ -179,6 +193,12 @@ class SimpleParamFacet(FacetAdapter):
                 short_key = key[len(self.PREFIX):]
                 result[short_key] = value
         return result
+
+    def revert_param(self, path: str, baseline_value: Any):
+        # path is the PREFIX-stripped key; the full param key is PREFIX + path.
+        if not is_restorable(path, baseline_value, self.RESTORE_EXCLUDE):
+            return None
+        return (f"{self.PREFIX}{path}", str(baseline_value))
 
     def deserialize(self, yaml_doc: Dict[str, Any]) -> List[Dict[str, Any]]:
         params = {}

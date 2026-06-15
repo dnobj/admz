@@ -1300,3 +1300,80 @@ class TestSecretParamFiltering:
         assert _is_sensitive("root.Foo.Passphrase") is True
         assert _is_sensitive("root.HTTPS.PrivateKey") is True
         assert _is_sensitive("root.Image.I0.Resolution") is False
+
+
+# ---------------------------------------------------------------------------
+# Targeted revert: undo only the drifted fields, not the whole baseline
+# ---------------------------------------------------------------------------
+
+class TestTargetedRevert:
+    def test_simple_param_facet_revert_param(self):
+        from admz.snapshot.facets.audio import AudioFacet
+        from admz.snapshot.facets.image import ImageFacet
+        assert AudioFacet().revert_param("Source.A0.InputGain", "-10") == \
+            ("root.AudioSource.A0.InputGain", "-10")
+        assert ImageFacet().revert_param("I0.Resolution", "1920x1080") == \
+            ("root.Image.I0.Resolution", "1920x1080")
+        # Per-facet RESTORE_EXCLUDE (image I*.Source) → not revertable.
+        assert ImageFacet().revert_param("I0.Source", "0") is None
+        # Masked secret → not revertable.
+        assert AudioFacet().revert_param("Source.A0.Foo", "******") is None
+
+    def test_events_facet_revert_param(self):
+        from admz.snapshot.facets.events import EventsFacet
+        f = EventsFacet()
+        assert f.revert_param("event.E0.Enabled", "yes") == \
+            ("root.Event.E0.Enabled", "yes")
+        assert f.revert_param("ioport.I0.Input.Name", "Port 1") == \
+            ("root.IOPort.I0.Input.Name", "Port 1")
+        # ioport.I*.Configurable excluded (401 on write).
+        assert f.revert_param("ioport.I0.Configurable", "yes") is None
+
+    def test_readonly_facets_are_not_revertable(self):
+        from admz.snapshot.facets.action_rules import ActionRulesFacet
+        from admz.snapshot.facets.other_params import CatchAllParamsFacet
+        from admz.snapshot.facets.users import UsersFacet
+        assert CatchAllParamsFacet().revert_param("root.SNMP.Enabled", "no") is None
+        assert ActionRulesFacet().revert_param("7", {"x": 1}) is None
+        assert UsersFacet().revert_param("admin_access.account1", "admin") is None
+
+    def test_targeted_plan_only_touches_drifted_fields(self, tmp_repo):
+        from unittest.mock import MagicMock
+        from admz.snapshot.models import DriftField
+        from admz.snapshot.restore import RestoreBuilder
+
+        reg = MagicMock()
+        reg.get_device_info.return_value = {"api_family": "vapix"}
+        builder = RestoreBuilder(MagicMock(), reg, tmp_repo)
+        fields = [
+            DriftField(facet="audio", path="Source.A0.InputGain",
+                       expected="-10", actual="-8"),
+            DriftField(facet="image", path="I0.Resolution",
+                       expected="1920x1080", actual="1280x720"),
+            DriftField(facet="other", path="root.SNMP.Enabled",
+                       expected="no", actual="yes"),          # read-only facet
+            DriftField(facet="audio", path="Source.A0.NewKey",
+                       expected="<missing>", actual="x"),     # appeared
+        ]
+        spec = builder.build_targeted_revert_plan("cam-x", fields)
+        # The two revertable fields, written in ONE small step.
+        assert len(spec["steps"]) == 1
+        assert spec["steps"][0]["params"] == {
+            "root.AudioSource.A0.InputGain": "-10",
+            "root.Image.I0.Resolution": "1920x1080",
+        }
+        assert spec["steps"][0]["risk_level"] == "service-affecting"
+        # Read-only + appeared fields are surfaced as a warning, not forced.
+        assert spec["warnings"]
+        assert "other.root.SNMP.Enabled" in spec["warnings"][0]
+        assert "added, not in baseline" in spec["warnings"][0]
+
+    def test_no_drift_yields_no_steps(self, tmp_repo):
+        from unittest.mock import MagicMock
+        from admz.snapshot.restore import RestoreBuilder
+        reg = MagicMock()
+        reg.get_device_info.return_value = {"api_family": "vapix"}
+        builder = RestoreBuilder(MagicMock(), reg, tmp_repo)
+        spec = builder.build_targeted_revert_plan("cam-x", [])
+        assert spec["steps"] == []
+        assert "Revert 0 drifted" in spec["description"]

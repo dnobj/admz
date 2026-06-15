@@ -56,6 +56,19 @@ class EventsFacet(FacetAdapter):
                 groups["ioport"][key[len("root.IOPort."):]] = value
         return {k: v for k, v in groups.items() if v}
 
+    _GROUP_PREFIX = {"event": "root.Event.", "ioport": "root.IOPort."}
+
+    def revert_param(self, path: str, baseline_value: Any):
+        # Drift paths are flattened as "<group>.<key>" (e.g. event.E0.Enabled);
+        # split off the group to pick its prefix + per-group exclude.
+        top, _, rest = path.partition(".")
+        prefix = self._GROUP_PREFIX.get(top)
+        if not prefix or not rest:
+            return None
+        if not is_restorable(rest, baseline_value, self.RESTORE_EXCLUDE.get(top, ())):
+            return None
+        return (f"{prefix}{rest}", str(baseline_value))
+
     def deserialize(self, yaml_doc: Dict[str, Any]) -> List[Dict[str, Any]]:
         params: Dict[str, str] = {}
         skipped = []

@@ -264,22 +264,29 @@ class TestBulkAccept:
 # ---------------------------------------------------------------------------
 
 class TestRevert:
+    @staticmethod
+    def _fake_drift(*facet_path_pairs):
+        """An async check_drift stub returning a report with the given
+        (facet, path) drifted fields (baseline 'old' -> live 'new')."""
+        from admz.snapshot.models import DriftField, DriftReport
+
+        async def _check(did, *a, **k):
+            return DriftReport(
+                device_id=did, has_drift=True,
+                fields=[DriftField(facet=f, path=p, expected="old", actual="new")
+                        for f, p in facet_path_pairs],
+            )
+        return _check
+
     def test_revert_many_builds_single_gated_plan(self, client, monkeypatch):
         ctx = _ctx()
         ctx.registry.add_device("cam-a", {"host": "192.0.2.1"})
         ctx.registry.add_device("cam-b", {"host": "192.0.2.2"})
-
-        def fake_build(did, ref=None, facet_names=None):
-            return {
-                "steps": [{
-                    "operation_id": "param.cgi:update", "device_id": did,
-                    "params": {"root.Foo": "1"}, "description": f"Restore {did}",
-                    "risk_level": "service-affecting",
-                }],
-                "warnings": [], "description": f"Restore {did} to baseline",
-                "source_ref": "baseline", "on_failure": "stop",
-            }
-        monkeypatch.setattr(ctx.restore_builder, "build_restore_plan", fake_build)
+        # Targeted revert checks drift, then writes back only the drifted
+        # fields. Stub the probe; the real build_targeted_revert_plan maps the
+        # image field to root.Image.I0.Resolution.
+        monkeypatch.setattr(ctx.drift_detector, "check_drift",
+                            self._fake_drift(("image", "I0.Resolution")))
 
         with _with_admin():
             r = client.post(
@@ -307,18 +314,8 @@ class TestRevert:
     def test_revert_skips_missing_device(self, client, monkeypatch):
         ctx = _ctx()
         ctx.registry.add_device("cam-a", {"host": "192.0.2.1"})
-
-        def fake_build(did, ref=None, facet_names=None):
-            return {
-                "steps": [{
-                    "operation_id": "param.cgi:update", "device_id": did,
-                    "params": {"root.Foo": "1"}, "description": f"Restore {did}",
-                    "risk_level": "service-affecting",
-                }],
-                "warnings": [], "description": f"Restore {did}",
-                "source_ref": "baseline", "on_failure": "stop",
-            }
-        monkeypatch.setattr(ctx.restore_builder, "build_restore_plan", fake_build)
+        monkeypatch.setattr(ctx.drift_detector, "check_drift",
+                            self._fake_drift(("image", "I0.Resolution")))
 
         with _with_admin():
             r = client.post(

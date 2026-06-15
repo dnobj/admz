@@ -152,6 +152,90 @@ class RestoreBuilder:
             "source_ref": ref,
         }
 
+    def build_targeted_revert_plan(
+        self,
+        device_id: str,
+        drifted_fields: List[Any],
+        family: str = "vapix",
+    ) -> Dict[str, Any]:
+        """Revert ONLY the drifted fields to their baseline values.
+
+        A full ``build_restore_plan`` re-pushes the entire baseline (every
+        restorable param across every facet — hundreds of params, many chunked
+        steps) even when a handful of fields drifted. This builds the minimal
+        diff-scoped plan instead: each ``DriftField`` carries ``expected`` (the
+        baseline value) + ``facet`` + ``path``; map (facet, path) back to its
+        param.cgi key via the facet's ``revert_param``. Fields a facet can't
+        write back (read-only/uncategorized/masked) or that *appeared* (not in
+        the baseline) are skipped with a warning, not blindly forced.
+        """
+        from admz.snapshot.facets import get_facets_for_device
+
+        device_info = self.registry.get_device_info(device_id)
+        device_info["device_id"] = device_id
+        facets_by_name = {
+            f.name: f for f in get_facets_for_device(device_info)
+        }
+
+        params: Dict[str, str] = {}
+        not_revertable: List[str] = []
+        for field in drifted_fields:
+            label = f"{field.facet}.{field.path}"
+            # A field present live but NOT in the baseline ("appeared") can't
+            # be reverted by writing a value — there's nothing to restore to.
+            if str(field.expected) == "<missing>":
+                not_revertable.append(f"{label} (added, not in baseline)")
+                continue
+            facet = facets_by_name.get(field.facet)
+            if facet is None:
+                not_revertable.append(label)
+                continue
+            rv = facet.revert_param(field.path, field.expected)
+            if rv is None:
+                not_revertable.append(label)
+                continue
+            full_key, value = rv
+            params[full_key] = value
+
+        warnings: List[str] = []
+        if not_revertable:
+            warnings.append(
+                "Not auto-revertable (read-only / uncategorized / masked / "
+                "added), skipping: " + ", ".join(sorted(not_revertable))
+            )
+
+        steps = []
+        if params:
+            param_sets = _chunk_params(params)
+            total = len(param_sets)
+            for idx, chunk in enumerate(param_sets, 1):
+                description = (
+                    f"Revert {len(chunk)} drifted setting"
+                    + ("s" if len(chunk) != 1 else "")
+                    + f" on {device_id}"
+                )
+                if total > 1:
+                    description += f" ({idx}/{total})"
+                steps.append({
+                    # ADR-0034: writing live config — must gate at the widget.
+                    "operation_id": "param.cgi:update",
+                    "device_id": device_id,
+                    "params": chunk,
+                    "description": description,
+                    "risk_level": "service-affecting",
+                })
+
+        n = len(params)
+        return {
+            "description": (
+                f"Revert {n} drifted setting" + ("s" if n != 1 else "")
+                + f" on {device_id} to baseline"
+            ),
+            "steps": steps,
+            "on_failure": "stop",
+            "warnings": warnings,
+        }
+
     def build_profile_plan(
         self,
         device_id: str,

@@ -322,6 +322,11 @@ async def revert_devices(
     principal = await get_current_principal(request)
     require_authenticated_principal(principal)
 
+    # TARGETED revert: undo only the fields that actually drifted (back to
+    # their baseline values), NOT a full-baseline re-push. We check drift per
+    # device to get the exact diff + each field's baseline value, then build a
+    # minimal plan. (Full restore-from-a-commit stays on build_restore_plan,
+    # reachable via the MCP restore_device tool.)
     all_steps: List[dict] = []
     warnings: List[str] = []
     missing: List[str] = []
@@ -330,9 +335,8 @@ async def revert_devices(
         if not ctx.registry.device_exists(did):
             missing.append(did)
             continue
-        spec = ctx.restore_builder.build_restore_plan(
-            did, ref=None, facet_names=req.facets
-        )
+        report = await ctx.drift_detector.check_drift(did)
+        spec = ctx.restore_builder.build_targeted_revert_plan(did, report.fields)
         if not spec["steps"]:
             no_config.append(did)
         all_steps.extend(spec["steps"])
@@ -342,7 +346,11 @@ async def revert_devices(
         record_event(principal, "snapshot.revert", resource="device:multiple",
                      details={"device_ids": req.device_ids, "outcome": "no-steps"})
         return {
-            "message": "No restorable baseline config for the selected device(s).",
+            "message": (
+                "Nothing to revert — the selected device(s) are in sync, or "
+                "the drifted fields aren't auto-revertable (read-only / "
+                "uncategorized)."
+            ),
             "warnings": warnings,
             "missing": missing,
             "no_config": no_config,
