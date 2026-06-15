@@ -1018,6 +1018,61 @@ class TestEngineHelpers:
         assert "root.Image.I0.Resolution" in result
         assert len(result) == 1
 
+    def test_parse_param_dump_drops_ignored_keys(self, monkeypatch):
+        import admz.snapshot.ignore as ig
+        monkeypatch.setattr(
+            ig, "get_ignore_patterns",
+            lambda: ["root.Antitailgate.AlarmActionPass", "root.Noise.*"],
+        )
+        from admz.snapshot.engine import _parse_param_dump
+        text = (
+            "root.Image.I0.Resolution=1920x1080\n"
+            "root.Antitailgate.AlarmActionPass=pass3\n"
+            "root.Noise.Counter=42\n"
+        )
+        result = _parse_param_dump(text)
+        assert result == {"root.Image.I0.Resolution": "1920x1080"}
+
+
+class TestIgnoreList:
+    def test_matcher_exact_group_and_glob(self):
+        from admz.snapshot.ignore import is_ignored
+        pats = ["root.App.Pass", "root.Grp", "*Pwd", "root.X.*"]
+        assert is_ignored("root.App.Pass", pats)            # exact
+        assert not is_ignored("root.App.Passcode", pats)    # exact, not prefix
+        assert is_ignored("root.Grp.Anything.Deep", pats)   # group prefix
+        assert not is_ignored("root.GrpExtra.Y", pats)      # boundary respected
+        assert is_ignored("root.Net.MyPwd", pats)           # *Pwd glob crosses dots
+        assert is_ignored("root.X.Y.Z", pats)               # root.X.* glob
+        assert not is_ignored("root.Other.Key", pats)
+
+    def test_case_insensitive(self):
+        from admz.snapshot.ignore import is_ignored
+        assert is_ignored("root.ANTITAILGATE.AlarmActionPass",
+                          ["root.antitailgate.alarmactionpass"])
+
+    def test_user_patterns_from_fleet_settings(self, monkeypatch):
+        import admz.snapshot.ignore as ig
+        import admz.fleet_settings as fs
+
+        class _Stub:
+            def get(self, k):
+                return "root.A.Pass\n  root.B.*  \n\nroot.C, root.D" if k == ig.USER_SETTING_KEY else None
+        monkeypatch.setattr(fs, "fleet_settings", _Stub())
+        pats = ig.get_ignore_patterns()
+        assert pats == ["root.A.Pass", "root.B.*", "root.C", "root.D"]
+
+    def test_user_patterns_empty_and_error_safe(self, monkeypatch):
+        import admz.snapshot.ignore as ig
+        import admz.fleet_settings as fs
+
+        class _Boom:
+            def get(self, k):
+                raise RuntimeError("db down")
+        monkeypatch.setattr(fs, "fleet_settings", _Boom())
+        # Fails open: never raises mid-snapshot.
+        assert ig.get_ignore_patterns() == list(ig._GLOBAL_IGNORE_PATTERNS)
+
 
 class TestBaselinePointers:
     """SnapshotEngine._set_baseline_pointers — a snapshot blesses the

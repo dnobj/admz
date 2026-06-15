@@ -583,6 +583,7 @@ async def settings_overview(request: Request):
     }
     has_password = bool(fleet_settings.get("confirm_password_hash"))
     get_creds_enabled = fleet_settings.get("tool_get_credentials_enabled") == "true"
+    from admz.snapshot.ignore import USER_SETTING_KEY, _GLOBAL_IGNORE_PATTERNS
     return templates.TemplateResponse(
         "settings.html",
         {
@@ -592,8 +593,39 @@ async def settings_overview(request: Request):
             "has_password": has_password,
             "get_creds_enabled": get_creds_enabled,
             "all_settings": fleet_settings.list_all(),
+            "ignore_patterns_text": fleet_settings.get(USER_SETTING_KEY) or "",
+            "ignore_globals": list(_GLOBAL_IGNORE_PATTERNS),
+            "ignore_saved": request.query_params.get("ignore_saved") == "1",
         },
     )
+
+
+@router.post("/settings/ignored-fields", response_class=RedirectResponse)
+async def save_ignored_fields(request: Request, patterns: str = Form("")):
+    """Persist the operator's config-tracking ignore list (one glob per line).
+
+    Params matching these are dropped at snapshot CAPTURE, so they never enter
+    a baseline, drift report, or the git config repo — for noisy keys or config
+    an app stores badly (e.g. a plaintext credential a custom ACAP writes into
+    param.cgi). Changes apply on the next snapshot/drift check."""
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+    from admz.snapshot.ignore import USER_SETTING_KEY
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+
+    # Normalize: trim each line, drop blanks; store newline-separated.
+    lines = [ln.strip() for ln in (patterns or "").replace(",", "\n").splitlines()]
+    cleaned = [ln for ln in lines if ln]
+    fleet_settings.set(USER_SETTING_KEY, "\n".join(cleaned))
+    record_event(
+        principal, "settings.config_ignore", resource="fleet",
+        details={"pattern_count": len(cleaned)},
+    )
+    return RedirectResponse(url="/settings?ignore_saved=1#config-tracking",
+                            status_code=303)
 
 
 @router.get("/audit-log", response_class=HTMLResponse)

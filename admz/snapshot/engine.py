@@ -98,14 +98,27 @@ def _is_sensitive(key: str) -> bool:
     return any(s in k for s in _SECRET_PARAM_SUBSTRINGS)
 
 
+def _is_ignored(key: str, patterns) -> bool:
+    """Operator-configured ignore list (admz.snapshot.ignore). ``patterns`` is
+    precomputed once per dump so this is a cheap per-key check, not a DB hit."""
+    from admz.snapshot.ignore import is_ignored
+    return is_ignored(key, patterns)
+
+
 def _parse_param_dump(text: str) -> Dict[str, str]:
+    from admz.snapshot.ignore import get_ignore_patterns
+    ignore = get_ignore_patterns()  # read once for the whole dump
     params = {}
     for line in text.strip().split("\n"):
         line = line.strip()
         if "=" in line and not line.startswith("#"):
             key, _, value = line.partition("=")
             key = key.strip()
-            if not _is_volatile(key) and not _is_sensitive(key):
+            if (
+                not _is_volatile(key)
+                and not _is_sensitive(key)
+                and not _is_ignored(key, ignore)
+            ):
                 params[key] = value.strip()
     return params
 
@@ -326,10 +339,14 @@ class SnapshotEngine:
             raw_text = result.parsed_data.get("raw", "")
             if raw_text:
                 return _parse_param_dump(raw_text)
+            from admz.snapshot.ignore import get_ignore_patterns
+            ignore = get_ignore_patterns()
             return {
                 k: v
                 for k, v in result.parsed_data.items()
-                if not _is_volatile(k) and not _is_sensitive(k)
+                if not _is_volatile(k)
+                and not _is_sensitive(k)
+                and not _is_ignored(k, ignore)
             }
 
         if isinstance(result.parsed_data, str):

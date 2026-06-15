@@ -101,6 +101,47 @@
     </div>
   </div>
 
+  <!-- Configuration tracking — ignore list -->
+  <div class="card" id="config-tracking">
+    <div class="card-header"><i data-lucide="filter"></i><span class="title">Configuration tracking</span></div>
+    <div class="card-body">
+      <p class="page-sub" style="margin:0 0 4px">
+        Fields to <strong>exclude</strong> from snapshots and drift. Matching params are dropped at
+        capture — they never enter a baseline, a drift report, or the git config repo. Use this for
+        noisy keys, or config an app stores badly (e.g. a credential a custom ACAP writes into
+        <span class="mono">param.cgi</span>). Changes apply on the next snapshot / drift check.
+      </p>
+      <p class="page-sub" style="margin:0 0 10px">
+        One pattern per line, matched against the full <span class="mono">root.*</span> key
+        (case-insensitive). <span class="mono">*</span>/<span class="mono">?</span> are globs
+        (<span class="mono">*</span> crosses dots); a plain entry matches that exact key or a whole
+        group. Examples: <span class="mono">root.Antitailgate.AlarmActionPass</span>,
+        <span class="mono">root.MyApp.*</span>, <span class="mono">*.DebugCounter</span>.
+      </p>
+      {% if ignore_saved %}
+      <div class="alert-box green" style="padding:8px 12px;border-radius:6px;margin-bottom:10px;background:var(--green-bg);border:1px solid var(--green-bd);color:var(--green-fg);font-size:13px">
+        <i data-lucide="check-circle" style="width:14px;height:14px;vertical-align:middle"></i> Ignore list saved.
+      </div>
+      {% endif %}
+      {% if ignore_globals %}
+      <div class="setting-row" style="padding-left:0;padding-right:0">
+        <div class="sr-text"><div class="sr-label">Built-in (global) ignores</div>
+          <div class="sr-desc">Shipped defaults, always on:
+            {% for g in ignore_globals %}<span class="mono">{{ g }}</span>{{ ", " if not loop.last }}{% endfor %}</div></div>
+      </div>
+      {% endif %}
+      <form method="POST" action="/settings/ignored-fields">
+        <label class="sr-label" for="ignore-patterns" style="display:block;margin-bottom:6px">Your custom ignore patterns</label>
+        <textarea id="ignore-patterns" name="patterns" rows="6" spellcheck="false"
+          placeholder="root.MyApp.SecretField&#10;root.SomeApp.*"
+          style="width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text);font-family:var(--mono);font-size:12.5px;line-height:1.6;resize:vertical">{{ ignore_patterns_text }}</textarea>
+        <div style="margin-top:10px;display:flex;justify-content:flex-end">
+          <button type="submit" class="btn primary sm"><i data-lucide="save"></i> Save ignore list</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- Health monitoring -->
   <div class="card">
     <div class="card-header"><i data-lucide="activity"></i><span class="title">Health monitoring</span></div>
