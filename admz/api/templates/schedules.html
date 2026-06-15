@@ -41,8 +41,8 @@
       <td><span class="risk-badge {{ rk|risk_sem }}">{% if rk == 'dangerous' %}<i data-lucide="alert-triangle"></i>{% endif %}{{ rk|risk_short }}</span></td>
       <td>{{ ('tag: ' + s.tag_filter) if s.tag_filter else 'all devices' }}</td>
       <td><span class="mono cadence" data-seconds="{{ s.interval_seconds }}">every {{ s.interval_seconds }}s</span></td>
-      <td class="mono">{{ s.next_run or '—' }}</td>
-      <td class="mono">{{ s.last_run or '—' }}</td>
+      <td class="mono ts" data-iso="{{ s.next_run or '' }}">{{ s.next_run or '—' }}</td>
+      <td class="mono ts" data-iso="{{ s.last_run or '' }}">{{ s.last_run or '—' }}</td>
       <td style="text-align:right;white-space:nowrap">
         <button class="btn ghost sm" type="button" onclick="runScheduleNow('{{ s.id }}', this)" title="Run once now"><i data-lucide="play"></i></button>
         <button class="btn ghost sm" type="button" style="color:var(--fg-red,#f87171)" onclick="deleteSchedule('{{ s.id }}')" title="Delete"><i data-lucide="trash-2"></i></button>
@@ -137,6 +137,42 @@ function humanizeSeconds(s) {
 }
 document.querySelectorAll('.cadence').forEach(el => {
   el.textContent = humanizeSeconds(el.getAttribute('data-seconds'));
+});
+
+// Next/last run are stored UTC (ISO + offset). Render them in the viewer's
+// local timezone, nicely, with a relative hint and a full-timestamp tooltip.
+function fmtLocal(iso) {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
+}
+function relTime(iso) {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const diff = (d.getTime() - Date.now()) / 1000;  // +future / -past
+  const a = Math.abs(diff);
+  let s;
+  if (a < 45) return 'just now';
+  else if (a < 3600) s = Math.round(a / 60) + 'm';
+  else if (a < 86400) s = Math.round(a / 3600) + 'h';
+  else s = Math.round(a / 86400) + 'd';
+  return diff >= 0 ? 'in ' + s : s + ' ago';
+}
+document.querySelectorAll('.ts').forEach(el => {
+  const iso = el.getAttribute('data-iso');
+  if (!iso) { el.textContent = '—'; return; }
+  el.textContent = fmtLocal(iso);
+  const rel = relTime(iso);
+  if (rel) {
+    const span = document.createElement('span');
+    span.style.color = 'var(--text-faint)';
+    span.textContent = ' · ' + rel;
+    el.appendChild(span);
+  }
+  const full = new Date(iso);
+  if (!isNaN(full.getTime())) el.title = full.toString();  // full local incl. TZ
 });
 
 // ── Modal ──
