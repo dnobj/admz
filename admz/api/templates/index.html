@@ -197,6 +197,11 @@
 .drift-diff-table .col-base { font-family: monospace; color: var(--fg-green, #4ade80); }
 .drift-diff-table .col-live { font-family: monospace; color: var(--fg-amber, #fbbf24); }
 .drift-diff-table .facet-chip { display: inline-block; padding: 1px 5px; border-radius: 4px; background: var(--surface); border: 1px solid var(--border); font-size: 10px; color: var(--text-faint); margin-right: 4px; vertical-align: middle; }
+.drift-diff-table .col-sel { width: 26px; text-align: center; }
+.drift-field-cb, .drift-field-all { width: 14px; height: 14px; cursor: pointer; accent-color: var(--accent, #FFCC33); vertical-align: middle; }
+.drift-diff-table tr.row-readonly { opacity: .62; }
+.drift-diff-table .field-noselect { color: var(--text-faint); }
+.ro-tag { display: inline-block; margin-left: 6px; padding: 0 5px; border: 1px solid var(--border); border-radius: 4px; font-size: 10px; color: var(--text-faint); vertical-align: middle; }
 .drift-actions-wrap { margin-top: 4px; }
 .drift-action-group { display: flex; align-items: flex-start; gap: 16px; padding-bottom: 12px; }
 .drift-action-label { display: flex; align-items: flex-start; gap: 6px; flex-direction: column; min-width: 300px; max-width: 340px; }
@@ -303,18 +308,74 @@ function renderDiff(did, data) {
     } else {
       let rows = fields.map(f => {
         const chip = f.facet ? '<span class="facet-chip">' + esc(f.facet) + '</span>' : '';
-        return '<tr><td class="col-path">' + chip + esc(f.path) + '</td>'
+        // `revertable` may be absent (older cache) — treat as revertable then.
+        const rv = (f.revertable !== false);
+        const reason = f.revert_skip_reason || 'read-only';
+        const sel = rv
+          ? '<input type="checkbox" class="drift-field-cb" checked'
+            + ' data-did="' + esc(did) + '"'
+            + ' data-facet="' + esc(f.facet || '') + '"'
+            + ' data-path="' + esc(f.path) + '">'
+          : '<span class="field-noselect" title="Not auto-revertable (' + esc(reason) + ')">—</span>';
+        const roTag = rv ? '' : '<span class="ro-tag">' + esc(reason) + '</span>';
+        return '<tr class="' + (rv ? '' : 'row-readonly') + '">'
+          + '<td class="col-sel">' + sel + '</td>'
+          + '<td class="col-path">' + chip + esc(f.path) + roTag + '</td>'
           + '<td class="col-base">' + esc(f.expected) + '</td>'
           + '<td class="col-live">' + esc(f.actual) + '</td></tr>';
       }).join('');
+      const anyRevertable = fields.some(f => f.revertable !== false);
+      const headSel = anyRevertable
+        ? '<input type="checkbox" class="drift-field-all" data-did="' + esc(did)
+          + '" checked title="Select all revertable fields">'
+        : '';
       diffWrap.innerHTML = '<table class="drift-diff-table">'
-        + '<thead><tr><th>Parameter</th><th style="color:var(--fg-green,#4ade80)">Baseline</th>'
+        + '<thead><tr><th class="col-sel">' + headSel + '</th><th>Parameter</th>'
+        + '<th style="color:var(--fg-green,#4ade80)">Baseline</th>'
         + '<th style="color:var(--fg-amber,#fbbf24)">Live (drifted)</th></tr></thead>'
         + '<tbody>' + rows + '</tbody></table>';
+      // Wire per-field selection (the diff table was just re-rendered).
+      const headEl = diffWrap.querySelector('.drift-field-all');
+      const cbs = Array.from(diffWrap.querySelectorAll('.drift-field-cb'));
+      if (headEl) headEl.addEventListener('change', () => {
+        cbs.forEach(cb => { cb.checked = headEl.checked; });
+        updateRevertBtn(did);
+      });
+      cbs.forEach(cb => cb.addEventListener('change', () => {
+        if (headEl) headEl.checked = cbs.length > 0 && cbs.every(c => c.checked);
+        updateRevertBtn(did);
+      }));
     }
     diffWrap.classList.remove('hidden');
   }
   if (actionsWrap) actionsWrap.style.display = '';
+  updateRevertBtn(did);
+}
+
+// Fields the operator checked for a single device's revert.
+function selectedFields(did) {
+  return Array.from(document.querySelectorAll('.drift-field-cb'))
+    .filter(cb => cb.getAttribute('data-did') === did && cb.checked)
+    .map(cb => ({
+      device_id: did,
+      facet: cb.getAttribute('data-facet') || '',
+      path: cb.getAttribute('data-path'),
+    }));
+}
+
+// Reflect the current selection on the per-device Revert button.
+function updateRevertBtn(did) {
+  const btn = document.getElementById('btn-revert-' + did);
+  if (!btn) return;
+  // No checkboxes rendered at all → nothing is auto-revertable here.
+  const anyCb = document.querySelector('.drift-field-cb[data-did="' + did + '"]');
+  const n = selectedFields(did).length;
+  btn.disabled = n === 0;
+  const label = !anyCb
+    ? 'Nothing to revert'
+    : (n > 0 ? 'Revert ' + n + ' field' + (n !== 1 ? 's' : '') : 'Select fields to revert');
+  btn.innerHTML = '<i data-lucide="rotate-ccw"></i> ' + label;
+  if (window.lucide) lucide.createIcons();
 }
 
 // Flip a row to in-sync after a successful accept (single or bulk).
@@ -372,23 +433,26 @@ async function submitRevert(did) {
   const note = (document.getElementById('note-revert-' + did) || {}).value || '';
   const btn = document.getElementById('btn-revert-' + did);
   const resultEl = document.getElementById('result-' + did);
+  const fields = selectedFields(did);
+  if (!fields.length) {
+    if (resultEl) { resultEl.innerHTML = '<span style="color:var(--text-faint)">Select at least one field to revert.</span>'; resultEl.classList.remove('hidden'); }
+    return;
+  }
   if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i> Building plan…'; }
   if (window.lucide) lucide.createIcons();
   try {
     const resp = await fetch('/api/snapshot/revert', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({device_ids: [did], note: note || null}),
+      body: JSON.stringify({device_ids: [did], note: note || null, fields: fields}),
     });
     const data = await resp.json();
     if (resp.ok && data.confirm_url) { window.location = data.confirm_url; return; }
     const msg = (data.detail || data.message || 'Nothing to revert.');
     if (resultEl) { resultEl.innerHTML = '<span style="color:var(--text-faint)">' + esc(msg) + '</span>'; resultEl.classList.remove('hidden'); }
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="rotate-ccw"></i> Revert to baseline'; }
-    if (window.lucide) lucide.createIcons();
+    updateRevertBtn(did);
   } catch (e) {
     if (resultEl) { resultEl.innerHTML = '<span style="color:var(--fg-red,#f87171)">Request failed.</span>'; resultEl.classList.remove('hidden'); }
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="rotate-ccw"></i> Revert to baseline'; }
-    if (window.lucide) lucide.createIcons();
+    updateRevertBtn(did);
   }
 }
 

@@ -1330,12 +1330,30 @@ class TestTargetedRevert:
         assert f.revert_param("ioport.I0.Configurable", "yes") is None
 
     def test_readonly_facets_are_not_revertable(self):
+        # action-rules restores via REST list ops (not param.cgi) and users via
+        # pwdgrp — neither param.cgi-reverts a single field, so revert_param
+        # stays None (those drifts are reported but never blind-forced).
         from admz.snapshot.facets.action_rules import ActionRulesFacet
-        from admz.snapshot.facets.other_params import CatchAllParamsFacet
         from admz.snapshot.facets.users import UsersFacet
-        assert CatchAllParamsFacet().revert_param("root.SNMP.Enabled", "no") is None
         assert ActionRulesFacet().revert_param("7", {"x": 1}) is None
         assert UsersFacet().revert_param("admin_access.account1", "admin") is None
+
+    def test_catchall_targeted_revert(self):
+        # The catch-all is read-only for a FULL-facet restore, but DOES
+        # targeted-revert a single drifted field — it stores params under their
+        # full root.* key, so `path` is already the param.cgi key.
+        from admz.snapshot.facets.other_params import CatchAllParamsFacet
+        f = CatchAllParamsFacet()
+        assert f.revert_param("root.Big_aoa_counter.Label", "My count") == \
+            ("root.Big_aoa_counter.Label", "My count")
+        assert f.revert_param("root.SNMP.Enabled", "no") == \
+            ("root.SNMP.Enabled", "no")
+        # Plaintext secrets (SNMP community / WPA PSK), Volatile*, masked → never
+        # written back even from the catch-all.
+        assert f.revert_param("root.SNMP.V1.WriteCommunity", "private") is None
+        assert f.revert_param("root.Network.Wireless.WPA.PSK", "x") is None
+        assert f.revert_param("root.Time.VolatileServer", "1.2.3.4") is None
+        assert f.revert_param("root.X.Pwd", "******") is None
 
     def test_targeted_plan_only_touches_drifted_fields(self, tmp_repo):
         from unittest.mock import MagicMock
@@ -1350,23 +1368,29 @@ class TestTargetedRevert:
                        expected="-10", actual="-8"),
             DriftField(facet="image", path="I0.Resolution",
                        expected="1920x1080", actual="1280x720"),
-            DriftField(facet="other", path="root.SNMP.Enabled",
-                       expected="no", actual="yes"),          # read-only facet
+            # Uncategorized (catch-all) field — NOW targeted-revertable.
+            DriftField(facet="other", path="root.Big_aoa_counter.Label",
+                       expected="My count", actual="Bijan's"),
+            # Uncategorized BUT secret → reported, never written back.
+            DriftField(facet="other", path="root.SNMP.V1.WriteCommunity",
+                       expected="private", actual="public"),
             DriftField(facet="audio", path="Source.A0.NewKey",
                        expected="<missing>", actual="x"),     # appeared
         ]
         spec = builder.build_targeted_revert_plan("cam-x", fields)
-        # The two revertable fields, written in ONE small step.
+        # The three revertable fields, written in ONE small step.
         assert len(spec["steps"]) == 1
         assert spec["steps"][0]["params"] == {
             "root.AudioSource.A0.InputGain": "-10",
             "root.Image.I0.Resolution": "1920x1080",
+            "root.Big_aoa_counter.Label": "My count",
         }
         assert spec["steps"][0]["risk_level"] == "service-affecting"
-        # Read-only + appeared fields are surfaced as a warning, not forced.
+        # Secret + appeared fields are surfaced as a warning, not forced.
         assert spec["warnings"]
-        assert "other.root.SNMP.Enabled" in spec["warnings"][0]
-        assert "added, not in baseline" in spec["warnings"][0]
+        warn = spec["warnings"][0]
+        assert "other.root.SNMP.V1.WriteCommunity" in warn
+        assert "added, not in baseline" in warn
 
     def test_no_drift_yields_no_steps(self, tmp_repo):
         from unittest.mock import MagicMock

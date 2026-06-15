@@ -274,6 +274,21 @@ async def restore_device(
     }
 
 
+class RevertFieldSelector(BaseModel):
+    """A single drifted field a caller chose to revert: which device, which
+    facet, and the flattened field path within that facet (as surfaced by the
+    drift report). ``path``/``facet`` are matched verbatim against the live
+    drift diff, so they aren't constrained to the identifier charset."""
+    device_id: str
+    facet: str
+    path: str
+
+    @field_validator("device_id")
+    @classmethod
+    def _check_did(cls, v: str) -> str:
+        return validate_identifier(v, "device_id")
+
+
 class RevertRequest(BaseModel):
     """One or more devices to revert to their blessed baseline.
 
@@ -282,10 +297,15 @@ class RevertRequest(BaseModel):
     plans — ``device_id="multiple"``). ``note`` is an audit annotation:
     revert re-applies the existing baseline to the device and makes NO git
     change, so the note lives only in the plan description + audit log.
+
+    ``fields`` scopes the revert to a chosen SUBSET of the drifted fields
+    (the UI's per-row checkboxes). When omitted, every auto-revertable
+    drifted field on each device is reverted (device-level revert).
     """
     device_ids: List[str]
     note: Optional[str] = None
     facets: Optional[List[str]] = None
+    fields: Optional[List[RevertFieldSelector]] = None
 
     @field_validator("device_ids")
     @classmethod
@@ -327,6 +347,19 @@ async def revert_devices(
     # device to get the exact diff + each field's baseline value, then build a
     # minimal plan. (Full restore-from-a-commit stays on build_restore_plan,
     # reachable via the MCP restore_device tool.)
+    #
+    # When the caller passes ``fields``, scope the revert to that exact subset
+    # (the UI's per-row checkboxes) — matched by (device_id, facet, path)
+    # against the live drift diff. With no ``fields``, every revertable drifted
+    # field on each device is reverted (device-level revert).
+    selected_by_device = None
+    if req.fields is not None:
+        selected_by_device = {}
+        for sel in req.fields:
+            selected_by_device.setdefault(sel.device_id, set()).add(
+                (sel.facet, sel.path)
+            )
+
     all_steps: List[dict] = []
     warnings: List[str] = []
     missing: List[str] = []
@@ -336,7 +369,11 @@ async def revert_devices(
             missing.append(did)
             continue
         report = await ctx.drift_detector.check_drift(did)
-        spec = ctx.restore_builder.build_targeted_revert_plan(did, report.fields)
+        fields = report.fields
+        if selected_by_device is not None:
+            chosen = selected_by_device.get(did, set())
+            fields = [f for f in fields if (f.facet, f.path) in chosen]
+        spec = ctx.restore_builder.build_targeted_revert_plan(did, fields)
         if not spec["steps"]:
             no_config.append(did)
         all_steps.extend(spec["steps"])
@@ -523,7 +560,32 @@ async def check_drift(
         if not ctx.registry.device_exists(device_id):
             raise HTTPException(status_code=404, detail=f"Device not found: {device_id}")
         report = await ctx.drift_detector.check_drift(device_id)
-        return report.to_summary()
+        summary = report.to_summary()
+        # Annotate each drifted field with whether a TARGETED revert can write
+        # it back — the UI uses this to enable/disable the per-row checkbox.
+        # Uses the SAME facet.revert_param the revert plan builder uses, so the
+        # checkbox state matches exactly what revert would actually do.
+        from admz.snapshot.facets import get_facets_for_device
+
+        device_info = ctx.registry.get_device_info(device_id)
+        device_info["device_id"] = device_id
+        facets_by_name = {
+            f.name: f for f in get_facets_for_device(device_info)
+        }
+        for fld in summary.get("drifted_fields", []):
+            facet = facets_by_name.get(fld.get("facet"))
+            revertable = False
+            reason = "read-only"
+            if str(fld.get("expected")) == "<missing>":
+                reason = "added"  # appeared live; no baseline value to restore
+            elif facet is not None and facet.revert_param(
+                fld.get("path"), fld.get("expected")
+            ) is not None:
+                revertable = True
+            fld["revertable"] = revertable
+            if not revertable:
+                fld["revert_skip_reason"] = reason
+        return summary
     reports = await ctx.drift_detector.check_fleet_drift(tag_filter=tag_filter)
     return {
         "count": len(reports),

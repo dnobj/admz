@@ -326,3 +326,88 @@ class TestRevert:
         body = r.json()
         assert body.get("blocked") is True
         assert body.get("missing") == ["ghost"]
+
+    def test_revert_field_selection_filters_to_chosen(self, client, monkeypatch):
+        """With ``fields``, only the chosen (facet, path) pairs reach the plan
+        builder — the rest of the drift is left untouched."""
+        ctx = _ctx()
+        ctx.registry.add_device("cam-a", {"host": "192.0.2.1"})
+        # Two drifted fields; the operator picks one.
+        monkeypatch.setattr(
+            ctx.drift_detector, "check_drift",
+            self._fake_drift(("image", "I0.Resolution"),
+                             ("audio", "Source.A0.InputGain")),
+        )
+        captured = {}
+        real_build = ctx.restore_builder.build_targeted_revert_plan
+
+        def spy(did, fields, *a, **k):
+            captured["fields"] = list(fields)
+            return real_build(did, fields, *a, **k)
+        monkeypatch.setattr(ctx.restore_builder,
+                            "build_targeted_revert_plan", spy)
+
+        with _with_admin():
+            r = client.post("/api/snapshot/revert", json={
+                "device_ids": ["cam-a"],
+                "fields": [{"device_id": "cam-a", "facet": "audio",
+                            "path": "Source.A0.InputGain"}],
+            })
+        assert r.status_code == 200
+        assert r.json().get("blocked") is True
+        # Only the selected field was handed to the builder.
+        assert [(f.facet, f.path) for f in captured["fields"]] == \
+            [("audio", "Source.A0.InputGain")]
+
+    def test_revert_field_selection_none_chosen_is_noop(self, client, monkeypatch):
+        """An empty ``fields`` list selects nothing → nothing to revert."""
+        ctx = _ctx()
+        ctx.registry.add_device("cam-a", {"host": "192.0.2.1"})
+        monkeypatch.setattr(ctx.drift_detector, "check_drift",
+                            self._fake_drift(("image", "I0.Resolution")))
+        with _with_admin():
+            r = client.post("/api/snapshot/revert",
+                            json={"device_ids": ["cam-a"], "fields": []})
+        assert r.status_code == 200
+        body = r.json()
+        assert body.get("confirm_url") is None
+        assert "message" in body
+
+
+class TestDriftRevertableAnnotation:
+    """``GET /api/snapshot/drift?device_id=`` tags each drifted field with
+    ``revertable`` (+ a reason) so the UI can render accurate per-row
+    checkboxes — using the same facet.revert_param the plan builder uses."""
+
+    def test_drift_marks_each_field_revertable(self, client, monkeypatch):
+        ctx = _ctx()
+        ctx.registry.add_device("cam-a", {"host": "192.0.2.1"})
+        from admz.snapshot.models import DriftField, DriftReport
+
+        async def _check(did, *a, **k):
+            return DriftReport(device_id=did, has_drift=True, fields=[
+                DriftField(facet="image", path="I0.Resolution",
+                           expected="1920x1080", actual="1280x720"),
+                DriftField(facet="other", path="root.Big_aoa_counter.Label",
+                           expected="My count", actual="Bijan's"),
+                DriftField(facet="other", path="root.SNMP.V1.WriteCommunity",
+                           expected="private", actual="public"),
+                DriftField(facet="audio", path="Source.A0.NewKey",
+                           expected="<missing>", actual="x"),
+            ])
+        monkeypatch.setattr(ctx.drift_detector, "check_drift", _check)
+
+        r = client.get("/api/snapshot/drift?device_id=cam-a")
+        assert r.status_code == 200
+        by_path = {f["path"]: f for f in r.json()["drifted_fields"]}
+        # Named facet + catch-all both revertable.
+        assert by_path["I0.Resolution"]["revertable"] is True
+        assert by_path["root.Big_aoa_counter.Label"]["revertable"] is True
+        # Secret catch-all key → not revertable (read-only).
+        snmp = by_path["root.SNMP.V1.WriteCommunity"]
+        assert snmp["revertable"] is False
+        assert snmp["revert_skip_reason"] == "read-only"
+        # Appeared (no baseline value) → not revertable (added).
+        newk = by_path["Source.A0.NewKey"]
+        assert newk["revertable"] is False
+        assert newk["revert_skip_reason"] == "added"
