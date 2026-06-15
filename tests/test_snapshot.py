@@ -1179,3 +1179,124 @@ class TestDriftNoteField:
         spec = builder.build_restore_plan("cam-01", ref="HEAD")
         # The description is from build_restore_plan — note is appended at route level
         assert "cam-01" in spec["description"]
+
+
+# ---------------------------------------------------------------------------
+# Comprehensive config tracking: facet index + catch-all + audio + action rules
+# ---------------------------------------------------------------------------
+
+class TestFacetIndexAndCatchAll:
+    """The config→facet index and the catch-all that ensures no param is
+    silently dropped (the audio input-gain blind spot)."""
+
+    def test_index_maps_known_facets_to_prefixes(self):
+        from admz.snapshot.facets.base import facet_param_index
+        idx = facet_param_index()
+        assert idx.get("image") == ["root.Image."]
+        assert idx.get("audio") == ["root.Audio"]
+        assert "root.Network." in idx.get("network", [])
+        # Facets without param prefixes are not in the param index.
+        assert "other" not in idx
+        assert "action_rules" not in idx
+
+    def test_claimed_prefixes_excludes_self(self):
+        from admz.snapshot.facets.base import claimed_prefixes
+        claimed = claimed_prefixes(exclude="other")
+        assert "root.Image." in claimed
+        assert "root.Audio" in claimed
+        # Nothing the catch-all itself would contribute (it has none anyway).
+
+    def test_catchall_captures_only_unclaimed_params(self):
+        from admz.snapshot.facets.other_params import CatchAllParamsFacet
+        facet = CatchAllParamsFacet()
+        raw = {"params": {
+            "root.Image.I0.Resolution": "1920x1080",   # owned by image
+            "root.AudioSource.A0.InputGain": "-10",      # owned by audio
+            "root.Syslog.Server": "10.0.0.9",            # unowned → catch-all
+            "root.SNMP.Enabled": "yes",                  # unowned → catch-all
+        }}
+        out = facet.serialize(raw)
+        assert out == {
+            "root.Syslog.Server": "10.0.0.9",
+            "root.SNMP.Enabled": "yes",
+        }
+        # Catch-all is read-only.
+        assert facet.deserialize(out) == []
+
+    def test_audio_input_gain_is_captured_not_dropped(self):
+        """Regression: the exact scenario that reported 'no drift' — an audio
+        input-gain change. AudioFacet must capture it; the catch-all must not
+        (it's claimed)."""
+        from admz.snapshot.facets.audio import AudioFacet
+        from admz.snapshot.facets.other_params import CatchAllParamsFacet
+        raw = {"params": {"root.AudioSource.A0.InputGain": "-10"}}
+        audio = AudioFacet().serialize(raw)
+        assert audio == {"Source.A0.InputGain": "-10"}
+        assert CatchAllParamsFacet().serialize(raw) == {}
+
+
+class TestActionRulesFacet:
+    def test_extracts_rules_from_varied_shapes(self):
+        from admz.snapshot.facets.action_rules import _extract_rules
+        rule = {"id": "1", "name": "Motion email"}
+        assert _extract_rules([rule]) == [rule]
+        assert _extract_rules({"rules": [rule]}) == [rule]
+        assert _extract_rules({"data": {"rules": [rule]}}) == [rule]
+        assert _extract_rules({"nope": 1}) == []
+
+    def test_serialize_keys_by_id_drops_volatile(self):
+        from admz.snapshot.facets.action_rules import ActionRulesFacet
+        raw = {"action_rules": {"rules": [
+            {"id": "7", "name": "Door", "enabled": True, "lastModified": "t1"},
+        ]}}
+        out = ActionRulesFacet().serialize(raw)
+        assert out == {"7": {"id": "7", "name": "Door", "enabled": True}}
+        assert ActionRulesFacet().deserialize(out) == []
+
+    def test_firmware_gating(self):
+        from admz.snapshot.facets.action_rules import ActionRulesFacet
+        f = ActionRulesFacet()
+        assert f.matches_device({"api_family": "vapix", "firmware": "12.10.68"}) is True
+        assert f.matches_device({"api_family": "vapix", "firmware": "11.11.205"}) is False
+
+    def test_uses_listrules_extra_read_op(self):
+        from admz.snapshot.facets.action_rules import ActionRulesFacet
+        specs = ActionRulesFacet().extra_read_ops
+        assert len(specs) == 1
+        assert specs[0].operation_id == "action-rules:listRules"
+        assert specs[0].result_key == "action_rules"
+
+
+class TestSecretParamFiltering:
+    """Comprehensive capture must never commit unmasked secrets (SNMP
+    community strings, PSKs, passphrases) to the git config repo."""
+
+    def test_parse_param_dump_drops_unmasked_secrets(self):
+        from admz.snapshot.engine import _parse_param_dump
+        dump = "\n".join([
+            "root.Image.I0.Resolution=1920x1080",
+            "root.SNMP.V1ReadCommunity=public",
+            "root.SNMP.V1WriteCommunity=write",
+            "root.SNMP.Trap.T0.Community=public",
+            "root.Network.Interface.I0.dot1x.EAPOL.EAP.PrivateKeyPassword=hunter2",
+            "root.Network.Wireless.WPAPSK=topsecret",
+            "root.SNMP.Enabled=yes",
+        ])
+        out = _parse_param_dump(dump)
+        # Real config kept.
+        assert out["root.Image.I0.Resolution"] == "1920x1080"
+        assert out["root.SNMP.Enabled"] == "yes"
+        # Every secret-shaped key dropped — not just masked.
+        for k in out:
+            assert "community" not in k.lower()
+            assert "psk" not in k.lower()
+            assert "password" not in k.lower()
+        assert "root.SNMP.V1WriteCommunity" not in out
+        assert "root.Network.Wireless.WPAPSK" not in out
+
+    def test_is_sensitive_matches_secret_param_shapes(self):
+        from admz.snapshot.engine import _is_sensitive
+        assert _is_sensitive("root.SNMP.V1WriteCommunity") is True
+        assert _is_sensitive("root.Foo.Passphrase") is True
+        assert _is_sensitive("root.HTTPS.PrivateKey") is True
+        assert _is_sensitive("root.Image.I0.Resolution") is False

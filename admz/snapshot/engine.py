@@ -67,13 +67,35 @@ SENSITIVE_PREFIXES = [
     "root.RemoteService.",
 ]
 
+# param.cgi masks password-class values as "******", but some secret params
+# come back in PLAINTEXT — SNMP community strings (V1WriteCommunity, …), WPA /
+# 802.1x pre-shared keys, passphrases. Comprehensive capture (the catch-all
+# facet) would otherwise commit these credentials to the git config repo,
+# violating "credentials never committed". Dropped by substring, in addition
+# to the shared redaction key matcher (password/secret/token/apikey/key/pat).
+_SECRET_PARAM_SUBSTRINGS = (
+    "community",
+    "passphrase",
+    "psk",
+    "presharedkey",
+    "wpapsk",
+    "privatekey",
+    "pwd",
+)
+
 
 def _is_volatile(key: str) -> bool:
     return any(key.startswith(p) for p in VOLATILE_PREFIXES)
 
 
 def _is_sensitive(key: str) -> bool:
-    return any(key.startswith(p) for p in SENSITIVE_PREFIXES)
+    if any(key.startswith(p) for p in SENSITIVE_PREFIXES):
+        return True
+    from admz import redact
+    if redact.is_sensitive_key(key):
+        return True
+    k = key.lower()
+    return any(s in k for s in _SECRET_PARAM_SUBSTRINGS)
 
 
 def _parse_param_dump(text: str) -> Dict[str, str]:

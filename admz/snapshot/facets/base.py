@@ -219,3 +219,30 @@ def get_facets_for_device(device_info: Dict[str, Any]) -> List[FacetAdapter]:
 
 def get_all_facets() -> List[Type[FacetAdapter]]:
     return list(_registry)
+
+
+def facet_param_index() -> Dict[str, List[str]]:
+    """The config→facet index: facet name -> the ``param.cgi`` prefixes it
+    owns. Every param under a listed prefix belongs to that facet; anything
+    not under any listed prefix falls to the catch-all ``other`` facet. This
+    is the single source of truth both for "which category does this config
+    belong to" and for the catch-all's complement."""
+    index: Dict[str, List[str]] = {}
+    for cls in _registry:
+        inst = cls()
+        prefixes = inst.param_prefixes
+        if prefixes:
+            index[inst.name] = list(prefixes)
+    return index
+
+
+def claimed_prefixes(exclude: Optional[str] = None) -> List[str]:
+    """Flat union of every facet's param prefixes — the set of params already
+    owned by a named category. ``exclude`` skips one facet (the catch-all
+    excludes itself so it captures only the *un*owned remainder)."""
+    out: List[str] = []
+    for name, prefixes in facet_param_index().items():
+        if name == exclude:
+            continue
+        out.extend(prefixes)
+    return out
