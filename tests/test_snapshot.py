@@ -1322,6 +1322,57 @@ class TestActionRulesFacet:
         assert specs[0].result_key == "action_rules"
 
 
+class TestApplicationsFacet:
+    # Shape mirrors the live applications-list.cgi reply (XML→dict, @-attrs).
+    _RAW = {"applications": {"@result": "ok", "application": [
+        {"@Name": "objectanalytics", "@Version": "1.25.116",
+         "@Status": "Running", "@License": "None", "@SignatureStatus": "Signed",
+         "@NiceName": "AXIS Object Analytics", "@ConfigurationPage": "local/x"},
+        {"@Name": "vmd", "@Version": "4.5.66", "@Status": "Stopped",
+         "@License": "None", "@SignatureStatus": "Signed"},
+    ]}}
+
+    def test_serialize_keys_apps_with_runstate(self):
+        from admz.snapshot.facets.applications import ApplicationsFacet
+        out = ApplicationsFacet().serialize(self._RAW)
+        assert out["objectanalytics"] == {
+            "status": "Running", "version": "1.25.116",
+            "license": "None", "signature": "Signed",
+        }
+        assert out["vmd"]["status"] == "Stopped"
+        # NiceName / ConfigurationPage are not tracked (display-only noise).
+        assert "nicename" not in out["objectanalytics"]
+
+    def test_single_app_dict_shape(self):
+        from admz.snapshot.facets.applications import ApplicationsFacet, _extract_apps
+        single = {"applications": {"@result": "ok",
+                  "application": {"@Name": "vmd", "@Status": "Running"}}}
+        assert len(_extract_apps(single["applications"])) == 1
+        out = ApplicationsFacet().serialize(single)
+        assert out["vmd"]["status"] == "Running"
+
+    def test_empty_or_missing_payload(self):
+        from admz.snapshot.facets.applications import ApplicationsFacet
+        assert ApplicationsFacet().serialize({}) == {}
+        assert ApplicationsFacet().serialize({"applications": {"@result": "ok"}}) == {}
+
+    def test_read_only_and_extra_read_op(self):
+        from admz.snapshot.facets.applications import ApplicationsFacet
+        f = ApplicationsFacet()
+        assert f.deserialize(self._RAW) == []          # never restored
+        assert f.revert_param("objectanalytics.status", "Running") is None
+        specs = f.extra_read_ops
+        assert len(specs) == 1
+        assert specs[0].operation_id == "applications-list.cgi:list"
+        assert specs[0].result_key == "applications"
+
+    def test_registered_and_applies_to_vapix(self):
+        from admz.snapshot.facets.applications import ApplicationsFacet
+        from admz.snapshot.facets.base import get_all_facets
+        assert ApplicationsFacet in get_all_facets()
+        assert ApplicationsFacet().matches_device({"api_family": "vapix"}) is True
+
+
 class TestSecretParamFiltering:
     """Comprehensive capture must never commit unmasked secrets (SNMP
     community strings, PSKs, passphrases) to the git config repo."""

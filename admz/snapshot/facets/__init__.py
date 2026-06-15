@@ -11,6 +11,7 @@ from admz.snapshot.facets.base import (  # noqa: F401
 
 from admz.snapshot.facets import (  # noqa: F401
     action_rules,
+    applications,
     audio,
     events,
     image,
