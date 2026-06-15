@@ -2,83 +2,144 @@
 
 {% block title %}{% if is_plan %}Confirm Plan{% else %}Confirm Operation — {{ session.operation_id }}{% endif %}{% endblock %}
 
+{% block extra_css %}
+<style>
+.confirm-wrap { max-width: 620px; margin: 36px auto; }
+.confirm-head { margin-bottom: 18px; }
+.risk-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0 18px; }
+
+.steps { margin-bottom: 18px; }
+.steps summary {
+  cursor: pointer; font-weight: 600; font-size: 13px; color: var(--text);
+  padding: 6px 0; list-style: none; user-select: none;
+}
+.steps summary::-webkit-details-marker { display: none; }
+.steps summary::before {
+  content: "\25B8"; margin-right: 7px; color: var(--text-faint);
+  display: inline-block; font-size: 11px;
+}
+.steps details[open] > summary::before { content: "\25BE"; }
+.step-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
+.step-table th {
+  text-align: left; padding: 6px 8px; color: var(--text-faint); font-weight: 600;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+  border-bottom: 1px solid var(--border);
+}
+.step-table td {
+  padding: 8px; border-bottom: 1px solid var(--border-subtle);
+  vertical-align: top; color: var(--text);
+}
+.step-table tr:last-child td { border-bottom: none; }
+.step-table .col-num { color: var(--text-faint); padding-left: 0; }
+.step-desc { color: var(--text-muted); font-size: 11.5px; margin-top: 3px; }
+
+.info-box {
+  background: var(--panel2); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 11px 14px; font-size: 12.5px; color: var(--text-muted); margin-bottom: 18px;
+}
+.info-box strong { color: var(--text); }
+
+.alert-box { padding: 14px 16px; border-radius: var(--radius); margin-bottom: 18px; }
+.alert-box .at { margin: 0 0 4px; font-weight: 700; font-size: 14px; }
+.alert-box .ad { margin: 0; font-size: 13px; color: var(--text-muted); }
+.alert-box.red   { background: var(--red-bg);   border: 1px solid var(--red-bd); }
+.alert-box.red   .at { color: var(--red-fg); }
+.alert-box.amber { background: var(--amber-bg); border: 1px solid var(--amber-bd); }
+.alert-box.amber .at { color: var(--amber-fg); }
+.alert-box.blue  { background: var(--blue-bg);  border: 1px solid var(--blue-bd); }
+.alert-box.blue  .at { color: var(--blue-fg); }
+
+.kv-box {
+  background: var(--panel2); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px 16px; margin-bottom: 18px; font-size: 13px; color: var(--text);
+}
+.kv-box p { margin: 0 0 8px; }
+.kv-box p:last-child { margin-bottom: 0; }
+.kv-box .k { color: var(--text-muted); }
+.kv-divider { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
+.kv-box table td { font-size: 12.5px; }
+.kv-box table .pk { padding: 2px 10px 2px 0; color: var(--text-muted); vertical-align: top; white-space: nowrap; }
+.kv-box table .pv { padding: 2px 0; word-break: break-all; color: var(--text); }
+
+.pw-field { margin-bottom: 18px; }
+.pw-field label { display: block; margin-bottom: 4px; font-weight: 600; font-size: 13px; color: var(--text); }
+.pw-field input {
+  width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel2); color: var(--text); font-size: 14px; box-sizing: border-box;
+}
+.pw-field input:focus { outline: none; border-color: var(--accent-bd); }
+
+.expiry-note { margin-top: 14px; font-size: 12px; color: var(--text-faint); text-align: center; }
+</style>
+{% endblock %}
+
 {% block content %}
-<div style="max-width:600px;margin:40px auto;">
+<div class="confirm-wrap">
+  <div class="card">
+    <div class="card-body">
 
   {% if is_plan and plan_summary %}
   {# ── Plan confirmation layout ─────────────────────────────────────── #}
-  <h1>Confirm Plan</h1>
+  <div class="confirm-head">
+    <h1 class="page-title">Confirm plan</h1>
+    <p class="page-sub">{{ plan_summary.get("description", session.danger_description) }}</p>
+  </div>
 
-  <p style="font-size:16px;color:#333;margin-bottom:24px;">
-    {{ plan_summary.get("description", session.danger_description) }}
-  </p>
-
-  {# Risk summary bar #}
+  {# Risk summary badges #}
   {% set risk = plan_summary.get("risk_summary", {}) %}
   {% set dangerous_count = risk.get("dangerous", 0) %}
   {% set sa_count = risk.get("service-affecting", 0) %}
-  <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px;">
-    <div style="padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600;
-      background:#f5f5f5;color:#333;">
-      {{ plan_summary.get("step_count", 0) }} step{{ "s" if plan_summary.get("step_count", 0) != 1 }}
-    </div>
+  <div class="risk-row">
+    <span class="badge grey">{{ plan_summary.get("step_count", 0) }} step{{ "s" if plan_summary.get("step_count", 0) != 1 }}</span>
     {% if dangerous_count > 0 %}
-    <div style="padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600;
-      background:#fecaca;color:#991b1b;">
-      {{ dangerous_count }} dangerous
-    </div>
+    <span class="badge red"><span class="dot sem-red"></span>{{ dangerous_count }} dangerous</span>
     {% endif %}
     {% if sa_count > 0 %}
-    <div style="padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600;
-      background:#fde68a;color:#92400e;">
-      {{ sa_count }} service-affecting
-    </div>
+    <span class="badge amber"><span class="dot sem-amber"></span>{{ sa_count }} service-affecting</span>
     {% endif %}
   </div>
 
   {# Collapsible step details #}
-  <details open style="margin-bottom:24px;">
-    <summary style="cursor:pointer;font-weight:600;font-size:15px;padding:8px 0;">
-      Plan Steps
-    </summary>
-    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:8px;">
-      <thead>
-        <tr style="border-bottom:2px solid #ddd;text-align:left;">
-          <th style="padding:8px 8px 8px 0;">#</th>
-          <th style="padding:8px;">Device</th>
-          <th style="padding:8px;">Operation</th>
-          <th style="padding:8px;">Risk</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for step in plan_summary.get("steps", []) %}
-        <tr style="border-bottom:1px solid #eee;">
-          <td style="padding:6px 8px 6px 0;color:#666;">{{ step.get("step", loop.index) }}</td>
-          <td style="padding:6px 8px;"><code>{{ step.get("device", "") }}</code></td>
-          <td style="padding:6px 8px;">
-            <code>{{ step.get("operation", "") }}</code>
-            {% if step.get("description") %}
-            <br><span style="color:#666;font-size:12px;">{{ step.get("description") }}</span>
-            {% endif %}
-          </td>
-          <td style="padding:6px 8px;">
-            <span style="
-              display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;
-              {% if step.get('risk') == 'dangerous' %}background:#fecaca;color:#991b1b;
-              {% elif step.get('risk') == 'service-affecting' %}background:#fde68a;color:#92400e;
-              {% elif step.get('risk') == 'normal' %}background:#dbeafe;color:#1e40af;
-              {% else %}background:#e5e7eb;color:#6b7280;{% endif %}
-            ">{{ step.get("risk", "unknown") }}</span>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </details>
+  <div class="steps">
+    <details open>
+      <summary>Plan steps</summary>
+      <table class="step-table">
+        <thead>
+          <tr>
+            <th class="col-num">#</th>
+            <th>Device</th>
+            <th>Operation</th>
+            <th>Risk</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for step in plan_summary.get("steps", []) %}
+          <tr>
+            <td class="col-num">{{ step.get("step", loop.index) }}</td>
+            <td><span class="mono text">{{ step.get("device", "") }}</span></td>
+            <td>
+              <span class="mono text">{{ step.get("operation", "") }}</span>
+              {% if step.get("description") %}
+              <div class="step-desc">{{ step.get("description") }}</div>
+              {% endif %}
+            </td>
+            <td>
+              {% set r = step.get('risk', 'unknown') %}
+              {% if r == 'dangerous' %}<span class="badge red">{{ r }}</span>
+              {% elif r == 'service-affecting' %}<span class="badge amber">{{ r }}</span>
+              {% elif r == 'normal' %}<span class="badge blue">{{ r }}</span>
+              {% else %}<span class="badge grey">{{ r }}</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+  </div>
 
   {# On-failure policy #}
   {% set policy = plan_summary.get("on_failure", "stop") %}
-  <div style="background:#f5f5f5;padding:12px 16px;border-radius:8px;margin-bottom:24px;font-size:13px;">
+  <div class="info-box">
     <strong>On failure:</strong>
     {% if policy == "stop" %}
       Stop — abort remaining steps
@@ -92,47 +153,46 @@
   </div>
 
   {% else %}
-  {# ── Single-operation confirmation layout (unchanged) ─────────────── #}
-  <h1>Confirm Operation</h1>
+  {# ── Single-operation confirmation layout ──────────────────────────── #}
+  <div class="confirm-head">
+    <h1 class="page-title">Confirm operation</h1>
+  </div>
 
   {% if session.risk_level == "dangerous" %}
-  <div style="background:#fef2f2;border:1px solid #fca5a5;padding:16px;border-radius:8px;margin-bottom:24px;">
-    <p style="margin:0 0 4px;font-weight:700;color:#b91c1c;">Dangerous Operation</p>
-    <p style="margin:0;color:#991b1b;">{{ session.danger_description }}</p>
+  <div class="alert-box red">
+    <p class="at">Dangerous operation</p>
+    <p class="ad">{{ session.danger_description }}</p>
   </div>
   {% elif session.risk_level == "service-affecting" %}
-  <div style="background:#fffbeb;border:1px solid #fcd34d;padding:16px;border-radius:8px;margin-bottom:24px;">
-    <p style="margin:0 0 4px;font-weight:700;color:#92400e;">Service-Affecting Operation</p>
-    <p style="margin:0;color:#78350f;">{{ session.danger_description }}</p>
+  <div class="alert-box amber">
+    <p class="at">Service-affecting operation</p>
+    <p class="ad">{{ session.danger_description }}</p>
   </div>
   {% else %}
-  <div style="background:#f0f9ff;border:1px solid #93c5fd;padding:16px;border-radius:8px;margin-bottom:24px;">
-    <p style="margin:0 0 4px;font-weight:700;color:#1e40af;">Operation Confirmation Required</p>
+  <div class="alert-box blue">
+    <p class="at">Operation confirmation required</p>
     {% if session.danger_description %}
-    <p style="margin:0;color:#1e3a5f;">{{ session.danger_description }}</p>
+    <p class="ad">{{ session.danger_description }}</p>
     {% endif %}
   </div>
   {% endif %}
 
-  <div style="background:#f5f5f5;padding:16px;border-radius:8px;margin-bottom:24px;">
-    <p style="margin:0 0 8px;"><strong>Device:</strong> {{ session.device_id }}</p>
-    <p style="margin:0 0 8px;"><strong>Operation:</strong> <code>{{ session.operation_id }}</code></p>
-    <p style="margin:0 0 8px;"><strong>Risk Level:</strong>
-      <span style="
-        display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;
-        {% if session.risk_level == 'dangerous' %}background:#fecaca;color:#991b1b;
-        {% elif session.risk_level == 'service-affecting' %}background:#fde68a;color:#92400e;
-        {% else %}background:#dbeafe;color:#1e40af;{% endif %}
-      ">{{ session.risk_level }}</span>
+  <div class="kv-box">
+    <p><span class="k">Device:</span> <span class="mono text">{{ session.device_id }}</span></p>
+    <p><span class="k">Operation:</span> <span class="mono text">{{ session.operation_id }}</span></p>
+    <p><span class="k">Risk level:</span>
+      {% if session.risk_level == 'dangerous' %}<span class="badge red">{{ session.risk_level }}</span>
+      {% elif session.risk_level == 'service-affecting' %}<span class="badge amber">{{ session.risk_level }}</span>
+      {% else %}<span class="badge blue">{{ session.risk_level }}</span>{% endif %}
     </p>
     {% if session.params %}
-    <div style="border-top:1px solid #ddd;padding-top:12px;margin-top:12px;">
-      <p style="margin:0 0 8px;font-weight:600;font-size:14px;">Parameters:</p>
-      <table style="width:100%;font-size:13px;border-collapse:collapse;">
+    <div class="kv-divider">
+      <p class="k" style="font-weight:600;color:var(--text)">Parameters</p>
+      <table style="width:100%;border-collapse:collapse;">
         {% for key, value in session.params.items() %}
         <tr>
-          <td style="padding:2px 8px 2px 0;color:#666;vertical-align:top;white-space:nowrap;"><code>{{ key }}</code></td>
-          <td style="padding:2px 0;word-break:break-all;"><code>{{ value }}</code></td>
+          <td class="pk"><span class="mono">{{ key }}</span></td>
+          <td class="pv"><span class="mono text">{{ value }}</span></td>
         </tr>
         {% endfor %}
       </table>
@@ -142,36 +202,32 @@
   {% endif %}
 
   {% if error is defined and error %}
-  <div style="background:#fef2f2;border:1px solid #fca5a5;padding:12px;border-radius:6px;margin-bottom:16px;color:#991b1b;">
-    {{ error }}
+  <div class="alert-box red" style="margin-bottom:16px">
+    <p class="ad" style="color:var(--red-fg)">{{ error }}</p>
   </div>
   {% endif %}
 
   <form method="POST" action="/confirm/{{ token }}" autocomplete="off">
     {% if needs_password %}
-    <div style="margin-bottom:24px;">
-      <label for="confirm_password" style="display:block;margin-bottom:4px;font-weight:600;">
-        Confirmation Password
-      </label>
-      <p style="margin:0 0 8px;font-size:13px;color:#666;">
+    <div class="pw-field">
+      <label for="confirm_password">Confirmation password</label>
+      <p class="page-sub" style="margin:0 0 8px">
         Enter the confirmation password to authorize this {% if is_plan %}plan{% else %}operation{% endif %}.
       </p>
-      <input type="password" id="confirm_password" name="confirm_password" required
-             autocomplete="off"
-             style="width:100%;padding:8px 12px;border:1px solid #ccc;border-radius:4px;font-size:16px;box-sizing:border-box;">
+      <input type="password" id="confirm_password" name="confirm_password" required autocomplete="off">
     </div>
     {% endif %}
 
-    <button type="submit"
-            style="width:100%;padding:12px;
-              {% if session.risk_level == 'dangerous' %}background:#dc2626;{% else %}background:#2563eb;{% endif %}
-              color:#fff;border:none;border-radius:6px;font-size:16px;cursor:pointer;font-weight:600;">
-      {% if is_plan %}Confirm Plan Execution{% else %}Confirm Execution{% endif %}
+    <button type="submit" class="btn full lg {% if session.risk_level == 'dangerous' %}danger{% else %}primary{% endif %}">
+      {% if is_plan %}Confirm plan execution{% else %}Confirm execution{% endif %}
     </button>
   </form>
 
-  <p style="margin-top:16px;font-size:13px;color:#999;text-align:center;">
+  <p class="expiry-note">
     This link expires in {{ (session.ttl / 60)|int }} minutes and can only be used once.
   </p>
+
+    </div>
+  </div>
 </div>
 {% endblock %}

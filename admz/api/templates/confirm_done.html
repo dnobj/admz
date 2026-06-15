@@ -2,25 +2,44 @@
 
 {% block title %}{% if is_plan %}Plan Confirmed{% else %}Operation Confirmed{% endif %}{% endblock %}
 
-{% block content %}
-<div style="max-width:480px;margin:40px auto;text-align:center;">
-  <div style="font-size:48px;margin-bottom:16px;">&#10003;</div>
-  <h1>{% if is_plan %}Plan Confirmed{% else %}Operation Confirmed{% endif %}</h1>
+{% block extra_css %}
+<style>
+.done-wrap { max-width: 480px; margin: 48px auto; text-align: center; }
+.done-check {
+  width: 56px; height: 56px; margin: 0 auto 16px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--green-bg); border: 1px solid var(--green-bd); color: var(--green-fg);
+}
+.done-check svg { width: 28px; height: 28px; }
+.done-box {
+  background: var(--green-bg); border: 1px solid var(--green-bd); border-radius: var(--radius);
+  padding: 16px; margin: 20px 0; text-align: left; font-size: 13px; color: var(--text);
+}
+.done-box p { margin: 0 0 8px; }
+.done-box p:last-child { margin-bottom: 0; }
+.done-box .k { color: var(--text-muted); }
+.done-note { color: var(--text-muted); font-size: 13px; margin: 0; }
+</style>
+{% endblock %}
 
-  <div style="background:#f0fdf4;border:1px solid #86efac;padding:16px;border-radius:8px;margin-bottom:24px;">
+{% block content %}
+<div class="done-wrap">
+  <div class="done-check"><i data-lucide="check"></i></div>
+  <h1 class="page-title">{% if is_plan %}Plan confirmed{% else %}Operation confirmed{% endif %}</h1>
+
+  <div class="done-box">
     {% if is_plan and plan_summary %}
-    <p style="margin:0 0 8px;"><strong>Plan:</strong> {{ plan_summary.get("description", "") }}</p>
-    <p style="margin:0 0 8px;">{{ plan_summary.get("step_count", 0) }} step{{ "s" if plan_summary.get("step_count", 0) != 1 }} will now execute.</p>
+    <p><span class="k">Plan:</span> {{ plan_summary.get("description", "") }}</p>
+    <p>{{ plan_summary.get("step_count", 0) }} step{{ "s" if plan_summary.get("step_count", 0) != 1 }} will now execute.</p>
     {% else %}
-    <p style="margin:0 0 8px;"><strong>Device:</strong> {{ session.device_id }}</p>
-    <p style="margin:0 0 8px;"><strong>Operation:</strong> <code>{{ session.operation_id }}</code></p>
-    <p style="margin:0;">The operation will now execute.</p>
+    <p><span class="k">Device:</span> <span class="mono text">{{ session.device_id }}</span></p>
+    <p><span class="k">Operation:</span> <span class="mono text">{{ session.operation_id }}</span></p>
+    <p>The operation will now execute.</p>
     {% endif %}
   </div>
 
-  <p style="color:#666;font-size:14px;">
-    You can return to your chat session. This link has been used and
-    cannot be reused.
+  <p class="done-note">
+    You can return to your chat session. This link has been used and cannot be reused.
   </p>
 </div>
 {% endblock %}
