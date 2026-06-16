@@ -6,14 +6,13 @@ from __future__ import annotations
 def test_fleet_health_summary(chat, cost_recorder):
     """LLM can summarize the fleet's reachability state.
 
-    KNOWN FLAKY (tracked): on a COLD conversation (the suite clears history
-    before each test) gemini-2.5-flash returns an empty candidate
+    HISTORY: this prompt used to flake — on a COLD conversation (the suite
+    clears history per test) gemini-2.5-flash returns an empty candidate
     (finish_reason=STOP, 0 parts, 0 output) at a high rate for fleet-summary
-    prompts — independent of wording (verified: "vs"/"and"/"or", single- vs
-    multi-sentence all flake cold; prior history suppresses it). Not request
-    formatting / safety / MAX_TOKENS. The real fix is server-side empty-response
-    retry in the chatbot manual loop; until then the conftest retry rides out
-    most of it."""
+    prompts. Root cause: the DYNAMIC thinking budget (-1) lets the model think
+    0 tokens and emit 0 output. Fixed in client._run_manual_tool_loop, which
+    now re-asks an empty response with a FIXED thinking budget (verified cold
+    10/10). Left here as a live guard that the fix holds."""
     result = chat(
         "Give me a brief fleet health summary. How many devices are "
         "online vs unreachable? Just the counts."

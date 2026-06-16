@@ -1046,6 +1046,42 @@ def _classify_tool_result(payload: Any):
     return "ok", "done"
 
 
+def _get_empty_response_retries() -> int:
+    """How many times to re-ask when the model returns an EMPTY candidate
+    (finish_reason=STOP, no text, no function call, 0 output tokens).
+
+    Root cause (diagnosed live): the default DYNAMIC thinking budget (-1) lets
+    gemini-2.5-flash spend 0 thinking tokens AND emit 0 output on a COLD
+    conversation — a valid-but-empty STOP candidate. Re-asking the IDENTICAL
+    request reproduces it near-deterministically; the retry therefore switches
+    to a FIXED thinking budget (see _get_empty_retry_thinking_budget), which
+    forces the model to engage (verified: cold fleet-summary 4/4 vs ~10%).
+    Default 4 (env ``ADMZ_GEMINI_EMPTY_RETRIES``; 0 disables)."""
+    raw = os.getenv("ADMZ_GEMINI_EMPTY_RETRIES")
+    if raw is None:
+        return 4
+    try:
+        v = int(raw)
+        return v if v >= 0 else 4
+    except ValueError:
+        return 4
+
+
+def _get_empty_retry_thinking_budget() -> int:
+    """Fixed thinking budget used when retrying an empty response. A positive
+    budget (default 1024) eliminates the empty-candidate quirk the dynamic (-1)
+    budget triggers on cold turns, while keeping thinking enabled (so tool use
+    still works — unlike a budget of 0). Env ``ADMZ_GEMINI_EMPTY_RETRY_THINKING_BUDGET``."""
+    raw = os.getenv("ADMZ_GEMINI_EMPTY_RETRY_THINKING_BUDGET")
+    if raw is None:
+        return 1024
+    try:
+        v = int(raw)
+        return v if v > 0 else 1024
+    except ValueError:
+        return 1024
+
+
 async def _run_manual_tool_loop(models, model, contents, sys_inst, mcp_session):
     """Drive the function-calling loop in ADMZ; yield translator-ready chunks."""
     from google.genai import types  # type: ignore[import-not-found]
@@ -1065,6 +1101,15 @@ async def _run_manual_tool_loop(models, model, contents, sys_inst, mcp_session):
     config["thinking_config"] = {"thinking_budget": _get_thinking_budget()}
     config_obj = _build_generate_config(config)
 
+    # Config for retrying an EMPTY candidate: identical, but with a FIXED
+    # thinking budget. The dynamic default (-1) is what lets the model emit an
+    # empty STOP candidate on a cold turn; a fixed budget forces it to engage.
+    _retry_cfg = dict(config)
+    _retry_cfg["thinking_config"] = {
+        "thinking_budget": _get_empty_retry_thinking_budget()
+    }
+    retry_config_obj = _build_generate_config(_retry_cfg)
+
     convo = _normalize_contents(contents)
     total_in = total_out = 0
     last_interaction_id = None
@@ -1072,20 +1117,38 @@ async def _run_manual_tool_loop(models, model, contents, sys_inst, mcp_session):
     next_call_id = 0  # unique per executed tool, across iterations
 
     hit_cap = True
+    empty_retries = _get_empty_response_retries()
     for _ in range(max_iter):
-        resp = await gen(model=model, contents=convo, config=config_obj)
-        ti, to = _extract_usage_from_chunk(resp)
-        total_in += ti or 0
-        total_out += to or 0
-        last_interaction_id = (
-            getattr(resp, "id", None)
-            or getattr(resp, "response_id", None)
-            or last_interaction_id
-        )
+        calls, content, text = [], None, ""
+        for _attempt in range(empty_retries + 1):
+            # Attempt 0 uses the normal (dynamic-thinking) config; retries use
+            # the fixed-thinking-budget config that breaks the empty-candidate
+            # quirk.
+            cfg = config_obj if _attempt == 0 else retry_config_obj
+            resp = await gen(model=model, contents=convo, config=cfg)
+            ti, to = _extract_usage_from_chunk(resp)
+            total_in += ti or 0
+            total_out += to or 0
+            last_interaction_id = (
+                getattr(resp, "id", None)
+                or getattr(resp, "response_id", None)
+                or last_interaction_id
+            )
+            calls, content = _extract_function_calls(resp)
+            text = _response_text(resp)
+            if calls or text.strip():
+                break
+            # Empty candidate (finish_reason=STOP, no parts) — the model
+            # returned nothing actionable. Retry with a fixed thinking budget.
+            if _attempt < empty_retries:
+                logger.warning(
+                    "[chat] empty model response (attempt %d/%d) — retrying "
+                    "with fixed thinking budget",
+                    _attempt + 1, empty_retries + 1,
+                )
 
-        calls, content = _extract_function_calls(resp)
         if not calls:
-            for piece in _chunk_text(_response_text(resp)):
+            for piece in _chunk_text(text):
                 yield _TextChunk(piece)
             hit_cap = False
             break

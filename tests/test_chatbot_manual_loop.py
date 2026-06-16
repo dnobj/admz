@@ -188,6 +188,52 @@ async def test_confirm_gate_not_bypassed():
 
 
 @pytest.mark.asyncio
+async def test_empty_candidate_is_retried(monkeypatch):
+    """gemini-2.5-flash sometimes returns an empty STOP candidate (no text, no
+    tool call) — the loop must re-ask (with a fixed thinking budget) rather than
+    surface nothing."""
+    monkeypatch.setenv("ADMZ_GEMINI_EMPTY_RETRIES", "3")
+    models = _FakeModels([
+        _Resp(text=None, usage=(100, 0)),   # empty candidate
+        _Resp(text=None, usage=(100, 0)),   # empty again
+        _Resp(text="7 devices online, 0 unreachable.", usage=(100, 12)),
+        _Resp(text="(unused)"),             # extra, should NOT be consumed
+    ])
+    events = _events(await _run(models, _FakeSession([])))
+    # re-asked past the two empties (3 calls total), then answered
+    assert len(models.call_contents) == 3
+    text = "".join(e.payload.get("chunk", "") for e in events if e.type == ChatEventType.TEXT)
+    assert "7 devices online" in text
+    assert events[-1].type == ChatEventType.DONE
+
+
+@pytest.mark.asyncio
+async def test_empty_retries_bounded_and_give_up_clean(monkeypatch):
+    """If every attempt is empty, the loop stops after the BOUNDED retries (no
+    infinite loop, no crash) and emits no text — the route then surfaces a
+    friendly error, exactly as before, just after exhausting retries."""
+    monkeypatch.setenv("ADMZ_GEMINI_EMPTY_RETRIES", "2")
+    models = _FakeModels([_Resp(text=None) for _ in range(6)])  # plenty
+    chunks = await _run(models, _FakeSession([]))
+    assert len(models.call_contents) == 3   # bounded: 1 initial + 2 retries
+    text = "".join(
+        getattr(c, "text", "") for c in chunks
+        if isinstance(c, client._TextChunk)
+    )
+    assert text == ""                        # nothing emitted on all-empty
+
+
+@pytest.mark.asyncio
+async def test_non_empty_first_try_is_not_retried(monkeypatch):
+    """A normal answer on the first attempt must NOT trigger any retry."""
+    monkeypatch.setenv("ADMZ_GEMINI_EMPTY_RETRIES", "4")
+    models = _FakeModels([_Resp(text="All good.", usage=(10, 3))])
+    events = _events(await _run(models, _FakeSession([])))
+    assert len(models.call_contents) == 1   # exactly one call
+    assert events[-1].type == ChatEventType.DONE
+
+
+@pytest.mark.asyncio
 async def test_parallel_calls_all_executed():
     models = _FakeModels([
         _Resp(function_calls=[_FC("execute_operation", {"a": 1}), _FC("execute_operation", {"b": 2})],
