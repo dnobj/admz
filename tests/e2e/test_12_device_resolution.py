@@ -32,8 +32,20 @@ referred to as just "D4200" on purpose — a substring of the stored
 
 from __future__ import annotations
 
+import pytest
+
 
 D4200_DEVICE_ID = "B8A44FFC2B16"
+
+
+def _require_d4200(registered_ids):
+    """This suite resolves a model reference to a registered device_id, so it
+    needs the D4200-VE present. Homelab inventory drifts — skip if it's gone."""
+    if D4200_DEVICE_ID not in registered_ids:
+        pytest.skip(
+            f"D4200-VE ({D4200_DEVICE_ID}) not in the registry — "
+            "device-resolution test needs it registered."
+        )
 
 
 # Phrases that mean "the agent punted the device-id lookup back to the
@@ -70,10 +82,11 @@ def _did_not_ask_user_for_id(result) -> bool:
     return not any(p in body for p in _ASK_FOR_ID_PHRASES)
 
 
-def test_model_reference_resolves_to_device_id(chat, cost_recorder):
+def test_model_reference_resolves_to_device_id(chat, cost_recorder, registered_ids):
     """Ask for a device's MAC using only its model name. The agent must
     look it up (search_devices/list_devices) and return the actual
     device_id — NOT ask the user to provide it."""
+    _require_d4200(registered_ids)
     result = chat(
         "What is the device ID (MAC address) of the D4200? Look it up "
         "in the registry."
@@ -91,7 +104,7 @@ def test_model_reference_resolves_to_device_id(chat, cost_recorder):
     )
 
 
-def test_action_by_model_name_resolves_without_asking(chat, cost_recorder):
+def test_action_by_model_name_resolves_without_asking(chat, cost_recorder, registered_ids):
     """The verbatim live-bug phrasing: an imperative referencing the
     device by model only. Regardless of whether the device is reachable,
     the agent must resolve the device_id and act on it — never stall
@@ -101,6 +114,7 @@ def test_action_by_model_name_resolves_without_asking(chat, cost_recorder):
     evidence the agent engaged the resolved device, rather than on the
     exact final wording — the device is often offline so the tail of the
     response may narrate a timeout."""
+    _require_d4200(registered_ids)
     result = chat(
         "make the D4200 flash white for 30 seconds"
     )

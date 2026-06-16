@@ -12,9 +12,11 @@ is reachable before any test starts.
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -22,6 +24,24 @@ import pytest
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:4242"
+
+
+@functools.lru_cache(maxsize=1)
+def _auth_headers() -> Dict[str, str]:
+    """Bearer header for deployments that require auth (ADR-0033 windows-local
+    makes /api/chat reject anonymous). Key resolution, in order:
+    ``ADMZ_E2E_API_KEY`` env, ``ADMZ_DEV_API_KEY`` env, then
+    ``~/.admz/dev-api-key.txt``. Empty (anonymous) when none is found — so this
+    still works against an ``ADMZ_AUTH_BACKEND=none`` server."""
+    key = os.getenv("ADMZ_E2E_API_KEY") or os.getenv("ADMZ_DEV_API_KEY")
+    if not key:
+        f = Path.home() / ".admz" / "dev-api-key.txt"
+        if f.exists():
+            try:
+                key = f.read_text(encoding="utf-8").strip()
+            except OSError:
+                key = None
+    return {"Authorization": f"Bearer {key}"} if key else {}
 PER_TEST_BUDGET_SECONDS = 240  # generous: tool calls + Gemini AFC can take time
 
 
@@ -130,18 +150,34 @@ def _send_chat(
     model: Optional[str] = None,
     use_tools: bool = True,
     timeout: float = PER_TEST_BUDGET_SECONDS,
+    retries: int = 3,
 ) -> ChatResult:
     payload: Dict[str, Any] = {"message": message, "use_tools": use_tools}
     if model:
         payload["model"] = model
-    start = time.monotonic()
-    with httpx.Client(timeout=timeout) as client:
-        resp = client.post(f"{_base_url()}/api/chat", json=payload)
-    elapsed = time.monotonic() - start
-    assert resp.status_code == 200, (
-        f"/api/chat returned HTTP {resp.status_code}: {resp.text[:500]}"
-    )
-    return ChatResult(resp.json(), elapsed)
+    last: Optional[ChatResult] = None
+    for attempt in range(retries + 1):
+        start = time.monotonic()
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(
+                f"{_base_url()}/api/chat", json=payload, headers=_auth_headers()
+            )
+        elapsed = time.monotonic() - start
+        assert resp.status_code == 200, (
+            f"/api/chat returned HTTP {resp.status_code}: {resp.text[:500]}"
+        )
+        result = ChatResult(resp.json(), elapsed)
+        # Retry ONLY the transient signature: an empty candidate (success=False,
+        # no text, 0 output tokens). This is what a Gemini 503 UNAVAILABLE blip
+        # surfaces as — NOT an ADMZ bug. Back off (2/4/6s) to ride out a short
+        # service spell. Don't retry successful turns or substantive errors.
+        transient = (not result.success) and (not result.response.strip())
+        if not transient:
+            return result
+        last = result
+        if attempt < retries:
+            time.sleep(2.0 * (attempt + 1))
+    return last  # type: ignore[return-value]
 
 
 def _clear_history() -> None:
@@ -155,6 +191,7 @@ def _clear_history() -> None:
             # doesn't trigger a GET /chat round-trip.
             client.post(
                 f"{_base_url()}/chat/clear", follow_redirects=False,
+                headers=_auth_headers(),
             )
     except (httpx.ConnectError, httpx.TimeoutException):
         pass  # liveness fixture would have already skipped
@@ -180,6 +217,40 @@ def chat():
     ``result.success``, ``result.response``, etc.
     """
     return _send_chat
+
+
+@pytest.fixture
+def api():
+    """REST helper for non-chat endpoints (auth-aware, no Gemini cost):
+
+        resp = api("GET", "/api/snapshot/drift?device_id=...")
+        resp = api("POST", "/api/config/ignore-rules", json={...})
+
+    Returns the raw httpx.Response so tests assert on status + body."""
+    def _call(method: str, path: str, **kw) -> httpx.Response:
+        with httpx.Client(timeout=60.0) as client:
+            return client.request(
+                method, f"{_base_url()}{path}", headers=_auth_headers(), **kw
+            )
+    return _call
+
+
+@pytest.fixture
+def registered_ids() -> set:
+    """The device_ids the live registry currently knows. Tests that target a
+    specific fixture device skip when it's absent (homelab inventory drifts)."""
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            r = client.get(f"{_base_url()}/api/devices", headers=_auth_headers())
+        if r.status_code == 200:
+            data = r.json()
+            devices = data if isinstance(data, list) else data.get("devices", [])
+            return {
+                d.get("device_id") for d in devices if isinstance(d, dict)
+            }
+    except (httpx.ConnectError, httpx.TimeoutException):
+        pass
+    return set()
 
 
 # ---------------------------------------------------------------------------
