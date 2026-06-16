@@ -112,6 +112,18 @@ class FacetAdapter(ABC):
         """
         return None
 
+    def canonical_key(self, path: str) -> str:
+        """The cross-facet identifier for a drifted/serialized field — what the
+        ignore list matches against, so one rule model addresses any config
+        item. Param-backed facets return the full ``root.*`` param key;
+        non-param facets (applications, action_rules, users) have no param key,
+        so they return ``<facet>:<path>``. Default: facet-scoped.
+
+        Unlike ``revert_param`` this is side-effect-free and ALWAYS yields a
+        key (it must address masked/Volatile/read-only fields too — those are
+        exactly the noisy items an operator wants to exclude)."""
+        return f"{self.name}:{path}"
+
 
 # param.cgi returns this literal mask for password-class values. Restoring
 # it would overwrite the device's real secret with six asterisks.
@@ -199,6 +211,10 @@ class SimpleParamFacet(FacetAdapter):
         if not is_restorable(path, baseline_value, self.RESTORE_EXCLUDE):
             return None
         return (f"{self.PREFIX}{path}", str(baseline_value))
+
+    def canonical_key(self, path: str) -> str:
+        # Param-backed: the full root.* key (PREFIX re-added to the short path).
+        return f"{self.PREFIX}{path}"
 
     def deserialize(self, yaml_doc: Dict[str, Any]) -> List[Dict[str, Any]]:
         params = {}

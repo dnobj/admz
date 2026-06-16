@@ -60,6 +60,10 @@ class DriftField:
     path: str
     expected: str
     actual: str
+    # Cross-facet identifier for the ignore list (full root.* key for param
+    # facets, else "<facet>:<path>"). For the UI's "exclude from tracking"
+    # action; NOT used in drift comparison (which joins on facet+path).
+    canonical_key: Optional[str] = None
 
 
 @dataclass
@@ -98,6 +102,7 @@ class DriftReport:
                     "path": f.path,
                     "expected": f.expected,
                     "actual": f.actual,
+                    "canonical_key": f.canonical_key,
                 }
                 for f in self.fields
             ],

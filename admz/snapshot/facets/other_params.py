@@ -88,3 +88,7 @@ class CatchAllParamsFacet(FacetAdapter):
         if _is_sensitive(path):
             return None
         return (path, str(baseline_value))
+
+    def canonical_key(self, path: str) -> str:
+        # Catch-all already stores full root.* keys.
+        return path

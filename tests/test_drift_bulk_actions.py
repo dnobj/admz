@@ -411,3 +411,59 @@ class TestDriftRevertableAnnotation:
         newk = by_path["Source.A0.NewKey"]
         assert newk["revertable"] is False
         assert newk["revert_skip_reason"] == "added"
+        # canonical_key annotated for the exclude action.
+        assert by_path["I0.Resolution"]["canonical_key"] == "root.Image.I0.Resolution"
+        assert by_path["root.Big_aoa_counter.Label"]["canonical_key"] == \
+            "root.Big_aoa_counter.Label"
+
+
+class TestIgnoreRulesAPI:
+    """POST/GET /api/config/ignore-rules — the in-context exclude action + the
+    Settings remove button hit this. Isolates fleet_settings to the temp DB."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, client, tmp_path, monkeypatch):
+        import admz.fleet_settings as fsmod
+        fresh = fsmod.FleetSettings(str(tmp_path / "admz.db"))
+        monkeypatch.setattr(fsmod, "fleet_settings", fresh)
+        yield
+
+    def test_add_then_remove(self, client):
+        with _with_admin():
+            r = client.post("/api/config/ignore-rules", json={"add": [
+                {"key": "root.MyApp.Field", "scope": "device:cam-a"},
+                {"key": "applications:vmd.status", "scope": "tag:lab"},
+            ]})
+            assert r.status_code == 200
+            keys = {(x["key"], x["scope"]) for x in r.json()["rules"]}
+            assert ("root.MyApp.Field", "device:cam-a") in keys
+            assert ("applications:vmd.status", "tag:lab") in keys
+
+            r2 = client.post("/api/config/ignore-rules", json={"remove": [
+                {"key": "root.MyApp.Field", "scope": "device:cam-a"},
+            ]})
+            assert r2.status_code == 200
+            keys2 = {(x["key"], x["scope"]) for x in r2.json()["rules"]}
+            assert ("root.MyApp.Field", "device:cam-a") not in keys2
+            assert ("applications:vmd.status", "tag:lab") in keys2
+
+    def test_requires_auth(self, client):
+        # Anonymous (NoAuth) is rejected — changing what the fleet tracks needs
+        # an authenticated principal.
+        r = client.post("/api/config/ignore-rules",
+                        json={"add": [{"key": "root.X", "scope": "global"}]})
+        assert r.status_code in (401, 403)
+
+    def test_rejects_bad_scope(self, client):
+        with _with_admin():
+            r = client.post("/api/config/ignore-rules",
+                            json={"add": [{"key": "root.X", "scope": "weird"}]})
+        assert r.status_code == 422
+
+    def test_get_lists_rules(self, client):
+        with _with_admin():
+            client.post("/api/config/ignore-rules",
+                        json={"add": [{"key": "root.Y", "scope": "global"}]})
+        r = client.get("/api/config/ignore-rules")
+        assert r.status_code == 200
+        assert any(x["key"] == "root.Y" for x in r.json()["rules"])

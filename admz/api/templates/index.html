@@ -75,6 +75,7 @@
     {% set is_drifted = device.drift.state == 'drifted' %}
     <tr class="config-row{% if is_drifted %} drifted-row{% endif %}"
         data-device-id="{{ device.device_id }}" data-health="unknown"
+        data-tags="{{ device.tags|default([])|join(',') }}"
         data-drift="{% if is_drifted %}drifted{% elif device.drift.state == 'in_sync' %}ok{% elif device.drift.state == 'unchecked' %}unchecked{% else %}none{% endif %}"
         onclick="window.location='/device/{{ device.device_id }}'">
       {% if filter_drift %}
@@ -151,6 +152,16 @@
                 <button class="btn ghost sm" style="color:var(--fg-red,#f87171)" id="btn-revert-{{ device.device_id }}" onclick="submitRevert('{{ device.device_id }}')"><i data-lucide="rotate-ccw"></i> Revert to baseline</button>
               </div>
             </div>
+            <div class="drift-action-group" style="border-top:1px solid var(--border);padding-top:12px">
+              <div class="drift-action-label">
+                <i data-lucide="eye-off" style="color:var(--text-muted)"></i>
+                <strong>Exclude from tracking</strong>
+                <span class="page-sub" style="margin:0">Stop tracking the ticked fields (or use ⊘ on a row). Pick a scope — this device, a tag, or fleet-wide. Manage rules in Settings.</span>
+              </div>
+              <div class="drift-action-controls">
+                <button class="btn ghost sm" id="btn-exclude-{{ device.device_id }}" onclick="bulkExclude('{{ device.device_id }}')"><i data-lucide="eye-off"></i> Exclude selected</button>
+              </div>
+            </div>
           </div>
           <div class="drift-result hidden" id="result-{{ device.device_id }}"></div>
         </div>
@@ -202,6 +213,16 @@
 .drift-diff-table tr.row-readonly { opacity: .62; }
 .drift-diff-table .field-noselect { color: var(--text-faint); }
 .ro-tag { display: inline-block; margin-left: 6px; padding: 0 5px; border: 1px solid var(--border); border-radius: 4px; font-size: 10px; color: var(--text-faint); vertical-align: middle; }
+.excluded-tag { color: var(--fg-amber, #fbbf24); border-color: var(--amber-bd); }
+.drift-diff-table .col-ign { width: 30px; text-align: center; }
+.row-ignore-btn { background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--text-faint); cursor: pointer; padding: 2px 5px; line-height: 1; }
+.row-ignore-btn:hover { color: var(--fg-red, #f87171); border-color: var(--border-strong); }
+.row-ignore-btn svg { width: 13px; height: 13px; vertical-align: middle; }
+.row-ignore-btn:disabled { opacity: .4; cursor: default; }
+.ignore-menu { position: absolute; z-index: 60; min-width: 220px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.45); padding: 6px; }
+.ignore-menu .ig-head { font-size: 11px; color: var(--text-faint); padding: 5px 8px 7px; text-transform: uppercase; letter-spacing: .04em; }
+.ignore-menu .ig-opt { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--text); font-size: 13px; padding: 7px 9px; border-radius: 6px; cursor: pointer; }
+.ignore-menu .ig-opt:hover { background: var(--accent-soft); }
 .drift-actions-wrap { margin-top: 4px; }
 .drift-action-group { display: flex; align-items: flex-start; gap: 16px; padding-bottom: 12px; }
 .drift-action-label { display: flex; align-items: flex-start; gap: 6px; flex-direction: column; min-width: 300px; max-width: 340px; }
@@ -311,18 +332,25 @@ function renderDiff(did, data) {
         // `revertable` may be absent (older cache) — treat as revertable then.
         const rv = (f.revertable !== false);
         const reason = f.revert_skip_reason || 'read-only';
+        const ck = f.canonical_key || ((f.facet || '') + ':' + f.path);
         const sel = rv
           ? '<input type="checkbox" class="drift-field-cb" checked'
             + ' data-did="' + esc(did) + '"'
             + ' data-facet="' + esc(f.facet || '') + '"'
-            + ' data-path="' + esc(f.path) + '">'
+            + ' data-path="' + esc(f.path) + '"'
+            + ' data-canonical="' + esc(ck) + '">'
           : '<span class="field-noselect" title="Not auto-revertable (' + esc(reason) + ')">—</span>';
         const roTag = rv ? '' : '<span class="ro-tag">' + esc(reason) + '</span>';
+        // ⊘ exclude-from-tracking — available on EVERY row (incl. read-only
+        // facet fields like ACAP run-state), since ignore covers any field.
+        const ign = '<button type="button" class="row-ignore-btn" title="Exclude this field from tracking"'
+          + ' data-did="' + esc(did) + '" data-canonical="' + esc(ck) + '"><i data-lucide="eye-off"></i></button>';
         return '<tr class="' + (rv ? '' : 'row-readonly') + '">'
           + '<td class="col-sel">' + sel + '</td>'
           + '<td class="col-path">' + chip + esc(f.path) + roTag + '</td>'
           + '<td class="col-base">' + esc(f.expected) + '</td>'
-          + '<td class="col-live">' + esc(f.actual) + '</td></tr>';
+          + '<td class="col-live">' + esc(f.actual) + '</td>'
+          + '<td class="col-ign">' + ign + '</td></tr>';
       }).join('');
       const anyRevertable = fields.some(f => f.revertable !== false);
       const headSel = anyRevertable
@@ -332,7 +360,8 @@ function renderDiff(did, data) {
       diffWrap.innerHTML = '<table class="drift-diff-table">'
         + '<thead><tr><th class="col-sel">' + headSel + '</th><th>Parameter</th>'
         + '<th style="color:var(--fg-green,#4ade80)">Baseline</th>'
-        + '<th style="color:var(--fg-amber,#fbbf24)">Live (drifted)</th></tr></thead>'
+        + '<th style="color:var(--fg-amber,#fbbf24)">Live (drifted)</th>'
+        + '<th class="col-ign" title="Exclude from tracking"></th></tr></thead>'
         + '<tbody>' + rows + '</tbody></table>';
       // Wire per-field selection (the diff table was just re-rendered).
       const headEl = diffWrap.querySelector('.drift-field-all');
@@ -344,6 +373,11 @@ function renderDiff(did, data) {
       cbs.forEach(cb => cb.addEventListener('change', () => {
         if (headEl) headEl.checked = cbs.length > 0 && cbs.every(c => c.checked);
         updateRevertBtn(did);
+      }));
+      // Wire per-row "exclude from tracking".
+      diffWrap.querySelectorAll('.row-ignore-btn').forEach(b => b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openIgnoreMenu(b, did, [b.getAttribute('data-canonical')]);
       }));
     }
     diffWrap.classList.remove('hidden');
@@ -376,6 +410,88 @@ function updateRevertBtn(did) {
     : (n > 0 ? 'Revert ' + n + ' field' + (n !== 1 ? 's' : '') : 'Select fields to revert');
   btn.innerHTML = '<i data-lucide="rotate-ccw"></i> ' + label;
   if (window.lucide) lucide.createIcons();
+}
+
+// ── Exclude from tracking (scoped ignore rules) ──
+function deviceTags(did) {
+  const row = document.querySelector('#devices-table tbody tr.config-row[data-device-id="' + did + '"]');
+  const raw = row ? (row.getAttribute('data-tags') || '') : '';
+  return raw.split(',').map(s => s.trim()).filter(Boolean);
+}
+function selectedCanonicalKeys(did) {
+  return Array.from(document.querySelectorAll('.drift-field-cb'))
+    .filter(cb => cb.getAttribute('data-did') === did && cb.checked)
+    .map(cb => cb.getAttribute('data-canonical')).filter(Boolean);
+}
+let _ignoreMenuEl = null;
+function closeIgnoreMenu() { if (_ignoreMenuEl) { _ignoreMenuEl.remove(); _ignoreMenuEl = null; } }
+document.addEventListener('click', closeIgnoreMenu);
+window.addEventListener('scroll', closeIgnoreMenu, true);
+
+function openIgnoreMenu(anchorEl, did, keys) {
+  closeIgnoreMenu();
+  keys = (keys || []).filter(Boolean);
+  if (!keys.length || !anchorEl) return;
+  const opts = [{label: 'This device only', scope: 'device:' + did}];
+  deviceTags(did).forEach(t => opts.push({label: 'Devices tagged “' + t + '”', scope: 'tag:' + t}));
+  opts.push({label: 'All devices (fleet-wide)', scope: 'global'});
+  const menu = document.createElement('div');
+  menu.className = 'ignore-menu';
+  menu.innerHTML = '<div class="ig-head">Exclude ' + keys.length + ' field' + (keys.length !== 1 ? 's' : '') + ' from tracking</div>'
+    + opts.map(o => '<button type="button" class="ig-opt" data-scope="' + esc(o.scope) + '">' + esc(o.label) + '</button>').join('');
+  document.body.appendChild(menu);
+  const r = anchorEl.getBoundingClientRect();
+  menu.style.top = (window.scrollY + r.bottom + 4) + 'px';
+  menu.style.left = (window.scrollX + Math.max(8, Math.min(r.left, window.innerWidth - 250))) + 'px';
+  menu.addEventListener('click', e => e.stopPropagation());
+  _ignoreMenuEl = menu;
+  menu.querySelectorAll('.ig-opt').forEach(b => b.addEventListener('click', () => {
+    const scope = b.getAttribute('data-scope');
+    closeIgnoreMenu();
+    excludeKeys(did, keys, scope);
+  }));
+}
+
+async function excludeKeys(did, keys, scope) {
+  const resultEl = document.getElementById('result-' + did);
+  try {
+    const resp = await fetch('/api/config/ignore-rules', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({add: keys.map(k => ({key: k, scope: scope}))}),
+    });
+    if (!resp.ok) throw new Error(resp.status);
+    const set = new Set(keys);
+    document.querySelectorAll('.row-ignore-btn').forEach(b => {
+      if (b.getAttribute('data-did') === did && set.has(b.getAttribute('data-canonical'))) {
+        const tr = b.closest('tr');
+        if (!tr) return;
+        tr.style.opacity = '.4';
+        const cb = tr.querySelector('.drift-field-cb');
+        if (cb) { cb.checked = false; cb.disabled = true; }
+        b.disabled = true;
+        const pathTd = tr.querySelector('.col-path');
+        if (pathTd && !tr.querySelector('.excluded-tag')) pathTd.insertAdjacentHTML('beforeend', ' <span class="ro-tag excluded-tag">excluded</span>');
+      }
+    });
+    updateRevertBtn(did);
+    if (resultEl) {
+      resultEl.innerHTML = '<span style="color:var(--fg-green,#4ade80)"><i data-lucide="check-circle"></i> Excluded ' + keys.length + ' field' + (keys.length !== 1 ? 's' : '') + ' (' + esc(scope) + '). They drop from tracking on the next check — manage in <a href="/settings#config-tracking">Settings</a>.</span>';
+      resultEl.classList.remove('hidden');
+      if (window.lucide) lucide.createIcons();
+    }
+  } catch (e) {
+    if (resultEl) { resultEl.innerHTML = '<span style="color:var(--fg-red,#f87171)">Couldn\'t exclude (sign-in required).</span>'; resultEl.classList.remove('hidden'); }
+  }
+}
+
+function bulkExclude(did) {
+  const keys = selectedCanonicalKeys(did);
+  const resultEl = document.getElementById('result-' + did);
+  if (!keys.length) {
+    if (resultEl) { resultEl.innerHTML = '<span style="color:var(--text-faint)">Tick at least one field to exclude (or use ⊘ on a row).</span>'; resultEl.classList.remove('hidden'); }
+    return;
+  }
+  openIgnoreMenu(document.getElementById('btn-exclude-' + did), did, keys);
 }
 
 // Flip a row to in-sync after a successful accept (single or bulk).

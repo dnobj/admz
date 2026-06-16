@@ -1018,38 +1018,44 @@ class TestEngineHelpers:
         assert "root.Image.I0.Resolution" in result
         assert len(result) == 1
 
-    def test_parse_param_dump_drops_ignored_keys(self, monkeypatch):
-        import admz.snapshot.ignore as ig
-        monkeypatch.setattr(
-            ig, "get_ignore_patterns",
-            lambda: ["root.Antitailgate.AlarmActionPass", "root.Noise.*"],
-        )
+    # The ignore list no longer filters at the raw param-dump level — it's
+    # applied per-facet and device-aware in _run_facet (see TestIgnoreApply).
+    # Only recognized secrets/volatile are dropped here. (AlarmActionPass is the
+    # gap that motivated the ignore list: the secret filter does NOT catch it,
+    # so it survives the dump and is excluded downstream by an ignore rule.)
+    def test_parse_param_dump_keeps_ignorable_drops_secrets(self):
         from admz.snapshot.engine import _parse_param_dump
         text = (
             "root.Image.I0.Resolution=1920x1080\n"
-            "root.Antitailgate.AlarmActionPass=pass3\n"
-            "root.Noise.Counter=42\n"
+            "root.Antitailgate.AlarmActionPass=pass3\n"     # NOT a known secret
+            "root.SNMP.V1.WriteCommunity=private\n"          # known secret -> dropped
         )
         result = _parse_param_dump(text)
-        assert result == {"root.Image.I0.Resolution": "1920x1080"}
+        assert result == {
+            "root.Image.I0.Resolution": "1920x1080",
+            "root.Antitailgate.AlarmActionPass": "pass3",
+        }
 
 
 class TestIgnoreList:
     def test_matcher_exact_group_and_glob(self):
-        from admz.snapshot.ignore import is_ignored
+        from admz.snapshot.ignore import matches_any
         pats = ["root.App.Pass", "root.Grp", "*Pwd", "root.X.*"]
-        assert is_ignored("root.App.Pass", pats)            # exact
-        assert not is_ignored("root.App.Passcode", pats)    # exact, not prefix
-        assert is_ignored("root.Grp.Anything.Deep", pats)   # group prefix
-        assert not is_ignored("root.GrpExtra.Y", pats)      # boundary respected
-        assert is_ignored("root.Net.MyPwd", pats)           # *Pwd glob crosses dots
-        assert is_ignored("root.X.Y.Z", pats)               # root.X.* glob
-        assert not is_ignored("root.Other.Key", pats)
+        assert matches_any("root.App.Pass", pats)            # exact
+        assert not matches_any("root.App.Passcode", pats)    # exact, not prefix
+        assert matches_any("root.Grp.Anything.Deep", pats)   # group prefix
+        assert not matches_any("root.GrpExtra.Y", pats)      # boundary respected
+        assert matches_any("root.Net.MyPwd", pats)           # *Pwd glob crosses dots
+        assert matches_any("root.X.Y.Z", pats)               # root.X.* glob
+        assert not matches_any("root.Other.Key", pats)
+        # canonical keys with ':' are matched as ordinary chars
+        assert matches_any("applications:vmd.status", ["applications:vmd.status"])
+        assert matches_any("applications:vmd.status", ["applications:vmd"])  # group
 
     def test_case_insensitive(self):
-        from admz.snapshot.ignore import is_ignored
-        assert is_ignored("root.ANTITAILGATE.AlarmActionPass",
-                          ["root.antitailgate.alarmactionpass"])
+        from admz.snapshot.ignore import matches_any
+        assert matches_any("root.ANTITAILGATE.AlarmActionPass",
+                           ["root.antitailgate.alarmactionpass"])
 
     def test_user_patterns_from_fleet_settings(self, monkeypatch):
         import admz.snapshot.ignore as ig
@@ -1072,6 +1078,110 @@ class TestIgnoreList:
         monkeypatch.setattr(fs, "fleet_settings", _Boom())
         # Fails open: never raises mid-snapshot.
         assert ig.get_ignore_patterns() == list(ig._GLOBAL_IGNORE_PATTERNS)
+
+
+class TestScopedIgnoreRules:
+    def _stub(self, monkeypatch, rules_json=None, legacy=None):
+        import admz.fleet_settings as fs
+        import admz.snapshot.ignore as ig
+        store = {}
+        if rules_json is not None:
+            store[ig.RULES_SETTING_KEY] = rules_json
+        if legacy is not None:
+            store[ig.USER_SETTING_KEY] = legacy
+
+        class _Stub:
+            def get(self, k):
+                return store.get(k)
+
+            def set(self, k, v):
+                store[k] = v
+        monkeypatch.setattr(fs, "fleet_settings", _Stub())
+        return store
+
+    def test_scope_resolution(self, monkeypatch):
+        import json
+        import admz.snapshot.ignore as ig
+        self._stub(monkeypatch, rules_json=json.dumps([
+            {"key": "root.A", "scope": "device:CAM1"},
+            {"key": "applications:vmd.status", "scope": "tag:lab"},
+            {"key": "root.G", "scope": "global"},
+        ]))
+        assert {r["key"] for r in ig.applicable_rules("CAM1", ["lab"])} == {
+            "root.A", "applications:vmd.status", "root.G"}
+        assert {r["key"] for r in ig.applicable_rules("CAM2", [])} == {"root.G"}
+        assert ig.is_ignored("root.A.x", "CAM1", [])          # group match, device scope
+        assert not ig.is_ignored("root.A.x", "CAM2", [])      # other device unaffected
+        assert ig.is_ignored("applications:vmd.status", "CAMx", ["lab"])
+        assert not ig.is_ignored("applications:vmd.status", "CAMx", [])
+
+    def test_legacy_union_and_unknown_scope(self, monkeypatch):
+        import json
+        import admz.snapshot.ignore as ig
+        self._stub(
+            monkeypatch,
+            rules_json=json.dumps([{"key": "root.Weird", "scope": "zzz:bad"}]),
+            legacy="root.Legacy",
+        )
+        keys = {(r["key"], r["scope"]) for r in ig.get_rules()}
+        assert ("root.Legacy", "global") in keys              # legacy -> global rule
+        assert not ig.is_ignored("root.Weird", "CAM1", ["lab"])  # unknown scope never matches
+        assert ig.is_ignored("root.Legacy", "CAM1", [])
+
+    def test_add_remove_dedupe(self, monkeypatch):
+        import admz.snapshot.ignore as ig
+        self._stub(monkeypatch)
+        ig.add_rules([{"key": "root.A", "scope": "global"},
+                      {"key": "root.A", "scope": "global"}])   # duplicate
+        ig.add_rules([{"key": "root.B", "scope": "device:C1"}])
+        scoped = ig._scoped_rules()
+        assert len([r for r in scoped if r["key"] == "root.A"]) == 1
+        ig.remove_rules([{"key": "root.A", "scope": "global"}])
+        keys = {r["key"] for r in ig._scoped_rules()}
+        assert "root.A" not in keys and "root.B" in keys
+
+
+class TestCanonicalKey:
+    def test_per_facet(self):
+        from admz.snapshot.facets.audio import AudioFacet
+        from admz.snapshot.facets.events import EventsFacet
+        from admz.snapshot.facets.other_params import CatchAllParamsFacet
+        from admz.snapshot.facets.applications import ApplicationsFacet
+        from admz.snapshot.facets.action_rules import ActionRulesFacet
+        assert AudioFacet().canonical_key("Source.A0.InputGain") == \
+            "root.AudioSource.A0.InputGain"
+        assert EventsFacet().canonical_key("event.E0.Enabled") == "root.Event.E0.Enabled"
+        assert EventsFacet().canonical_key("ioport.I0.Name") == "root.IOPort.I0.Name"
+        assert EventsFacet().canonical_key("weird") == "events:weird"
+        assert CatchAllParamsFacet().canonical_key("root.X.Y") == "root.X.Y"
+        assert ApplicationsFacet().canonical_key("vmd.status") == "applications:vmd.status"
+        assert ActionRulesFacet().canonical_key("7.enabled") == "action_rules:7.enabled"
+
+
+class TestIgnoreApply:
+    """The device-aware filter that drops excluded fields from a facet's
+    serialized output before commit (engine._filter_ignored)."""
+
+    def test_filters_leaf_group_and_flat(self):
+        from admz.snapshot.engine import _filter_ignored
+        from admz.snapshot.facets.applications import ApplicationsFacet
+        from admz.snapshot.facets.audio import AudioFacet
+        rules = [{"key": "applications:vmd.status", "scope": "global"},
+                 {"key": "root.AudioSource.A0.InputGain", "scope": "global"}]
+        apps = {"vmd": {"status": "Stopped", "version": "4"},
+                "aoa": {"status": "Running"}}
+        # leaf-level: drop only vmd.status, keep vmd.version + aoa
+        assert _filter_ignored(ApplicationsFacet(), apps, rules) == {
+            "vmd": {"version": "4"}, "aoa": {"status": "Running"}}
+        # group-level: remove the whole app
+        assert _filter_ignored(ApplicationsFacet(), apps,
+                               [{"key": "applications:vmd", "scope": "global"}]) == {
+            "aoa": {"status": "Running"}}
+        # flat param facet
+        audio = {"Source.A0.InputGain": "-10", "Source.A0.Enabled": "yes"}
+        assert _filter_ignored(AudioFacet(), audio, rules) == {"Source.A0.Enabled": "yes"}
+        # no rules -> unchanged
+        assert _filter_ignored(AudioFacet(), audio, []) == audio
 
 
 class TestBaselinePointers:

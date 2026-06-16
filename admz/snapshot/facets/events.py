@@ -69,6 +69,15 @@ class EventsFacet(FacetAdapter):
             return None
         return (f"{prefix}{rest}", str(baseline_value))
 
+    def canonical_key(self, path: str) -> str:
+        # "<group>.<key>" -> full root.* key; fall back to facet-scoped if the
+        # group is unrecognized (so it still has a stable, matchable identifier).
+        top, _, rest = path.partition(".")
+        prefix = self._GROUP_PREFIX.get(top)
+        if prefix and rest:
+            return f"{prefix}{rest}"
+        return f"events:{path}"
+
     def deserialize(self, yaml_doc: Dict[str, Any]) -> List[Dict[str, Any]]:
         params: Dict[str, str] = {}
         skipped = []

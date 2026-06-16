@@ -98,27 +98,52 @@ def _is_sensitive(key: str) -> bool:
     return any(s in k for s in _SECRET_PARAM_SUBSTRINGS)
 
 
-def _is_ignored(key: str, patterns) -> bool:
-    """Operator-configured ignore list (admz.snapshot.ignore). ``patterns`` is
-    precomputed once per dump so this is a cheap per-key check, not a DB hit."""
+def _prune_nested(d: Dict[str, Any], drop: set, prefix: str = "") -> Dict[str, Any]:
+    """Rebuild a (possibly one-level-nested) facet dict, dropping leaves whose
+    flattened key is in ``drop`` and discarding any group left empty."""
+    out: Dict[str, Any] = {}
+    for k, v in d.items():
+        fk = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
+        if isinstance(v, dict):
+            sub = _prune_nested(v, drop, fk)
+            if sub:
+                out[k] = sub
+        elif fk not in drop:
+            out[k] = v
+    return out
+
+
+def _filter_ignored(facet, normalized: Dict[str, Any], rules) -> Dict[str, Any]:
+    """Drop operator-excluded fields from a facet's serialized output before it
+    enters the snapshot/git. Matches each field's canonical key (so it covers
+    param + non-param facets uniformly) against ``rules`` — the ignore rules
+    already filtered to this device's scope."""
+    if not rules:
+        return normalized
+    from admz.snapshot.flatten import flatten
     from admz.snapshot.ignore import is_ignored
-    return is_ignored(key, patterns)
+    flat = flatten(normalized)
+    drop = {
+        fk for fk in flat
+        if is_ignored(facet.canonical_key(fk), rules=rules)
+    }
+    if not drop:
+        return normalized
+    return _prune_nested(normalized, drop)
 
 
 def _parse_param_dump(text: str) -> Dict[str, str]:
-    from admz.snapshot.ignore import get_ignore_patterns
-    ignore = get_ignore_patterns()  # read once for the whole dump
+    # NOTE: only volatile/secret params are dropped here (param-level, always).
+    # The operator IGNORE list is applied later, per-facet and device-aware, in
+    # _run_facet via _filter_ignored — it needs device/tag scope + canonical
+    # keys, which aren't available at this raw-param stage.
     params = {}
     for line in text.strip().split("\n"):
         line = line.strip()
         if "=" in line and not line.startswith("#"):
             key, _, value = line.partition("=")
             key = key.strip()
-            if (
-                not _is_volatile(key)
-                and not _is_sensitive(key)
-                and not _is_ignored(key, ignore)
-            ):
+            if not _is_volatile(key) and not _is_sensitive(key):
                 params[key] = value.strip()
     return params
 
@@ -164,8 +189,10 @@ class SnapshotEngine:
             device_id, device_info, facets, family
         )
 
+        from admz.snapshot.ignore import applicable_rules
+        ignore_rules = applicable_rules(device_id, device_info.get("tags"))
         for facet in facets:
-            result = self._run_facet(facet, raw_params, extra_results)
+            result = self._run_facet(facet, raw_params, extra_results, ignore_rules)
             snapshot.facets.append(result)
 
         self._write_files(device_id, device_info, snapshot)
@@ -297,8 +324,10 @@ class SnapshotEngine:
             device_id, device_info, facets, family
         )
 
+        from admz.snapshot.ignore import applicable_rules
+        ignore_rules = applicable_rules(device_id, device_info.get("tags"))
         for facet in facets:
-            result = self._run_facet(facet, raw_params, extra_results)
+            result = self._run_facet(facet, raw_params, extra_results, ignore_rules)
             snapshot.facets.append(result)
 
         self._write_files(device_id, device_info, snapshot)
@@ -339,14 +368,10 @@ class SnapshotEngine:
             raw_text = result.parsed_data.get("raw", "")
             if raw_text:
                 return _parse_param_dump(raw_text)
-            from admz.snapshot.ignore import get_ignore_patterns
-            ignore = get_ignore_patterns()
             return {
                 k: v
                 for k, v in result.parsed_data.items()
-                if not _is_volatile(k)
-                and not _is_sensitive(k)
-                and not _is_ignored(k, ignore)
+                if not _is_volatile(k) and not _is_sensitive(k)
             }
 
         if isinstance(result.parsed_data, str):
@@ -398,12 +423,15 @@ class SnapshotEngine:
         facet: FacetAdapter,
         raw_params: Dict[str, str],
         extra_results: Dict[str, Any],
+        ignore_rules=None,
     ) -> FacetResult:
         try:
             raw_responses = {"params": raw_params}
             raw_responses.update(extra_results)
 
             normalized = facet.serialize(raw_responses)
+            # Apply the operator ignore list (device-scoped) before commit.
+            normalized = _filter_ignored(facet, normalized, ignore_rules)
             if not normalized:
                 return FacetResult(name=facet.name, success=True, normalized={})
 

@@ -3,21 +3,11 @@ import time
 from typing import Any, Dict, List, Optional
 
 from admz.snapshot.facets import get_facets_for_device
+from admz.snapshot.flatten import flatten as _flatten
 from admz.snapshot.git_repo import GitRepo
 from admz.snapshot.models import DriftField, DriftReport
 
 logger = logging.getLogger(__name__)
-
-
-def _flatten(d: Dict[str, Any], prefix: str = "") -> Dict[str, str]:
-    items = {}
-    for k, v in d.items():
-        full_key = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
-        if isinstance(v, dict):
-            items.update(_flatten(v, full_key))
-        else:
-            items[full_key] = str(v)
-    return items
 
 
 class DriftDetector:
@@ -100,6 +90,15 @@ class DriftDetector:
             device_id=device_id, has_drift=False, observed_sha=observed_sha
         )
 
+        # Operator ignore list, scoped to this device. Applied to BOTH sides of
+        # the compare so an excluded field vanishes from drift immediately, even
+        # if an older baseline still holds it (no forced re-baseline).
+        from admz.snapshot.ignore import applicable_rules, is_ignored
+        ignore_rules = applicable_rules(device_id, device_info.get("tags"))
+        facets_by_name = {
+            f.name: f for f in get_facets_for_device(device_info)
+        }
+
         for facet_name in sorted(live_by_facet):
             stored = self.git.read_facet(device_id, facet_name, baseline_sha)
             if stored is None:
@@ -109,6 +108,17 @@ class DriftDetector:
 
             stored_flat = _flatten(stored)
             live_flat = _flatten(live_by_facet[facet_name])
+
+            facet = facets_by_name.get(facet_name)
+            if ignore_rules and facet is not None:
+                stored_flat = {
+                    k: v for k, v in stored_flat.items()
+                    if not is_ignored(facet.canonical_key(k), rules=ignore_rules)
+                }
+                live_flat = {
+                    k: v for k, v in live_flat.items()
+                    if not is_ignored(facet.canonical_key(k), rules=ignore_rules)
+                }
 
             all_keys = set(stored_flat.keys()) | set(live_flat.keys())
             facet_drifted = False
@@ -123,6 +133,9 @@ class DriftDetector:
                             path=key,
                             expected=expected,
                             actual=actual,
+                            canonical_key=(
+                                facet.canonical_key(key) if facet else None
+                            ),
                         )
                     )
                     facet_drifted = True

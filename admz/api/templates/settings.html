@@ -130,7 +130,30 @@
             {% for g in ignore_globals %}<span class="mono">{{ g }}</span>{{ ", " if not loop.last }}{% endfor %}</div></div>
       </div>
       {% endif %}
-      <form method="POST" action="/settings/ignored-fields">
+
+      <!-- Scoped rules (added from a device's drift diff) -->
+      <div class="setting-row" style="padding-left:0;padding-right:0;flex-direction:column;align-items:stretch;gap:8px">
+        <div class="sr-label">Scoped rules <span class="page-sub" style="margin:0;font-weight:400">— added via ⊘ / "Exclude selected" on a device's drift diff</span></div>
+        {% if ignore_rules %}
+        <table style="width:100%;border-collapse:collapse;font-size:12.5px">
+          <tbody>
+          {% for r in ignore_rules %}
+          <tr style="border-bottom:1px solid var(--border-subtle,var(--border))">
+            <td style="padding:6px 8px 6px 0;font-family:var(--mono);word-break:break-all">{{ r.key }}</td>
+            <td style="padding:6px 8px;white-space:nowrap"><span class="badge {{ 'grey' if r.scope == 'global' else 'blue' }} mono">{{ r.scope }}</span></td>
+            <td style="padding:6px 0;text-align:right;white-space:nowrap">
+              <button type="button" class="btn ghost sm" onclick="removeIgnoreRule(this, '{{ r.key|e }}', '{{ r.scope|e }}')"><i data-lucide="trash-2"></i> Remove</button>
+            </td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <div class="page-sub" style="margin:0">No scoped rules yet. Add them from a device's drift diff (the ⊘ on a row, or "Exclude selected").</div>
+        {% endif %}
+      </div>
+
+      <form method="POST" action="/settings/ignored-fields" style="margin-top:6px">
         <label class="sr-label" for="ignore-patterns" style="display:block;margin-bottom:6px">Your custom ignore patterns</label>
         <textarea id="ignore-patterns" name="patterns" rows="6" spellcheck="false"
           placeholder="root.MyApp.SecretField&#10;root.SomeApp.*"
@@ -165,4 +188,24 @@
   </div>
 
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+async function removeIgnoreRule(btn, key, scope) {
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/config/ignore-rules', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({remove: [{key: key, scope: scope}]}),
+    });
+    if (!resp.ok) throw new Error(resp.status);
+    const tr = btn.closest('tr');
+    if (tr) tr.remove();
+  } catch (e) {
+    btn.disabled = false;
+    btn.innerHTML = 'Failed — retry';
+  }
+}
+</script>
 {% endblock %}

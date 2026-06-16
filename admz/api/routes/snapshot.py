@@ -574,6 +574,10 @@ async def check_drift(
         }
         for fld in summary.get("drifted_fields", []):
             facet = facets_by_name.get(fld.get("facet"))
+            # canonical_key for the "exclude from tracking" action — normally
+            # set by the drift loop; backfill here for robustness.
+            if not fld.get("canonical_key") and facet is not None:
+                fld["canonical_key"] = facet.canonical_key(fld.get("path"))
             revertable = False
             reason = "read-only"
             if str(fld.get("expected")) == "<missing>":
@@ -592,3 +596,68 @@ async def check_drift(
         "drifted": sum(1 for r in reports if r.has_drift),
         "reports": [r.to_summary() for r in reports],
     }
+
+
+# ---------------------------------------------------------------------------
+# Config-tracking ignore rules (scoped: global / tag:<tag> / device:<id>)
+# ---------------------------------------------------------------------------
+class IgnoreRuleModel(BaseModel):
+    key: str
+    scope: str = "global"
+
+    @field_validator("key")
+    @classmethod
+    def _check_key(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v or len(v) > 512 or "\n" in v:
+            raise ValueError("key must be a non-empty single-line pattern")
+        return v
+
+    @field_validator("scope")
+    @classmethod
+    def _check_scope(cls, v: str) -> str:
+        v = (v or "global").strip() or "global"
+        if v == "global" or v.startswith("tag:") or v.startswith("device:"):
+            return v
+        raise ValueError("scope must be 'global', 'tag:<tag>', or 'device:<id>'")
+
+
+class IgnoreRulesRequest(BaseModel):
+    add: Optional[List[IgnoreRuleModel]] = None
+    remove: Optional[List[IgnoreRuleModel]] = None
+
+
+@router.get("/config/ignore-rules")
+async def list_ignore_rules(ctx: AppContext = Depends(get_context)):
+    """All config-tracking ignore rules (scoped store + legacy global list)."""
+    from admz.snapshot.ignore import get_rules
+    return {"rules": get_rules()}
+
+
+@router.post("/config/ignore-rules")
+async def update_ignore_rules(
+    request: Request,
+    req: IgnoreRulesRequest,
+    ctx: AppContext = Depends(get_context),
+):
+    """Add/remove scoped ignore rules. Authenticated (changes what the fleet
+    tracks) + audited. The in-context "exclude from tracking" UI POSTs here."""
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+    from admz.snapshot import ignore
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+
+    added = [r.model_dump() for r in (req.add or [])]
+    removed = [r.model_dump() for r in (req.remove or [])]
+    if added:
+        ignore.add_rules(added)
+    if removed:
+        ignore.remove_rules(removed)
+    record_event(
+        principal, "config.ignore_rules", resource="fleet",
+        details={"added": added, "removed": removed},
+    )
+    return {"rules": ignore.get_rules()}

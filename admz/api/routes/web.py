@@ -583,7 +583,9 @@ async def settings_overview(request: Request):
     }
     has_password = bool(fleet_settings.get("confirm_password_hash"))
     get_creds_enabled = fleet_settings.get("tool_get_credentials_enabled") == "true"
-    from admz.snapshot.ignore import USER_SETTING_KEY, _GLOBAL_IGNORE_PATTERNS
+    from admz.snapshot.ignore import (
+        USER_SETTING_KEY, _GLOBAL_IGNORE_PATTERNS, _scoped_rules,
+    )
     return templates.TemplateResponse(
         "settings.html",
         {
@@ -595,6 +597,8 @@ async def settings_overview(request: Request):
             "all_settings": fleet_settings.list_all(),
             "ignore_patterns_text": fleet_settings.get(USER_SETTING_KEY) or "",
             "ignore_globals": list(_GLOBAL_IGNORE_PATTERNS),
+            # Scoped rules only (the legacy textarea covers the global flat list).
+            "ignore_rules": _scoped_rules(),
             "ignore_saved": request.query_params.get("ignore_saved") == "1",
         },
     )
