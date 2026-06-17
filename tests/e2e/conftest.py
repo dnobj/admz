@@ -246,6 +246,12 @@ def api_anon():
 
 
 @pytest.fixture
+def a_device(registered_ids):
+    """The first registered device_id (sorted), or None so tests can skip."""
+    return next(iter(sorted(registered_ids)), None)
+
+
+@pytest.fixture
 def registered_ids() -> set:
     """The device_ids the live registry currently knows. Tests that target a
     specific fixture device skip when it's absent (homelab inventory drifts)."""
