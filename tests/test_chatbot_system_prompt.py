@@ -183,3 +183,63 @@ class TestBuildSystemPrompt:
             or "never ask the user for the device_id" in prompt
             or ("never ask the user" in prompt and "mac address" in prompt)
         )
+
+    def test_narrow_param_read_guidance(self):
+        """Latency fix: a bare param.cgi:list dumps the whole tree (~150k-token
+        turns). The prompt must steer the LLM to discover the group index then
+        narrow with group=, not blind-guess subgroups."""
+        prompt = build_system_prompt("alice").lower()
+        assert "group=" in prompt
+        assert "discover, then narrow" in prompt or "group index" in prompt
+        # The Axis-structure hint that fixed the volume-hunt failure.
+        assert "root.audiosource" in prompt
+
+
+class TestPreloadedContext:
+    """device_roster / common_ops preload (admz.chatbot.context)."""
+
+    _ROSTER = "- C1710 (E827250959C6) · 192.168.1.123 · online · tags: lab"
+    _OPS = "- Reboot / restart the device: `restart.cgi:restart`"
+
+    def test_roster_omitted_by_default(self):
+        prompt = build_system_prompt("alice")
+        assert "# Current fleet" not in prompt
+        assert "# Common operations" not in prompt
+
+    def test_roster_injected_when_provided(self):
+        prompt = build_system_prompt("alice", device_roster=self._ROSTER)
+        assert "# Current fleet" in prompt
+        assert "E827250959C6" in prompt
+        # The framing must tell the model NOT to call a tool to resolve.
+        assert "do not call" in prompt.lower()
+
+    def test_common_ops_injected_when_provided(self):
+        prompt = build_system_prompt("alice", common_ops=self._OPS)
+        assert "# Common operations" in prompt
+        assert "restart.cgi:restart" in prompt
+
+    def test_empty_strings_inject_nothing(self):
+        prompt = build_system_prompt("alice", device_roster="  ", common_ops="")
+        assert "# Current fleet" not in prompt
+        assert "# Common operations" not in prompt
+
+    def test_preload_preserves_safety_mandate(self):
+        """Preloading context must NOT drop the query_catalog mandate or the
+        device-id guidance."""
+        prompt = build_system_prompt(
+            "alice", device_roster=self._ROSTER, common_ops=self._OPS
+        )
+        low = prompt.lower()
+        assert "query_catalog" in low and "execute_operation" in low
+        assert "mandatory" in low or "always call" in low
+        # common_ops must still tell the model to verify params via query_catalog
+        assert "query_catalog" in prompt  # section text references it
+
+    def test_renders_without_stray_placeholders_with_preload(self):
+        prompt = build_system_prompt(
+            "alice", device_roster=self._ROSTER, common_ops=self._OPS
+        )
+        assert "/confirm/{token}" in prompt  # escaped brace survived
+        assert "{device_roster}" not in prompt
+        assert "{fleet_section}" not in prompt
+        assert "{common_ops_section}" not in prompt

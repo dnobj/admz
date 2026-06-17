@@ -978,6 +978,155 @@ async def _call_mcp_tool(mcp_session: Any, name: str, args: Any) -> dict:
     return {"result": str(content)[:2000]}
 
 
+# --- smart capping of oversized model-facing tool results --------------------
+#
+# A bare ``param.cgi:list`` (no ``group=``) returns the device's ENTIRE
+# parameter tree as one ``data`` text blob (thousands of ``root.X.Y=value``
+# lines). Left whole, it's re-sent in every following round-trip of the turn —
+# the single biggest driver of the ~150k-token turns we measured. We cap it
+# *structure-aware*: scope to the parameter groups ``query_catalog`` just named
+# if we can (only the needed params), else hand back a group index + a "re-call
+# with group=" hint. Small results pass through unchanged. Model-facing only —
+# the UI tool card still renders the full (redacted) result.
+
+_DEFAULT_MAX_TOOL_RESULT_CHARS = 6000
+
+
+def _max_tool_result_chars() -> int:
+    try:
+        v = int(os.getenv("ADMZ_CHAT_MAX_TOOL_RESULT_CHARS", "") or 0)
+        return v if v > 0 else _DEFAULT_MAX_TOOL_RESULT_CHARS
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_TOOL_RESULT_CHARS
+
+
+def _looks_like_param_dump(s: Any) -> bool:
+    """A VAPIX param.cgi list blob: many ``a.b.c=value`` lines."""
+    if not isinstance(s, str) or "=" not in s:
+        return False
+    eq_lines = [ln for ln in s[:4000].splitlines() if "=" in ln]
+    if len(eq_lines) < 5:
+        return False
+    key0 = eq_lines[0].split("=", 1)[0]
+    return key0.startswith("root.") or "." in key0
+
+
+def _extract_param_groups(payload: Any) -> list:
+    """Best-effort: the ``parameter_groups`` a query_catalog result named, as a
+    flat list of dotted prefixes (e.g. ``["root.Audio", "root.AudioSource"]``)."""
+    if not isinstance(payload, dict):
+        return []
+    pg = payload.get("parameter_groups") or payload.get("parameterGroups") or []
+    out = []
+    if isinstance(pg, list):
+        for item in pg:
+            if isinstance(item, str):
+                out.append(item)
+            elif isinstance(item, dict):
+                v = (
+                    item.get("group")
+                    or item.get("prefix")
+                    or item.get("path")
+                    or item.get("name")
+                )
+                if isinstance(v, str):
+                    out.append(v)
+    return [g.rstrip(".") for g in out if g]
+
+
+def _summarize_param_dump(blob: str, recent_param_groups: Optional[list]) -> dict:
+    lines = [ln for ln in blob.splitlines() if "=" in ln]
+    total = len(lines)
+    budget = _max_tool_result_chars()
+
+    # Intent-scoped filter (the "only the needed params" path): if the catalog
+    # just named groups, keep just those — no extra round-trip needed.
+    groups = [g for g in (recent_param_groups or []) if g]
+    if groups:
+        kept = [
+            ln for ln in lines
+            if any(ln.split("=", 1)[0].startswith(g) for g in groups)
+        ]
+        if kept and len("\n".join(kept)) <= budget:
+            return {
+                "_scoped": True,
+                "_note": (
+                    f"Showing {len(kept)} of {total} parameters — only those "
+                    f"under {', '.join(groups)} (the groups query_catalog "
+                    "returned). Re-call param.cgi:list with a different group= "
+                    "for others."
+                ),
+                "data": "\n".join(kept),
+            }
+
+    # Otherwise: a group index (2nd-level prefix -> count), no values.
+    counts: dict = {}
+    for ln in lines:
+        parts = ln.split("=", 1)[0].split(".")
+        g = ".".join(parts[:2]) if len(parts) >= 2 else parts[0]
+        counts[g] = counts.get(g, 0) + 1
+    index = dict(sorted(counts.items(), key=lambda kv: -kv[1])[:40])
+    return {
+        "_truncated": True,
+        "_note": (
+            f"Full parameter tree trimmed ({total} parameters in {len(counts)} "
+            "groups). Re-call param.cgi:list with a specific group= (a key from "
+            "'groups' below) to get its values — never request the whole tree."
+        ),
+        "total_params": total,
+        "groups": index,
+    }
+
+
+def _smart_cap_tool_result(
+    name: str, result: Any, recent_param_groups: Optional[list] = None
+) -> Any:
+    """Cap an oversized model-facing tool result, structure-aware. Small
+    results (the common case) pass through unchanged."""
+    try:
+        serialized = json.dumps(result, default=str)
+    except Exception:  # noqa: BLE001
+        return result
+    budget = _max_tool_result_chars()
+    if len(serialized) <= budget:
+        return result
+    if not isinstance(result, dict):
+        return {
+            "_truncated": True,
+            "_note": "Result too large for context; truncated — narrow your request.",
+            "preview": serialized[:budget],
+        }
+
+    capped = dict(result)
+    data = capped.get("data")
+    if _looks_like_param_dump(data):
+        capped["data"] = _summarize_param_dump(data, recent_param_groups)
+        return capped
+
+    # Generic oversized result: trim the single fattest field with a marker.
+    fattest_key, fattest_len = None, 0
+    for k, v in capped.items():
+        try:
+            vlen = len(json.dumps(v, default=str))
+        except Exception:  # noqa: BLE001
+            vlen = len(str(v))
+        if vlen > fattest_len:
+            fattest_key, fattest_len = k, vlen
+    if fattest_key is not None:
+        v = capped[fattest_key]
+        if isinstance(v, str):
+            capped[fattest_key] = v[:budget] + f"\n…(truncated; {len(v)} chars total)"
+        elif isinstance(v, list):
+            capped[fattest_key] = v[:50]
+            capped["_truncated"] = f"{fattest_key}: showing 50 of {len(v)} items"
+        else:
+            capped[fattest_key] = str(v)[:budget] + "…(truncated)"
+    capped.setdefault(
+        "_note", "Result trimmed to fit context; re-query more narrowly if needed."
+    )
+    return capped
+
+
 # --- display helpers for the tool-card UI (args/result panes + status) -------
 
 _MAX_DISPLAY_STR = 300
@@ -1115,6 +1264,7 @@ async def _run_manual_tool_loop(models, model, contents, sys_inst, mcp_session):
     last_interaction_id = None
     max_iter = _get_max_tool_iterations()
     next_call_id = 0  # unique per executed tool, across iterations
+    recent_param_groups: list = []  # groups the last query_catalog named
 
     hit_cap = True
     empty_retries = _get_empty_response_retries()
@@ -1171,8 +1321,20 @@ async def _run_manual_tool_loop(models, model, contents, sys_inst, mcp_session):
             yield _ToolResultChunk(
                 name, status, summary, call_id, result=safe_payload
             )
+            # Remember the parameter groups a catalog lookup named, so a
+            # following param.cgi:list can be scoped to just those.
+            if name == "query_catalog":
+                pg = _extract_param_groups(payload)
+                if pg:
+                    recent_param_groups = pg
+            # Model-facing result: smart-cap oversized blobs (e.g. a full
+            # param tree) so they don't bloat every following round-trip of
+            # this turn. The UI card above already showed the full result.
+            model_payload = _smart_cap_tool_result(
+                name, payload, recent_param_groups
+            )
             part = _make_function_response_part(
-                types, name, payload, getattr(fc, "id", None)
+                types, name, model_payload, getattr(fc, "id", None)
             )
             convo.append(types.Content(role="user", parts=[part]))
 

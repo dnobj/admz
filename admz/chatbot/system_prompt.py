@@ -25,7 +25,7 @@ Authenticated user: {user_line}
 You operate through the ADMZ MCP tools (provided as your tool
 surface). Every tool call is audit-logged against the
 authenticated user above.
-
+{fleet_section}
 # Device identification — read this carefully
 
 Every device has TWO names:
@@ -107,12 +107,24 @@ pointer to a getter). So:
   "halfway" = midpoint of [min, max]) and execute. Only ask the user
   to clarify if the request is genuinely ambiguous *after* you've
   looked up what the parameter means.
-
+{common_ops_section}
 # Tool use rules
 
 - For READ-ONLY queries (list_devices, get_device, query_catalog,
   check_drift, etc.): just call the tool. NEVER ask permission for
   read-only queries — the user expects you to look things up.
+- **Read parameters: discover, then narrow.** `param.cgi:list` accepts a
+  `group=` (e.g. `root.Audio`, `root.AudioSource`, `root.Image`). Prefer the
+  narrowest group that covers what you need — use the `parameter_groups`
+  `query_catalog` returned. If you're unsure which group holds a value, call
+  `param.cgi:list` with NO `group`: you will NOT get the huge full tree — the
+  server returns a compact **group index** (the top-level groups + their
+  counts). Read that index, then re-call with the right `group=` to get the
+  values. Do NOT blind-guess deep subgroups (e.g. don't keep drilling into
+  `root.Audio.*`); use the index to pick the right top-level group. On Axis
+  devices, audio volume / output gain lives under `root.AudioSource`, image
+  settings under `root.ImageSource`. If a result says it was trimmed, re-call
+  with a specific `group=` from the listed groups.
 - For WRITES (anything that changes the device — reboot, parameter
   changes, firmware, users, PTZ, audio, etc.) the flow is
   `query_catalog` → **`execute_operation`**, in that order, every
@@ -250,8 +262,17 @@ def build_system_prompt(
     *,
     display_name: Optional[str] = None,
     groups: Optional[Iterable[str]] = None,
+    device_roster: Optional[str] = None,
+    common_ops: Optional[str] = None,
 ) -> str:
-    """Construct the chatbot's system prompt for a given principal."""
+    """Construct the chatbot's system prompt for a given principal.
+
+    ``device_roster`` / ``common_ops`` are optional preloaded context
+    blocks (see :mod:`admz.chatbot.context`). When supplied, they're framed
+    so the model resolves devices + picks operation_ids without a tool
+    round-trip; when omitted (or empty) the prompt is unchanged and the
+    model falls back to calling the tools.
+    """
     display = display_name or principal_name
     group_list = sorted(set(groups)) if groups else []
 
@@ -262,4 +283,40 @@ def build_system_prompt(
     else:
         user_line = principal_name
 
-    return _PROMPT_TEMPLATE.format(user_line=user_line)
+    fleet_section = ""
+    if device_roster and device_roster.strip():
+        fleet_section = (
+            "\n# Current fleet — already loaded; do NOT call a tool just to "
+            "list or resolve a device\n\n"
+            "The full device inventory is below (the `device_id` is the MAC "
+            "the tools require). Resolve any \"my C1710 / the lab speaker / "
+            "192.168.1.x / the lobby cam\" reference straight from this list — "
+            "do NOT call `list_devices`, `search_devices`, or `get_device` just "
+            "to find a device or read its id / model / ip / health / firmware / "
+            "tags / drift — and to simply LIST or COUNT the fleet, answer from "
+            "this roster too (no `list_devices` needed). Call those tools only "
+            "to fetch a field that ISN'T shown here, or to re-check live state "
+            "on demand. Each line is "
+            "`MODEL (DEVICE_ID) · [nickname] · IP · health · fw · drift · tags`:\n\n"
+            f"{device_roster.strip()}\n"
+        )
+
+    common_ops_section = ""
+    if common_ops and common_ops.strip():
+        common_ops_section = (
+            "\n# Common operations — preloaded operation IDs (skip the lookup)\n\n"
+            "These are real, catalog-verified `operation_id`s for the most "
+            "common requests on your fleet's device models. You MAY pass one "
+            "straight to `execute_operation` without a `query_catalog` "
+            "discovery call first. You must STILL call `query_catalog` when you "
+            "need a parameter's valid range / values you don't already know — "
+            "your memory of a parameter's format is not reliable (see above). "
+            "An operation_id not listed here still requires `query_catalog`.\n\n"
+            f"{common_ops.strip()}\n"
+        )
+
+    return _PROMPT_TEMPLATE.format(
+        user_line=user_line,
+        fleet_section=fleet_section,
+        common_ops_section=common_ops_section,
+    )

@@ -51,6 +51,7 @@ from admz.chatbot.events import (
     ChatEventType,
     event_error,
 )
+from admz.chatbot.context import build_common_ops_reference, build_device_roster
 from admz.chatbot.system_prompt import build_system_prompt
 from admz.chatbot.usage import (
     check_budget,
@@ -239,6 +240,8 @@ async def chat_submit(
         principal_name=principal.name,
         display_name=principal.display_name,
         groups=principal.groups,
+        device_roster=build_device_roster(),
+        common_ops=build_common_ops_reference(),
     )
 
     logger.debug(
@@ -410,6 +413,8 @@ async def _run_chat_turn(
         principal_name=principal.name,
         display_name=principal.display_name,
         groups=principal.groups,
+        device_roster=build_device_roster(),
+        common_ops=build_common_ops_reference(),
     )
 
     logger.debug(
