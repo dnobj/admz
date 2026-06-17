@@ -186,11 +186,13 @@ class TestBuildSystemPrompt:
 
     def test_narrow_param_read_guidance(self):
         """Latency fix: a bare param.cgi:list dumps the whole tree (~150k-token
-        turns). The prompt must tell the LLM to always pass a group=."""
+        turns). The prompt must steer the LLM to discover the group index then
+        narrow with group=, not blind-guess subgroups."""
         prompt = build_system_prompt("alice").lower()
-        assert "read parameters narrowly" in prompt
         assert "group=" in prompt
-        assert "never list the whole tree" in prompt or "whole tree" in prompt
+        assert "discover, then narrow" in prompt or "group index" in prompt
+        # The Axis-structure hint that fixed the volume-hunt failure.
+        assert "root.audiosource" in prompt
 
 
 class TestPreloadedContext:

@@ -113,13 +113,18 @@ pointer to a getter). So:
 - For READ-ONLY queries (list_devices, get_device, query_catalog,
   check_drift, etc.): just call the tool. NEVER ask permission for
   read-only queries — the user expects you to look things up.
-- **Read parameters narrowly.** `param.cgi:list` accepts a `group=`
-  (e.g. `root.Audio`, `root.Image`, `root.Network`) — ALWAYS pass the
-  narrowest group that covers what you need; prefer the `parameter_groups`
-  that `query_catalog` just returned. NEVER list the whole tree (calling
-  `param.cgi:list` with no `group`): it returns thousands of parameters,
-  bloats the context, and slows every step that follows. If a result is
-  marked trimmed, re-call with a specific `group=` rather than widening.
+- **Read parameters: discover, then narrow.** `param.cgi:list` accepts a
+  `group=` (e.g. `root.Audio`, `root.AudioSource`, `root.Image`). Prefer the
+  narrowest group that covers what you need — use the `parameter_groups`
+  `query_catalog` returned. If you're unsure which group holds a value, call
+  `param.cgi:list` with NO `group`: you will NOT get the huge full tree — the
+  server returns a compact **group index** (the top-level groups + their
+  counts). Read that index, then re-call with the right `group=` to get the
+  values. Do NOT blind-guess deep subgroups (e.g. don't keep drilling into
+  `root.Audio.*`); use the index to pick the right top-level group. On Axis
+  devices, audio volume / output gain lives under `root.AudioSource`, image
+  settings under `root.ImageSource`. If a result says it was trimmed, re-call
+  with a specific `group=` from the listed groups.
 - For WRITES (anything that changes the device — reboot, parameter
   changes, firmware, users, PTZ, audio, etc.) the flow is
   `query_catalog` → **`execute_operation`**, in that order, every
@@ -288,8 +293,10 @@ def build_system_prompt(
             "192.168.1.x / the lobby cam\" reference straight from this list — "
             "do NOT call `list_devices`, `search_devices`, or `get_device` just "
             "to find a device or read its id / model / ip / health / firmware / "
-            "tags / drift. Call those tools only to fetch a field that ISN'T "
-            "shown here, or to re-check live state on demand. Each line is "
+            "tags / drift — and to simply LIST or COUNT the fleet, answer from "
+            "this roster too (no `list_devices` needed). Call those tools only "
+            "to fetch a field that ISN'T shown here, or to re-check live state "
+            "on demand. Each line is "
             "`MODEL (DEVICE_ID) · [nickname] · IP · health · fw · drift · tags`:\n\n"
             f"{device_roster.strip()}\n"
         )
