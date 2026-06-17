@@ -619,6 +619,135 @@ async def device_history_diff(
     }
 
 
+# --------------------------------------------------------------------------
+# Named config baselines (alternate configurations), ADR-0031 follow-on.
+# A named baseline = a name -> a git commit holding a saved full config for
+# the device. The ACTIVE one is whichever commit == the device's baseline_sha,
+# so "make active" reuses POST /snapshot/accept-baseline (with that commit_sha)
+# and "push to the device" reuses POST /snapshot/revert — this surface only
+# manages the name->commit mapping.
+# --------------------------------------------------------------------------
+
+class SaveBaselineRequest(BaseModel):
+    name: str
+    commit_sha: Optional[str] = None  # default: the device's current baseline
+    note: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: str) -> str:
+        import re
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("name is required")
+        if len(v) > 64:
+            raise ValueError("name too long (max 64)")
+        if not re.fullmatch(r"[A-Za-z0-9 ._-]+", v):
+            raise ValueError("name may only contain letters, digits, space, . _ -")
+        return v
+
+    @field_validator("commit_sha")
+    @classmethod
+    def _check_sha(cls, v: Optional[str]) -> Optional[str]:
+        return validate_git_ref(v) if v else None
+
+
+@router.get("/snapshot/baselines/{device_id}")
+async def list_baselines(device_id: str, ctx: AppContext = Depends(get_context)):
+    """Named config baselines (alternate configs) for a device, with the
+    active one flagged (its commit == the device's ``baseline_sha``)."""
+    if not ctx.registry.device_exists(device_id):
+        raise HTTPException(status_code=404, detail=f"Device not found: {device_id}")
+    info = ctx.registry.get_device_info(device_id)
+    baseline_sha = info.get("baseline_sha")
+    try:
+        items = ctx.registry.list_named_baselines(device_id)
+    except NotImplementedError:
+        items = []
+    active = None
+    for b in items:
+        b["short_sha"] = (b.get("commit_sha") or "")[:12]
+        b["is_active"] = bool(baseline_sha) and b.get("commit_sha") == baseline_sha
+        if b["is_active"]:
+            active = b["name"]
+    return {
+        "device_id": device_id,
+        "baseline_sha": baseline_sha,
+        "active_name": active,
+        "baselines": items,
+    }
+
+
+@router.post("/snapshot/baselines/{device_id}")
+async def save_baseline(
+    request: Request,
+    device_id: str,
+    req: SaveBaselineRequest,
+    ctx: AppContext = Depends(get_context),
+):
+    """Save the current baseline (or an explicit ``commit_sha``) as a named
+    alternate config. Authenticated + audited, like accept-baseline."""
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+    resource = f"device:{device_id}"
+
+    if not ctx.registry.device_exists(device_id):
+        raise HTTPException(status_code=404, detail=f"Device not found: {device_id}")
+    info = ctx.registry.get_device_info(device_id)
+    target = req.commit_sha or info.get("baseline_sha")
+    if not target:
+        raise HTTPException(
+            status_code=400,
+            detail="No commit to save — snapshot the device first, or pass commit_sha.",
+        )
+    if not ctx.git_repo.list_facets_at(device_id, target):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Commit {target[:12]} holds no config for {device_id}.",
+        )
+    try:
+        ctx.registry.save_named_baseline(
+            device_id, req.name, target,
+            note=(req.note or "").strip(), created_by=str(principal),
+        )
+    except NotImplementedError:
+        raise HTTPException(status_code=501, detail="Backend does not support named baselines.")
+    record_event(principal, "snapshot.save_named_baseline", resource=resource,
+                 details={"name": req.name, "commit_sha": target})
+    return {"success": True, "device_id": device_id, "name": req.name, "commit_sha": target}
+
+
+@router.delete("/snapshot/baselines/{device_id}/{name}")
+async def delete_baseline(
+    request: Request,
+    device_id: str,
+    name: str,
+    ctx: AppContext = Depends(get_context),
+):
+    """Delete a named alternate config (the git commit stays in history)."""
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+    if not ctx.registry.device_exists(device_id):
+        raise HTTPException(status_code=404, detail=f"Device not found: {device_id}")
+    try:
+        removed = ctx.registry.delete_named_baseline(device_id, name)
+    except NotImplementedError:
+        raise HTTPException(status_code=501, detail="Backend does not support named baselines.")
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"No named baseline '{name}' on {device_id}.")
+    record_event(principal, "snapshot.delete_named_baseline",
+                 resource=f"device:{device_id}", details={"name": name})
+    return {"success": True, "device_id": device_id, "name": name}
+
+
 @router.get("/snapshot/drift")
 async def check_drift(
     device_id: Optional[str] = Query(None),

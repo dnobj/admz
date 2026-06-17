@@ -226,17 +226,30 @@
       </div>
     </div>
 
-    <!-- Branch panel (quiet, collapsible) -->
-    <div class="branch-panel">
-      <div class="bp-head" data-collapse-toggle="branch-body">
-        <i data-lucide="git-branch"></i><span class="t">Configuration branches</span>
-        <span class="sub">on main · none saved</span>
-      </div>
-      <div id="branch-body" class="hidden">
-        <div class="branch-row"><span class="bn">main</span><span class="page-sub" style="margin:0">everyday baseline · active</span><span class="ml-auto badge green"><span class="dot"></span>active</span></div>
-        <div class="setting-row"><div class="sr-text"><div class="sr-desc">Branches are saved alternate configs (overlays on main) you can apply to this slot. None exist yet — create one from the Configuration screen.</div></div></div>
+    <!-- Alternate configurations (named baselines) -->
+    <div class="card">
+      <div class="card-header"><i data-lucide="git-branch"></i><span class="title">Alternate configurations</span></div>
+      <div class="card-body flush">
+        <div id="alt-configs"><p class="page-sub" style="margin:0;padding:10px 16px">Loading…</p></div>
+        <div class="setting-row" style="border-top:1px solid var(--border)">
+          <div style="display:flex;gap:8px;width:100%;flex-wrap:wrap;align-items:center">
+            <input type="text" id="ac-name" maxlength="64" placeholder="Save current config as… (e.g. event-mode)"
+                   style="flex:1;min-width:180px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px">
+            <button class="btn ghost sm" id="ac-save-btn" onclick="acSave()"><i data-lucide="save"></i> Save</button>
+          </div>
+        </div>
+        <div id="ac-msg" class="page-sub" style="display:none;padding:0 16px 10px"></div>
       </div>
     </div>
+    <style>
+      #alt-configs .ac-row { display:flex; align-items:center; gap:10px; padding:9px 16px; border-top:1px solid var(--border); }
+      #alt-configs .ac-row:first-child { border-top:0; }
+      #alt-configs .ac-main { flex:1; min-width:0; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+      #alt-configs .ac-name { font-size:13px; font-weight:600; }
+      #alt-configs .ac-note { font-size:12px; color:var(--text-muted); }
+      #alt-configs .ac-sha { font-size:11px; color:var(--text-faint); }
+      #alt-configs .ac-acts { display:flex; gap:6px; flex:0 0 auto; }
+    </style>
   </div>
 </div>
 
@@ -540,5 +553,81 @@ async function histSetBaseline(sha, btn) {
   }
 }
 loadConfigHistory();
+
+// ── Alternate configurations (named baselines) ──
+async function loadAltConfigs() {
+  const box = document.getElementById('alt-configs');
+  if (!box) return;
+  try {
+    const resp = await fetch('/api/snapshot/baselines/' + encodeURIComponent(DEVICE_ID));
+    if (!resp.ok) { box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">Unavailable.</p>'; return; }
+    const data = await resp.json();
+    const items = data.baselines || [];
+    if (!items.length) {
+      box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">No saved configs yet. Save the current config under a name to switch between alternates later.</p>';
+      return;
+    }
+    box.innerHTML = items.map(function(b) {
+      const active = b.is_active ? '<span class="badge green"><span class="dot"></span>active</span>' : '';
+      const acts = b.is_active ? '' :
+        '<button class="btn ghost sm" onclick="acActivate(\'' + b.commit_sha + '\', this)" title="Make this the baseline drift compares against"><i data-lucide="flag"></i> Make active</button>';
+      return '<div class="ac-row">'
+        + '<div class="ac-main"><span class="ac-name">' + ddEsc(b.name) + '</span>' + active
+        +   (b.note ? '<span class="ac-note">' + ddEsc(b.note) + '</span>' : '')
+        +   '<code class="ac-sha">' + ddEsc(b.short_sha) + '</code></div>'
+        + '<div class="ac-acts">' + acts
+        +   '<button class="btn ghost sm" onclick="acDelete(\'' + encodeURIComponent(b.name) + '\', this)" title="Delete this saved config (git history kept)"><i data-lucide="trash-2"></i></button></div>'
+        + '</div>';
+    }).join('');
+    if (window.lucide) lucide.createIcons();
+  } catch (e) { box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">Unavailable.</p>'; }
+}
+function acMsg(text, ok) {
+  const m = document.getElementById('ac-msg');
+  if (!m) return;
+  m.style.display = ''; m.style.color = ok ? 'var(--fg-green,#4ade80)' : 'var(--fg-red,#f87171)';
+  m.textContent = text;
+}
+async function acSave() {
+  const inp = document.getElementById('ac-name');
+  const name = (inp.value || '').trim();
+  if (!name) { acMsg('Enter a name.', false); return; }
+  const btn = document.getElementById('ac-save-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const resp = await fetch('/api/snapshot/baselines/' + encodeURIComponent(DEVICE_ID), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: name}),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.success) { inp.value = ''; acMsg('Saved "' + name + '".', true); loadAltConfigs(); }
+    else { acMsg('Error: ' + (data.detail || data.message || 'failed'), false); }
+  } catch (e) { acMsg('Request failed.', false); }
+  if (btn) btn.disabled = false;
+}
+async function acActivate(sha, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const resp = await fetch('/api/snapshot/accept-baseline', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({device_id: DEVICE_ID, commit_sha: sha, note: 'Activate alternate config'}),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.success) {
+      acMsg('Now the active baseline. To push it to the device, use “Revert to baseline”.', true);
+      loadAltConfigs(); loadConfigHistory();
+    } else { if (btn) btn.disabled = false; acMsg('Error: ' + (data.detail || 'failed'), false); }
+  } catch (e) { if (btn) btn.disabled = false; acMsg('Request failed.', false); }
+}
+async function acDelete(encName, btn) {
+  if (!confirm('Delete this saved config? (Its git history is kept.)')) return;
+  if (btn) btn.disabled = true;
+  try {
+    const resp = await fetch('/api/snapshot/baselines/' + encodeURIComponent(DEVICE_ID) + '/' + encName, {method: 'DELETE'});
+    if (resp.ok) { loadAltConfigs(); }
+    else { const data = await resp.json().catch(function(){return {};}); if (btn) btn.disabled = false; acMsg('Error: ' + (data.detail || resp.status), false); }
+  } catch (e) { if (btn) btn.disabled = false; acMsg('Request failed.', false); }
+}
+loadAltConfigs();
 </script>
 {% endblock %}

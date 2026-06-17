@@ -350,6 +350,43 @@ class DeviceRegistry(ABC):
             "This registry does not support config-baseline pointers"
         )
 
+    def save_named_baseline(
+        self,
+        device_id: str,
+        name: str,
+        commit_sha: str,
+        *,
+        note: str = "",
+        created_by: str = "",
+    ) -> None:
+        """Save (or overwrite) a named full-config baseline (an "alternate
+        configuration") for a device — a name pointing at a git commit that
+        holds a saved config. The ACTIVE baseline is whichever name's
+        ``commit_sha`` equals the device's ``baseline_sha`` (no separate flag).
+
+        Optional method — backends that don't track config (e.g. the stubbed
+        Vault backend) raise NotImplementedError; callers treat it best-effort.
+        """
+        raise NotImplementedError(
+            "This registry does not support named config baselines"
+        )
+
+    def list_named_baselines(self, device_id: str) -> List[Dict[str, Any]]:
+        """All named baselines (alternate configs) for a device, newest first.
+        Optional — see :meth:`save_named_baseline`. An empty list is a valid
+        'none saved'; NotImplementedError means the backend is unsupported."""
+        raise NotImplementedError(
+            "This registry does not support named config baselines"
+        )
+
+    def delete_named_baseline(self, device_id: str, name: str) -> bool:
+        """Remove a named baseline (the underlying git commit stays in
+        history). Returns True if a row was removed. Optional — see
+        :meth:`save_named_baseline`."""
+        raise NotImplementedError(
+            "This registry does not support named config baselines"
+        )
+
     def update_account(
         self,
         device_id: str,
