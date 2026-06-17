@@ -76,6 +76,12 @@ class DriftReport:
     # True when the device has no blessed baseline to compare against, so
     # ``has_drift=False`` means "nothing to compare", NOT "in sync".
     no_baseline: bool = False
+    # True when the live device couldn't be read at all (auth failure /
+    # unreachable). ``has_drift=False`` here means "unknown" — NOT "in sync".
+    # Without this, an unreadable device makes every baselined field look
+    # "removed" (false drift).
+    unreadable: bool = False
+    unreadable_reason: str = ""  # "auth_failed" | "unreachable" | ""
     # Git commit holding what this audit observed (ADR-0031 slice 2).
     # Commit-on-change: an unchanged device points at the existing commit.
     # None when observation recording failed/was unavailable.
@@ -92,6 +98,8 @@ class DriftReport:
             "device_id": self.device_id,
             "has_drift": self.has_drift,
             "no_baseline": self.no_baseline,
+            "unreadable": self.unreadable,
+            "unreadable_reason": self.unreadable_reason,
             "observed_sha": self.observed_sha,
             "facets_checked": self.facets_checked,
             "facets_drifted": self.facets_drifted,

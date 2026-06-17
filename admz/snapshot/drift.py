@@ -40,6 +40,22 @@ class DriftDetector:
         if baseline_sha is None:
             baseline_sha = device_info.get("baseline_sha")
 
+        # Readability gate: if the live device can't be read (auth failure /
+        # unreachable), a field-by-field compare would mark EVERY baselined
+        # field as "removed" (false drift) and record an empty audit. Report
+        # 'couldn't read' instead — before probing or recording anything.
+        try:
+            ok, reason = await self.engine.probe_readable(
+                device_id, device_info, family
+            )
+        except Exception:  # noqa: BLE001 - engine without a usable probe -> don't block
+            ok, reason = True, ""
+        if not ok:
+            return DriftReport(
+                device_id=device_id, has_drift=False,
+                unreadable=True, unreadable_reason=reason,
+            )
+
         # Probe the device ONCE and record the observation. Best-effort: if
         # capture/commit fails (e.g. an engine without a git repo), drift
         # detection still proceeds via a direct probe below.
