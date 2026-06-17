@@ -748,6 +748,114 @@ async def delete_baseline(
     return {"success": True, "device_id": device_id, "name": name}
 
 
+class ApplyTagBaselineRequest(BaseModel):
+    name: str
+    # Exact tag membership; empty/None -> all devices (the "all" scope).
+    tag_filter: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("name is required")
+        return v
+
+
+@router.post("/snapshot/apply-tag-baseline")
+async def apply_tag_baseline(
+    request: Request,
+    req: ApplyTagBaselineRequest,
+    ctx: AppContext = Depends(get_context),
+):
+    """Apply a named alternate config across a tag (or the whole fleet when
+    ``tag_filter`` is empty): re-point each matching device's baseline to its
+    variant of that name (metadata), then push them all in ONE gated plan.
+    Devices without a variant by that name are skipped + reported. The push is
+    the standard blocked envelope — approve at ``confirm_url`` to run it."""
+    from admz import operations
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+
+    devices = ctx.registry.list_devices()
+    if req.tag_filter:
+        devices = [d for d in devices if req.tag_filter in (d.get("tags") or [])]
+
+    applied: List[dict] = []
+    skipped: List[str] = []
+    all_steps: List[dict] = []
+    for d in devices:
+        did = d.get("device_id")
+        if not did:
+            continue
+        try:
+            variants = ctx.registry.list_named_baselines(did)
+        except NotImplementedError:
+            variants = []
+        match = next((b for b in variants if b.get("name") == req.name), None)
+        if not match:
+            skipped.append(did)
+            continue
+        sha = match["commit_sha"]
+        # Re-point the active baseline (metadata, like make-active)...
+        ctx.registry.set_config_pointers(did, baseline_sha=sha)
+        operations.refresh_drift_after_accept(did, sha, d.get("latest_observed_sha"))
+        # ...and collect the steps to push that variant to the device.
+        spec = ctx.restore_builder.build_restore_plan(did, ref=sha)
+        all_steps.extend(spec.get("steps", []))
+        applied.append({"device_id": did, "commit_sha": sha})
+
+    resource = f"tag:{req.tag_filter or '*'}"
+    if not applied:
+        record_event(principal, "snapshot.apply_tag_baseline", resource=resource,
+                     details={"name": req.name, "outcome": "none-matched"})
+        return {
+            "message": f"No devices in scope have a saved config named '{req.name}'.",
+            "applied": [], "skipped": skipped, "name": req.name,
+        }
+
+    if not all_steps:
+        record_event(principal, "snapshot.apply_tag_baseline", resource=resource,
+                     details={"name": req.name,
+                              "applied": [a["device_id"] for a in applied],
+                              "outcome": "rebaselined-no-push"})
+        return {
+            "success": True,
+            "message": (
+                f"Re-pointed {len(applied)} baseline(s) to '{req.name}'; the "
+                "device(s) already match — nothing to push."
+            ),
+            "applied": applied, "skipped": skipped, "name": req.name,
+        }
+
+    description = (
+        f"Apply config '{req.name}' to {len(applied)} device"
+        + ("s" if len(applied) != 1 else "")
+    )
+    try:
+        plan = ctx.plan_engine.create_plan(
+            description=description, steps=all_steps, on_failure="stop",
+        )
+    except ValueError as e:
+        record_event(principal, "snapshot.apply_tag_baseline", resource=resource,
+                     success=False, error_message=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+
+    record_event(principal, "snapshot.apply_tag_baseline", resource=resource,
+                 details={"name": req.name, "plan_id": plan.plan_id,
+                          "applied": [a["device_id"] for a in applied],
+                          "skipped": skipped, "step_count": len(all_steps)})
+    result = await operations.execute_gated_plan(ctx.plan_engine, plan.plan_id)
+    result["applied"] = applied
+    result["skipped"] = skipped
+    result["name"] = req.name
+    return result
+
+
 @router.get("/snapshot/drift")
 async def check_drift(
     device_id: Optional[str] = Query(None),

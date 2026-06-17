@@ -238,6 +238,15 @@
             <button class="btn ghost sm" id="ac-save-btn" onclick="acSave()"><i data-lucide="save"></i> Save</button>
           </div>
         </div>
+        <div class="setting-row" id="ac-apply-row" style="border-top:1px solid var(--border);display:none">
+          <div style="display:flex;gap:8px;width:100%;flex-wrap:wrap;align-items:center">
+            <span class="page-sub" style="margin:0">Apply</span>
+            <select id="ac-apply-name" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px"></select>
+            <span class="page-sub" style="margin:0">across</span>
+            <select id="ac-apply-scope" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px"></select>
+            <button class="btn ghost sm" id="ac-apply-btn" onclick="acApplyTag()"><i data-lucide="git-branch"></i> Apply</button>
+          </div>
+        </div>
         <div id="ac-msg" class="page-sub" style="display:none;padding:0 16px 10px"></div>
       </div>
     </div>
@@ -308,6 +317,7 @@ const HEALTH = {
 })();
 
 const DEVICE_ID = {{ device.device_id|tojson }};
+const DEVICE_TAGS = {{ (device.tags or [])|tojson }};
 
 // ── Replace hardware: rebind this slot to a new unit (ADR-0036) ──
 const rhBtn = document.getElementById('replace-hw-btn');
@@ -563,6 +573,7 @@ async function loadAltConfigs() {
     if (!resp.ok) { box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">Unavailable.</p>'; return; }
     const data = await resp.json();
     const items = data.baselines || [];
+    acPopulateApply(items);
     if (!items.length) {
       box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">No saved configs yet. Save the current config under a name to switch between alternates later.</p>';
       return;
@@ -627,6 +638,45 @@ async function acDelete(encName, btn) {
     if (resp.ok) { loadAltConfigs(); }
     else { const data = await resp.json().catch(function(){return {};}); if (btn) btn.disabled = false; acMsg('Error: ' + (data.detail || resp.status), false); }
   } catch (e) { if (btn) btn.disabled = false; acMsg('Request failed.', false); }
+}
+function acPopulateApply(items) {
+  const row = document.getElementById('ac-apply-row');
+  const nameSel = document.getElementById('ac-apply-name');
+  const scopeSel = document.getElementById('ac-apply-scope');
+  if (!row || !nameSel || !scopeSel) return;
+  if (!items.length) { row.style.display = 'none'; return; }
+  row.style.display = '';
+  const names = Array.from(new Set(items.map(function(b){ return b.name; })));
+  nameSel.innerHTML = names.map(function(n){ return '<option value="' + ddEsc(n) + '">' + ddEsc(n) + '</option>'; }).join('');
+  if (!scopeSel.dataset.filled) {
+    let opts = (DEVICE_TAGS || []).map(function(t){ return '<option value="' + ddEsc(t) + '">tag: ' + ddEsc(t) + '</option>'; }).join('');
+    opts += '<option value="*">All devices</option>';
+    scopeSel.innerHTML = opts;
+    scopeSel.dataset.filled = '1';
+  }
+}
+async function acApplyTag() {
+  const name = (document.getElementById('ac-apply-name') || {}).value;
+  const scope = (document.getElementById('ac-apply-scope') || {}).value;
+  if (!name) return;
+  const tag_filter = (scope && scope !== '*') ? scope : null;
+  const btn = document.getElementById('ac-apply-btn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i> Applying…'; if (window.lucide) lucide.createIcons(); }
+  try {
+    const resp = await fetch('/api/snapshot/apply-tag-baseline', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: name, tag_filter: tag_filter}),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.confirm_url) { window.location = data.confirm_url; return; }
+    const applied = (data.applied || []).length, skipped = (data.skipped || []).length;
+    if (resp.ok && (data.success || data.applied)) {
+      acMsg((data.message || ('Applied to ' + applied + ' device(s).'))
+            + (skipped ? ' Skipped ' + skipped + ' without that config.' : ''), true);
+      loadAltConfigs(); loadConfigHistory();
+    } else { acMsg('Error: ' + (data.detail || data.message || 'failed'), false); }
+  } catch (e) { acMsg('Request failed.', false); }
+  if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="git-branch"></i> Apply'; if (window.lucide) lucide.createIcons(); }
 }
 loadAltConfigs();
 </script>

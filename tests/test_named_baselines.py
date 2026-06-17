@@ -132,3 +132,97 @@ class TestNamedBaselineRoutes:
     def test_list_unknown_device_404(self, client):
         c = client[0]
         assert c.get("/api/snapshot/baselines/ghost").status_code == 404
+
+
+# --------------------------------------------------------------------------
+# POST /api/snapshot/baselines/apply-tag  (per-tag / all-devices bulk apply)
+# Auth + the gated push plan are reused (tested via revert); here we isolate
+# the device-selection / skip / baseline re-point logic.
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def apply_client(tmp_path, monkeypatch):
+    db_path = tmp_path / "admz.db"
+    repo_path = tmp_path / "config-repo"
+    monkeypatch.setenv("ADMZ_DB_PATH", str(db_path))
+    monkeypatch.setenv("ADMZ_KEY_PATH", str(tmp_path / "admz.key"))
+    monkeypatch.setenv("ADMZ_CONFIG_REPO_PATH", str(repo_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("ADMZ_AUTH_BACKEND", "none")
+
+    repo = GitRepo(str(repo_path))
+    _init_git(repo)
+    # cam1 gets TWO commits; its "evening" variant points at the EARLIER one,
+    # so the startup baseline-backfill (which picks the latest) differs from it
+    # and the apply must actually re-point to prove it works.
+    _write_facet(repo, "cam1", "image", "x: 1\n")
+    s1 = repo.commit_snapshot("cam1", "Snapshot cam1", auto_push=False)  # evening variant
+    _write_facet(repo, "cam1", "image", "x: 2\n")
+    repo.commit_snapshot("cam1", "Snapshot cam1", auto_push=False)  # latest (backfill target)
+    _write_facet(repo, "cam3", "image", "x: 1\n")
+    s3 = repo.commit_snapshot("cam3", "Snapshot cam3", auto_push=False)
+
+    import admz.api.main as main_module
+    reg = SQLiteDeviceRegistry(
+        db_path=str(db_path), key_path=str(tmp_path / "admz.key"),
+    )
+    reg.add_device("cam1", {"host": "192.0.2.1", "tags": ["lab"]})
+    reg.save_named_baseline("cam1", "evening", s1)
+    reg.add_device("cam2", {"host": "192.0.2.2", "tags": ["lab"]})  # no variant
+    reg.add_device("cam3", {"host": "192.0.2.3", "tags": ["other"]})
+    reg.save_named_baseline("cam3", "evening", s3)
+    monkeypatch.setattr(main_module, "registry", reg)
+
+    # Neutralize auth + the reused/expensive bits so we test selection logic.
+    monkeypatch.setattr("admz.authz.require_authenticated_principal", lambda p: None)
+    monkeypatch.setattr("admz.operations.refresh_drift_after_accept", lambda *a, **k: None)
+
+    async def _fake_gated(engine, plan_id):
+        return {"blocked": True, "confirm_url": "/confirm/x", "plan_id": plan_id}
+
+    monkeypatch.setattr("admz.operations.execute_gated_plan", _fake_gated)
+    # Return no push steps -> the route takes the "re-pointed, nothing to push"
+    # branch, isolating the selection/skip/re-point logic (the gated push plan
+    # itself is covered by the revert tests + live verification).
+    monkeypatch.setattr(
+        "admz.snapshot.restore.RestoreBuilder.build_restore_plan",
+        lambda self, did, ref=None, **kw: {"steps": []},
+    )
+
+    with TestClient(main_module.app, follow_redirects=False) as c:
+        yield c, reg, s1, s3
+
+
+class TestApplyTagBaseline:
+    def test_apply_to_tag_selects_skips_and_repoints(self, apply_client):
+        c, reg, s1, s3 = apply_client
+        r = c.post("/api/snapshot/apply-tag-baseline",
+                   json={"name": "evening", "tag_filter": "lab"})
+        assert r.status_code == 200
+        body = r.json()
+        assert [a["device_id"] for a in body["applied"]] == ["cam1"]
+        assert body["skipped"] == ["cam2"]  # in 'lab' but has no 'evening'
+        assert body["success"] is True
+        assert "Re-pointed" in body["message"]
+        # cam1's baseline re-pointed to its 'evening' commit (the EARLIER one,
+        # so this differs from the latest commit the startup backfill picked —
+        # proving the apply actually re-pointed). cam3 (tag 'other') is out of
+        # scope: absent from both applied + skipped.
+        assert reg.get_device_info("cam1")["baseline_sha"] == s1
+        assert "cam3" not in [a["device_id"] for a in body["applied"]]
+        assert "cam3" not in body["skipped"]
+
+    def test_apply_all_devices_when_no_tag(self, apply_client):
+        c, reg, s1, s3 = apply_client
+        body = c.post("/api/snapshot/apply-tag-baseline",
+                      json={"name": "evening"}).json()
+        assert sorted(a["device_id"] for a in body["applied"]) == ["cam1", "cam3"]
+        assert body["skipped"] == ["cam2"]
+
+    def test_none_matched_message(self, apply_client):
+        c, reg, s1, s3 = apply_client
+        body = c.post("/api/snapshot/apply-tag-baseline",
+                      json={"name": "nope", "tag_filter": "lab"}).json()
+        assert body["applied"] == []
+        assert "No devices" in body["message"]
