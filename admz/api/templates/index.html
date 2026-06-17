@@ -159,7 +159,7 @@
                 <span class="page-sub" style="margin:0">Stop tracking the ticked fields (or use ⊘ on a row). Pick a scope — this device, a tag, or fleet-wide. Manage rules in Settings.</span>
               </div>
               <div class="drift-action-controls">
-                <button class="btn ghost sm" id="btn-exclude-{{ device.device_id }}" onclick="bulkExclude('{{ device.device_id }}')"><i data-lucide="eye-off"></i> Exclude selected</button>
+                <button class="btn ghost sm" id="btn-exclude-{{ device.device_id }}" onclick="bulkExclude('{{ device.device_id }}', event)"><i data-lucide="eye-off"></i> Exclude selected</button>
               </div>
             </div>
           </div>
@@ -484,7 +484,10 @@ async function excludeKeys(did, keys, scope) {
   }
 }
 
-function bulkExclude(did) {
+function bulkExclude(did, evt) {
+  // Stop the opening click from bubbling to the document click-handler that
+  // closes the menu (otherwise the scope picker opens and instantly closes).
+  if (evt) evt.stopPropagation();
   const keys = selectedCanonicalKeys(did);
   const resultEl = document.getElementById('result-' + did);
   if (!keys.length) {
