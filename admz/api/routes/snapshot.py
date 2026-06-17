@@ -550,6 +550,75 @@ async def diff_device(
     }
 
 
+# Commit-message prefix -> a short type label the history UI badges + icons.
+_HISTORY_TYPES = (
+    ("Accept baseline", "baseline"),
+    ("Audit:", "audit"),
+    ("Snapshot", "snapshot"),
+    ("Restore", "restore"),
+    ("Delete", "delete"),
+)
+
+
+def _classify_commit(message: str) -> str:
+    for prefix, label in _HISTORY_TYPES:
+        if message.startswith(prefix):
+            return label
+    return "other"
+
+
+@router.get("/snapshot/history/{device_id}")
+async def device_history(
+    device_id: str,
+    limit: int = Query(40, ge=1, le=200),
+    ctx: AppContext = Depends(get_context),
+):
+    """Config commit history for one device (newest first), annotated with
+    which commit is the current baseline / latest observation and a type
+    label per commit. Read-only — the same versioned config the drift diff
+    already exposes, surfaced as a timeline."""
+    if not ctx.registry.device_exists(device_id):
+        raise HTTPException(status_code=404, detail=f"Device not found: {device_id}")
+    info = ctx.registry.get_device_info(device_id)
+    baseline_sha = info.get("baseline_sha")
+    latest_sha = info.get("latest_observed_sha")
+    commits = ctx.git_repo.log(path=f"fleet/{device_id}/", max_count=limit)
+    for c in commits:
+        sha = c.get("sha", "")
+        c["short_sha"] = sha[:12]
+        c["type"] = _classify_commit(c.get("message", ""))
+        c["is_baseline"] = bool(baseline_sha) and sha == baseline_sha
+        c["is_latest_observed"] = bool(latest_sha) and sha == latest_sha
+    return {
+        "device_id": device_id,
+        "baseline_sha": baseline_sha,
+        "latest_observed_sha": latest_sha,
+        "count": len(commits),
+        "commits": commits,
+    }
+
+
+@router.get("/snapshot/history/{device_id}/{sha}/diff")
+async def device_history_diff(
+    device_id: str,
+    sha: str,
+    ctx: AppContext = Depends(get_context),
+):
+    """Unified diff a single commit introduced for this device (vs its
+    parent, or everything it added for a root commit)."""
+    validate_identifier(device_id, "device_id")
+    validate_git_ref(sha)
+    if not ctx.registry.device_exists(device_id):
+        raise HTTPException(status_code=404, detail=f"Device not found: {device_id}")
+    diff_text = ctx.git_repo.diff_commit(sha, path=f"fleet/{device_id}/")
+    return {
+        "device_id": device_id,
+        "sha": sha,
+        "short_sha": sha[:12],
+        "diff": diff_text if diff_text.strip() else "(no config changes in this commit)",
+    }
+
+
 @router.get("/snapshot/drift")
 async def check_drift(
     device_id: Optional[str] = Query(None),

@@ -316,6 +316,19 @@ class GitRepo:
         result = self._run_git(*args, check=False)
         return result.stdout
 
+    def diff_commit(self, sha: str, path: Optional[str] = None) -> str:
+        """Unified diff a single commit introduced — vs its first parent, or
+        the empty tree for a root commit (which has no parent). ``path``
+        scopes it to e.g. one device's directory."""
+        # Git's well-known empty-tree object id, so a ROOT commit still shows
+        # everything it added rather than erroring on a missing parent.
+        empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        parent = self._run_git(
+            "rev-parse", "--verify", "--quiet", f"{sha}^", check=False
+        )
+        base = parent.stdout.strip() if parent.returncode == 0 else empty_tree
+        return self.diff(base, sha, path=path)
+
     def list_tags(self) -> List[str]:
         result = self._run_git("tag", "-l", check=False)
         return result.stdout.strip().split("\n") if result.stdout.strip() else []

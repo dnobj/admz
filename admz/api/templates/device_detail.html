@@ -110,13 +110,27 @@
       </div>
     </div>
 
-    <!-- Snapshot history -->
+    <!-- Config history -->
     <div class="card">
-      <div class="card-header"><i data-lucide="git-commit-horizontal"></i><span class="title">Snapshot history</span></div>
-      <div class="card-body">
-        <p class="page-sub" style="margin:0">Configuration is snapshotted to git — versioned, diffable, restorable. View the per-facet diff and baselines on the <a href="/devices?filter=drifted">Configuration</a> screen.</p>
+      <div class="card-header"><i data-lucide="git-commit-horizontal"></i><span class="title">Config history</span></div>
+      <div class="card-body flush">
+        <div id="cfg-history"><p class="page-sub" style="margin:0;padding:10px 16px">Loading history…</p></div>
       </div>
     </div>
+    <style>
+      #cfg-history .hist-row { border-top:1px solid var(--border); }
+      #cfg-history .hist-row:first-child { border-top:0; }
+      #cfg-history .hist-line { display:flex; align-items:center; gap:10px; padding:9px 16px; cursor:pointer; }
+      #cfg-history .hist-line:hover { background:var(--surface); }
+      #cfg-history .hist-msg { flex:1; min-width:0; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      #cfg-history .hist-meta { font-size:12px; color:var(--text-muted); white-space:nowrap; }
+      #cfg-history .hist-meta code { font-size:11px; }
+      #cfg-history .hist-chev { width:15px; height:15px; color:var(--text-faint); transition:transform .15s; flex:0 0 auto; }
+      #cfg-history .hist-row.open .hist-chev { transform:rotate(180deg); }
+      #cfg-history .hist-detail { padding:0 16px 12px 38px; }
+      #cfg-history .hist-diff { margin:0; max-height:340px; overflow:auto; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; font-size:12px; line-height:1.45; white-space:pre; }
+      #cfg-history .hist-actions { margin-top:8px; }
+    </style>
   </div>
 
   <!-- Right column -->
@@ -440,5 +454,91 @@ if (delBtn) {
     if (window.lucide) lucide.createIcons();
   });
 }
+
+// ── Config history timeline ──
+const HIST_TYPE = {
+  snapshot: {cls:'sem-grey'},  baseline: {cls:'sem-green'},
+  audit:    {cls:'sem-grey'},  restore:  {cls:'sem-amber'},
+  delete:   {cls:'sem-amber'}, other:    {cls:'sem-grey'},
+};
+function histRel(iso) {
+  if (!iso) return '';
+  const d = new Date(iso); if (isNaN(d.getTime())) return '';
+  const s = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  if (s < 2592000) return Math.floor(s/86400) + 'd ago';
+  return d.toLocaleDateString();
+}
+async function loadConfigHistory() {
+  const box = document.getElementById('cfg-history');
+  if (!box) return;
+  try {
+    const resp = await fetch('/api/snapshot/history/' + encodeURIComponent(DEVICE_ID) + '?limit=40');
+    if (!resp.ok) { box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">History unavailable.</p>'; return; }
+    const data = await resp.json();
+    const commits = data.commits || [];
+    if (!commits.length) {
+      box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">No snapshots yet — snapshot this device to start its history.</p>';
+      return;
+    }
+    box.innerHTML = commits.map(function(c) {
+      const t = HIST_TYPE[c.type] || HIST_TYPE.other;
+      let markers = '';
+      if (c.is_baseline) markers += ' <span class="badge green"><span class="dot"></span>baseline</span>';
+      else if (c.is_latest_observed) markers += ' <span class="badge">latest</span>';
+      const actions = c.is_baseline ? '' :
+        '<div class="hist-actions"><button class="btn ghost sm" onclick="histSetBaseline(\'' + c.sha + '\', this)"><i data-lucide="flag"></i> Set as baseline</button></div>';
+      return '<div class="hist-row" data-sha="' + c.sha + '">'
+        + '<div class="hist-line" onclick="histToggle(this)">'
+        +   '<span class="status-dot ' + t.cls + '"><span class="core"></span></span>'
+        +   '<span class="hist-msg">' + ddEsc(c.message) + markers + '</span>'
+        +   '<span class="hist-meta" title="' + ddEsc(c.date || '') + '">' + ddEsc(histRel(c.date)) + ' · <code>' + ddEsc(c.short_sha) + '</code></span>'
+        +   '<i data-lucide="chevron-down" class="hist-chev"></i>'
+        + '</div>'
+        + '<div class="hist-detail hidden"><pre class="hist-diff">Loading diff…</pre>' + actions + '</div>'
+        + '</div>';
+    }).join('');
+    if (window.lucide) lucide.createIcons();
+  } catch (e) {
+    box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">History unavailable.</p>';
+  }
+}
+async function histToggle(lineEl) {
+  const row = lineEl.closest('.hist-row');
+  const detail = row.querySelector('.hist-detail');
+  const pre = row.querySelector('.hist-diff');
+  if (!detail.classList.contains('hidden')) { detail.classList.add('hidden'); row.classList.remove('open'); return; }
+  detail.classList.remove('hidden'); row.classList.add('open');
+  if (pre.dataset.loaded) return;
+  try {
+    const sha = row.getAttribute('data-sha');
+    const resp = await fetch('/api/snapshot/history/' + encodeURIComponent(DEVICE_ID) + '/' + encodeURIComponent(sha) + '/diff');
+    const data = await resp.json();
+    pre.textContent = resp.ok ? (data.diff || '(no changes)') : ('Error: ' + (data.detail || resp.status));
+    pre.dataset.loaded = '1';
+  } catch (e) { pre.textContent = 'Failed to load diff.'; }
+}
+async function histSetBaseline(sha, btn) {
+  if (!confirm('Set this commit as the device baseline?\nDrift will be measured against it from now on.')) return;
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i> Setting…'; if (window.lucide) lucide.createIcons(); }
+  try {
+    const resp = await fetch('/api/snapshot/accept-baseline', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({device_id: DEVICE_ID, commit_sha: sha, note: 'Set as baseline from history'}),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.success) { loadConfigHistory(); }
+    else {
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="flag"></i> Set as baseline'; if (window.lucide) lucide.createIcons(); }
+      alert('Error: ' + (data.detail || data.message || 'failed'));
+    }
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="flag"></i> Set as baseline'; if (window.lucide) lucide.createIcons(); }
+    alert('Request failed.');
+  }
+}
+loadConfigHistory();
 </script>
 {% endblock %}
