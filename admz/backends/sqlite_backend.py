@@ -119,6 +119,22 @@ CREATE TABLE IF NOT EXISTS sites (
     metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_sites_org ON sites(org_id);
+
+-- Named config baselines (alternate configurations) per device: a name -> a
+-- git commit that holds a saved full config for the device. The ACTIVE one is
+-- whichever commit_sha == devices.baseline_sha (no separate flag). Kept in a
+-- dedicated table (not info_json) so health/facts churn can't clobber it,
+-- mirroring the baseline_sha pointer columns.
+CREATE TABLE IF NOT EXISTS device_baselines (
+    device_id   TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    commit_sha  TEXT NOT NULL,
+    note        TEXT NOT NULL DEFAULT '',
+    created_at  REAL NOT NULL,
+    created_by  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (device_id, name),
+    FOREIGN KEY (device_id) REFERENCES devices(device_id) ON DELETE CASCADE
+);
 """
 
 # ADR-0032: the device_groups / device_group_memberships tables are gone —
@@ -489,6 +505,60 @@ class SQLiteDeviceRegistry(DeviceRegistry):
                 values,
             )
             conn.commit()
+
+    # ── Named config baselines (alternate configurations) ──────────────────
+    def save_named_baseline(
+        self,
+        device_id: str,
+        name: str,
+        commit_sha: str,
+        *,
+        note: str = "",
+        created_by: str = "",
+    ) -> None:
+        """Save (or overwrite) a named full-config baseline — a name pointing
+        at a git commit that holds a saved config for the device. The ACTIVE
+        baseline is whichever name's ``commit_sha`` equals the device's
+        ``baseline_sha`` (no separate flag)."""
+        import time
+        if not self.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device '{device_id}' not found")
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO device_baselines "
+                "(device_id, name, commit_sha, note, created_at, created_by) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(device_id, name) DO UPDATE SET "
+                "commit_sha=excluded.commit_sha, note=excluded.note, "
+                "created_at=excluded.created_at, created_by=excluded.created_by",
+                (device_id, name, commit_sha, note or "", time.time(), created_by or ""),
+            )
+            conn.commit()
+
+    def list_named_baselines(self, device_id: str) -> List[Dict[str, Any]]:
+        """All named baselines for a device (newest first)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT name, commit_sha, note, created_at, created_by "
+                "FROM device_baselines WHERE device_id=? ORDER BY created_at DESC",
+                (device_id,),
+            ).fetchall()
+        return [
+            {"name": r[0], "commit_sha": r[1], "note": r[2],
+             "created_at": r[3], "created_by": r[4]}
+            for r in rows
+        ]
+
+    def delete_named_baseline(self, device_id: str, name: str) -> bool:
+        """Remove a named baseline (the underlying commit stays in git
+        history). Returns True if a row was actually removed."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM device_baselines WHERE device_id=? AND name=?",
+                (device_id, name),
+            )
+            conn.commit()
+            return cur.rowcount > 0
 
     def remove_device(self, device_id: str) -> None:
         if not self.device_exists(device_id):

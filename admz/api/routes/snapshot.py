@@ -550,6 +550,312 @@ async def diff_device(
     }
 
 
+# Commit-message prefix -> a short type label the history UI badges + icons.
+_HISTORY_TYPES = (
+    ("Accept baseline", "baseline"),
+    ("Audit:", "audit"),
+    ("Snapshot", "snapshot"),
+    ("Restore", "restore"),
+    ("Delete", "delete"),
+)
+
+
+def _classify_commit(message: str) -> str:
+    for prefix, label in _HISTORY_TYPES:
+        if message.startswith(prefix):
+            return label
+    return "other"
+
+
+@router.get("/snapshot/history/{device_id}")
+async def device_history(
+    device_id: str,
+    limit: int = Query(40, ge=1, le=200),
+    ctx: AppContext = Depends(get_context),
+):
+    """Config commit history for one device (newest first), annotated with
+    which commit is the current baseline / latest observation and a type
+    label per commit. Read-only — the same versioned config the drift diff
+    already exposes, surfaced as a timeline."""
+    if not ctx.registry.device_exists(device_id):
+        raise HTTPException(status_code=404, detail=f"Device not found: {device_id}")
+    info = ctx.registry.get_device_info(device_id)
+    baseline_sha = info.get("baseline_sha")
+    latest_sha = info.get("latest_observed_sha")
+    commits = ctx.git_repo.log(path=f"fleet/{device_id}/", max_count=limit)
+    for c in commits:
+        sha = c.get("sha", "")
+        c["short_sha"] = sha[:12]
+        c["type"] = _classify_commit(c.get("message", ""))
+        c["is_baseline"] = bool(baseline_sha) and sha == baseline_sha
+        c["is_latest_observed"] = bool(latest_sha) and sha == latest_sha
+    return {
+        "device_id": device_id,
+        "baseline_sha": baseline_sha,
+        "latest_observed_sha": latest_sha,
+        "count": len(commits),
+        "commits": commits,
+    }
+
+
+@router.get("/snapshot/history/{device_id}/{sha}/diff")
+async def device_history_diff(
+    device_id: str,
+    sha: str,
+    ctx: AppContext = Depends(get_context),
+):
+    """Unified diff a single commit introduced for this device (vs its
+    parent, or everything it added for a root commit)."""
+    validate_identifier(device_id, "device_id")
+    validate_git_ref(sha)
+    if not ctx.registry.device_exists(device_id):
+        raise HTTPException(status_code=404, detail=f"Device not found: {device_id}")
+    diff_text = ctx.git_repo.diff_commit(sha, path=f"fleet/{device_id}/")
+    return {
+        "device_id": device_id,
+        "sha": sha,
+        "short_sha": sha[:12],
+        "diff": diff_text if diff_text.strip() else "(no config changes in this commit)",
+    }
+
+
+# --------------------------------------------------------------------------
+# Named config baselines (alternate configurations), ADR-0031 follow-on.
+# A named baseline = a name -> a git commit holding a saved full config for
+# the device. The ACTIVE one is whichever commit == the device's baseline_sha,
+# so "make active" reuses POST /snapshot/accept-baseline (with that commit_sha)
+# and "push to the device" reuses POST /snapshot/revert — this surface only
+# manages the name->commit mapping.
+# --------------------------------------------------------------------------
+
+class SaveBaselineRequest(BaseModel):
+    name: str
+    commit_sha: Optional[str] = None  # default: the device's current baseline
+    note: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: str) -> str:
+        import re
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("name is required")
+        if len(v) > 64:
+            raise ValueError("name too long (max 64)")
+        if not re.fullmatch(r"[A-Za-z0-9 ._-]+", v):
+            raise ValueError("name may only contain letters, digits, space, . _ -")
+        return v
+
+    @field_validator("commit_sha")
+    @classmethod
+    def _check_sha(cls, v: Optional[str]) -> Optional[str]:
+        return validate_git_ref(v) if v else None
+
+
+@router.get("/snapshot/baselines/{device_id}")
+async def list_baselines(device_id: str, ctx: AppContext = Depends(get_context)):
+    """Named config baselines (alternate configs) for a device, with the
+    active one flagged (its commit == the device's ``baseline_sha``)."""
+    if not ctx.registry.device_exists(device_id):
+        raise HTTPException(status_code=404, detail=f"Device not found: {device_id}")
+    info = ctx.registry.get_device_info(device_id)
+    baseline_sha = info.get("baseline_sha")
+    try:
+        items = ctx.registry.list_named_baselines(device_id)
+    except NotImplementedError:
+        items = []
+    active = None
+    for b in items:
+        b["short_sha"] = (b.get("commit_sha") or "")[:12]
+        b["is_active"] = bool(baseline_sha) and b.get("commit_sha") == baseline_sha
+        if b["is_active"]:
+            active = b["name"]
+    return {
+        "device_id": device_id,
+        "baseline_sha": baseline_sha,
+        "active_name": active,
+        "baselines": items,
+    }
+
+
+@router.post("/snapshot/baselines/{device_id}")
+async def save_baseline(
+    request: Request,
+    device_id: str,
+    req: SaveBaselineRequest,
+    ctx: AppContext = Depends(get_context),
+):
+    """Save the current baseline (or an explicit ``commit_sha``) as a named
+    alternate config. Authenticated + audited, like accept-baseline."""
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+    resource = f"device:{device_id}"
+
+    if not ctx.registry.device_exists(device_id):
+        raise HTTPException(status_code=404, detail=f"Device not found: {device_id}")
+    info = ctx.registry.get_device_info(device_id)
+    target = req.commit_sha or info.get("baseline_sha")
+    if not target:
+        raise HTTPException(
+            status_code=400,
+            detail="No commit to save — snapshot the device first, or pass commit_sha.",
+        )
+    if not ctx.git_repo.list_facets_at(device_id, target):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Commit {target[:12]} holds no config for {device_id}.",
+        )
+    try:
+        ctx.registry.save_named_baseline(
+            device_id, req.name, target,
+            note=(req.note or "").strip(), created_by=str(principal),
+        )
+    except NotImplementedError:
+        raise HTTPException(status_code=501, detail="Backend does not support named baselines.")
+    record_event(principal, "snapshot.save_named_baseline", resource=resource,
+                 details={"name": req.name, "commit_sha": target})
+    return {"success": True, "device_id": device_id, "name": req.name, "commit_sha": target}
+
+
+@router.delete("/snapshot/baselines/{device_id}/{name}")
+async def delete_baseline(
+    request: Request,
+    device_id: str,
+    name: str,
+    ctx: AppContext = Depends(get_context),
+):
+    """Delete a named alternate config (the git commit stays in history)."""
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+    if not ctx.registry.device_exists(device_id):
+        raise HTTPException(status_code=404, detail=f"Device not found: {device_id}")
+    try:
+        removed = ctx.registry.delete_named_baseline(device_id, name)
+    except NotImplementedError:
+        raise HTTPException(status_code=501, detail="Backend does not support named baselines.")
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"No named baseline '{name}' on {device_id}.")
+    record_event(principal, "snapshot.delete_named_baseline",
+                 resource=f"device:{device_id}", details={"name": name})
+    return {"success": True, "device_id": device_id, "name": name}
+
+
+class ApplyTagBaselineRequest(BaseModel):
+    name: str
+    # Exact tag membership; empty/None -> all devices (the "all" scope).
+    tag_filter: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("name is required")
+        return v
+
+
+@router.post("/snapshot/apply-tag-baseline")
+async def apply_tag_baseline(
+    request: Request,
+    req: ApplyTagBaselineRequest,
+    ctx: AppContext = Depends(get_context),
+):
+    """Apply a named alternate config across a tag (or the whole fleet when
+    ``tag_filter`` is empty): re-point each matching device's baseline to its
+    variant of that name (metadata), then push them all in ONE gated plan.
+    Devices without a variant by that name are skipped + reported. The push is
+    the standard blocked envelope — approve at ``confirm_url`` to run it."""
+    from admz import operations
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+
+    devices = ctx.registry.list_devices()
+    if req.tag_filter:
+        devices = [d for d in devices if req.tag_filter in (d.get("tags") or [])]
+
+    applied: List[dict] = []
+    skipped: List[str] = []
+    all_steps: List[dict] = []
+    for d in devices:
+        did = d.get("device_id")
+        if not did:
+            continue
+        try:
+            variants = ctx.registry.list_named_baselines(did)
+        except NotImplementedError:
+            variants = []
+        match = next((b for b in variants if b.get("name") == req.name), None)
+        if not match:
+            skipped.append(did)
+            continue
+        sha = match["commit_sha"]
+        # Re-point the active baseline (metadata, like make-active)...
+        ctx.registry.set_config_pointers(did, baseline_sha=sha)
+        operations.refresh_drift_after_accept(did, sha, d.get("latest_observed_sha"))
+        # ...and collect the steps to push that variant to the device.
+        spec = ctx.restore_builder.build_restore_plan(did, ref=sha)
+        all_steps.extend(spec.get("steps", []))
+        applied.append({"device_id": did, "commit_sha": sha})
+
+    resource = f"tag:{req.tag_filter or '*'}"
+    if not applied:
+        record_event(principal, "snapshot.apply_tag_baseline", resource=resource,
+                     details={"name": req.name, "outcome": "none-matched"})
+        return {
+            "message": f"No devices in scope have a saved config named '{req.name}'.",
+            "applied": [], "skipped": skipped, "name": req.name,
+        }
+
+    if not all_steps:
+        record_event(principal, "snapshot.apply_tag_baseline", resource=resource,
+                     details={"name": req.name,
+                              "applied": [a["device_id"] for a in applied],
+                              "outcome": "rebaselined-no-push"})
+        return {
+            "success": True,
+            "message": (
+                f"Re-pointed {len(applied)} baseline(s) to '{req.name}'; the "
+                "device(s) already match — nothing to push."
+            ),
+            "applied": applied, "skipped": skipped, "name": req.name,
+        }
+
+    description = (
+        f"Apply config '{req.name}' to {len(applied)} device"
+        + ("s" if len(applied) != 1 else "")
+    )
+    try:
+        plan = ctx.plan_engine.create_plan(
+            description=description, steps=all_steps, on_failure="stop",
+        )
+    except ValueError as e:
+        record_event(principal, "snapshot.apply_tag_baseline", resource=resource,
+                     success=False, error_message=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+
+    record_event(principal, "snapshot.apply_tag_baseline", resource=resource,
+                 details={"name": req.name, "plan_id": plan.plan_id,
+                          "applied": [a["device_id"] for a in applied],
+                          "skipped": skipped, "step_count": len(all_steps)})
+    result = await operations.execute_gated_plan(ctx.plan_engine, plan.plan_id)
+    result["applied"] = applied
+    result["skipped"] = skipped
+    result["name"] = req.name
+    return result
+
+
 @router.get("/snapshot/drift")
 async def check_drift(
     device_id: Optional[str] = Query(None),

@@ -110,13 +110,27 @@
       </div>
     </div>
 
-    <!-- Snapshot history -->
+    <!-- Config history -->
     <div class="card">
-      <div class="card-header"><i data-lucide="git-commit-horizontal"></i><span class="title">Snapshot history</span></div>
-      <div class="card-body">
-        <p class="page-sub" style="margin:0">Configuration is snapshotted to git — versioned, diffable, restorable. View the per-facet diff and baselines on the <a href="/devices?filter=drifted">Configuration</a> screen.</p>
+      <div class="card-header"><i data-lucide="git-commit-horizontal"></i><span class="title">Config history</span></div>
+      <div class="card-body flush">
+        <div id="cfg-history"><p class="page-sub" style="margin:0;padding:10px 16px">Loading history…</p></div>
       </div>
     </div>
+    <style>
+      #cfg-history .hist-row { border-top:1px solid var(--border); }
+      #cfg-history .hist-row:first-child { border-top:0; }
+      #cfg-history .hist-line { display:flex; align-items:center; gap:10px; padding:9px 16px; cursor:pointer; }
+      #cfg-history .hist-line:hover { background:var(--surface); }
+      #cfg-history .hist-msg { flex:1; min-width:0; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      #cfg-history .hist-meta { font-size:12px; color:var(--text-muted); white-space:nowrap; }
+      #cfg-history .hist-meta code { font-size:11px; }
+      #cfg-history .hist-chev { width:15px; height:15px; color:var(--text-faint); transition:transform .15s; flex:0 0 auto; }
+      #cfg-history .hist-row.open .hist-chev { transform:rotate(180deg); }
+      #cfg-history .hist-detail { padding:0 16px 12px 38px; }
+      #cfg-history .hist-diff { margin:0; max-height:340px; overflow:auto; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; font-size:12px; line-height:1.45; white-space:pre; }
+      #cfg-history .hist-actions { margin-top:8px; }
+    </style>
   </div>
 
   <!-- Right column -->
@@ -212,17 +226,39 @@
       </div>
     </div>
 
-    <!-- Branch panel (quiet, collapsible) -->
-    <div class="branch-panel">
-      <div class="bp-head" data-collapse-toggle="branch-body">
-        <i data-lucide="git-branch"></i><span class="t">Configuration branches</span>
-        <span class="sub">on main · none saved</span>
-      </div>
-      <div id="branch-body" class="hidden">
-        <div class="branch-row"><span class="bn">main</span><span class="page-sub" style="margin:0">everyday baseline · active</span><span class="ml-auto badge green"><span class="dot"></span>active</span></div>
-        <div class="setting-row"><div class="sr-text"><div class="sr-desc">Branches are saved alternate configs (overlays on main) you can apply to this slot. None exist yet — create one from the Configuration screen.</div></div></div>
+    <!-- Alternate configurations (named baselines) -->
+    <div class="card">
+      <div class="card-header"><i data-lucide="git-branch"></i><span class="title">Alternate configurations</span></div>
+      <div class="card-body flush">
+        <div id="alt-configs"><p class="page-sub" style="margin:0;padding:10px 16px">Loading…</p></div>
+        <div class="setting-row" style="border-top:1px solid var(--border)">
+          <div style="display:flex;gap:8px;width:100%;flex-wrap:wrap;align-items:center">
+            <input type="text" id="ac-name" maxlength="64" placeholder="Save current config as… (e.g. event-mode)"
+                   style="flex:1;min-width:180px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px">
+            <button class="btn ghost sm" id="ac-save-btn" onclick="acSave()"><i data-lucide="save"></i> Save</button>
+          </div>
+        </div>
+        <div class="setting-row" id="ac-apply-row" style="border-top:1px solid var(--border);display:none">
+          <div style="display:flex;gap:8px;width:100%;flex-wrap:wrap;align-items:center">
+            <span class="page-sub" style="margin:0">Apply</span>
+            <select id="ac-apply-name" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px"></select>
+            <span class="page-sub" style="margin:0">across</span>
+            <select id="ac-apply-scope" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px"></select>
+            <button class="btn ghost sm" id="ac-apply-btn" onclick="acApplyTag()"><i data-lucide="git-branch"></i> Apply</button>
+          </div>
+        </div>
+        <div id="ac-msg" class="page-sub" style="display:none;padding:0 16px 10px"></div>
       </div>
     </div>
+    <style>
+      #alt-configs .ac-row { display:flex; align-items:center; gap:10px; padding:9px 16px; border-top:1px solid var(--border); }
+      #alt-configs .ac-row:first-child { border-top:0; }
+      #alt-configs .ac-main { flex:1; min-width:0; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+      #alt-configs .ac-name { font-size:13px; font-weight:600; }
+      #alt-configs .ac-note { font-size:12px; color:var(--text-muted); }
+      #alt-configs .ac-sha { font-size:11px; color:var(--text-faint); }
+      #alt-configs .ac-acts { display:flex; gap:6px; flex:0 0 auto; }
+    </style>
   </div>
 </div>
 
@@ -281,6 +317,7 @@ const HEALTH = {
 })();
 
 const DEVICE_ID = {{ device.device_id|tojson }};
+const DEVICE_TAGS = {{ (device.tags or [])|tojson }};
 
 // ── Replace hardware: rebind this slot to a new unit (ADR-0036) ──
 const rhBtn = document.getElementById('replace-hw-btn');
@@ -440,5 +477,207 @@ if (delBtn) {
     if (window.lucide) lucide.createIcons();
   });
 }
+
+// ── Config history timeline ──
+const HIST_TYPE = {
+  snapshot: {cls:'sem-grey'},  baseline: {cls:'sem-green'},
+  audit:    {cls:'sem-grey'},  restore:  {cls:'sem-amber'},
+  delete:   {cls:'sem-amber'}, other:    {cls:'sem-grey'},
+};
+function histRel(iso) {
+  if (!iso) return '';
+  const d = new Date(iso); if (isNaN(d.getTime())) return '';
+  const s = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  if (s < 2592000) return Math.floor(s/86400) + 'd ago';
+  return d.toLocaleDateString();
+}
+async function loadConfigHistory() {
+  const box = document.getElementById('cfg-history');
+  if (!box) return;
+  try {
+    const resp = await fetch('/api/snapshot/history/' + encodeURIComponent(DEVICE_ID) + '?limit=40');
+    if (!resp.ok) { box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">History unavailable.</p>'; return; }
+    const data = await resp.json();
+    const commits = data.commits || [];
+    if (!commits.length) {
+      box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">No snapshots yet — snapshot this device to start its history.</p>';
+      return;
+    }
+    box.innerHTML = commits.map(function(c) {
+      const t = HIST_TYPE[c.type] || HIST_TYPE.other;
+      let markers = '';
+      if (c.is_baseline) markers += ' <span class="badge green"><span class="dot"></span>baseline</span>';
+      else if (c.is_latest_observed) markers += ' <span class="badge">latest</span>';
+      const actions = c.is_baseline ? '' :
+        '<div class="hist-actions"><button class="btn ghost sm" onclick="histSetBaseline(\'' + c.sha + '\', this)"><i data-lucide="flag"></i> Set as baseline</button></div>';
+      return '<div class="hist-row" data-sha="' + c.sha + '">'
+        + '<div class="hist-line" onclick="histToggle(this)">'
+        +   '<span class="status-dot ' + t.cls + '"><span class="core"></span></span>'
+        +   '<span class="hist-msg">' + ddEsc(c.message) + markers + '</span>'
+        +   '<span class="hist-meta" title="' + ddEsc(c.date || '') + '">' + ddEsc(histRel(c.date)) + ' · <code>' + ddEsc(c.short_sha) + '</code></span>'
+        +   '<i data-lucide="chevron-down" class="hist-chev"></i>'
+        + '</div>'
+        + '<div class="hist-detail hidden"><pre class="hist-diff">Loading diff…</pre>' + actions + '</div>'
+        + '</div>';
+    }).join('');
+    if (window.lucide) lucide.createIcons();
+  } catch (e) {
+    box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">History unavailable.</p>';
+  }
+}
+async function histToggle(lineEl) {
+  const row = lineEl.closest('.hist-row');
+  const detail = row.querySelector('.hist-detail');
+  const pre = row.querySelector('.hist-diff');
+  if (!detail.classList.contains('hidden')) { detail.classList.add('hidden'); row.classList.remove('open'); return; }
+  detail.classList.remove('hidden'); row.classList.add('open');
+  if (pre.dataset.loaded) return;
+  try {
+    const sha = row.getAttribute('data-sha');
+    const resp = await fetch('/api/snapshot/history/' + encodeURIComponent(DEVICE_ID) + '/' + encodeURIComponent(sha) + '/diff');
+    const data = await resp.json();
+    pre.textContent = resp.ok ? (data.diff || '(no changes)') : ('Error: ' + (data.detail || resp.status));
+    pre.dataset.loaded = '1';
+  } catch (e) { pre.textContent = 'Failed to load diff.'; }
+}
+async function histSetBaseline(sha, btn) {
+  if (!confirm('Set this commit as the device baseline?\nDrift will be measured against it from now on.')) return;
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i> Setting…'; if (window.lucide) lucide.createIcons(); }
+  try {
+    const resp = await fetch('/api/snapshot/accept-baseline', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({device_id: DEVICE_ID, commit_sha: sha, note: 'Set as baseline from history'}),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.success) { loadConfigHistory(); }
+    else {
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="flag"></i> Set as baseline'; if (window.lucide) lucide.createIcons(); }
+      alert('Error: ' + (data.detail || data.message || 'failed'));
+    }
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="flag"></i> Set as baseline'; if (window.lucide) lucide.createIcons(); }
+    alert('Request failed.');
+  }
+}
+loadConfigHistory();
+
+// ── Alternate configurations (named baselines) ──
+async function loadAltConfigs() {
+  const box = document.getElementById('alt-configs');
+  if (!box) return;
+  try {
+    const resp = await fetch('/api/snapshot/baselines/' + encodeURIComponent(DEVICE_ID));
+    if (!resp.ok) { box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">Unavailable.</p>'; return; }
+    const data = await resp.json();
+    const items = data.baselines || [];
+    acPopulateApply(items);
+    if (!items.length) {
+      box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">No saved configs yet. Save the current config under a name to switch between alternates later.</p>';
+      return;
+    }
+    box.innerHTML = items.map(function(b) {
+      const active = b.is_active ? '<span class="badge green"><span class="dot"></span>active</span>' : '';
+      const acts = b.is_active ? '' :
+        '<button class="btn ghost sm" onclick="acActivate(\'' + b.commit_sha + '\', this)" title="Make this the baseline drift compares against"><i data-lucide="flag"></i> Make active</button>';
+      return '<div class="ac-row">'
+        + '<div class="ac-main"><span class="ac-name">' + ddEsc(b.name) + '</span>' + active
+        +   (b.note ? '<span class="ac-note">' + ddEsc(b.note) + '</span>' : '')
+        +   '<code class="ac-sha">' + ddEsc(b.short_sha) + '</code></div>'
+        + '<div class="ac-acts">' + acts
+        +   '<button class="btn ghost sm" onclick="acDelete(\'' + encodeURIComponent(b.name) + '\', this)" title="Delete this saved config (git history kept)"><i data-lucide="trash-2"></i></button></div>'
+        + '</div>';
+    }).join('');
+    if (window.lucide) lucide.createIcons();
+  } catch (e) { box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">Unavailable.</p>'; }
+}
+function acMsg(text, ok) {
+  const m = document.getElementById('ac-msg');
+  if (!m) return;
+  m.style.display = ''; m.style.color = ok ? 'var(--fg-green,#4ade80)' : 'var(--fg-red,#f87171)';
+  m.textContent = text;
+}
+async function acSave() {
+  const inp = document.getElementById('ac-name');
+  const name = (inp.value || '').trim();
+  if (!name) { acMsg('Enter a name.', false); return; }
+  const btn = document.getElementById('ac-save-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const resp = await fetch('/api/snapshot/baselines/' + encodeURIComponent(DEVICE_ID), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: name}),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.success) { inp.value = ''; acMsg('Saved "' + name + '".', true); loadAltConfigs(); }
+    else { acMsg('Error: ' + (data.detail || data.message || 'failed'), false); }
+  } catch (e) { acMsg('Request failed.', false); }
+  if (btn) btn.disabled = false;
+}
+async function acActivate(sha, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const resp = await fetch('/api/snapshot/accept-baseline', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({device_id: DEVICE_ID, commit_sha: sha, note: 'Activate alternate config'}),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.success) {
+      acMsg('Now the active baseline. To push it to the device, use “Revert to baseline”.', true);
+      loadAltConfigs(); loadConfigHistory();
+    } else { if (btn) btn.disabled = false; acMsg('Error: ' + (data.detail || 'failed'), false); }
+  } catch (e) { if (btn) btn.disabled = false; acMsg('Request failed.', false); }
+}
+async function acDelete(encName, btn) {
+  if (!confirm('Delete this saved config? (Its git history is kept.)')) return;
+  if (btn) btn.disabled = true;
+  try {
+    const resp = await fetch('/api/snapshot/baselines/' + encodeURIComponent(DEVICE_ID) + '/' + encName, {method: 'DELETE'});
+    if (resp.ok) { loadAltConfigs(); }
+    else { const data = await resp.json().catch(function(){return {};}); if (btn) btn.disabled = false; acMsg('Error: ' + (data.detail || resp.status), false); }
+  } catch (e) { if (btn) btn.disabled = false; acMsg('Request failed.', false); }
+}
+function acPopulateApply(items) {
+  const row = document.getElementById('ac-apply-row');
+  const nameSel = document.getElementById('ac-apply-name');
+  const scopeSel = document.getElementById('ac-apply-scope');
+  if (!row || !nameSel || !scopeSel) return;
+  if (!items.length) { row.style.display = 'none'; return; }
+  row.style.display = '';
+  const names = Array.from(new Set(items.map(function(b){ return b.name; })));
+  nameSel.innerHTML = names.map(function(n){ return '<option value="' + ddEsc(n) + '">' + ddEsc(n) + '</option>'; }).join('');
+  if (!scopeSel.dataset.filled) {
+    let opts = (DEVICE_TAGS || []).map(function(t){ return '<option value="' + ddEsc(t) + '">tag: ' + ddEsc(t) + '</option>'; }).join('');
+    opts += '<option value="*">All devices</option>';
+    scopeSel.innerHTML = opts;
+    scopeSel.dataset.filled = '1';
+  }
+}
+async function acApplyTag() {
+  const name = (document.getElementById('ac-apply-name') || {}).value;
+  const scope = (document.getElementById('ac-apply-scope') || {}).value;
+  if (!name) return;
+  const tag_filter = (scope && scope !== '*') ? scope : null;
+  const btn = document.getElementById('ac-apply-btn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i> Applying…'; if (window.lucide) lucide.createIcons(); }
+  try {
+    const resp = await fetch('/api/snapshot/apply-tag-baseline', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: name, tag_filter: tag_filter}),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.confirm_url) { window.location = data.confirm_url; return; }
+    const applied = (data.applied || []).length, skipped = (data.skipped || []).length;
+    if (resp.ok && (data.success || data.applied)) {
+      acMsg((data.message || ('Applied to ' + applied + ' device(s).'))
+            + (skipped ? ' Skipped ' + skipped + ' without that config.' : ''), true);
+      loadAltConfigs(); loadConfigHistory();
+    } else { acMsg('Error: ' + (data.detail || data.message || 'failed'), false); }
+  } catch (e) { acMsg('Request failed.', false); }
+  if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="git-branch"></i> Apply'; if (window.lucide) lucide.createIcons(); }
+}
+loadAltConfigs();
 </script>
 {% endblock %}
