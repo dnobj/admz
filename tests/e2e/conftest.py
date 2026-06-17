@@ -236,6 +236,16 @@ def api():
 
 
 @pytest.fixture
+def api_anon():
+    """Like ``api`` but with NO auth — for asserting destructive endpoints
+    reject anonymous callers."""
+    def _call(method: str, path: str, **kw) -> httpx.Response:
+        with httpx.Client(timeout=30.0) as client:
+            return client.request(method, f"{_base_url()}{path}", **kw)
+    return _call
+
+
+@pytest.fixture
 def registered_ids() -> set:
     """The device_ids the live registry currently knows. Tests that target a
     specific fixture device skip when it's absent (homelab inventory drifts)."""

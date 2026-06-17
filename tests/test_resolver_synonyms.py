@@ -147,6 +147,40 @@ class TestFlashResolvesToSirenAndLight:
                 f"got {keys}"
             )
 
+
+class TestPtzMotionSynonyms:
+    """Regression — e2e coverage found 'pan left' / 'tilt up' / 'point the
+    camera' resolved to NOTHING (the ptz-move task only matched on the words
+    'ptz'/'move', so 'move the camera' worked but the directional verbs didn't).
+    The natural directional verbs now map to ptz-move."""
+
+    def _resolver(self):
+        from axis_api_atlas.catalog.loader import CatalogLoader
+        from axis_api_atlas.catalog.resolver import CatalogResolver
+        return CatalogResolver(CatalogLoader(axis_api_atlas.default_data_path()))
+
+    def test_motion_synonyms_map_to_ptz_move(self):
+        from axis_api_atlas.catalog.resolver import _INTENT_SYNONYMS
+        for key in ("pan", "pan left", "tilt up", "point the camera",
+                    "aim the camera"):
+            assert key in _INTENT_SYNONYMS, f"missing synonym key: {key!r}"
+            assert "ptz-move" in _INTENT_SYNONYMS[key]
+
+    def test_match_intent_pan_tilt_surface_ptz_move(self):
+        r = self._resolver()
+        for intent in ("pan left", "pan the camera left", "tilt up",
+                       "point the camera down", "aim the camera at the door"):
+            keys = r._match_intent(intent, "vapix")
+            assert "ptz-move" in keys, (
+                f"intent {intent!r} should surface ptz-move, got {keys}"
+            )
+
+    def test_bare_tilt_angle_stays_orientation(self):
+        # We intentionally did NOT add bare 'tilt'/'point'; 'tilt angle' and
+        # 'camera angle' must still resolve to set-orientation, not ptz-move.
+        r = self._resolver()
+        assert "set-orientation" in r._match_intent("tilt angle", "vapix")
+
     def test_resolve_surfaces_siren_and_light_start(self):
         """The full resolve() must include siren_and_light.cgi:start
         among the candidate operations for a flash intent — that's the
