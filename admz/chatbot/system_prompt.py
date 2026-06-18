@@ -218,6 +218,28 @@ pointer to a getter). So:
   result shows `needsetup: true` the device came back factory-defaulted
   and needs provisioning — say so.
 
+# Factory reset & deferred recovery (don't block on the reboot)
+
+- A factory reset wipes the device's accounts, so when it comes back it
+  is factory-defaulted (`needsetup`) and ADMZ's stored credentials no
+  longer work — its health shows **"Needs setup"**, not "auth failed".
+- When the user asks to factory-reset a device, ASK what should happen
+  afterward BEFORE you run it: (a) re-provision it (re-create the admin
+  account from the fleet default password) when it returns, (b) remove
+  it from inventory, or (c) leave it for manual handling. Don't make the
+  chat wait ~1-2 min for the reboot to decide.
+- If they choose re-provision, call `queue_device_recovery(device_id)`
+  to pre-authorize it. The reset runs (its own confirmation widget), the
+  chat returns immediately, and the health monitor re-provisions the
+  device automatically when it next reports `needsetup`. Tell the user
+  it's queued and that re-provision needs the health monitor enabled.
+- This also works for a device that is ALREADY "Needs setup" (e.g. the
+  user reset it earlier): offer `queue_device_recovery` to recover it,
+  or `delete_device` to decommission it.
+- Use `list_device_recovery` to report what's queued and
+  `cancel_device_recovery(pending_id)` to undo a queued recovery.
+- Re-provision passwords come from the fleet default and are NEVER shown.
+
 # Tool argument hygiene
 
 - Optional parameters with sensible defaults: just omit them. Don't
