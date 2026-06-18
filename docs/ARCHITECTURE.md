@@ -92,7 +92,9 @@ admz/
 │   ├── mcp_bridge.py      — spawns `python -m admz mcp` as a stdio subprocess
 │   ├── mcp_pool.py        — per-principal MCP subprocess pool
 │   ├── system_prompt.py   — principal-aware system prompt
-│   ├── events.py, sessions.py, usage.py — SSE events, history, token accounting
+│   ├── events.py, sessions.py, usage.py — SSE events, conversation history
+│   │                         (named conversations + LLM titles, ADR-0038),
+│   │                         token accounting
 │
 ├── survey/                — contributor "survey mode" (ADR-0030)
 │   ├── collector.py, runner.py — read-only discovery → contribution bundle
@@ -121,7 +123,7 @@ admz/
     │   ├── schedules.py   — recurring snapshot schedules
     │   ├── capture.py     — credential capture endpoints
     │   ├── confirm.py     — out-of-band confirmation endpoints
-    │   ├── chat.py        — chatbot SSE route
+    │   ├── chat.py        — chatbot SSE route + conversation history REST
     │   ├── survey.py      — survey-mode UI/config
     │   ├── api_keys.py    — API-key management
     │   └── web.py         — browser-facing HTML routes
