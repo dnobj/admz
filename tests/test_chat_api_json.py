@@ -644,3 +644,87 @@ class TestJsonChatAudit:
         rejects = [e for e in entries if e.action == "chat_budget_exceeded"]
         assert len(rejects) == 1
         assert rejects[0].success is False
+
+
+class TestConversationRoutes:
+    def _store(self):
+        import admz.chatbot.sessions as sess_module
+        return sess_module.chat_sessions
+
+    def test_list_empty(self, client):
+        r = client.get("/api/chat/conversations")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["conversations"] == [] and body["active"] is None
+
+    def test_create_activates_and_lists(self, client):
+        cid = client.post("/api/chat/conversations", json={}).json()["id"]
+        body = client.get("/api/chat/conversations").json()
+        assert body["active"] == cid
+        assert [c["id"] for c in body["conversations"]] == [cid]
+        assert body["conversations"][0]["active"] is True
+
+    def test_create_with_title_is_manual(self, client):
+        cid = client.post(
+            "/api/chat/conversations", json={"title": "Pinned"}
+        ).json()["id"]
+        meta = client.get(f"/api/chat/conversations/{cid}").json()
+        assert meta["title"] == "Pinned" and meta["title_source"] == "manual"
+
+    def test_get_messages(self, client):
+        store = self._store()
+        store.append_turn("anonymous", "hi", "hello")
+        cid = store.get_active_conversation("anonymous")
+        msgs = client.get(f"/api/chat/conversations/{cid}").json()["messages"]
+        assert [m["text"] for m in msgs] == ["hi", "hello"]
+
+    def test_get_unknown_404(self, client):
+        assert client.get("/api/chat/conversations/nope").status_code == 404
+
+    def test_get_foreign_404(self, client):
+        other = self._store().create_conversation(r"AXIS\other")
+        assert client.get(f"/api/chat/conversations/{other}").status_code == 404
+
+    def test_activate_switches(self, client):
+        store = self._store()
+        a = client.post("/api/chat/conversations", json={}).json()["id"]
+        b = client.post("/api/chat/conversations", json={}).json()["id"]
+        assert store.get_active_conversation("anonymous") == b
+        r = client.post(f"/api/chat/conversations/{a}/activate")
+        assert r.status_code == 200 and r.json()["active"] == a
+        assert store.get_active_conversation("anonymous") == a
+
+    def test_activate_foreign_404(self, client):
+        other = self._store().create_conversation(r"AXIS\other")
+        r = client.post(f"/api/chat/conversations/{other}/activate")
+        assert r.status_code == 404
+
+    def test_rename(self, client):
+        cid = client.post("/api/chat/conversations", json={}).json()["id"]
+        r = client.patch(
+            f"/api/chat/conversations/{cid}", json={"title": "Renamed"}
+        )
+        assert r.status_code == 200
+        meta = client.get(f"/api/chat/conversations/{cid}").json()
+        assert meta["title"] == "Renamed" and meta["title_source"] == "manual"
+
+    def test_rename_empty_rejected(self, client):
+        cid = client.post("/api/chat/conversations", json={}).json()["id"]
+        r = client.patch(f"/api/chat/conversations/{cid}", json={"title": ""})
+        assert r.status_code in (400, 422)
+
+    def test_rename_foreign_404(self, client):
+        other = self._store().create_conversation(r"AXIS\other")
+        r = client.patch(f"/api/chat/conversations/{other}", json={"title": "x"})
+        assert r.status_code == 404
+
+    def test_delete(self, client):
+        cid = client.post("/api/chat/conversations", json={}).json()["id"]
+        assert client.delete(f"/api/chat/conversations/{cid}").status_code == 200
+        assert client.get(f"/api/chat/conversations/{cid}").status_code == 404
+
+    def test_delete_foreign_404(self, client):
+        store = self._store()
+        other = store.create_conversation(r"AXIS\other")
+        assert client.delete(f"/api/chat/conversations/{other}").status_code == 404
+        assert store.get_conversation(r"AXIS\other", other) is not None
