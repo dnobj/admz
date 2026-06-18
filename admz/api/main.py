@@ -87,15 +87,27 @@ async def lifespan(app: FastAPI):
     registry = create_device_registry()
     ctx = init_context(registry)
 
-    # Register deferred recovery handlers (e.g. reprovision-on-return) so the
-    # health-monitor sweep can fire pre-approved recoveries.
+    # One-time migration of the legacy schedules.json + pending_device_actions
+    # into the unified tasks table (ADR-0037). Idempotent + non-destructive, so
+    # safe to run every startup; the scheduler + sweep read the tasks store.
+    try:
+        from admz.tasks.migrate import migrate_legacy
+        migrate_legacy()
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning(
+            "tasks migration failed", exc_info=True
+        )
+
+    # Install the unified task-handler context (reprovision + scheduled handlers)
+    # so the health-monitor sweep can fire pre-approved detection tasks.
     try:
         from admz.recovery_actions import register_recovery_handlers
         register_recovery_handlers(ctx)
     except Exception:  # noqa: BLE001
         import logging
         logging.getLogger(__name__).warning(
-            "recovery handler registration failed", exc_info=True
+            "task context install failed", exc_info=True
         )
 
     await ctx.scheduler.start()

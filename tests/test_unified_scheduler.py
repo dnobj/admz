@@ -1,118 +1,87 @@
-"""Tests for the unified-scheduler additions (#22 Slice A).
+"""Tests for the Task-native scheduler (ADR-0037, was the unified-scheduler PR).
 
-Pins:
-  * FR-SCH-010 — handler registry: register_job_handler / get_job_handler /
-    list_job_types; _execute_schedule dispatches by job_type; unknown
-    job_type produces a clear error envelope.
-  * FR-SCH-011 — drift_audit handler: runs check_fleet_drift; new
-    transitions flow into drift_alerts; summary reflects counts.
-  * FR-SCH-013 — every run attributes the audit row to the synthetic
-    'scheduler' principal (NOT 'anonymous'); failures also audited.
-  * KL-SCH-005 — per-job lock: run_now and the interval loop never
-    overlap for the same schedule id.
-  * Migration — schedules.json without job_type loads as 'snapshot'.
-  * Pre-existing snapshot behavior unchanged (covered by the
-    untouched tests/test_scheduler.py).
+Schedule tasks now live in the SQLite ``tasks`` store, not ``schedules.json`` —
+so the old on-disk merge/reconcile tests are gone (replaced by
+``test_tasks_store.py`` + ``test_tasks_migrate.py``). What still matters and is
+pinned here:
+  * handler registry: register/get/list (delegating to admz.tasks.handlers).
+  * dispatch by action_type; unknown action → clear error envelope.
+  * the drift_audit handler runs check_fleet_drift.
+  * per-job lock (KL-SCH-005): run_now never overlaps itself for one task.
+  * audit attribution (FR-SCH-013): the synthetic 'scheduler' principal.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-import time
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from admz.snapshot.scheduler import (
-    JobContext,
     ScheduledJob,
     SnapshotSchedule,
     SnapshotScheduler,
-    _HANDLERS,
     get_job_handler,
     list_job_types,
     register_job_handler,
 )
+from admz.tasks.handlers import _HANDLERS
+from admz.tasks.store import TaskStore
 
 
-# ---------------------------------------------------------------------------
-# Handler registry
-# ---------------------------------------------------------------------------
+def _scheduler(tmp_path, **kwargs):
+    return SnapshotScheduler(
+        snapshot_engine=kwargs.get("snapshot_engine", MagicMock()),
+        drift_detector=kwargs.get("drift_detector"),
+        store=TaskStore(str(tmp_path / "admz.db")),
+    )
 
 
 class TestHandlerRegistry:
-    def test_snapshot_handler_registered_at_import(self):
+    def test_builtin_handlers_registered_at_import(self):
         assert get_job_handler("snapshot") is not None
-
-    def test_drift_audit_handler_registered_at_import(self):
         assert get_job_handler("drift_audit") is not None
+        assert get_job_handler("survey") is not None
+        assert get_job_handler("reprovision") is not None
 
     def test_unknown_job_type_returns_none(self):
         assert get_job_handler("does-not-exist") is None
 
-    def test_list_job_types_includes_both(self):
+    def test_list_job_types_includes_builtins(self):
         types = list_job_types()
-        assert "snapshot" in types
-        assert "drift_audit" in types
+        assert {"snapshot", "drift_audit", "survey"} <= set(types)
 
     def test_register_then_unregister_via_decorator(self):
-        """Tests can register transient handlers, then pop the key to
-        keep the global registry clean."""
         @register_job_handler("test_job")
-        async def _h(job, ctx):
+        async def _h(task, ctx):
             return {"success": True, "summary": "ok"}
 
         assert get_job_handler("test_job") is _h
-        # Cleanup so other tests see a clean registry.
         del _HANDLERS["test_job"]
 
 
-# ---------------------------------------------------------------------------
-# Dispatch behavior
-# ---------------------------------------------------------------------------
-
-
 class TestDispatch:
-    def _mk_scheduler(self, tmp_path, **kwargs):
-        return SnapshotScheduler(
-            snapshot_engine=kwargs.get("snapshot_engine", MagicMock()),
-            schedule_path=str(tmp_path / "schedules.json"),
-            drift_detector=kwargs.get("drift_detector"),
-        )
-
     @pytest.mark.asyncio
-    async def test_snapshot_job_dispatches_to_snapshot_handler(
-        self, tmp_path,
-    ):
-        # Mock the engine so we don't talk to real devices.
+    async def test_snapshot_job_dispatches(self, tmp_path):
         engine = MagicMock()
         engine.snapshot_fleet = AsyncMock(return_value=[])
-        s = self._mk_scheduler(tmp_path, snapshot_engine=engine)
-        job = SnapshotSchedule(
-            id="s1", description="d", interval_seconds=3600,
-            job_type="snapshot",
-        )
-        s.schedules[job.id] = job
-
-        result = await s._execute_schedule(job)
+        s = _scheduler(tmp_path, snapshot_engine=engine)
+        s.add_schedule(SnapshotSchedule(id="s1", description="d",
+                                        interval_seconds=3600, job_type="snapshot"))
+        result = await s.run_now("s1")
         assert result["success"] is True
         assert result["job_type"] == "snapshot"
         assert engine.snapshot_fleet.called
 
     @pytest.mark.asyncio
-    async def test_drift_audit_dispatches_to_drift_handler(self, tmp_path):
+    async def test_drift_audit_dispatches(self, tmp_path):
         detector = MagicMock()
         detector.check_fleet_drift = AsyncMock(return_value=[])
-        s = self._mk_scheduler(tmp_path, drift_detector=detector)
-        job = SnapshotSchedule(
-            id="d1", description="nightly audit",
-            interval_seconds=86400, job_type="drift_audit",
-        )
-        s.schedules[job.id] = job
-
-        result = await s._execute_schedule(job)
+        s = _scheduler(tmp_path, drift_detector=detector)
+        s.add_schedule(SnapshotSchedule(id="d1", description="audit",
+                                        interval_seconds=86400, job_type="drift_audit"))
+        result = await s.run_now("d1")
         assert result["success"] is True
         assert result["job_type"] == "drift_audit"
         assert result["checked"] == 0
@@ -120,77 +89,48 @@ class TestDispatch:
 
     @pytest.mark.asyncio
     async def test_unknown_job_type_returns_clear_error(self, tmp_path):
-        s = self._mk_scheduler(tmp_path)
-        job = SnapshotSchedule(
-            id="x", description="bogus", interval_seconds=3600,
-            job_type="not_a_real_type",
-        )
-        s.schedules[job.id] = job
-        result = await s._execute_schedule(job)
+        s = _scheduler(tmp_path)
+        s.add_schedule(SnapshotSchedule(id="x", description="bogus",
+                                        interval_seconds=3600, job_type="not_a_real_type"))
+        result = await s.run_now("x")
         assert result["success"] is False
         assert "not_a_real_type" in result["error"]
-        # And the failure surfaces in last_result for operator visibility.
-        assert "error" in s.schedules["x"].last_result.lower()
+        assert "error" in s.get_schedule("x").last_result.lower()
 
     @pytest.mark.asyncio
     async def test_handler_exception_becomes_error_envelope(self, tmp_path):
         engine = MagicMock()
-        engine.snapshot_fleet = AsyncMock(
-            side_effect=RuntimeError("simulated boom")
-        )
-        s = self._mk_scheduler(tmp_path, snapshot_engine=engine)
-        job = SnapshotSchedule(
-            id="s2", description="d", interval_seconds=3600,
-        )
-        s.schedules[job.id] = job
-        result = await s._execute_schedule(job)
+        engine.snapshot_fleet = AsyncMock(side_effect=RuntimeError("simulated boom"))
+        s = _scheduler(tmp_path, snapshot_engine=engine)
+        s.add_schedule(SnapshotSchedule(id="s2", description="d", interval_seconds=3600))
+        result = await s.run_now("s2")
         assert result["success"] is False
         assert "simulated boom" in result["error"]
 
-
-# ---------------------------------------------------------------------------
-# Per-job lock (KL-SCH-005)
-# ---------------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_run_now_unknown_schedule(self, tmp_path):
+        s = _scheduler(tmp_path)
+        result = await s.run_now("ghost")
+        assert result["success"] is False
 
 
 class TestPerJobLock:
     @pytest.mark.asyncio
-    async def test_concurrent_run_for_same_schedule_is_serialized(
-        self, tmp_path,
-    ):
-        """Two ``run_now`` calls for the same schedule run sequentially.
-        Specifically: the second call must not enter the handler until
-        the first has returned."""
+    async def test_concurrent_run_for_same_schedule_is_serialized(self, tmp_path):
         order: list = []
 
-        # Register a handler that records enter/exit ordering.
         @register_job_handler("ordered_probe")
-        async def _h(job, ctx):
-            order.append(("enter", job.id))
+        async def _h(task, ctx):
+            order.append(("enter", task.id))
             await asyncio.sleep(0.05)
-            order.append(("exit", job.id))
+            order.append(("exit", task.id))
             return {"success": True, "summary": "ok"}
 
         try:
-            s = SnapshotScheduler(
-                snapshot_engine=MagicMock(),
-                schedule_path=str(tmp_path / "schedules.json"),
-            )
-            job = SnapshotSchedule(
-                id="probe", description="d", interval_seconds=3600,
-                job_type="ordered_probe",
-            )
-            s.schedules[job.id] = job
-
-            # Kick off two concurrent runs.
-            await asyncio.gather(
-                s._execute_schedule(job),
-                s._execute_schedule(job),
-            )
-
-            # The trace must show interleave-free runs: each
-            # ("enter", X) is followed by ("exit", X) before the
-            # next ("enter", X).
+            s = _scheduler(tmp_path)
+            s.add_schedule(SnapshotSchedule(id="probe", description="d",
+                                            interval_seconds=3600, job_type="ordered_probe"))
+            await asyncio.gather(s.run_now("probe"), s.run_now("probe"))
             assert order == [
                 ("enter", "probe"), ("exit", "probe"),
                 ("enter", "probe"), ("exit", "probe"),
@@ -200,225 +140,76 @@ class TestPerJobLock:
 
     @pytest.mark.asyncio
     async def test_different_schedules_run_in_parallel(self, tmp_path):
-        """The lock is per-schedule, NOT global. Two schedules can
-        run concurrently."""
         active: list = []
 
         @register_job_handler("parallel_probe")
-        async def _h(job, ctx):
-            active.append(job.id)
+        async def _h(task, ctx):
+            active.append(task.id)
             await asyncio.sleep(0.05)
             return {"success": True, "summary": "ok"}
 
         try:
-            s = SnapshotScheduler(
-                snapshot_engine=MagicMock(),
-                schedule_path=str(tmp_path / "schedules.json"),
-            )
-            j1 = SnapshotSchedule(
-                id="a", description="d", interval_seconds=3600,
-                job_type="parallel_probe",
-            )
-            j2 = SnapshotSchedule(
-                id="b", description="d", interval_seconds=3600,
-                job_type="parallel_probe",
-            )
-            s.schedules["a"] = j1
-            s.schedules["b"] = j2
-
-            await asyncio.gather(
-                s._execute_schedule(j1),
-                s._execute_schedule(j2),
-            )
-
-            # Both schedules entered the handler before either left
-            # — i.e. they were genuinely parallel.
+            s = _scheduler(tmp_path)
+            s.add_schedule(SnapshotSchedule(id="a", description="d",
+                                            interval_seconds=3600, job_type="parallel_probe"))
+            s.add_schedule(SnapshotSchedule(id="b", description="d",
+                                            interval_seconds=3600, job_type="parallel_probe"))
+            await asyncio.gather(s.run_now("a"), s.run_now("b"))
             assert set(active) == {"a", "b"}
         finally:
             del _HANDLERS["parallel_probe"]
 
 
-# ---------------------------------------------------------------------------
-# Audit attribution (FR-SCH-013)
-# ---------------------------------------------------------------------------
-
-
 class TestAuditAttribution:
     @pytest.mark.asyncio
-    async def test_run_writes_audit_row_as_scheduler_principal(
-        self, tmp_path, monkeypatch,
-    ):
+    async def test_run_writes_audit_row_as_scheduler_principal(self, tmp_path, monkeypatch):
         from admz import audit as audit_module
-        fresh_audit = audit_module.AuditLog(
-            db_path=str(tmp_path / "admz.db"),
-        )
-        monkeypatch.setattr(audit_module, "audit_log", fresh_audit)
+        fresh = audit_module.AuditLog(db_path=str(tmp_path / "audit.db"))
+        monkeypatch.setattr(audit_module, "audit_log", fresh)
 
         engine = MagicMock()
         engine.snapshot_fleet = AsyncMock(return_value=[])
-        s = SnapshotScheduler(
-            snapshot_engine=engine,
-            schedule_path=str(tmp_path / "schedules.json"),
-        )
-        job = SnapshotSchedule(
-            id="audited", description="d", interval_seconds=3600,
-            job_type="snapshot",
-        )
-        s.schedules[job.id] = job
+        s = _scheduler(tmp_path, snapshot_engine=engine)
+        s.add_schedule(SnapshotSchedule(id="audited", description="d",
+                                        interval_seconds=3600, job_type="snapshot"))
+        await s.run_now("audited")
 
-        await s._execute_schedule(job)
-
-        rows = audit_module.audit_log.list_recent(
-            action="scheduler.run.snapshot", limit=5,
-        )
-        assert rows, "scheduler should write an audit row on every run"
-        assert rows[0].requester == "scheduler"
+        rows = audit_module.audit_log.list_recent(action="scheduler.run.snapshot", limit=5)
+        assert rows and rows[0].requester == "scheduler"
         assert rows[0].auth_source == "scheduler"
         assert rows[0].success is True
-        # Resource format: "schedule:<id>"
         assert rows[0].resource == "schedule:audited"
 
     @pytest.mark.asyncio
-    async def test_failure_audited_with_error_message(
-        self, tmp_path, monkeypatch,
-    ):
+    async def test_failure_audited_with_error_message(self, tmp_path, monkeypatch):
         from admz import audit as audit_module
-        fresh_audit = audit_module.AuditLog(
-            db_path=str(tmp_path / "admz.db"),
-        )
-        monkeypatch.setattr(audit_module, "audit_log", fresh_audit)
+        fresh = audit_module.AuditLog(db_path=str(tmp_path / "audit.db"))
+        monkeypatch.setattr(audit_module, "audit_log", fresh)
 
         engine = MagicMock()
-        engine.snapshot_fleet = AsyncMock(
-            side_effect=RuntimeError("boom"),
-        )
-        s = SnapshotScheduler(
-            snapshot_engine=engine,
-            schedule_path=str(tmp_path / "schedules.json"),
-        )
-        job = SnapshotSchedule(
-            id="failing", description="d", interval_seconds=3600,
-        )
-        s.schedules[job.id] = job
-        await s._execute_schedule(job)
+        engine.snapshot_fleet = AsyncMock(side_effect=RuntimeError("boom"))
+        s = _scheduler(tmp_path, snapshot_engine=engine)
+        s.add_schedule(SnapshotSchedule(id="failing", description="d", interval_seconds=3600))
+        await s.run_now("failing")
 
-        rows = audit_module.audit_log.list_recent(
-            action="scheduler.run.snapshot", limit=5,
-        )
+        rows = audit_module.audit_log.list_recent(action="scheduler.run.snapshot", limit=5)
         assert rows[0].success is False
         assert "boom" in rows[0].error_message
 
 
-# ---------------------------------------------------------------------------
-# schedules.json migration (ADR-0026)
-# ---------------------------------------------------------------------------
-
-
-class TestMigration:
-    def test_legacy_row_without_job_type_loads_as_snapshot(self, tmp_path):
-        """Operator's existing schedules.json from before this PR
-        has no `job_type` field. The loader defaults to 'snapshot'
-        so nothing breaks for them."""
-        path = tmp_path / "schedules.json"
-        # Pre-Phase-X shape: no job_type, no params.
-        path.write_text(json.dumps({
-            "legacy": {
-                "id": "legacy",
-                "description": "every 6 hours",
-                "interval_seconds": 21600,
-                "tag_filter": "lobby",
-                "enabled": True,
-            }
-        }))
-
-        s = SnapshotScheduler(
-            snapshot_engine=MagicMock(),
-            schedule_path=str(path),
-        )
-        s._load()
-        assert "legacy" in s.schedules
-        assert s.schedules["legacy"].job_type == "snapshot"
-        assert s.schedules["legacy"].params == {}
-
-    def test_round_trip_preserves_job_type(self, tmp_path):
-        path = tmp_path / "schedules.json"
-        s = SnapshotScheduler(
-            snapshot_engine=MagicMock(),
-            schedule_path=str(path),
-        )
-        s.schedules["da"] = SnapshotSchedule(
-            id="da", description="nightly", interval_seconds=86400,
-            job_type="drift_audit",
-        )
-        s._save()
-        # Re-load fresh; verify round-trip.
-        s2 = SnapshotScheduler(
-            snapshot_engine=MagicMock(),
-            schedule_path=str(path),
-        )
-        s2._load()
-        assert s2.schedules["da"].job_type == "drift_audit"
-
-    def test_merge_save_does_not_clobber_other_process(self, tmp_path):
-        """Regression (KL-SCH-006): the chatbot's MCP subprocess starts with
-        an empty scheduler (ADMZ_MCP_NO_SCHEDULER skips _load). Creating a
-        schedule there must NOT wipe the server's existing schedules — the
-        bug where chat's 'drift-check-4h' clobbered the nightly jobs."""
-        path = str(tmp_path / "schedules.json")
-        # Process A (the web/API server) persists two schedules.
-        a = SnapshotScheduler(snapshot_engine=MagicMock(), schedule_path=path)
-        a.add_schedule(SnapshotSchedule(
-            id="nightly", description="n", interval_seconds=86400))
-        a.add_schedule(SnapshotSchedule(
-            id="hourly-drift", description="d", interval_seconds=3600,
-            job_type="drift_audit"))
-        # Process B (a fresh pool subprocess) starts EMPTY and adds one.
-        b = SnapshotScheduler(snapshot_engine=MagicMock(), schedule_path=path)
-        assert b.schedules == {}  # never loaded (NO_SCHEDULER)
-        b.add_schedule(SnapshotSchedule(
-            id="drift-4h", description="4h", interval_seconds=14400,
-            job_type="drift_audit"))
-        # The file must hold ALL THREE — B's write merged, didn't clobber.
-        on_disk = json.loads(Path(path).read_text())
-        assert set(on_disk) == {"nightly", "hourly-drift", "drift-4h"}
-
-    def test_list_schedules_reloads_from_disk(self, tmp_path):
-        """A schedule written by another process shows up in list_schedules
-        without a restart."""
-        path = str(tmp_path / "schedules.json")
-        a = SnapshotScheduler(snapshot_engine=MagicMock(), schedule_path=path)
-        a.add_schedule(SnapshotSchedule(
-            id="x", description="x", interval_seconds=3600))
-        b = SnapshotScheduler(snapshot_engine=MagicMock(), schedule_path=path)
-        b.add_schedule(SnapshotSchedule(
-            id="y", description="y", interval_seconds=3600))
-        assert {s.id for s in a.list_schedules()} == {"x", "y"}
-
-    def test_remove_deletes_from_disk(self, tmp_path):
-        path = str(tmp_path / "schedules.json")
-        s = SnapshotScheduler(snapshot_engine=MagicMock(), schedule_path=path)
+class TestStoreBackedCrud:
+    def test_add_list_update_remove(self, tmp_path):
+        s = _scheduler(tmp_path)
         s.add_schedule(SnapshotSchedule(id="a", description="a", interval_seconds=60))
-        s.add_schedule(SnapshotSchedule(id="b", description="b", interval_seconds=60))
+        s.add_schedule(SnapshotSchedule(id="b", description="b", interval_seconds=60,
+                                        job_type="drift_audit"))
+        assert {x.id for x in s.list_schedules()} == {"a", "b"}
+        assert s.get_schedule("b").job_type == "drift_audit"
+        s.update_schedule("a", enabled=False)
+        assert s.get_schedule("a").enabled is False
         assert s.remove_schedule("a") is True
-        assert set(json.loads(Path(path).read_text())) == {"b"}
-        assert s.remove_schedule("ghost") is False  # unknown id → no-op
-
-    def test_reconcile_adopts_and_drops(self, tmp_path):
-        """_reconcile_from_disk adopts schedules created by another process
-        and drops ones it removed (the running server's pickup path)."""
-        path = str(tmp_path / "schedules.json")
-        server = SnapshotScheduler(snapshot_engine=MagicMock(), schedule_path=path)
-        server.add_schedule(SnapshotSchedule(
-            id="keep", description="k", interval_seconds=3600))
-        other = SnapshotScheduler(snapshot_engine=MagicMock(), schedule_path=path)
-        other.add_schedule(SnapshotSchedule(
-            id="new", description="n", interval_seconds=3600))
-        other.remove_schedule("keep")
-        server._reconcile_from_disk()  # not running → updates the set only
-        assert "new" in server.schedules
-        assert "keep" not in server.schedules
+        assert {x.id for x in s.list_schedules()} == {"b"}
+        assert s.remove_schedule("ghost") is False
 
     def test_scheduled_job_alias_works(self):
-        """ScheduledJob is the ADR-0026 name; SnapshotSchedule is the
-        legacy name. They should be the same class."""
         assert ScheduledJob is SnapshotSchedule

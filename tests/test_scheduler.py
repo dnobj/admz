@@ -13,6 +13,15 @@ from admz.snapshot.scheduler import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_tasks_store(tmp_path, monkeypatch):
+    """ADR-0037: schedules live in the SQLite tasks store. Point the singleton at
+    a per-test DB so each test starts clean (the schedule_path arg is now inert)."""
+    import admz.tasks.store as _sm
+    from admz.tasks.store import TaskStore
+    monkeypatch.setattr(_sm, "tasks_store", TaskStore(str(tmp_path / "tasks.db")))
+
+
 # ---------------------------------------------------------------------------
 # Test parse_interval
 # ---------------------------------------------------------------------------
@@ -170,10 +179,11 @@ class TestSchedulerPersistence:
             interval_seconds=3600,
         ))
 
+        # A second scheduler instance reads the same (shared SQLite) store.
         s2 = SnapshotScheduler(engine, path)
-        s2._load()
-        assert "hourly" in s2.schedules
-        assert s2.schedules["hourly"].interval_seconds == 3600
+        got = s2.get_schedule("hourly")
+        assert got is not None
+        assert got.interval_seconds == 3600
 
     def test_remove_schedule(self, tmp_path):
         engine = MockSnapshotEngine()
@@ -224,14 +234,16 @@ class TestSchedulerPersistence:
         assert scheduler.get_schedule("s1") is not None
         assert scheduler.get_schedule("nope") is None
 
-    def test_save_creates_directory(self, tmp_path):
+    def test_added_schedule_is_persisted(self, tmp_path):
+        # ADR-0037: persistence is the SQLite tasks store, not a JSON file —
+        # a fresh scheduler instance still sees the added schedule.
         engine = MockSnapshotEngine()
-        path = str(tmp_path / "subdir" / "schedules.json")
+        path = str(tmp_path / "schedules.json")
         scheduler = SnapshotScheduler(engine, path)
         scheduler.add_schedule(SnapshotSchedule(
             id="s1", description="S1", interval_seconds=60,
         ))
-        assert os.path.exists(path)
+        assert SnapshotScheduler(engine, path).get_schedule("s1") is not None
 
 
 # ---------------------------------------------------------------------------
