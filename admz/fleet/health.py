@@ -124,6 +124,7 @@ class DeviceHealthStatus(str, Enum):
     ONLINE = "online"
     UNREACHABLE = "unreachable"     # no TCP connect
     AUTH_FAILED = "auth_failed"     # TCP up, VAPIX rejected creds
+    NEEDS_SETUP = "needs_setup"     # reachable but factory-defaulted (needsetup=yes)
     UNKNOWN = "unknown"             # never checked
 
 
@@ -510,13 +511,15 @@ async def probe_device(
                     consecutive_failures=1,
                 )
 
-            # Success — pull uptime/bootid from the parsed result.
+            # Success — pull uptime/bootid/needsetup from the parsed result.
             data = getattr(result, "parsed_data", None) or {}
+            needsetup = False
             if isinstance(data, dict):
                 inner = data.get("data") if "data" in data else data
                 if isinstance(inner, dict):
                     uptime_seconds = inner.get("uptime")
                     bootid = inner.get("bootid")
+                    needsetup = str(inner.get("needsetup", "")).lower() == "yes"
                 else:
                     uptime_seconds = None
                     bootid = None
@@ -526,6 +529,22 @@ async def probe_device(
 
             uptime_int = int(uptime_seconds) if uptime_seconds is not None else None
             bootid_str = str(bootid) if bootid is not None else None
+
+            # A factory-defaulted device answers systemready (reachable) but has
+            # no account yet — needsetup=yes is a definitive, auth-free signal,
+            # so it's "needs setup", NOT "auth failed" (a recoverable state).
+            if needsetup:
+                return DeviceHealthRecord(
+                    device_id=device_id,
+                    status=DeviceHealthStatus.NEEDS_SETUP,
+                    last_check=now,
+                    last_seen_online=now,  # reachable, just not provisioned yet
+                    latency_ms=elapsed_ms,
+                    consecutive_failures=0,
+                    last_error="factory-defaulted (needsetup=yes) — not provisioned",
+                    uptime_seconds=uptime_int,
+                    bootid=bootid_str,
+                )
 
             # systemready 200 proves reachability but NOT valid credentials on
             # some firmware. Confirm with an auth-required call so a wrong/stale

@@ -75,7 +75,7 @@ async def get_fleet_health(
 
     counts: Dict[str, int] = {
         "online": 0, "unreachable": 0,
-        "auth_failed": 0, "unknown": 0,
+        "auth_failed": 0, "needs_setup": 0, "unknown": 0,
     }
     entries: List[Dict[str, Any]] = []
     for d in all_devices:

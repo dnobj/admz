@@ -248,6 +248,7 @@ const HEALTH = {
   online:      { sem: 'green', label: 'Online', bucket: 'online' },
   unreachable: { sem: 'red',   label: 'Unreachable', bucket: 'attention' },
   auth_failed: { sem: 'amber', label: 'Auth failed', bucket: 'attention' },
+  needs_setup: { sem: 'amber', label: 'Needs setup', bucket: 'attention' },
   unknown:     { sem: 'grey',  label: 'Unknown', bucket: 'unknown' },
 };
 (async () => {
@@ -334,10 +335,12 @@ function renderDiff(did, data) {
   const fields = data.drifted_fields || [];
   if (loadingEl) loadingEl.style.display = 'none';
   if (data.unreadable) {
-    const why = data.unreadable_reason === 'auth_failed'
-      ? 'credentials were rejected (auth failed)'
-      : (data.unreadable_reason === 'unreachable' ? 'the device is unreachable'
-                                                  : 'the device could not be read');
+    const why = data.unreadable_reason === 'needs_setup'
+      ? 'it is factory-defaulted (needs provisioning) — recover or decommission'
+      : (data.unreadable_reason === 'auth_failed'
+          ? 'credentials were rejected (auth failed)'
+          : (data.unreadable_reason === 'unreachable' ? 'the device is unreachable'
+                                                      : 'the device could not be read'));
     if (diffWrap) diffWrap.innerHTML =
       '<div style="padding:8px 0;color:var(--fg-amber,#fbbf24);font-size:13px">'
       + '<i data-lucide="alert-triangle" style="width:14px;height:14px;vertical-align:-2px"></i> '

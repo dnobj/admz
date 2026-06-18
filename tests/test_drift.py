@@ -518,3 +518,49 @@ class TestDriftReadability:
         summary = report.to_summary()
         assert summary["unreadable"] is True
         assert summary["unreadable_reason"] == "auth_failed"
+
+
+class _Result:
+    def __init__(self, success, status_code=None, parsed_data=None):
+        self.success = success
+        self.status_code = status_code
+        self.parsed_data = parsed_data
+
+
+class _NeedsSetupExecutor:
+    """An authed read 401s, but systemready (no auth) reports needsetup=yes."""
+    async def execute(self, op, device, creds, params):
+        opid = op.get("id", "") if isinstance(op, dict) else ""
+        if "systemready" in opid:
+            return _Result(True, 200, {"systemready": "yes", "needsetup": "yes"})
+        return _Result(False, 401)
+
+
+class _CatalogTwoOps:
+    def get_operation(self, family, op_id):
+        class _Op:
+            def to_executor_dict(self):
+                return {"id": op_id}
+        return _Op()
+
+    def get_risk_level(self, *a):
+        return "normal"
+
+
+class _EngineNeedsSetup(FakeSnapshotEngine):
+    def __init__(self, registry):
+        super().__init__(registry, live_params={})
+        self.catalog = _CatalogTwoOps()
+        self.executors = {"vapix": _NeedsSetupExecutor()}
+
+
+class TestProbeReadableNeedsSetup:
+    @pytest.mark.asyncio
+    async def test_probe_readable_distinguishes_needs_setup(self):
+        reg = FakeRegistry({"cam-01": {"host": "1.2.3.4"}})
+        engine = _EngineNeedsSetup(reg)
+        ok, reason = await engine.probe_readable(
+            "cam-01", {"host": "1.2.3.4"}, "vapix"
+        )
+        assert ok is False
+        assert reason == "needs_setup"
