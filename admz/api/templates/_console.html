@@ -7,6 +7,8 @@
 <div class="console {{ 'embed' if embed else '' }}">
 
   <div class="console-head">
+    <button class="icon-btn sm" type="button" id="conv-toggle"
+      title="Conversations" aria-label="Show conversations"><i data-lucide="panel-left"></i></button>
     <span class="spark"><i data-lucide="sparkles"></i></span>
     <div style="min-width:0">
       <div class="ch-title">ADMZ Console</div>
@@ -19,6 +21,17 @@
     <button class="icon-btn sm" type="button" title="Close console" onclick="if(parent.admzCloseDock)parent.admzCloseDock()"><i data-lucide="x"></i></button>
     {% endif %}
   </div>
+
+  {# Conversation history — left slide-out pane (chat.js drives it). #}
+  <div class="conv-scrim" id="conv-scrim" hidden></div>
+  <aside class="conv-drawer" id="conv-drawer" aria-hidden="true" aria-label="Conversations">
+    <div class="conv-drawer-head">
+      <button class="btn primary sm" type="button" id="conv-new"><i data-lucide="plus"></i> New chat</button>
+      <span class="spacer"></span>
+      <button class="icon-btn sm" type="button" id="conv-close" title="Close" aria-label="Close"><i data-lucide="x"></i></button>
+    </div>
+    <div class="conv-list" id="conv-list"></div>
+  </aside>
 
   {% if not configured %}
   <div style="padding:14px 24px 0"><div class="console-col" style="padding:0">
@@ -116,7 +129,7 @@
       </form>
 
       <form method="POST" action="/chat/clear">
-        <button type="submit" class="btn subtle sm">Clear chat history</button>
+        <button type="submit" class="btn subtle sm"><i data-lucide="plus"></i> New chat</button>
       </form>
     </div>
   </div>

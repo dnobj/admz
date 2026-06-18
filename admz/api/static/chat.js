@@ -132,6 +132,9 @@
           case "done":
             renderUsageFooter(assistantBubble, parsed.data);
             resolveAllPending(assistantBubble); // turn ended → tools finished
+            // Refresh the conversation drawer: a brand-new conversation and
+            // its freshly-generated title should appear without a reload.
+            if (typeof loadConversations === "function") loadConversations();
             // Scan the *complete* assistant text once, now that streaming is
             // done. (Scanning incrementally in appendText could match a token
             // chunk-split mid-stream — a partial id ≥20 chars — and render a
@@ -723,4 +726,201 @@
     addPinnedAction("capture", token);
     icons();
   };
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Conversation history drawer (left slide-out pane)
+  // ──────────────────────────────────────────────────────────────────────────
+  var drawer = document.getElementById("conv-drawer");
+  var scrim = document.getElementById("conv-scrim");
+  var convList = document.getElementById("conv-list");
+  var convToggle = document.getElementById("conv-toggle");
+
+  function openDrawer() {
+    if (!drawer) return;
+    drawer.classList.add("open");
+    drawer.setAttribute("aria-hidden", "false");
+    if (scrim) scrim.hidden = false;
+    loadConversations();
+  }
+  function closeDrawer() {
+    if (!drawer) return;
+    drawer.classList.remove("open");
+    drawer.setAttribute("aria-hidden", "true");
+    if (scrim) scrim.hidden = true;
+  }
+
+  function relTime(iso) {
+    if (!iso) return "";
+    var then = new Date(iso).getTime();
+    if (isNaN(then)) return "";
+    var secs = Math.max(0, (Date.now() - then) / 1000);
+    if (secs < 60) return "just now";
+    var mins = Math.floor(secs / 60);
+    if (mins < 60) return mins + "m ago";
+    var hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + "h ago";
+    var days = Math.floor(hrs / 24);
+    if (days < 7) return days + "d ago";
+    return new Date(then).toLocaleDateString();
+  }
+
+  function loadConversations() {
+    if (!convList) return;
+    fetch("/api/chat/conversations", { headers: { Accept: "application/json" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data) return;
+        renderConvList(data.conversations || [], data.active);
+      })
+      .catch(function () {});
+  }
+
+  function renderConvList(items, activeId) {
+    convList.innerHTML = "";
+    if (!items.length) {
+      var empty = document.createElement("div");
+      empty.className = "conv-empty";
+      empty.textContent = "No conversations yet.";
+      convList.appendChild(empty);
+      return;
+    }
+    items.forEach(function (c) {
+      var row = document.createElement("div");
+      row.className = "conv-row" + (c.active ? " active" : "");
+      row.dataset.id = c.id;
+
+      var main = document.createElement("button");
+      main.type = "button";
+      main.className = "conv-open";
+      var title = document.createElement("span");
+      title.className = "conv-title";
+      title.textContent = c.title || "New chat";
+      var meta = document.createElement("span");
+      meta.className = "conv-time";
+      meta.textContent = relTime(c.updated_at);
+      main.appendChild(title);
+      main.appendChild(meta);
+      main.addEventListener("click", function () { openConversation(c.id); });
+
+      var actions = document.createElement("span");
+      actions.className = "conv-actions";
+      var ren = document.createElement("button");
+      ren.type = "button";
+      ren.className = "icon-btn xs";
+      ren.title = "Rename";
+      ren.innerHTML = ico("pencil");
+      ren.addEventListener("click", function (e) {
+        e.stopPropagation();
+        renameConversation(c.id, c.title || "");
+      });
+      var del = document.createElement("button");
+      del.type = "button";
+      del.className = "icon-btn xs";
+      del.title = "Delete";
+      del.innerHTML = ico("trash-2");
+      del.addEventListener("click", function (e) {
+        e.stopPropagation();
+        deleteConversation(c.id);
+      });
+      actions.appendChild(ren);
+      actions.appendChild(del);
+
+      row.appendChild(main);
+      row.appendChild(actions);
+      convList.appendChild(row);
+    });
+    icons();
+  }
+
+  function resetTranscript() {
+    transcript.innerHTML = "";
+    seenTokens.clear();
+    var actions = document.getElementById("chat-actions");
+    var actionsList = document.getElementById("chat-actions-list");
+    if (actionsList) actionsList.innerHTML = "";
+    if (actions) actions.style.display = "none";
+  }
+
+  function replayMessage(role, text) {
+    if (role === "user") {
+      renderUserBubble(text);
+    } else {
+      var at = renderAssistantBubble();
+      currentTextBlock(at).textContent = text;
+      removeTyping(at);
+    }
+  }
+
+  function openConversation(id) {
+    fetch("/api/chat/conversations/" + encodeURIComponent(id), {
+      headers: { Accept: "application/json" },
+    })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data) return;
+        return fetch("/api/chat/conversations/" + encodeURIComponent(id) + "/activate", {
+          method: "POST",
+        }).then(function () {
+          if (emptyState) emptyState.style.display = "none";
+          resetTranscript();
+          (data.messages || []).forEach(function (m) { replayMessage(m.role, m.text); });
+          icons();
+          closeDrawer();
+          loadConversations();
+        });
+      })
+      .catch(function () {});
+  }
+
+  function newConversation() {
+    fetch("/api/chat/conversations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function () {
+        resetTranscript();
+        if (emptyState) emptyState.style.display = "";
+        closeDrawer();
+        loadConversations();
+        var msgEl = document.getElementById("message");
+        if (msgEl) msgEl.focus();
+      })
+      .catch(function () {});
+  }
+
+  function renameConversation(id, current) {
+    var next = window.prompt("Rename conversation", current || "");
+    if (next == null) return;
+    next = next.trim();
+    if (!next) return;
+    fetch("/api/chat/conversations/" + encodeURIComponent(id), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: next }),
+    })
+      .then(function (r) { if (r.ok) loadConversations(); })
+      .catch(function () {});
+  }
+
+  function deleteConversation(id) {
+    if (!window.confirm("Delete this conversation? This cannot be undone.")) return;
+    fetch("/api/chat/conversations/" + encodeURIComponent(id), { method: "DELETE" })
+      .then(function (r) {
+        if (!r.ok) return;
+        loadConversations();
+      })
+      .catch(function () {});
+  }
+
+  if (convToggle) convToggle.addEventListener("click", openDrawer);
+  if (scrim) scrim.addEventListener("click", closeDrawer);
+  var convClose = document.getElementById("conv-close");
+  if (convClose) convClose.addEventListener("click", closeDrawer);
+  var convNew = document.getElementById("conv-new");
+  if (convNew) convNew.addEventListener("click", newConversation);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && drawer && drawer.classList.contains("open")) closeDrawer();
+  });
 })();
