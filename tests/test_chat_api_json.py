@@ -508,6 +508,104 @@ class TestJsonChatHistory:
         assert sess_module.chat_sessions.get_history("anonymous") == []
 
 
+class TestJsonChatConversationTitles:
+    def test_first_turn_generates_llm_title(self, client):
+        _seed_api_key()
+        import admz.chatbot.sessions as sess_module
+
+        async def fake_title(**kwargs):
+            return "Generated Title"
+
+        with patch(
+            "admz.api.routes.chat.stream_turn",
+            side_effect=_fake_stream(text="ans"),
+        ), patch(
+            "admz.api.routes.chat.generate_conversation_title",
+            side_effect=fake_title,
+        ):
+            client.post("/api/chat", json={"message": "first question"})
+
+        store = sess_module.chat_sessions
+        cid = store.get_active_conversation("anonymous")
+        meta = store.get_conversation("anonymous", cid)
+        assert meta["title"] == "Generated Title"
+        assert meta["title_source"] == "llm"
+
+    def test_title_generated_only_once(self, client):
+        _seed_api_key()
+        calls = {"n": 0}
+
+        async def fake_title(**kwargs):
+            calls["n"] += 1
+            return "Title One"
+
+        with patch(
+            "admz.api.routes.chat.stream_turn",
+            side_effect=_fake_stream(text="ans"),
+        ), patch(
+            "admz.api.routes.chat.generate_conversation_title",
+            side_effect=fake_title,
+        ):
+            client.post("/api/chat", json={"message": "first"})
+            client.post("/api/chat", json={"message": "second"})
+
+        assert calls["n"] == 1  # only the conversation's first turn is titled
+
+    def test_falls_back_to_snippet_when_llm_blank(self, client):
+        _seed_api_key()
+        import admz.chatbot.sessions as sess_module
+
+        async def empty_title(**kwargs):
+            return ""
+
+        with patch(
+            "admz.api.routes.chat.stream_turn",
+            side_effect=_fake_stream(text="ans"),
+        ), patch(
+            "admz.api.routes.chat.generate_conversation_title",
+            side_effect=empty_title,
+        ):
+            client.post(
+                "/api/chat",
+                json={"message": "Has the lobby camera drifted from baseline?"},
+            )
+
+        store = sess_module.chat_sessions
+        cid = store.get_active_conversation("anonymous")
+        meta = store.get_conversation("anonymous", cid)
+        assert meta["title_source"] == "snippet"
+        assert meta["title"].startswith("Has the lobby camera")
+
+    def test_clear_starts_new_conversation_preserving_old(self, client):
+        _seed_api_key()
+        import admz.chatbot.sessions as sess_module
+
+        async def no_title(**kwargs):
+            return ""
+
+        with patch(
+            "admz.api.routes.chat.stream_turn",
+            side_effect=_fake_stream(text="ans"),
+        ), patch(
+            "admz.api.routes.chat.generate_conversation_title",
+            side_effect=no_title,
+        ):
+            client.post("/api/chat", json={"message": "first convo"})
+
+        store = sess_module.chat_sessions
+        first_cid = store.get_active_conversation("anonymous")
+
+        # "New chat" — switches to a fresh empty conversation, keeps the old.
+        r = client.post("/chat/clear")
+        assert r.status_code == 303
+        new_cid = store.get_active_conversation("anonymous")
+        assert new_cid and new_cid != first_cid
+        assert store.get_history("anonymous") == []  # new conversation is empty
+
+        ids = {c["id"] for c in store.list_conversations("anonymous")}
+        assert first_cid in ids and new_cid in ids  # old one preserved
+
+
 class TestJsonChatAudit:
     def test_successful_turn_audited_with_via_chatbot(self, client):
         _seed_api_key()

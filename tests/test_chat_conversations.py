@@ -9,6 +9,7 @@ import sqlite3
 
 import pytest
 
+from admz.chatbot.client import _clean_title, generate_conversation_title
 from admz.chatbot.sessions import ChatSessionStore, snippet_title
 
 
@@ -159,6 +160,86 @@ def test_snippet_title_truncates():
     out = snippet_title(long, limit=48)
     assert len(out) == 48 and out.endswith("…")
     assert snippet_title("  multi   space\nhere ") == "multi space here"
+
+
+# ---------------------------------------------------------------------------
+# LLM title helper (generate_conversation_title) — best-effort, never raises
+# ---------------------------------------------------------------------------
+
+
+class TestCleanTitle:
+    def test_strips_quotes_and_punctuation(self):
+        assert _clean_title('"Drift Check."', 48) == "Drift Check"
+        assert _clean_title("Q3538 Factory Reset Audit!", 48) == "Q3538 Factory Reset Audit"
+
+    def test_first_line_only(self):
+        assert _clean_title("Lobby Camera Reboot\nignored second line", 48) == (
+            "Lobby Camera Reboot"
+        )
+
+    def test_caps_length_with_ellipsis(self):
+        out = _clean_title("word " * 30, 20)
+        assert len(out) == 20 and out.endswith("…")
+
+    def test_empty(self):
+        assert _clean_title("", 48) == ""
+        assert _clean_title(None, 48) == ""
+
+
+@pytest.mark.asyncio
+async def test_generate_title_no_key_returns_empty():
+    assert (
+        await generate_conversation_title(
+            api_key="", model="m", user_message="u", assistant_message="a"
+        )
+        == ""
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_title_swallows_errors(monkeypatch):
+    import admz.chatbot.client as client_mod
+
+    def boom():
+        raise RuntimeError("no sdk")
+
+    monkeypatch.setattr(client_mod, "_import_genai", boom)
+    out = await generate_conversation_title(
+        api_key="k", model="m", user_message="u", assistant_message="a"
+    )
+    assert out == ""
+
+
+@pytest.mark.asyncio
+async def test_generate_title_happy_path(monkeypatch):
+    import admz.chatbot.client as client_mod
+
+    class FakeResp:
+        text = '"Lobby Camera Reboot."'
+
+    class FakeModels:
+        async def generate_content(self, **kw):
+            return FakeResp()
+
+    class FakeAio:
+        models = FakeModels()
+
+    class FakeClient:
+        aio = FakeAio()
+
+    class FakeGenai:
+        @staticmethod
+        def Client(api_key):
+            return FakeClient()
+
+    monkeypatch.setattr(client_mod, "_import_genai", lambda: FakeGenai)
+    out = await generate_conversation_title(
+        api_key="k",
+        model="gemini-2.5-flash",
+        user_message="reboot the lobby camera",
+        assistant_message="done",
+    )
+    assert out == "Lobby Camera Reboot"
 
 
 # ---------------------------------------------------------------------------
