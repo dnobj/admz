@@ -27,7 +27,17 @@
   <thead><tr><th>Kind</th><th>Task</th><th>When</th><th>Target</th><th>Last run</th><th>Status</th><th></th></tr></thead>
   <tbody id="tasks-body"><tr><td colspan="7" class="page-sub" style="padding:14px">Loading…</td></tr></tbody>
 </table>
-<div class="empty-state hidden" id="tasks-empty"><i data-lucide="list-checks"></i><div style="margin-top:10px">No tasks yet. <a href="#" id="empty-new-link">Create a schedule</a>, or queue a recovery from a device's page.</div></div>
+<div class="empty-state hidden" id="tasks-empty"><i data-lucide="list-checks"></i><div style="margin-top:10px">No active tasks. <a href="#" id="empty-new-link">Create a schedule</a>, or queue a recovery from a device's page.</div></div>
+
+<!-- Recent history — terminal triggered tasks (done / cancelled / failed) -->
+<div id="task-history" class="hidden" style="margin-top:24px">
+  <h2 class="page-title" style="font-size:15px;margin:0 0 2px">Recent activity</h2>
+  <p class="page-sub" style="margin:0 0 10px">The last few triggered tasks that completed, fired, or were cancelled.</p>
+  <table class="data-table" id="history-table">
+    <thead><tr><th>Kind</th><th>Task</th><th>When</th><th>Target</th><th>Outcome</th></tr></thead>
+    <tbody id="history-body"></tbody>
+  </table>
+</div>
 
 <!-- New-schedule modal -->
 <div class="modal-overlay hidden" id="sched-modal">
@@ -127,21 +137,65 @@ function fmtLocal(iso) {
 }
 
 let CURRENT_KIND = '';
+const HISTORY_LIMIT = 10;
+const TERMINAL = new Set(['done', 'failed', 'cancelled', 'expired', 'fired']);
+
+function fmtUnix(secs) {
+  if (!secs) return '';
+  const d = new Date(secs * 1000);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
 
 async function loadTasks() {
-  const body = document.getElementById('tasks-body');
-  const url = '/api/tasks' + (CURRENT_KIND ? ('?kind=' + CURRENT_KIND) : '');
   let tasks = [];
   try {
-    const r = await fetch(url);
+    const r = await fetch('/api/tasks');
     if (r.ok) tasks = (await r.json()).tasks || [];
   } catch (e) {}
+
+  // Active = schedules + still-pending detections. History = terminal detections.
+  let active = tasks.filter(t => t.trigger_kind === 'schedule' || t.status === 'pending');
+  const history = tasks.filter(t => t.trigger_kind === 'detection' && TERMINAL.has(t.status));
+  if (CURRENT_KIND) active = active.filter(t => t.trigger_kind === CURRENT_KIND);
+
   const tbl = document.getElementById('tasks-table');
   const empty = document.getElementById('tasks-empty');
-  if (!tasks.length) { tbl.classList.add('hidden'); empty.classList.remove('hidden'); return; }
-  tbl.classList.remove('hidden'); empty.classList.add('hidden');
-  body.innerHTML = tasks.map(renderRow).join('');
+  if (!active.length) {
+    tbl.classList.add('hidden'); empty.classList.remove('hidden');
+  } else {
+    tbl.classList.remove('hidden'); empty.classList.add('hidden');
+    document.getElementById('tasks-body').innerHTML = active.map(renderRow).join('');
+  }
+
+  // History section: newest first, last N — hidden under the Scheduled filter.
+  const histWrap = document.getElementById('task-history');
+  if (history.length && CURRENT_KIND !== 'schedule') {
+    const recent = history.slice()
+      .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))
+      .slice(0, HISTORY_LIMIT);
+    document.getElementById('history-body').innerHTML = recent.map(renderHistoryRow).join('');
+    histWrap.classList.remove('hidden');
+  } else {
+    histWrap.classList.add('hidden');
+  }
   if (window.lucide) lucide.createIcons();
+}
+
+function renderHistoryRow(t) {
+  const meta = JOB_LABELS[t.action_type] || { label: t.action_type, icon: 'clock' };
+  const when = EVENT_LABELS[t.event] || ('when ' + (t.event || '?'));
+  const target = t.device_id ? esc(t.device_id)
+    : (t.tag_filter ? 'tag: ' + esc(t.tag_filter) : 'all devices');
+  const sem = t.status === 'done' ? 'var(--fg-green,#4ade80)'
+    : t.status === 'failed' ? 'var(--fg-red,#f87171)' : 'var(--text-faint)';
+  const queued = t.created_at ? '<div class="sub mono" style="color:var(--text-faint)">queued ' + esc(fmtUnix(t.created_at)) + '</div>' : '';
+  return '<tr style="opacity:.75"><td><span class="kind-chip kind-detection">Triggered</span></td>'
+    + '<td><div class="device-name-cell"><span class="type-tile"><i data-lucide="' + meta.icon + '"></i></span>'
+    + '<div><div class="nm" style="font-family:var(--sans);font-weight:600">' + esc(t.description || t.id) + '</div>'
+    + '<div class="sub mono">' + esc(t.action_type) + '</div></div></div></td>'
+    + '<td class="mono">' + esc(when) + '</td><td>' + target + '</td>'
+    + '<td><span class="st-chip" style="color:' + sem + '">' + esc(t.status) + '</span>' + queued + '</td></tr>';
 }
 
 function renderRow(t) {
