@@ -39,16 +39,29 @@ async def list_audit_entries(
     action: Optional[str] = None,
     requester: Optional[str] = None,
     since: Optional[float] = None,
+    before: Optional[float] = None,
+    device: Optional[str] = None,
+    text: Optional[str] = None,
+    success: Optional[bool] = None,
     principal: Principal = Depends(get_current_principal),
 ):
-    """List recent audit-log entries, newest first.
+    """List / search audit-log entries, newest first.
 
-    Filters are optional and combinable.
+    Filters are optional and combinable. ``action``/``requester`` are substring
+    matches; ``device`` matches the resource + details; ``text`` is a free-text
+    scan; ``since``/``before`` bound the time range.
     """
     log = AuditLog()
-    entries = log.list_recent(
-        limit=limit, action=action, requester=requester, since=since,
-    )
+    if any(v is not None for v in (before, device, text, success)):
+        entries = log.search(
+            start=since, end=before, requester=requester, action=action,
+            device=device, text=text, success=success, limit=limit,
+        )
+    else:
+        # Back-compat: exact action/requester match (the original endpoint).
+        entries = log.list_recent(
+            limit=limit, action=action, requester=requester, since=since,
+        )
     return [
         AuditEntryResponse(
             id=e.id,

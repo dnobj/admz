@@ -274,6 +274,11 @@ def _tool_resource(name: str, arguments: Any) -> str:
     account_id = arguments.get("account_id")
     if account_id:
         parts.append(f"account:{account_id}")
+    # Surface the specific operation so "who factory-defaulted device X" /
+    # "who rebooted Y" is searchable in the resource string, not just details.
+    operation_id = arguments.get("operation_id")
+    if operation_id:
+        parts.append(f"op:{operation_id}")
     return "/".join(parts)
 
 
@@ -1844,6 +1849,8 @@ class ADMZMCPServer:
                     result = self._list_device_recovery(arguments)
                 elif name == "cancel_device_recovery":
                     result = self._cancel_device_recovery(arguments)
+                elif name == "search_audit_log":
+                    result = self._search_audit_log(arguments)
                 # --- Firmware ---
                 elif name == "download_firmware":
                     result = await self._download_firmware(arguments)
@@ -3331,6 +3338,106 @@ class ADMZMCPServer:
             "cancelled": pid if cancelled else None,
             "message": ("Cancelled." if cancelled
                         else "No cancellable pending action with that id."),
+        }
+
+    # --- Audit-log search (who-did-what) ---------------------------------
+
+    @staticmethod
+    def _parse_audit_ts(v: Any) -> Optional[float]:
+        """ISO-8601 or unix → unix float; None if unparseable."""
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        s = str(v).strip()
+        try:
+            return float(s)
+        except ValueError:
+            pass
+        try:
+            from datetime import datetime
+            return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _parse_audit_window(s: Any) -> Optional[float]:
+        """'30m' / '2h' / '7d' / '1w' → seconds; None if unparseable."""
+        if not s:
+            return None
+        import re
+        m = re.match(r"^\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]+)\s*$", str(s))
+        if not m:
+            return None
+        n, unit = float(m.group(1)), m.group(2).lower()
+        units = {"s": 1, "sec": 1, "m": 60, "min": 60, "h": 3600, "hr": 3600,
+                 "hour": 3600, "d": 86400, "day": 86400, "w": 604800, "week": 604800}
+        for k in sorted(units, key=len, reverse=True):
+            if unit.startswith(k):
+                return n * units[k]
+        return None
+
+    def _fmt_audit_entry(self, e: Any) -> Dict[str, Any]:
+        from datetime import datetime, timezone
+        d = e.details or {}
+        args = d.get("args") if isinstance(d.get("args"), dict) else {}
+        bits = []
+        op = args.get("operation_id") or d.get("operation_id")
+        if op:
+            bits.append(f"op={op}")
+        if d.get("confirmed_by"):
+            bits.append(f"approved_by={d['confirmed_by']}")
+        if d.get("risk_level"):
+            bits.append(f"risk={d['risk_level']}")
+        if d.get("intent"):
+            bits.append(f"intent={d['intent']}")
+        if d.get("summary"):
+            bits.append(str(d["summary"]))
+        return {
+            "time": datetime.fromtimestamp(e.timestamp, timezone.utc).isoformat(),
+            "actor": e.requester,
+            "auth_source": e.auth_source,
+            "action": e.action,
+            "resource": e.resource,
+            "success": e.success,
+            # Curated summary only — never the raw args (already sanitized, but
+            # keep the surface tight).
+            "summary": "; ".join(bits) if bits else None,
+            "error": e.error_message or None,
+        }
+
+    def _search_audit_log(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        import time as _time
+        from datetime import datetime, timezone
+
+        from admz.audit import AuditLog
+
+        start = self._parse_audit_ts(arguments.get("since"))
+        end = self._parse_audit_ts(arguments.get("before"))
+        win = self._parse_audit_window(arguments.get("within"))
+        if win and start is None:
+            start = _time.time() - win
+
+        entries = AuditLog().search(
+            start=start, end=end,
+            requester=arguments.get("actor"),
+            action=arguments.get("action"),
+            device=arguments.get("device_id"),
+            text=arguments.get("query"),
+            success=arguments.get("success"),
+            limit=int(arguments.get("limit") or 30),
+        )
+        window = None
+        if start or end:
+            window = {
+                "since": datetime.fromtimestamp(start, timezone.utc).isoformat() if start else None,
+                "before": datetime.fromtimestamp(end, timezone.utc).isoformat() if end else None,
+            }
+        return {
+            "success": True,
+            "count": len(entries),
+            "window": window,
+            "entries": [self._fmt_audit_entry(e) for e in entries],
         }
 
     async def _provision_device(
