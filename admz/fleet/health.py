@@ -699,6 +699,14 @@ class HealthMonitor:
         Public so operators (or tests) can trigger a sweep
         on-demand without waiting for the next interval.
         """
+        # The sweep is also when one-shot deferred actions get evaluated —
+        # expire stale ones up front so they can't fire late.
+        try:
+            from admz.fleet.pending_actions import pending_actions
+            pending_actions.expire_stale()
+        except Exception:  # noqa: BLE001
+            pass
+
         try:
             devices = self.registry.list_devices()
         except Exception as exc:
@@ -773,5 +781,65 @@ class HealthMonitor:
                                 device_id, exc_info=True,
                             )
 
+                # Fire any pre-authorized deferred actions whose trigger this
+                # device's new state now satisfies (e.g. came back needsetup ->
+                # re-provision). Launched async so a slow recovery action can't
+                # stall the sweep; a no-op unless something is pending.
+                await self._fire_pending(device_id, record.status.value)
+
         await asyncio.gather(*(_check(d) for d in devices))
         return len(devices)
+
+    async def _fire_pending(self, device_id: str, status_value: str) -> None:
+        """Evaluate + launch any pre-authorized deferred actions for this
+        device whose trigger its new state now satisfies. Atomic claim →
+        fire-once; launched async so it can't stall the sweep."""
+        try:
+            from admz.fleet.pending_actions import (
+                pending_actions, trigger_for_status,
+            )
+            trig = trigger_for_status(status_value)
+            if trig is None:
+                return
+            for action_row in pending_actions.claim_for_trigger(device_id, trig):
+                asyncio.create_task(self._run_pending(action_row))
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "pending-action evaluation failed for %s", device_id, exc_info=True
+            )
+
+    async def _run_pending(self, action_row: Dict[str, Any]) -> None:
+        """Execute one claimed (pre-authorized) deferred action + audit it."""
+        from types import SimpleNamespace
+
+        from admz.audit import record_event
+        from admz.fleet.pending_actions import (
+            execute_pending_action, pending_actions,
+        )
+
+        pid = action_row.get("id")
+        did = action_row.get("device_id")
+        action = action_row.get("action") or {}
+        principal = SimpleNamespace(
+            name=action_row.get("approved_by") or "deferred",
+            source="deferred-trigger",
+        )
+        try:
+            await execute_pending_action(action, did)
+            pending_actions.mark(pid, "done")
+            record_event(
+                principal, "deferred_action_fired", resource=f"device:{did}",
+                details={"id": pid, "action": action.get("action"),
+                         "trigger": action_row.get("trigger")},
+            )
+        except Exception as exc:  # noqa: BLE001
+            pending_actions.mark(pid, "failed", str(exc)[:300])
+            logger.warning("deferred action %s for %s failed: %s", pid, did, exc)
+            try:
+                record_event(
+                    principal, "deferred_action_failed", resource=f"device:{did}",
+                    success=False, error_message=str(exc)[:300],
+                    details={"id": pid, "action": action.get("action")},
+                )
+            except Exception:  # noqa: BLE001
+                pass
