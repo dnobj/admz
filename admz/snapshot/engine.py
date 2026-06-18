@@ -408,6 +408,17 @@ class SnapshotEngine:
         if getattr(result, "success", False):
             return True, ""
         if getattr(result, "status_code", None) == 401:
+            # A factory-defaulted device 401s on every authed read but reports
+            # needsetup via systemready (no auth) — tell the two apart.
+            try:
+                from admz.fleet.systemready import read_systemready
+                sr = await read_systemready(
+                    catalog, executor, device_info, credentials, family
+                )
+                if sr and sr.get("needsetup"):
+                    return False, "needs_setup"
+            except Exception:  # noqa: BLE001
+                pass
             return False, "auth_failed"
         return False, "unreachable"
 

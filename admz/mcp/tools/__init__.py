@@ -37,6 +37,7 @@ from admz.mcp.tools import (
     fleet,
     knowledge,
     provision,
+    recovery,
     schedules,
 )
 
@@ -48,6 +49,7 @@ MIGRATED_TOOLS: List[Tool] = (
     + schedules.TOOLS
     + fleet.TOOLS
     + provision.TOOLS
+    + recovery.TOOLS
     + firmware.TOOLS
 )
 

@@ -86,6 +86,18 @@ async def lifespan(app: FastAPI):
     _warn_anonymous_auth_backend()
     registry = create_device_registry()
     ctx = init_context(registry)
+
+    # Register deferred recovery handlers (e.g. reprovision-on-return) so the
+    # health-monitor sweep can fire pre-approved recoveries.
+    try:
+        from admz.recovery_actions import register_recovery_handlers
+        register_recovery_handlers(ctx)
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning(
+            "recovery handler registration failed", exc_info=True
+        )
+
     await ctx.scheduler.start()
 
     # Device health monitor: opt-in via the health_monitor_enabled

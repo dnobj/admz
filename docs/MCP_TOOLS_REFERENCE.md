@@ -1,6 +1,6 @@
 # ADMZ MCP Tools Reference
 
-Complete reference for the **47 tools** the ADMZ MCP server exposes.
+Complete reference for the **50 tools** the ADMZ MCP server exposes.
 
 > Note: a `get_credentials` MCP tool used to exist. It was **removed**
 > (CR-1) because returning plaintext passwords into LLM context violates
@@ -125,6 +125,34 @@ offline period followed by a healthy response.
   factory-defaulted (e.g. after factory reset) and needs provisioning.
 - **Errors:** `DeviceNotFound`, `OperationNotFound` (systemready missing
   from the catalog)
+
+### `queue_device_recovery`
+Pre-authorize a **trigger-based** recovery (the counterpart to the
+time-based snapshot schedules). When the device next reports
+factory-defaulted (`needsetup`), the health-monitor sweep automatically
+re-provisions it — so a factory reset from chat doesn't block on the
+~1–2 min reboot. The actual provision runs only because it was authorized
+here, up front; the password comes from the fleet default and is never
+shown.
+- **Args:** `device_id` (required); `intent` (only `reprovision` for now);
+  `username` (default `root`)
+- **Returns:** `{success, queued, pending_id, device_id, trigger, message}`
+- Requires an authenticated principal (anonymous may not arm it) and the
+  health monitor to be enabled (it is the evaluator). The pending action
+  is fire-once, expires after 24h, and is cancellable.
+- **Errors:** `DeviceNotFound`, `PermissionDenied` (anonymous)
+
+### `list_device_recovery`
+List active (pending) deferred recovery actions. Read-only.
+- **Args:** optional `device_id` to scope to one device (omit for all)
+- **Returns:** `{success, count, pending:[{pending_id, device_id, action,
+  trigger, approved_by, expires_at, description}]}`
+
+### `cancel_device_recovery`
+Cancel a still-pending deferred recovery by id.
+- **Args:** `pending_id` (required)
+- **Returns:** `{success, cancelled, message}` (`success: false` if it
+  already fired or the id is unknown)
 
 ---
 

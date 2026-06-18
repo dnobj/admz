@@ -5,6 +5,7 @@ REST API routes for device management.
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, Depends, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from admz.api.context import AppContext, get_context
 from admz.fleet_settings import (
@@ -758,3 +759,91 @@ async def reveal_fleet_setting(key: str, request: Request):
         details={"decision": reason, "flag_fallback": flag_fallback_used},
     )
     return {"key": key, "value": value}
+
+
+# --------------------------------------------------------------------------
+# Recovery of factory-defaulted devices (deferred actions, Slice 3)
+# --------------------------------------------------------------------------
+
+class RecoveryRequest(BaseModel):
+    # Only 'reprovision' is queued (runs when the device returns factory-default);
+    # 'remove' is immediate via DELETE /devices/{id}, so it isn't queued here.
+    intent: str = "reprovision"
+    username: str = "root"
+
+
+@router.post("/devices/{device_id}/recovery")
+async def queue_recovery(
+    request: Request,
+    device_id: str,
+    req: RecoveryRequest,
+    registry: DeviceRegistry = Depends(get_registry),
+):
+    """Queue a pre-authorized recovery for a factory-defaulted device: when it
+    next reports needsetup (now, or after a future factory reset) the health
+    sweep re-provisions it (creates the admin account from the fleet default
+    password). Authenticated + audited."""
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+    from admz.fleet.pending_actions import TRIGGER_NEEDS_SETUP, pending_actions
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+    if not registry.device_exists(device_id):
+        raise HTTPException(status_code=404, detail=f"Device not found: {device_id}")
+    if req.intent != "reprovision":
+        raise HTTPException(
+            status_code=400,
+            detail="Only 'reprovision' is queueable here; remove a device via DELETE.",
+        )
+    pid = pending_actions.create(
+        device_id=device_id,
+        action={"action": "reprovision", "username": req.username},
+        trigger=TRIGGER_NEEDS_SETUP,
+        approved_by=str(principal),
+        description=f"Re-provision {device_id} when it returns factory-defaulted",
+    )
+    record_event(principal, "device.queue_recovery", resource=f"device:{device_id}",
+                 details={"intent": "reprovision", "pending_id": pid})
+    return {
+        "success": True, "queued": True, "pending_id": pid,
+        "message": ("Re-provision queued — runs on the next health check, or "
+                    "after a future factory reset."),
+    }
+
+
+@router.get("/devices/{device_id}/pending")
+async def list_pending(
+    device_id: str, registry: DeviceRegistry = Depends(get_registry),
+):
+    """Active pending (deferred) actions for a device."""
+    from admz.fleet.pending_actions import pending_actions
+    return {
+        "device_id": device_id,
+        "pending": pending_actions.list_active_for(device_id),
+    }
+
+
+@router.post("/devices/{device_id}/pending/{pid}/cancel")
+async def cancel_pending(
+    request: Request,
+    device_id: str,
+    pid: str,
+    registry: DeviceRegistry = Depends(get_registry),
+):
+    """Cancel a still-pending deferred action."""
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+    from admz.fleet.pending_actions import pending_actions
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+    if not pending_actions.cancel(pid):
+        raise HTTPException(
+            status_code=404, detail="No cancellable pending action with that id.",
+        )
+    record_event(principal, "device.cancel_pending", resource=f"device:{device_id}",
+                 details={"pending_id": pid})
+    return {"success": True, "cancelled": pid}

@@ -1837,6 +1837,13 @@ class ADMZMCPServer:
                 # --- Provisioning ---
                 elif name == "provision_device":
                     result = await self._provision_device(arguments)
+                # --- Deferred recovery ---
+                elif name == "queue_device_recovery":
+                    result = self._queue_device_recovery(arguments)
+                elif name == "list_device_recovery":
+                    result = self._list_device_recovery(arguments)
+                elif name == "cancel_device_recovery":
+                    result = self._cancel_device_recovery(arguments)
                 # --- Firmware ---
                 elif name == "download_firmware":
                     result = await self._download_firmware(arguments)
@@ -3212,19 +3219,13 @@ class ADMZMCPServer:
 
     @staticmethod
     def _generate_device_password(length: int = 24) -> str:
-        while True:
-            pw = secrets.token_urlsafe(length)[:length]
-            if (any(c.isupper() for c in pw) and
-                    any(c.islower() for c in pw) and
-                    any(c.isdigit() for c in pw)):
-                return pw
+        from admz.provisioning import generate_device_password
+        return generate_device_password(length)
 
     @staticmethod
     def _serial_to_mac(serial: str) -> str:
-        s = serial.upper().replace(":", "").replace("-", "")
-        if len(s) != 12:
-            return serial
-        return ":".join(s[i:i + 2] for i in range(0, 12, 2))
+        from admz.provisioning import serial_to_mac
+        return serial_to_mac(serial)
 
     async def _execute_on_host(
         self,
@@ -3237,61 +3238,100 @@ class ADMZMCPServer:
         auth: Optional[Dict[str, str]] = None,
         family: str = "vapix",
     ) -> tuple:
-        operation = self.catalog.get_operation(family, operation_id)
-        if not operation:
-            return False, f"Operation '{operation_id}' not found in {family} catalog"
-
-        executor = self.executors.get(family)
-        if not executor:
-            return False, f"No executor for family '{family}'"
-
-        device: Dict[str, Any] = {
-            "host": host,
-            "device_id": f"_host_{host}",
-            "auth_method": auth_method,
-            "port": 80,
-        }
-        # Use structured auth dict if provided, otherwise build from auth_method
-        if auth:
-            device["auth"] = auth
-        else:
-            device["auth"] = {"http": auth_method, "https": auth_method, "scheme": "http"}
-
-        creds = credentials or {"username": "", "password": ""}
-
-        op_dict = {
-            "id": operation.id,
-            "cgi": operation.cgi,
-            "method": operation.method,
-            "risk_level": operation.risk_level,
-            "request": operation.request,
-            "response": operation.response,
-            "requires": operation.requires,
-            "_endpoint": operation.endpoint,
-            "_generation": operation.generation,
-            "_auth": operation.auth,
-            "service_impact": operation.service_impact,
-            "base_path": operation.base_path,
-            "path": operation.path,
-        }
-
-        result = await executor.execute(op_dict, device, creds, params)
-        if result.success:
-            return True, None
-        return False, result.error or f"HTTP {result.status_code}"
+        from admz.provisioning import execute_on_host
+        return await execute_on_host(
+            self.catalog, self.executors, host, operation_id, params,
+            credentials=credentials, auth_method=auth_method, auth=auth,
+            family=family,
+        )
 
     def _store_provisioned_creds(
         self, device_id: str, username: str, password: str,
     ) -> None:
-        account_data = {
-            "username": username,
-            "password": password,
-            "account_type": "admin",
-            "purpose": "Provisioned by provision_device",
+        from admz.provisioning import store_provisioned_creds
+        store_provisioned_creds(self.registry, device_id, username, password)
+
+    # --- Deferred recovery (trigger-based pending actions) ---------------
+    # These write to the shared pending_device_actions table; the API
+    # process's health-monitor sweep is the evaluator + executor. Cross-
+    # process by design (same pattern as schedules/plans), so a chat-side
+    # queue is honored by the running web server.
+
+    def _queue_device_recovery(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from admz.fleet.pending_actions import TRIGGER_NEEDS_SETUP, pending_actions
+
+        device_id = arguments.get("device_id")
+        intent = (arguments.get("intent") or "reprovision").strip()
+        username = arguments.get("username", "root")
+        if not device_id:
+            return {"success": False, "error": "device_id is required"}
+        # Queuing is a pre-authorization for a destructive provision — the
+        # anonymous principal may not arm it (mirrors the REST gate).
+        if getattr(self.principal, "is_anonymous", False):
+            return {
+                "success": False,
+                "error": "PermissionDenied",
+                "message": (
+                    "Queuing a recovery pre-authorizes a future re-provision and "
+                    "requires an authenticated principal (not the anonymous "
+                    "default). Authenticate to the web/REST surface first."
+                ),
+            }
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+        if intent != "reprovision":
+            return {"success": False,
+                    "error": f"Unsupported intent '{intent}' (only 'reprovision')"}
+        pid = pending_actions.create(
+            device_id=device_id,
+            action={"action": "reprovision", "username": username},
+            trigger=TRIGGER_NEEDS_SETUP,
+            approved_by=self.principal.name,
+            description=f"Re-provision {device_id} when it returns factory-defaulted",
+        )
+        return {
+            "success": True, "queued": True, "pending_id": pid,
+            "device_id": device_id, "trigger": TRIGGER_NEEDS_SETUP,
+            "message": (
+                "Re-provision queued. It fires on the next health check once the "
+                "device reports factory-defaulted (now, or after a future reset). "
+                "Requires the health monitor to be enabled."
+            ),
         }
-        if self.registry.account_exists(device_id, "default"):
-            self.registry.remove_account(device_id, "default")
-        self.registry.add_account(device_id, "default", account_data)
+
+    def _list_device_recovery(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from admz.fleet.pending_actions import pending_actions
+
+        device_id = arguments.get("device_id")
+        rows = (pending_actions.list_active_for(device_id) if device_id
+                else pending_actions.list_active())
+        pending = [
+            {
+                "pending_id": r.get("id"),
+                "device_id": r.get("device_id"),
+                "action": (r.get("action") or {}).get("action"),
+                "trigger": r.get("trigger"),
+                "approved_by": r.get("approved_by"),
+                "expires_at": r.get("expires_at"),
+                "description": r.get("description"),
+            }
+            for r in rows
+        ]
+        return {"success": True, "count": len(pending), "pending": pending}
+
+    def _cancel_device_recovery(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from admz.fleet.pending_actions import pending_actions
+
+        pid = arguments.get("pending_id")
+        if not pid:
+            return {"success": False, "error": "pending_id is required"}
+        cancelled = pending_actions.cancel(pid)
+        return {
+            "success": bool(cancelled),
+            "cancelled": pid if cancelled else None,
+            "message": ("Cancelled." if cancelled
+                        else "No cancellable pending action with that id."),
+        }
 
     async def _provision_device(
         self, arguments: Dict[str, Any]

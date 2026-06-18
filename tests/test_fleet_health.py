@@ -187,6 +187,35 @@ class TestProbeAuthenticated:
         assert rec.consecutive_failures == 1
 
     @pytest.mark.asyncio
+    async def test_needsetup_marks_needs_setup_not_auth_failed(self):
+        """A factory-defaulted device answers systemready (200) with
+        needsetup=yes — that's NEEDS_SETUP (recoverable), not AUTH_FAILED."""
+        catalog = MagicMock()
+        op = MagicMock()
+        op.to_executor_dict.return_value = {"id": "systemready.cgi:systemReady"}
+        catalog.get_operation.return_value = op
+
+        executor = MagicMock()
+        result = MagicMock(
+            success=True, status_code=200,
+            parsed_data={"systemready": "yes", "needsetup": "yes",
+                         "uptime": 100, "bootid": "boot-abc"},
+        )
+        executor.execute = AsyncMock(return_value=result)
+
+        rec = await probe_device(
+            device_id="cam-01",
+            device_info={"host": "192.0.2.1"},
+            credentials={"username": "root", "password": "x"},
+            catalog=catalog,
+            executor=executor,
+        )
+        assert rec.status == DeviceHealthStatus.NEEDS_SETUP
+        assert rec.last_seen_online is not None          # reachable
+        assert "needsetup" in rec.last_error.lower()
+        assert rec.bootid == "boot-abc"
+
+    @pytest.mark.asyncio
     async def test_systemready_success_populates_uptime_bootid(self):
         catalog = MagicMock()
         op = MagicMock()

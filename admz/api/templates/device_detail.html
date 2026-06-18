@@ -259,6 +259,22 @@
       #alt-configs .ac-sha { font-size:11px; color:var(--text-faint); }
       #alt-configs .ac-acts { display:flex; gap:6px; flex:0 0 auto; }
     </style>
+
+    <!-- Recovery (factory-defaulted devices + deferred actions) -->
+    <div class="card">
+      <div class="card-header"><i data-lucide="wrench"></i><span class="title">Recovery</span></div>
+      <div class="card-body flush">
+        <div id="recovery-banner"></div>
+        <div id="pending-list"><p class="page-sub" style="margin:0;padding:10px 16px">No pending actions.</p></div>
+        <div class="setting-row" style="border-top:1px solid var(--border)">
+          <div style="display:flex;gap:8px;width:100%;align-items:center;flex-wrap:wrap">
+            <span class="page-sub" style="margin:0;flex:1;min-width:160px">Re-provision this device (create an admin from the fleet default password) when it next reports factory-defaulted.</span>
+            <button class="btn ghost sm" id="rec-queue-btn" onclick="recQueue()"><i data-lucide="wrench"></i> Queue re-provision</button>
+          </div>
+        </div>
+        <div id="rec-msg" class="page-sub" style="display:none;padding:0 16px 10px"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -299,7 +315,8 @@
 <script>
 const HEALTH = {
   online:{sem:'green',label:'Online'}, unreachable:{sem:'red',label:'Unreachable'},
-  auth_failed:{sem:'amber',label:'Auth failed'}, unknown:{sem:'grey',label:'Unknown'},
+  auth_failed:{sem:'amber',label:'Auth failed'}, needs_setup:{sem:'amber',label:'Needs setup'},
+  unknown:{sem:'grey',label:'Unknown'},
 };
 (async () => {
   try {
@@ -679,5 +696,81 @@ async function acApplyTag() {
   if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="git-branch"></i> Apply'; if (window.lucide) lucide.createIcons(); }
 }
 loadAltConfigs();
+
+/* ---- Recovery: deferred pending actions + needs_setup CTA ---- */
+async function loadPending() {
+  const box = document.getElementById('pending-list');
+  if (!box) return;
+  try {
+    const r = await fetch('/api/devices/' + encodeURIComponent(DEVICE_ID) + '/pending');
+    const data = await r.json();
+    const items = (data && data.pending) || [];
+    if (!items.length) {
+      box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">No pending actions.</p>';
+      return;
+    }
+    box.innerHTML = items.map(function (p) {
+      const act = (p.action || {}).action || 'action';
+      const secs = p.expires_at ? (p.expires_at * 1000 - Date.now()) / 1000 : 0;
+      const when = secs > 0
+        ? (' · expires in ' + (secs < 3600 ? Math.round(secs / 60) + 'm' : Math.round(secs / 3600) + 'h'))
+        : '';
+      return '<div class="setting-row"><div class="sr-text" style="flex:1;min-width:0">'
+        + '<div class="sr-label">⏳ ' + ddEsc(act) + '</div>'
+        + '<div class="sr-desc">' + ddEsc(p.description || ('fires on ' + (p.trigger || 'trigger'))) + when + '</div>'
+        + '</div><button class="btn ghost sm" onclick="recCancel(\'' + ddEsc(p.id) + '\', this)">'
+        + '<i data-lucide="x"></i> Cancel</button></div>';
+    }).join('');
+    if (window.lucide) lucide.createIcons();
+  } catch (e) { /* leave the default */ }
+}
+async function recQueue() {
+  const btn = document.getElementById('rec-queue-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/devices/' + encodeURIComponent(DEVICE_ID) + '/recovery', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ intent: 'reprovision' }),
+    });
+    const data = await r.json();
+    const ok = r.ok && data && data.success;
+    recMsg(ok ? (data.message || 'Queued — will re-provision when it returns factory-defaulted.')
+              : ('Error: ' + ((data && data.detail) || 'failed')), ok);
+    if (ok) loadPending();
+  } catch (e) { recMsg('Request failed.', false); }
+  if (btn) btn.disabled = false;
+}
+async function recCancel(pid, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/devices/' + encodeURIComponent(DEVICE_ID)
+      + '/pending/' + encodeURIComponent(pid) + '/cancel', { method: 'POST' });
+    if (r.ok) loadPending(); else if (btn) btn.disabled = false;
+  } catch (e) { if (btn) btn.disabled = false; }
+}
+function recMsg(text, ok) {
+  const m = document.getElementById('rec-msg'); if (!m) return;
+  m.style.display = ''; m.textContent = text;
+  m.style.color = ok ? 'var(--fg-green,#4ade80)' : 'var(--fg-red,#f87171)';
+}
+(async function recBanner() {
+  try {
+    const r = await fetch('/api/fleet/health'); if (!r.ok) return;
+    const d = await r.json();
+    const me = (d.devices || []).find(function (x) { return x.device_id === DEVICE_ID; });
+    if (me && me.status === 'needs_setup') {
+      const b = document.getElementById('recovery-banner'); if (!b) return;
+      b.innerHTML = '<div style="padding:10px 16px;color:var(--fg-amber,#fbbf24);font-size:13px;'
+        + 'border-bottom:1px solid var(--border)"><i data-lucide="alert-triangle" '
+        + 'style="width:14px;height:14px;vertical-align:-2px"></i> This device is '
+        + 'factory-defaulted (needs setup). Queue a re-provision below, or '
+        + '<a href="#" style="color:inherit;text-decoration:underline" '
+        + 'onclick="var x=document.getElementById(\'delete-device-btn\');if(x)x.click();return false;">'
+        + 'decommission</a> it.</div>';
+      if (window.lucide) lucide.createIcons();
+    }
+  } catch (e) { /* non-fatal */ }
+})();
+loadPending();
 </script>
 {% endblock %}
