@@ -464,3 +464,57 @@ class TestRestoreBuilderProfile:
             plan["steps"][0]["params"]["root.Network.HostName"]
             == "device-specific-name"
         )
+
+
+# ---------------------------------------------------------------------------
+# Readability gate: an unreadable device must not masquerade as drift
+# ---------------------------------------------------------------------------
+
+class _Result401:
+    success = False
+    status_code = 401
+
+
+class _Executor401:
+    async def execute(self, op, dev, creds, params):
+        return _Result401()
+
+
+class _CatalogWithParamOp:
+    def get_operation(self, family, op_id):
+        class _Op:
+            def to_executor_dict(self):
+                return {}
+        return _Op()
+
+    def get_risk_level(self, *a):
+        return "normal"
+
+
+class _Engine401(FakeSnapshotEngine):
+    """A stub engine whose readability probe gets an HTTP 401 (auth failed)."""
+
+    def __init__(self, registry, git_repo=None):
+        super().__init__(registry, live_params={}, git_repo=git_repo)
+        self.catalog = _CatalogWithParamOp()
+        self.executors = {"vapix": _Executor401()}
+
+
+class TestDriftReadability:
+    @pytest.mark.asyncio
+    async def test_auth_failure_reports_unreadable_not_drift(self, tmp_repo):
+        reg = FakeRegistry(
+            {"cam-01": {"host": "1.2.3.4", "api_family": "vapix", "baseline_sha": "HEAD"}}
+        )
+        detector = DriftDetector(_Engine401(reg, git_repo=tmp_repo), tmp_repo)
+        report = await detector.check_drift("cam-01")
+        assert report.unreadable is True
+        assert report.unreadable_reason == "auth_failed"
+        assert report.has_drift is False
+        assert report.fields == []
+        # No empty "Audit:" observation recorded for an unreadable device.
+        assert reg.pointer_calls == []
+        # Surfaces in the summary the route/UI consume.
+        summary = report.to_summary()
+        assert summary["unreadable"] is True
+        assert summary["unreadable_reason"] == "auth_failed"

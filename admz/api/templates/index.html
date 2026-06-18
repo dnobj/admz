@@ -302,6 +302,16 @@ function toggleDrift(did) {
   if (detailRow.classList.contains('hidden')) openDrift(did); else closeDrift(did);
 }
 
+function toggleReadOnly(td) {
+  const table = td.closest('table');
+  if (!table) return;
+  const rows = table.querySelectorAll('tr.ro-collapsed');
+  const chev = td.querySelector('.ro-chev');
+  const showing = rows.length > 0 && rows[0].style.display !== 'none';
+  rows.forEach(r => { r.style.display = showing ? 'none' : ''; });
+  if (chev) chev.style.transform = showing ? '' : 'rotate(90deg)';
+}
+
 async function loadDiff(did) {
   const loadingEl = document.getElementById('loading-' + did);
   try {
@@ -323,11 +333,28 @@ function renderDiff(did, data) {
   const actionsWrap = document.getElementById('actions-' + did);
   const fields = data.drifted_fields || [];
   if (loadingEl) loadingEl.style.display = 'none';
+  if (data.unreadable) {
+    const why = data.unreadable_reason === 'auth_failed'
+      ? 'credentials were rejected (auth failed)'
+      : (data.unreadable_reason === 'unreachable' ? 'the device is unreachable'
+                                                  : 'the device could not be read');
+    if (diffWrap) diffWrap.innerHTML =
+      '<div style="padding:8px 0;color:var(--fg-amber,#fbbf24);font-size:13px">'
+      + '<i data-lucide="alert-triangle" style="width:14px;height:14px;vertical-align:-2px"></i> '
+      + 'Could not read this device&#39;s live config &mdash; ' + esc(why)
+      + '. This is not real drift &mdash; fix connectivity/credentials, then re-check.</div>';
+    if (actionsWrap) actionsWrap.style.display = 'none';
+    if (window.lucide) lucide.createIcons();
+    return;
+  }
   if (diffWrap) {
     if (fields.length === 0) {
       diffWrap.innerHTML = '<span style="color:var(--text-faint);font-size:13px">No drifted fields returned.</span>';
     } else {
-      let rows = fields.map(f => {
+      // Read-only "observed" fields (ACAP run-state, etc.) aren't revertable
+      // and just add noise to the actionable diff — render them collapsed
+      // below the revertable rows, behind a toggle.
+      const mkRow = (f, hidden) => {
         const chip = f.facet ? '<span class="facet-chip">' + esc(f.facet) + '</span>' : '';
         // `revertable` may be absent (older cache) — treat as revertable then.
         const rv = (f.revertable !== false);
@@ -345,14 +372,26 @@ function renderDiff(did, data) {
         // facet fields like ACAP run-state), since ignore covers any field.
         const ign = '<button type="button" class="row-ignore-btn" title="Exclude this field from tracking"'
           + ' data-did="' + esc(did) + '" data-canonical="' + esc(ck) + '"><i data-lucide="eye-off"></i></button>';
-        return '<tr class="' + (rv ? '' : 'row-readonly') + '">'
+        const cls = (rv ? '' : 'row-readonly') + (hidden ? ' ro-collapsed' : '');
+        return '<tr class="' + cls + '"' + (hidden ? ' style="display:none"' : '') + '>'
           + '<td class="col-sel">' + sel + '</td>'
           + '<td class="col-path">' + chip + esc(f.path) + roTag + '</td>'
           + '<td class="col-base">' + esc(f.expected) + '</td>'
           + '<td class="col-live">' + esc(f.actual) + '</td>'
           + '<td class="col-ign">' + ign + '</td></tr>';
-      }).join('');
-      const anyRevertable = fields.some(f => f.revertable !== false);
+      };
+      const rvFields = fields.filter(f => f.revertable !== false);
+      const roFields = fields.filter(f => f.revertable === false);
+      let rows = rvFields.map(f => mkRow(f, false)).join('');
+      if (roFields.length) {
+        rows += '<tr class="ro-group-head"><td colspan="5" onclick="toggleReadOnly(this)"'
+          + ' style="cursor:pointer;color:var(--text-muted);font-size:12px;padding:8px 6px;user-select:none">'
+          + '<i data-lucide="chevron-right" class="ro-chev" style="width:13px;height:13px;vertical-align:-2px;transition:transform .15s"></i> '
+          + roFields.length + ' read-only observed change' + (roFields.length !== 1 ? 's' : '')
+          + ' (not revertable)</td></tr>';
+        rows += roFields.map(f => mkRow(f, true)).join('');
+      }
+      const anyRevertable = rvFields.length > 0;
       const headSel = anyRevertable
         ? '<input type="checkbox" class="drift-field-all" data-did="' + esc(did)
           + '" checked title="Select all revertable fields">'

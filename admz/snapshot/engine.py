@@ -379,6 +379,38 @@ class SnapshotEngine:
 
         return {}
 
+    async def probe_readable(
+        self, device_id: str, device_info: Dict, family: str = "vapix"
+    ):
+        """Lightweight authenticated read to tell whether the live device is
+        actually readable. Returns ``(ok, reason)`` — ``ok=False`` with reason
+        ``"auth_failed"`` (HTTP 401) or ``"unreachable"``.
+
+        Drift uses this so an unreadable device isn't mistaken for one whose
+        every baselined field was removed. Fail-OPEN: when we can't even
+        attempt the probe (no executor/catalog/op — e.g. a stubbed test
+        engine), return ``(True, "")`` so drift proceeds as before."""
+        executor = self.executors.get(family) if self.executors else None
+        catalog = getattr(self, "catalog", None)
+        if executor is None or catalog is None:
+            return True, ""
+        operation = catalog.get_operation(family, "param.cgi:list")
+        if not operation:
+            return True, ""
+        try:
+            credentials = self.registry.get_credentials(device_id)
+            result = await executor.execute(
+                operation.to_executor_dict(), device_info, credentials,
+                {"group": "root.Brand"},  # tiny authenticated read
+            )
+        except Exception:  # noqa: BLE001 - connection error etc.
+            return False, "unreachable"
+        if getattr(result, "success", False):
+            return True, ""
+        if getattr(result, "status_code", None) == 401:
+            return False, "auth_failed"
+        return False, "unreachable"
+
     async def _read_extra_ops(
         self,
         device_id: str,
