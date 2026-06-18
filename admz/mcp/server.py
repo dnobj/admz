@@ -1844,6 +1844,8 @@ class ADMZMCPServer:
                     result = self._list_device_recovery(arguments)
                 elif name == "cancel_device_recovery":
                     result = self._cancel_device_recovery(arguments)
+                elif name == "list_tasks":
+                    result = self._list_tasks(arguments)
                 # --- Firmware ---
                 elif name == "download_firmware":
                     result = await self._download_firmware(arguments)
@@ -3332,6 +3334,23 @@ class ADMZMCPServer:
             "message": ("Cancelled." if cancelled
                         else "No cancellable pending action with that id."),
         }
+
+    def _list_tasks(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Unified view of schedule + detection tasks (ADR-0037)."""
+        from admz.tasks.store import tasks_store
+
+        device_id = arguments.get("device_id")
+        kind = arguments.get("kind")
+        tasks = tasks_store.list(trigger_kind=kind, device_id=device_id)
+        out = []
+        for t in tasks:
+            d = t.to_dict()
+            if t.trigger_kind == "schedule":
+                d["when"] = f"every {t.interval_human}"
+            else:
+                d["when"] = f"when {t.event}"
+            out.append(d)
+        return {"success": True, "count": len(out), "tasks": out}
 
     async def _provision_device(
         self, arguments: Dict[str, Any]

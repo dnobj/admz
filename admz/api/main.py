@@ -33,6 +33,7 @@ from admz.api.routes import (
     plans,
     schedules,
     snapshot,
+    tasks as tasks_route,
     survey as survey_route,
     voice as voice_route,
     web,
@@ -195,6 +196,7 @@ app.include_router(plans.router, prefix="/api", tags=["plans"])
 app.include_router(snapshot.router, prefix="/api", tags=["snapshot"])
 app.include_router(discovery.router, prefix="/api", tags=["discovery"])
 app.include_router(schedules.router, prefix="/api", tags=["schedules"])
+app.include_router(tasks_route.router, prefix="/api", tags=["tasks"])
 app.include_router(api_keys_route.router, prefix="/api", tags=["api-keys"])
 app.include_router(audit_route.router, prefix="/api", tags=["audit"])
 app.include_router(drift_route.router, prefix="/api", tags=["drift"])
