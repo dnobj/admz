@@ -111,6 +111,38 @@ async def acs_events(request: Request):
     )
 
 
+@router.post("/api/acs/action")
+async def acs_action(request: Request):
+    """Gated ACS camera action (start/stop recording) from the /acs buttons.
+
+    Routes through the confirmation gate (risk_level: action → url_only), so the
+    response is the blocked/confirm envelope; the UI then opens /confirm/{token}.
+    """
+    from admz.api.context import get_context
+
+    from admz.operations import execute_gated_operation
+    from admz.modules.acs_pro.registry_view import ACS_DEVICE_ID, AcsRegistryView
+
+    body = await request.json()
+    op = (body.get("op") or "").lower()
+    camera_id = body.get("camera_id")
+    op_ids = {
+        "start": "RecordingControlFacade:StartRecording",
+        "stop": "RecordingControlFacade:StopRecording",
+    }
+    if op not in op_ids or not camera_id:
+        return JSONResponse(
+            {"success": False, "error": "BadRequest", "message": "op must be start|stop with a camera_id."},
+            status_code=400,
+        )
+    ctx = get_context()
+    return await execute_gated_operation(
+        device_id=ACS_DEVICE_ID, operation_id=op_ids[op], family="acs-pro",
+        params={"cameraId": {"Id": camera_id}},
+        catalog=ctx.catalog, registry=AcsRegistryView(ctx.registry), executors=ctx.executors,
+    )
+
+
 @router.get("/acs", response_class=HTMLResponse)
 async def acs_page(request: Request):
     from admz.api.context import get_context

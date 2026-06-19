@@ -80,9 +80,13 @@ read-only tools + correlation, the gated `/acs` page + "Cameras" nav item, the
 prompt section, and unit tests for all of it (config/gating/correlation/executor
 with mocked transport + the MCP surface growth).
 
-**Out of scope (this version):** mutating ACS operations (StartRecording, PTZ,
-schedules) — the gate is ready for them behind confirmation later; a persisted
-device↔camera cross-reference table; multi-user S4U delegation.
+**Out of scope (this version):** ~~mutating ACS operations~~ — **shipped in
+actions-v2 (ADR-0041 follow-up):** RecordingControl start/stop, AddBookmark, and
+PtzFacade:GotoPresetId route through the confirmation gate (`risk_level: action`
+→ `url_only`, added to the default policy) via a transparent `AcsRegistryView`
+that resolves the synthetic `acs-server` target without a real device row; live-
+verified that the gate blocks and the approved path fires. Still out of scope: a
+persisted device↔camera cross-reference table; multi-user S4U delegation.
 
 **Live-verified (2026-06-19)** against a real ACS Pro 6.16 server (API 2.43) on
 the dev box: Negotiate/NTLM authenticated end-to-end as the operator;

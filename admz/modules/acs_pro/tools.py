@@ -86,7 +86,62 @@ async def _acs_find_camera_for_device(ctx, a):
     return {"success": True, "device_id": device_id, **match}
 
 
+# --- gated action handlers (ADR-0041 actions-v2) ----------------------------
+# These route through the confirmation gate (risk_level: action → url_only), so
+# they return a blocked/confirm envelope; the action fires only on web approval.
+async def acs_gated_action(ctx, op_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    from admz.modules.acs_pro.config import acs_enabled
+
+    if not acs_enabled():
+        return {"success": False, "error": "ACSNotConfigured",
+                "message": "ACS Pro isn't connected. Enable it in Settings → Modules."}
+    from admz.operations import execute_gated_operation
+    from admz.modules.acs_pro.registry_view import ACS_DEVICE_ID, AcsRegistryView
+
+    return await execute_gated_operation(
+        device_id=ACS_DEVICE_ID, operation_id=op_id, family="acs-pro", params=params,
+        catalog=ctx.server.catalog,
+        registry=AcsRegistryView(ctx.server.registry),
+        executors=ctx.server.executors,
+    )
+
+
+async def _acs_start_recording(ctx, a):
+    return await acs_gated_action(ctx, "RecordingControlFacade:StartRecording",
+                                  {"cameraId": {"Id": a["camera_id"]}})
+
+
+async def _acs_stop_recording(ctx, a):
+    return await acs_gated_action(ctx, "RecordingControlFacade:StopRecording",
+                                  {"cameraId": {"Id": a["camera_id"]}})
+
+
+async def _acs_add_bookmark(ctx, a):
+    import datetime
+
+    t = a.get("time") or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return await acs_gated_action(ctx, "BookmarkFacade:AddBookmark", {
+        "cameraId": {"Id": a["camera_id"]},
+        "time": t,
+        "name": a.get("name") or "ADMZ bookmark",
+        "description": a.get("description") or "",
+    })
+
+
+async def _acs_goto_preset(ctx, a):
+    return await acs_gated_action(ctx, "PtzFacade:GotoPresetId", {
+        "cameraId": {"Id": a["camera_id"]},
+        "presetId": int(a["preset_id"]),
+    })
+
+
 # --- schemas ----------------------------------------------------------------
+_CAMERA_ID_PROP = {
+    "camera_id": {
+        "type": "string",
+        "description": "The ACS CameraId.Id (from acs_list_cameras or acs_find_camera_for_device).",
+    }
+}
 def _range_props() -> Dict[str, Any]:
     return {
         "range": {
@@ -192,5 +247,60 @@ def tool_specs() -> List[ToolSpec]:
                 },
             ),
             _acs_find_camera_for_device,
+        ),
+        ToolSpec(
+            Tool(
+                name="acs_start_recording",
+                description=(
+                    "Start recording on an ACS Pro camera. SERVICE-AFFECTING — "
+                    "returns a confirmation the user must approve via the web "
+                    "widget before it runs."
+                ),
+                inputSchema={"type": "object", "properties": dict(_CAMERA_ID_PROP), "required": ["camera_id"]},
+            ),
+            _acs_start_recording,
+        ),
+        ToolSpec(
+            Tool(
+                name="acs_stop_recording",
+                description="Stop recording on an ACS Pro camera. SERVICE-AFFECTING — requires confirmation.",
+                inputSchema={"type": "object", "properties": dict(_CAMERA_ID_PROP), "required": ["camera_id"]},
+            ),
+            _acs_stop_recording,
+        ),
+        ToolSpec(
+            Tool(
+                name="acs_add_bookmark",
+                description=(
+                    "Add a bookmark to an ACS camera's recording (annotate a "
+                    "moment, e.g. a demo). Service-affecting — requires confirmation."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        **_CAMERA_ID_PROP,
+                        "name": {"type": "string", "description": "Bookmark title."},
+                        "description": {"type": "string", "description": "Optional bookmark note."},
+                        "time": {"type": "string", "description": "UTC 'YYYY-MM-DD HH:MM:SS'; defaults to now."},
+                    },
+                    "required": ["camera_id"],
+                },
+            ),
+            _acs_add_bookmark,
+        ),
+        ToolSpec(
+            Tool(
+                name="acs_goto_preset",
+                description="Move an ACS PTZ camera to a numbered preset. SERVICE-AFFECTING — requires confirmation.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        **_CAMERA_ID_PROP,
+                        "preset_id": {"type": "integer", "description": "The preset id to go to."},
+                    },
+                    "required": ["camera_id", "preset_id"],
+                },
+            ),
+            _acs_goto_preset,
         ),
     ]

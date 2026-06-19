@@ -47,6 +47,12 @@ _DEFAULT_CONFIRMATION_LEVELS: Dict[str, str] = {
     "service-affecting": "url_only",
     "normal": "none",
     "read-only": "none",
+    # ACS Pro (and other server-target families) use a simpler read|action
+    # risk vocabulary. Actions mutate live state → widget-gate them (ADR-0034);
+    # reads are unconfirmed. Without these, the .get(risk, "none") fallback
+    # would let an unmapped 'action' risk through ungated.
+    "action": "url_only",
+    "read": "none",
 }
 
 VALID_CONFIRMATION_LEVELS = {"url_and_password", "url_only", "llm_confirm", "none"}

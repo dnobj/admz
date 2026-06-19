@@ -19,13 +19,20 @@
 </div>
 
 <table class="data-table">
-  <thead><tr><th>Camera</th><th>Model</th><th>ACS camera id</th></tr></thead>
+  <thead><tr><th>Camera</th><th>Model</th><th>ACS camera id</th><th style="width:170px">Recording</th></tr></thead>
   <tbody>
     {% for c in cameras %}
+    {% set cid = (c.get('CameraId') or {}).get('Id') if (c.get('CameraId') is mapping) else c.get('CameraId') %}
     <tr>
       <td>{{ c.get('Name') or '—' }}</td>
       <td>{{ c.get('Model') or '—' }}</td>
-      <td class="page-sub">{{ (c.get('CameraId') or {}).get('Id') if (c.get('CameraId') is mapping) else (c.get('CameraId') or '—') }}</td>
+      <td class="page-sub">{{ cid or '—' }}</td>
+      <td>
+        {% if cid %}
+        <button class="btn sm acs-rec" data-cam="{{ cid }}" data-op="start" type="button" title="Start recording (requires approval)"><i data-lucide="circle"></i> Record</button>
+        <button class="btn sm ghost acs-rec" data-cam="{{ cid }}" data-op="stop" type="button" title="Stop recording (requires approval)"><i data-lucide="square"></i> Stop</button>
+        {% endif %}
+      </td>
     </tr>
     {% endfor %}
   </tbody>
@@ -95,6 +102,25 @@
     document.getElementById(id).addEventListener('keydown', function (e) { if (e.key === 'Enter') loadAcsEvents(); });
   });
   loadAcsEvents();
+
+  // Recording buttons → gated action → confirm widget.
+  document.querySelectorAll('.acs-rec').forEach(function (btn) {
+    btn.addEventListener('click', async function () {
+      var cam = btn.getAttribute('data-cam');
+      var op = btn.getAttribute('data-op');
+      btn.disabled = true;
+      try {
+        var r = await fetch('/api/acs/action', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ op: op, camera_id: cam }),
+        });
+        var d = await r.json();
+        if (d.blocked && d.confirm_url) { window.location.href = d.confirm_url; return; }
+        if (d.success) { btn.disabled = false; alert('Done.'); return; }
+        btn.disabled = false; alert('Failed: ' + (d.message || d.error || 'error'));
+      } catch (e) { btn.disabled = false; alert('Error: ' + e); }
+    });
+  });
 })();
 </script>
 {% endblock %}
