@@ -223,6 +223,15 @@ app.include_router(voice_route.router, tags=["voice"])
 app.include_router(survey_route.router, tags=["survey"])
 app.include_router(web.router, tags=["web"])
 
+# ADR-0039/0040: platform-module routers (e.g. ACS Pro's /api/acs/* + /acs).
+# Discovery is a cheap, ordered import; each module's routers() always returns
+# its routes (the connect/config endpoints must exist to enable the module),
+# while the module self-gates its *visible* surface (nav/tools/prompt).
+from admz.modules.registry import ModuleRegistry as _ModuleRegistry  # noqa: E402
+
+for _mod_router, _mod_prefix in _ModuleRegistry().discover().routers_all():
+    app.include_router(_mod_router, prefix=_mod_prefix, tags=["modules"])
+
 
 @app.get("/api/whoami", tags=["auth"])
 async def whoami(request: Request):

@@ -187,6 +187,35 @@
     </div>
   </div>
 
+  <!-- Modules (ADR-0040) — connect pluggable modules. They add no sidebar /
+       chatbot surface until enabled here. -->
+  <div class="card" id="modules">
+    <div class="card-header"><i data-lucide="blocks"></i><span class="title">Modules</span></div>
+    <div class="card-body">
+      <div class="sr">
+        <div class="sr-text">
+          <div class="sr-label">Axis Camera Station Pro <span id="acs-status" class="badge {{ 'green' if acs.enabled else 'grey' }}" style="margin-left:6px"><span class="dot"></span>{{ 'Connected' if acs.enabled else 'Not connected' }}</span></div>
+          <div class="sr-desc">Read-only: list ACS cameras and correlate them to your ADMZ devices by MAC. Authenticates as this server's own Windows identity (Negotiate) — <strong>no password is stored</strong>. Enabling it adds a “Cameras” item to the sidebar and ACS tools to the chatbot.</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 120px;gap:10px;margin-top:6px;max-width:520px">
+        <label class="page-sub" style="display:block">Server address
+          <input id="acs-host" value="{{ acs.server_url }}" placeholder="acs-server.example.com"
+            style="width:100%;box-sizing:border-box;margin-top:4px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text)"></label>
+        <label class="page-sub" style="display:block">Port
+          <input id="acs-port" type="number" value="{{ acs.port }}"
+            style="width:100%;box-sizing:border-box;margin-top:4px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text)"></label>
+      </div>
+      <label class="page-sub" style="display:block;margin-top:10px"><input id="acs-verify" type="checkbox" {{ 'checked' if acs.verify_tls }}> Verify TLS certificate (ACS ships a self-signed cert by default — leave off unless you've installed a trusted one)</label>
+      <label class="page-sub" style="display:block;margin-top:6px"><input id="acs-enabled" type="checkbox" {{ 'checked' if acs.enabled }}> Enable — show ACS Pro in the sidebar and chatbot</label>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+        <button class="btn" id="acs-test" type="button"><i data-lucide="plug"></i> Test connection</button>
+        <button class="btn primary" id="acs-save" type="button">Save</button>
+        <span id="acs-msg" class="page-sub" aria-live="polite"></span>
+      </div>
+    </div>
+  </div>
+
 </div>
 {% endblock %}
 
@@ -207,5 +236,44 @@ async function removeIgnoreRule(btn, key, scope) {
     btn.innerHTML = 'Failed — retry';
   }
 }
+
+// ACS Pro (Modules card)
+function acsBody() {
+  return {
+    server_url: (document.getElementById('acs-host').value || '').trim(),
+    port: parseInt(document.getElementById('acs-port').value, 10) || 29204,
+    verify_tls: document.getElementById('acs-verify').checked,
+    enabled: document.getElementById('acs-enabled').checked,
+  };
+}
+function acsMsg(t) { const m = document.getElementById('acs-msg'); if (m) m.textContent = t; }
+document.getElementById('acs-test')?.addEventListener('click', async () => {
+  acsMsg('Testing…');
+  try {
+    const r = await fetch('/api/acs/test', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(acsBody()),
+    });
+    const d = await r.json();
+    if (d.success) {
+      const v = d.data || {};
+      acsMsg('✓ Reached ACS Pro' + (v.Major !== undefined ? ' (API ' + v.Major + '.' + v.Minor + ')' : ''));
+    } else {
+      acsMsg('✗ ' + (d.message || 'Connection failed'));
+    }
+  } catch (e) { acsMsg('✗ ' + e); }
+});
+document.getElementById('acs-save')?.addEventListener('click', async () => {
+  acsMsg('Saving…');
+  try {
+    const r = await fetch('/api/acs/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(acsBody()),
+    });
+    const d = await r.json();
+    if (d.success) { acsMsg('✓ Saved'); setTimeout(() => location.reload(), 500); }
+    else { acsMsg('✗ ' + (d.message || 'Save failed')); }
+  } catch (e) { acsMsg('✗ ' + e); }
+});
 </script>
 {% endblock %}

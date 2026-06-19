@@ -89,8 +89,15 @@ def _live_tool_order():
     return [t.name for t in res.root.tools]
 
 
-def test_list_tools_order_is_frozen():
-    assert _live_tool_order() == EXPECTED_TOOL_ORDER
+def test_device_tool_order_is_frozen():
+    """The 52 device/platform tools are a frozen, ordered PREFIX.
+
+    Enabled platform modules (e.g. ACS Pro) append their tools after, so we
+    assert the prefix — this keeps the test independent of which modules happen
+    to be enabled in the live config.
+    """
+    names = _live_tool_order()
+    assert names[: len(EXPECTED_TOOL_ORDER)] == EXPECTED_TOOL_ORDER
 
 
 def test_list_tools_has_no_duplicates():
@@ -98,18 +105,18 @@ def test_list_tools_has_no_duplicates():
     assert len(names) == len(set(names)), "duplicate tool name in list_tools"
 
 
-def test_dispatch_table_matches_list_tools():
-    """Every advertised tool must have a dispatch handler, and vice-versa.
+def test_dispatch_table_matches_device_tools():
+    """The static dispatch table is exactly the frozen device tools.
 
-    The P2 refactor split the schema list (list_tools) from the dispatch table
-    (TOOL_HANDLERS). This guards against the two drifting — a tool advertised
-    but unhandled (or handled but unadvertised) is a bug.
+    list_tools (schemas) and TOOL_HANDLERS (dispatch) must not drift for the
+    device surface. Module tools are advertised too but dispatched via the
+    module registry, so they're not in TOOL_HANDLERS.
     """
     from admz.mcp.dispatch import TOOL_HANDLERS
 
-    advertised = set(_live_tool_order())
-    handled = set(TOOL_HANDLERS)
-    assert advertised == handled, {
-        "advertised_only": sorted(advertised - handled),
-        "handled_only": sorted(handled - advertised),
+    assert set(TOOL_HANDLERS) == set(EXPECTED_TOOL_ORDER), {
+        "table_only": sorted(set(TOOL_HANDLERS) - set(EXPECTED_TOOL_ORDER)),
+        "expected_only": sorted(set(EXPECTED_TOOL_ORDER) - set(TOOL_HANDLERS)),
     }
+    # Every device tool is actually advertised by list_tools.
+    assert set(TOOL_HANDLERS) <= set(_live_tool_order())

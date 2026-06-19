@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block nav_active %}acs{% endblock %}
+{% block title %}ACS Pro{% endblock %}
+{% block crumb_tail %}ACS Pro{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="pt">
+    <h1 class="page-title">Axis Camera Station Pro</h1>
+    <p class="page-sub">Read-only view of the connected ACS Pro server — its cameras map to ADMZ devices by MAC. Manage the connection in <a href="/settings">Settings → Modules</a>.</p>
+  </div>
+  <div class="page-actions"><a class="btn" href="/settings"><i data-lucide="settings"></i> Manage connection</a></div>
+</div>
+
+{% if reachable %}
+<div class="note-band" style="margin-bottom:16px">
+  <i data-lucide="check-circle"></i>
+  <span>Connected to <strong>{{ cfg.server_url }}:{{ cfg.port }}</strong>{% if version %} · API {{ version.get('Major', '?') }}.{{ version.get('Minor', '?') }}{% if version.get('ProductMajor') is not none %} · Product {{ version.get('ProductMajor') }}.{{ version.get('ProductMinor') }}{% endif %}{% endif %} · authenticated via Negotiate.</span>
+</div>
+
+<table class="data-table">
+  <thead><tr><th>Camera</th><th>Model</th><th>ACS camera id</th></tr></thead>
+  <tbody>
+    {% for c in cameras %}
+    <tr>
+      <td>{{ c.get('Name') or '—' }}</td>
+      <td>{{ c.get('Model') or '—' }}</td>
+      <td class="page-sub">{{ (c.get('CameraId') or {}).get('Id') if (c.get('CameraId') is mapping) else (c.get('CameraId') or '—') }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if not cameras %}
+<div class="empty-state"><i data-lucide="cctv"></i><div style="margin-top:10px">The server returned no cameras.</div></div>
+{% endif %}
+
+{% else %}
+<div class="note-band amber" style="margin-bottom:16px">
+  <i data-lucide="alert-triangle"></i>
+  <span>Couldn't reach <strong>{{ cfg.server_url }}:{{ cfg.port }}</strong>. {{ error or 'The server may be offline, or ADMZ may lack a Windows identity with access.' }}</span>
+</div>
+<div class="empty-state"><i data-lucide="cctv"></i><div style="margin-top:10px">No data — verify the connection in <a href="/settings">Settings → Modules</a>.</div></div>
+{% endif %}
+{% endblock %}
