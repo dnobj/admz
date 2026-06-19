@@ -33,6 +33,7 @@ from typing import List
 from mcp.types import Tool
 
 from admz.mcp.tools import (
+    audit,
     firmware,
     fleet,
     knowledge,
@@ -52,6 +53,7 @@ MIGRATED_TOOLS: List[Tool] = (
     + provision.TOOLS
     + recovery.TOOLS
     + tasks.TOOLS
+    + audit.TOOLS
     + firmware.TOOLS
 )
 

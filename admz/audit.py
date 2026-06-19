@@ -182,24 +182,92 @@ class AuditLog:
             logger.warning("AuditLog.list_recent failed: %s", e)
             return []
 
-        results: List[AuditEntry] = []
-        for row in rows:
-            try:
-                details = json.loads(row[6])
-            except (json.JSONDecodeError, TypeError):
-                details = {}
-            results.append(AuditEntry(
-                id=row[0],
-                timestamp=row[1],
-                requester=row[2],
-                auth_source=row[3],
-                action=row[4],
-                resource=row[5],
-                details=details,
-                success=bool(row[7]),
-                error_message=row[8],
-            ))
-        return results
+        return [self._row_to_entry(r) for r in rows]
+
+    def search(
+        self,
+        *,
+        start: Optional[float] = None,
+        end: Optional[float] = None,
+        requester: Optional[str] = None,
+        action: Optional[str] = None,
+        device: Optional[str] = None,
+        text: Optional[str] = None,
+        success: Optional[bool] = None,
+        limit: int = 50,
+    ) -> List[AuditEntry]:
+        """Flexible search over the audit log, newest first.
+
+        All filters are optional + combinable (AND-ed):
+          * ``start`` / ``end`` — unix-timestamp time range (the "limit by
+            time range" the operator asks for).
+          * ``requester`` / ``action`` — case-insensitive **substring** match
+            (so ``action="recovery"`` finds ``device.queue_recovery``,
+            ``mcp.list_device_recovery``, …).
+          * ``device`` — substring matched against the ``resource`` AND the
+            serialized ``details`` (device ids live in both — e.g.
+            ``mcp:execute_operation/device:X`` and ``details.args.device_id``).
+          * ``text`` — free-text substring across action/resource/details/error.
+          * ``success`` — True/False to keep only ok/failed rows.
+        """
+        clauses: List[str] = []
+        params: List[Any] = []
+        if start is not None:
+            clauses.append("timestamp >= ?")
+            params.append(start)
+        if end is not None:
+            clauses.append("timestamp <= ?")
+            params.append(end)
+        if requester:
+            clauses.append("requester LIKE ?")
+            params.append(f"%{requester}%")
+        if action:
+            clauses.append("action LIKE ?")
+            params.append(f"%{action}%")
+        if success is not None:
+            clauses.append("success = ?")
+            params.append(1 if success else 0)
+        if device:
+            clauses.append("(resource LIKE ? OR details_json LIKE ?)")
+            params.extend([f"%{device}%", f"%{device}%"])
+        if text:
+            clauses.append(
+                "(action LIKE ? OR resource LIKE ? OR details_json LIKE ? "
+                "OR error_message LIKE ?)"
+            )
+            params.extend([f"%{text}%"] * 4)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = (
+            "SELECT id, timestamp, requester, auth_source, action, "
+            "resource, details_json, success, error_message "
+            f"FROM audit_log {where} ORDER BY id DESC LIMIT ?"
+        )
+        params.append(max(1, min(int(limit or 50), 500)))
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(sql, tuple(params)).fetchall()
+        except sqlite3.Error as e:  # pragma: no cover
+            logger.warning("AuditLog.search failed: %s", e)
+            return []
+        return [self._row_to_entry(r) for r in rows]
+
+    @staticmethod
+    def _row_to_entry(row) -> AuditEntry:
+        try:
+            details = json.loads(row[6])
+        except (json.JSONDecodeError, TypeError):
+            details = {}
+        return AuditEntry(
+            id=row[0],
+            timestamp=row[1],
+            requester=row[2],
+            auth_source=row[3],
+            action=row[4],
+            resource=row[5],
+            details=details,
+            success=bool(row[7]),
+            error_message=row[8],
+        )
 
 
 # Module-level singleton — like capture_store, confirm_store, etc.
