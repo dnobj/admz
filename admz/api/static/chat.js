@@ -29,6 +29,26 @@
 
   if (!form || !transcript || !sendBtn) return;
 
+  // ── Composer settings popover (gear): model + voice dropdowns. ──────────
+  (function () {
+    var btn = document.getElementById("composer-settings-btn");
+    var panel = document.getElementById("composer-settings");
+    if (!btn || !panel) return;
+    function close() { panel.hidden = true; btn.setAttribute("aria-expanded", "false"); }
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var open = panel.hidden;
+      panel.hidden = !open;
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    document.addEventListener("click", function (e) {
+      if (!panel.hidden && !panel.contains(e.target) && !btn.contains(e.target)) close();
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && !panel.hidden) close();
+    });
+  })();
+
   // ── Suggestion buttons fill the composer and send. ──────────────────────
   document.querySelectorAll(".suggest-btn").forEach(function (btn) {
     btn.addEventListener("click", function () {
@@ -66,6 +86,12 @@
     var message = messageEl.value.trim();
     if (!message) return;
 
+    // Clear the composer immediately on send — the message is already
+    // captured and echoed as the user bubble; the field shouldn't hold the
+    // sent text for the whole turn.
+    messageEl.value = "";
+    messageEl.style.height = "auto";
+
     if (emptyState) emptyState.style.display = "none";
 
     renderUserBubble(message);
@@ -91,9 +117,7 @@
       .finally(function () {
         sendBtn.disabled = false;
         sendBtn.classList.remove("disabled");
-        messageEl.value = "";
-        messageEl.style.height = "auto";
-        messageEl.focus();
+        messageEl.focus();  // composer was already cleared on send
         resolveAllPending(assistantBubble); // backstop if stream ended early
         removeTyping(assistantBubble);
       });
@@ -132,13 +156,13 @@
           case "done":
             renderUsageFooter(assistantBubble, parsed.data);
             resolveAllPending(assistantBubble); // turn ended → tools finished
+            // Refresh the conversation drawer: a brand-new conversation and
+            // its freshly-generated title should appear without a reload.
+            if (typeof loadConversations === "function") loadConversations();
             // Approval/capture widgets are built ONLY from the structured
-            // tool_result above (the authoritative source). A /confirm or
-            // /capture URL that appears solely in the model's prose was
-            // fabricated — the model wrote a link without actually calling the
-            // gate, so the token isn't a real session. We deliberately do NOT
-            // render a widget for it (that produced the misleading "invalid or
-            // has expired" approval card); instead we flag it honestly.
+            // tool_result above. A /confirm|/capture URL appearing solely in the
+            // model's prose was fabricated — flag it honestly instead of
+            // rendering a phantom "invalid or has expired" widget.
             try {
               var fullText = assistantBubble.querySelector(".at-blocks").textContent;
               flagUnbackedLinks(fullText, assistantBubble);
@@ -763,4 +787,247 @@
     addPinnedAction("capture", token);
     icons();
   };
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Conversation history drawer (left slide-out pane)
+  // ──────────────────────────────────────────────────────────────────────────
+  var drawer = document.getElementById("conv-drawer");
+  var scrim = document.getElementById("conv-scrim");
+  var convList = document.getElementById("conv-list");
+  var convToggle = document.getElementById("conv-toggle");
+
+  function openDrawer() {
+    if (!drawer) return;
+    drawer.classList.add("open");
+    drawer.setAttribute("aria-hidden", "false");
+    if (scrim) scrim.hidden = false;
+    loadConversations();
+  }
+  function closeDrawer() {
+    if (!drawer) return;
+    drawer.classList.remove("open");
+    drawer.setAttribute("aria-hidden", "true");
+    if (scrim) scrim.hidden = true;
+  }
+
+  function relTime(iso) {
+    if (!iso) return "";
+    var then = new Date(iso).getTime();
+    if (isNaN(then)) return "";
+    var secs = Math.max(0, (Date.now() - then) / 1000);
+    if (secs < 60) return "just now";
+    var mins = Math.floor(secs / 60);
+    if (mins < 60) return mins + "m ago";
+    var hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + "h ago";
+    var days = Math.floor(hrs / 24);
+    if (days < 7) return days + "d ago";
+    return new Date(then).toLocaleDateString();
+  }
+
+  function loadConversations() {
+    if (!convList) return;
+    fetch("/api/chat/conversations", { headers: { Accept: "application/json" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data) return;
+        renderConvList(data.conversations || [], data.active);
+      })
+      .catch(function () {});
+  }
+
+  function renderConvList(items, activeId) {
+    convList.innerHTML = "";
+    if (!items.length) {
+      var empty = document.createElement("div");
+      empty.className = "conv-empty";
+      empty.textContent = "No conversations yet.";
+      convList.appendChild(empty);
+      return;
+    }
+    items.forEach(function (c) {
+      var row = document.createElement("div");
+      row.className = "conv-row" + (c.active ? " active" : "");
+      row.dataset.id = c.id;
+
+      var main = document.createElement("button");
+      main.type = "button";
+      main.className = "conv-open";
+      var title = document.createElement("span");
+      title.className = "conv-title";
+      title.textContent = c.title || "New chat";
+      var meta = document.createElement("span");
+      meta.className = "conv-time";
+      meta.textContent = relTime(c.updated_at);
+      main.appendChild(title);
+      main.appendChild(meta);
+      main.addEventListener("click", function () { openConversation(c.id); });
+
+      var actions = document.createElement("span");
+      actions.className = "conv-actions";
+      var ren = document.createElement("button");
+      ren.type = "button";
+      ren.className = "icon-btn xs";
+      ren.title = "Rename";
+      ren.innerHTML = ico("pencil");
+      ren.addEventListener("click", function (e) {
+        e.stopPropagation();
+        renameConversation(c.id, c.title || "");
+      });
+      var del = document.createElement("button");
+      del.type = "button";
+      del.className = "icon-btn xs";
+      del.title = "Delete";
+      del.innerHTML = ico("trash-2");
+      del.addEventListener("click", function (e) {
+        e.stopPropagation();
+        deleteConversation(c.id);
+      });
+      actions.appendChild(ren);
+      actions.appendChild(del);
+
+      row.appendChild(main);
+      row.appendChild(actions);
+      convList.appendChild(row);
+    });
+    icons();
+  }
+
+  function resetTranscript() {
+    transcript.innerHTML = "";
+    seenTokens.clear();
+    var actions = document.getElementById("chat-actions");
+    var actionsList = document.getElementById("chat-actions-list");
+    if (actionsList) actionsList.innerHTML = "";
+    if (actions) actions.style.display = "none";
+  }
+
+  function replayMessage(role, text) {
+    if (role === "user") {
+      renderUserBubble(text);
+    } else {
+      var at = renderAssistantBubble();
+      currentTextBlock(at).textContent = text;
+      removeTyping(at);
+    }
+  }
+
+  function openConversation(id) {
+    fetch("/api/chat/conversations/" + encodeURIComponent(id), {
+      headers: { Accept: "application/json" },
+    })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data) return;
+        return fetch("/api/chat/conversations/" + encodeURIComponent(id) + "/activate", {
+          method: "POST",
+        }).then(function () {
+          if (emptyState) emptyState.style.display = "none";
+          resetTranscript();
+          (data.messages || []).forEach(function (m) { replayMessage(m.role, m.text); });
+          icons();
+          closeDrawer();
+          loadConversations();
+        });
+      })
+      .catch(function () {});
+  }
+
+  // On load, resume the active conversation in the main view so the screen
+  // matches what the next message continues (instead of a misleadingly blank
+  // transcript). "New chat" stays the explicit way to start fresh. Display-only:
+  // we render the last RESTORE_MAX messages; the LLM context window is capped
+  // separately server-side.
+  var RESTORE_MAX = 60; // ~30 turns shown on resume
+  function restoreActiveConversation() {
+    // Only restore into a genuinely empty transcript — skip the no-JS,
+    // server-rendered fallback turn (which omits the #chat-empty marker).
+    if (!emptyState || transcript.children.length) return;
+    fetch("/api/chat/conversations", { headers: { Accept: "application/json" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data || !data.active) return;
+        var meta = (data.conversations || []).filter(function (c) {
+          return c.id === data.active;
+        })[0];
+        if (!meta || !meta.message_count) return; // active conversation is empty
+        return fetch("/api/chat/conversations/" + encodeURIComponent(data.active), {
+          headers: { Accept: "application/json" },
+        })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (conv) {
+            if (!conv || !conv.messages || !conv.messages.length) return;
+            if (transcript.children.length) return; // user already started typing/sending
+            if (emptyState) emptyState.style.display = "none";
+            conv.messages.slice(-RESTORE_MAX).forEach(function (m) {
+              replayMessage(m.role, m.text);
+            });
+            icons();
+            transcript.scrollIntoView(false);
+          });
+      })
+      .catch(function () {});
+  }
+
+  function newConversation() {
+    fetch("/api/chat/conversations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function () {
+        resetTranscript();
+        if (emptyState) emptyState.style.display = "";
+        closeDrawer();
+        loadConversations();
+        var msgEl = document.getElementById("message");
+        if (msgEl) msgEl.focus();
+      })
+      .catch(function () {});
+  }
+
+  function renameConversation(id, current) {
+    var next = window.prompt("Rename conversation", current || "");
+    if (next == null) return;
+    next = next.trim();
+    if (!next) return;
+    fetch("/api/chat/conversations/" + encodeURIComponent(id), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: next }),
+    })
+      .then(function (r) { if (r.ok) loadConversations(); })
+      .catch(function () {});
+  }
+
+  function deleteConversation(id) {
+    if (!window.confirm("Delete this conversation? This cannot be undone.")) return;
+    fetch("/api/chat/conversations/" + encodeURIComponent(id), { method: "DELETE" })
+      .then(function (r) {
+        if (!r.ok) return;
+        loadConversations();
+      })
+      .catch(function () {});
+  }
+
+  if (convToggle) convToggle.addEventListener("click", openDrawer);
+  if (scrim) scrim.addEventListener("click", closeDrawer);
+  var convClose = document.getElementById("conv-close");
+  if (convClose) convClose.addEventListener("click", closeDrawer);
+  // "+ New chat" (drawer) via event delegation so it fires regardless of when
+  // the drawer DOM is (re)rendered or the icon is swapped by lucide.
+  document.addEventListener("click", function (e) {
+    if (!e.target || !e.target.closest) return;
+    if (e.target.closest("#conv-new")) {
+      e.preventDefault();
+      newConversation();
+    }
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && drawer && drawer.classList.contains("open")) closeDrawer();
+  });
+
+  // Resume the active conversation on Console load (display-only).
+  restoreActiveConversation();
 })();
