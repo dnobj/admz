@@ -45,9 +45,12 @@ class ModuleRegistry:
         from admz.modules import devices
 
         self.register_module(devices.get_module())
-        # PR2 appends:
-        #   from admz.modules import acs_pro
-        #   self.register_module(acs_pro.get_module())
+        # ADR-0040: ACS Pro (module #2). Always registered; its visible surface
+        # (nav/tools/prompt) self-gates on the acs_pro enable flag, so it's
+        # inert until the operator connects a server.
+        from admz.modules import acs_pro
+
+        self.register_module(acs_pro.get_module())
         return self
 
     # ---- merge helpers (used by MCP / REST / chatbot surfaces) ----------

@@ -586,6 +586,7 @@ async def settings_overview(request: Request):
     from admz.snapshot.ignore import (
         USER_SETTING_KEY, _GLOBAL_IGNORE_PATTERNS, _scoped_rules,
     )
+    from admz.modules.acs_pro.config import acs_config
     return templates.TemplateResponse(
         "settings.html",
         {
@@ -594,6 +595,7 @@ async def settings_overview(request: Request):
             "levels": levels,
             "has_password": has_password,
             "get_creds_enabled": get_creds_enabled,
+            "acs": acs_config(),
             "all_settings": fleet_settings.list_all(),
             "ignore_patterns_text": fleet_settings.get(USER_SETTING_KEY) or "",
             "ignore_globals": list(_GLOBAL_IGNORE_PATTERNS),
