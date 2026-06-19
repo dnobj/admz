@@ -33,6 +33,7 @@ from admz.api.routes import (
     plans,
     schedules,
     snapshot,
+    tasks as tasks_route,
     survey as survey_route,
     voice as voice_route,
     web,
@@ -87,15 +88,27 @@ async def lifespan(app: FastAPI):
     registry = create_device_registry()
     ctx = init_context(registry)
 
-    # Register deferred recovery handlers (e.g. reprovision-on-return) so the
-    # health-monitor sweep can fire pre-approved recoveries.
+    # One-time migration of the legacy schedules.json + pending_device_actions
+    # into the unified tasks table (ADR-0037). Idempotent + non-destructive, so
+    # safe to run every startup; the scheduler + sweep read the tasks store.
+    try:
+        from admz.tasks.migrate import migrate_legacy
+        migrate_legacy()
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning(
+            "tasks migration failed", exc_info=True
+        )
+
+    # Install the unified task-handler context (reprovision + scheduled handlers)
+    # so the health-monitor sweep can fire pre-approved detection tasks.
     try:
         from admz.recovery_actions import register_recovery_handlers
         register_recovery_handlers(ctx)
     except Exception:  # noqa: BLE001
         import logging
         logging.getLogger(__name__).warning(
-            "recovery handler registration failed", exc_info=True
+            "task context install failed", exc_info=True
         )
 
     await ctx.scheduler.start()
@@ -183,6 +196,7 @@ app.include_router(plans.router, prefix="/api", tags=["plans"])
 app.include_router(snapshot.router, prefix="/api", tags=["snapshot"])
 app.include_router(discovery.router, prefix="/api", tags=["discovery"])
 app.include_router(schedules.router, prefix="/api", tags=["schedules"])
+app.include_router(tasks_route.router, prefix="/api", tags=["tasks"])
 app.include_router(api_keys_route.router, prefix="/api", tags=["api-keys"])
 app.include_router(audit_route.router, prefix="/api", tags=["audit"])
 app.include_router(drift_route.router, prefix="/api", tags=["drift"])

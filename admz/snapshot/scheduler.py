@@ -1,42 +1,49 @@
+"""Time-based task evaluator (ADR-0037, was the SnapshotScheduler).
+
+Schedule tasks now live in the unified SQLite ``tasks`` store (``admz.tasks``),
+not ``schedules.json`` — so the cross-process merge/reconcile hack is gone
+(SQLite is the source of truth; a periodic re-query adopts tasks created by other
+processes). This module keeps the interval-loop machinery + the ``SnapshotSchedule``
+public API (so REST/MCP callers are unchanged) and dispatches through the unified
+handler registry (``admz.tasks.handlers``).
+"""
+
 import asyncio
-import json
 import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
+# Importing handlers registers the built-in action handlers (snapshot /
+# drift_audit / survey / reprovision) into the unified registry.
+from admz.tasks import handlers as _task_handlers
+from admz.tasks.handlers import (  # noqa: F401 — re-exported for back-compat
+    TaskContext,
+    execute_task_action,
+    register_task_handler,
+)
+from admz.tasks.handlers import TaskContext as JobContext  # back-compat alias
+from admz.tasks import store as _store_mod
+from admz.tasks.store import TRIGGER_SCHEDULE, Task
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class SnapshotSchedule:
-    """A scheduled job. Name kept for back-compat (existing
-    ``schedules.json`` entries deserialise into this shape) but
-    each row now carries a ``job_type`` so the scheduler can run
-    snapshots, drift audits, and other recurring jobs through the
-    same loop machinery. See ADR-0026 + FR-SCH-010..014.
-    """
+    """Back-compat shape for the REST/MCP schedule surface. Converted to/from a
+    unified :class:`admz.tasks.store.Task` at the scheduler boundary."""
 
     id: str
     description: str
     interval_seconds: int
-    # Snapshot-shaped scope (kept for back-compat + still meaningful
-    # for drift_audit too). Hierarchy-aware fields will be added
-    # under FR-SCH-012 once Slice 2 of the Org/Site/Group work lands.
     tag_filter: Optional[str] = None
     device_ids: Optional[List[str]] = None
     enabled: bool = True
     last_run: Optional[str] = None
     next_run: Optional[str] = None
     last_result: Optional[str] = None
-    # FR-SCH-010 — job_type drives handler-registry dispatch. Default
-    # "snapshot" so legacy schedules.json entries migrate cleanly
-    # (no operator action required, per ADR-0026's migration note).
     job_type: str = "snapshot"
-    # Free-form job-type-specific knobs. drift_audit currently uses
-    # no params; reserved for future handlers (cert-expiry, rotation,
-    # etc.).
     params: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -45,17 +52,12 @@ class SnapshotSchedule:
             del d["device_ids"]
         if d["tag_filter"] is None:
             del d["tag_filter"]
-        # Drop params from the wire shape when empty so the file
-        # stays uncluttered for the common snapshot case.
         if not d.get("params"):
             d.pop("params", None)
         return d
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "SnapshotSchedule":
-        # Migration (ADR-0026): legacy rows have no `job_type` field;
-        # default to "snapshot" so pre-Phase-X persisted schedules
-        # keep working.
         d = dict(d)
         d.setdefault("job_type", "snapshot")
         d.setdefault("params", {})
@@ -76,85 +78,66 @@ class SnapshotSchedule:
         return f"{s // 86400}d"
 
 
-# Back-compat alias. ADR-0026 calls this `ScheduledJob`; we expose
-# both names so callers and tests can use whichever reads cleaner
-# at the call site.
+# Back-compat alias (ADR-0026 name).
 ScheduledJob = SnapshotSchedule
 
 
+def _to_task(s: SnapshotSchedule) -> Task:
+    return Task(
+        id=s.id,
+        description=s.description or "",
+        trigger_kind=TRIGGER_SCHEDULE,
+        interval_seconds=s.interval_seconds,
+        next_run=s.next_run,
+        last_run=s.last_run,
+        last_result=s.last_result,
+        action_type=s.job_type or "snapshot",
+        action_params=dict(s.params or {}),
+        tag_filter=s.tag_filter,
+        device_ids=s.device_ids,
+        enabled=s.enabled,
+        status="active",
+    )
+
+
+def _to_schedule(t: Task) -> SnapshotSchedule:
+    return SnapshotSchedule(
+        id=t.id,
+        description=t.description,
+        interval_seconds=t.interval_seconds,
+        tag_filter=t.tag_filter,
+        device_ids=t.device_ids,
+        enabled=t.enabled,
+        last_run=t.last_run,
+        next_run=t.next_run,
+        last_result=t.last_result,
+        job_type=t.action_type,
+        params=dict(t.action_params or {}),
+    )
+
+
 # ---------------------------------------------------------------------------
-# Handler registry (FR-SCH-010)
+# Handler-registry back-compat shims (delegate to the unified registry)
 # ---------------------------------------------------------------------------
-#
-# A `(job_type, async handler)` map. Handlers receive the live
-# ``ScheduledJob`` plus a context bag the scheduler builds at
-# construction time. Adding a new periodic capability means
-# registering a new handler — not standing up a parallel scheduler
-# (ADR-0026). The pattern mirrors ADR-0015 (pluggable facets) and
-# ADR-0011 (pluggable backends).
-JobHandler = Callable[
-    ["SnapshotSchedule", "JobContext"], Awaitable[Dict[str, Any]],
-]
 
-_HANDLERS: Dict[str, JobHandler] = {}
+def register_job_handler(job_type: str):
+    """Back-compat alias for ``register_task_handler``."""
+    return register_task_handler(job_type)
 
 
-def register_job_handler(job_type: str) -> Callable[[JobHandler], JobHandler]:
-    """Decorator: register an async handler for a job_type.
-
-    Production handlers register at import time. Tests can register
-    additional handlers via the same decorator (no helper needed)
-    and clean up by popping the key — see test_unified_scheduler.py.
-    """
-
-    def _wrap(fn: JobHandler) -> JobHandler:
-        _HANDLERS[job_type] = fn
-        return fn
-
-    return _wrap
-
-
-def get_job_handler(job_type: str) -> Optional[JobHandler]:
-    """Public accessor — used by handlers that need to delegate
-    (e.g. a composite handler that runs snapshot + drift in sequence)."""
-    return _HANDLERS.get(job_type)
+def get_job_handler(job_type: str):
+    return _task_handlers.get_task_handler(job_type)
 
 
 def list_job_types() -> List[str]:
-    """Introspect registered handlers. Used by the REST/MCP
-    schedule-create endpoints to validate the operator's choice."""
-    return sorted(_HANDLERS)
-
-
-@dataclass
-class JobContext:
-    """Bundle of dependencies handed to each job handler.
-
-    Not the same as ``Components`` — handlers should depend on the
-    narrow set they actually need so the bundle stays cohesive. If
-    a handler needs something not here, add it (don't reach for a
-    global)."""
-
-    snapshot_engine: Any = None
-    drift_detector: Any = None
+    return _task_handlers.list_action_types()
 
 
 INTERVAL_UNITS = {
-    "s": 1,
-    "sec": 1,
-    "second": 1,
-    "seconds": 1,
-    "m": 60,
-    "min": 60,
-    "minute": 60,
-    "minutes": 60,
-    "h": 3600,
-    "hr": 3600,
-    "hour": 3600,
-    "hours": 3600,
-    "d": 86400,
-    "day": 86400,
-    "days": 86400,
+    "s": 1, "sec": 1, "second": 1, "seconds": 1,
+    "m": 60, "min": 60, "minute": 60, "minutes": 60,
+    "h": 3600, "hr": 3600, "hour": 3600, "hours": 3600,
+    "d": 86400, "day": 86400, "days": 86400,
 }
 
 
@@ -169,7 +152,6 @@ def parse_interval(text: str) -> int:
                 return int(float(num_part) * multiplier)
             except ValueError:
                 pass
-
     try:
         return int(text)
     except ValueError:
@@ -179,130 +161,99 @@ def parse_interval(text: str) -> int:
         )
 
 
-# How often the running (uvicorn) scheduler syncs its in-memory task set
-# with the on-disk file, so schedules created/removed by another process
-# (e.g. the chatbot's MCP-pool subprocess) are adopted/dropped without a
-# restart (KL-SCH-006).
+# How often the running scheduler re-queries the store to adopt/drop schedule
+# tasks created/removed by another process (replaces the old disk reconcile).
 _RECONCILE_INTERVAL_SECONDS = 30
 
 
 class SnapshotScheduler:
+    """Runs schedule tasks (from the unified store) on their intervals."""
 
-    def __init__(
-        self,
-        snapshot_engine,
-        schedule_path: str,
-        drift_detector=None,
-    ):
+    def __init__(self, snapshot_engine, schedule_path: str = "", drift_detector=None,
+                 store=None):
         self.engine = snapshot_engine
         self.drift_detector = drift_detector
-        self.schedule_path = Path(schedule_path)
-        self.schedules: Dict[str, SnapshotSchedule] = {}
+        # ``schedule_path`` retained for signature compatibility; storage is the
+        # SQLite tasks store now (ADR-0037). Read the singleton at construction
+        # so tests can monkeypatch ``admz.tasks.store.tasks_store``.
+        self.store = store if store is not None else _store_mod.tasks_store
         self._tasks: Dict[str, asyncio.Task] = {}
-        # KL-SCH-005 — per-job lock fixing the run_now ↔ interval-loop
-        # race. Both call paths now go through ``_execute_schedule``,
-        # which acquires the per-job lock before doing any work.
         self._job_locks: Dict[str, asyncio.Lock] = {}
         self._running = False
         self._reconcile_task: Optional[asyncio.Task] = None
 
-    # JobScheduler alias matches ADR-0026's preferred name.
-    # Operators / contributors can use either at the call site.
-
-    def _lock_for(self, schedule_id: str) -> asyncio.Lock:
-        lock = self._job_locks.get(schedule_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._job_locks[schedule_id] = lock
-        return lock
-
-    def _job_context(self) -> JobContext:
-        """Build the bundle of deps handlers expect. Constructed
-        per execution so dynamic re-injection works in tests."""
-        return JobContext(
-            snapshot_engine=self.engine,
-            drift_detector=self.drift_detector,
+    def _ctx(self) -> TaskContext:
+        return TaskContext(
+            snapshot_engine=self.engine, drift_detector=self.drift_detector,
         )
 
+    def _lock_for(self, task_id: str) -> asyncio.Lock:
+        lock = self._job_locks.get(task_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._job_locks[task_id] = lock
+        return lock
+
+    # ----- CRUD (SnapshotSchedule in/out for back-compat) -----------------
+
     def add_schedule(self, schedule: SnapshotSchedule) -> SnapshotSchedule:
-        now = datetime.now(timezone.utc)
         if not schedule.next_run:
-            schedule.next_run = (
-                now + timedelta(seconds=schedule.interval_seconds)
-            ).isoformat()
-
-        self.schedules[schedule.id] = schedule
-        self._save()
-
-        if self._running and schedule.enabled:
-            self._start_task(schedule)
-
-        return schedule
-
-    def update_schedule(
-        self, schedule_id: str, **kwargs
-    ) -> Optional[SnapshotSchedule]:
-        schedule = self.schedules.get(schedule_id)
-        if not schedule:
-            return None
-
-        for key, value in kwargs.items():
-            if hasattr(schedule, key):
-                setattr(schedule, key, value)
-
-        if "interval_seconds" in kwargs:
             schedule.next_run = (
                 datetime.now(timezone.utc)
                 + timedelta(seconds=schedule.interval_seconds)
             ).isoformat()
+        self.store.upsert(_to_task(schedule))
+        if self._running and schedule.enabled:
+            self._start_task(schedule.id)
+        return schedule
 
-        self._save()
-
+    def update_schedule(self, schedule_id: str, **kwargs) -> Optional[SnapshotSchedule]:
+        task = self.store.get(schedule_id)
+        if task is None or task.trigger_kind != TRIGGER_SCHEDULE:
+            return None
+        # Map SnapshotSchedule field names onto Task fields.
+        if "job_type" in kwargs:
+            task.action_type = kwargs.pop("job_type")
+        if "params" in kwargs:
+            task.action_params = kwargs.pop("params") or {}
+        for key, value in kwargs.items():
+            if hasattr(task, key):
+                setattr(task, key, value)
+        if "interval_seconds" in kwargs:
+            task.next_run = (
+                datetime.now(timezone.utc)
+                + timedelta(seconds=task.interval_seconds)
+            ).isoformat()
+        self.store.upsert(task)
         if self._running:
             self._cancel_task(schedule_id)
-            if schedule.enabled:
-                self._start_task(schedule)
-
-        return schedule
+            if task.enabled:
+                self._start_task(schedule_id)
+        return _to_schedule(task)
 
     def remove_schedule(self, schedule_id: str) -> bool:
         self._cancel_task(schedule_id)
-        in_mem = self.schedules.pop(schedule_id, None) is not None
-        # Explicit on-disk delete — a merge-save keeps entries it doesn't own,
-        # so a delete has to remove the row itself (else another process could
-        # resurrect it on its next save).
-        data = self._read_raw()
-        on_disk = data.pop(schedule_id, None) is not None
-        if on_disk:
-            self._write_raw(data)
-        return in_mem or on_disk
+        return self.store.delete(schedule_id)
 
     def get_schedule(self, schedule_id: str) -> Optional[SnapshotSchedule]:
-        return self.schedules.get(schedule_id)
+        task = self.store.get(schedule_id)
+        if task is None or task.trigger_kind != TRIGGER_SCHEDULE:
+            return None
+        return _to_schedule(task)
 
     def list_schedules(self) -> List[SnapshotSchedule]:
-        # Reload from disk so schedules created by another process (e.g. the
-        # chatbot's MCP subprocess) show up without a restart.
-        merged: Dict[str, SnapshotSchedule] = {}
-        for sid, sdata in self._read_raw().items():
-            try:
-                merged[sid] = SnapshotSchedule.from_dict(sdata)
-            except Exception:
-                continue
-        for sid, s in self.schedules.items():
-            merged.setdefault(sid, s)
-        return list(merged.values())
+        return [_to_schedule(t) for t in self.store.schedule_tasks()]
+
+    # ----- lifecycle ------------------------------------------------------
 
     async def start(self):
-        self._load()
         self._running = True
-        for schedule in self.schedules.values():
-            if schedule.enabled:
-                self._start_task(schedule)
+        for t in self.store.schedule_tasks(enabled_only=True):
+            self._start_task(t.id)
         self._reconcile_task = asyncio.create_task(self._reconcile_loop())
         logger.info(
-            "Scheduler started with %d schedule(s)",
-            sum(1 for s in self.schedules.values() if s.enabled),
+            "Scheduler started with %d schedule task(s)",
+            len(self.store.schedule_tasks(enabled_only=True)),
         )
 
     async def stop(self):
@@ -316,375 +267,127 @@ class SnapshotScheduler:
         logger.info("Scheduler stopped")
 
     async def _reconcile_loop(self) -> None:
-        """Sync the in-memory task set with the on-disk file on a timer so
-        schedules another process created/removed are adopted/dropped without
-        a restart. Only the running scheduler runs this."""
+        """Adopt/drop schedule-task loops as the store changes (cross-process)."""
         try:
             while self._running:
                 await asyncio.sleep(_RECONCILE_INTERVAL_SECONDS)
                 if not self._running:
                     break
                 try:
-                    self._reconcile_from_disk()
-                except Exception:  # pragma: no cover — never let it kill the loop
+                    self._reconcile()
+                except Exception:  # pragma: no cover
                     logger.exception("schedule reconcile failed")
         except asyncio.CancelledError:
             pass
 
-    def _reconcile_from_disk(self) -> None:
-        raw = self._read_raw()
-        disk_ids = set(raw.keys())
-        mem_ids = set(self.schedules.keys())
-
-        for sid in disk_ids - mem_ids:        # created elsewhere → adopt + run
-            try:
-                s = SnapshotSchedule.from_dict(raw[sid])
-            except Exception:
-                continue
-            self.schedules[sid] = s
-            if self._running and s.enabled:
-                self._start_task(s)
-            logger.info("Adopted externally-created schedule %s", sid)
-
-        for sid in mem_ids - disk_ids:        # removed elsewhere → cancel + drop
+    def _reconcile(self) -> None:
+        want = {t.id for t in self.store.schedule_tasks(enabled_only=True)}
+        have = set(self._tasks.keys())
+        for sid in want - have:
+            self._start_task(sid)
+            logger.info("Adopted schedule task %s", sid)
+        for sid in have - want:
             self._cancel_task(sid)
-            self.schedules.pop(sid, None)
-            logger.info("Dropped externally-removed schedule %s", sid)
-
-        for sid in disk_ids & mem_ids:        # enabled flipped elsewhere
-            want = bool(raw[sid].get("enabled", True))
-            s = self.schedules[sid]
-            if want != s.enabled:
-                s.enabled = want
-                if self._running:
-                    self._cancel_task(sid)
-                    if want:
-                        self._start_task(s)
+            logger.info("Dropped schedule task %s", sid)
 
     async def run_now(self, schedule_id: str) -> Dict[str, Any]:
-        schedule = self.schedules.get(schedule_id)
-        if not schedule:
+        task = self.store.get(schedule_id)
+        if task is None or task.trigger_kind != TRIGGER_SCHEDULE:
             return {"success": False, "error": f"Schedule not found: {schedule_id}"}
-        return await self._execute_schedule(schedule)
+        return await self._execute(task)
 
-    def _start_task(self, schedule: SnapshotSchedule):
-        self._cancel_task(schedule.id)
-        task = asyncio.create_task(self._schedule_loop(schedule))
-        self._tasks[schedule.id] = task
+    # ----- loop + execution ----------------------------------------------
 
-    def _cancel_task(self, schedule_id: str):
-        task = self._tasks.pop(schedule_id, None)
+    def _start_task(self, task_id: str):
+        self._cancel_task(task_id)
+        self._tasks[task_id] = asyncio.create_task(self._schedule_loop(task_id))
+
+    def _cancel_task(self, task_id: str):
+        task = self._tasks.pop(task_id, None)
         if task and not task.done():
             task.cancel()
 
-    async def _schedule_loop(self, schedule: SnapshotSchedule):
+    async def _schedule_loop(self, task_id: str):
         try:
             while True:
-                wait = self._seconds_until_next(schedule)
+                task = self.store.get(task_id)
+                if task is None or task.trigger_kind != TRIGGER_SCHEDULE \
+                        or not task.enabled:
+                    return  # removed / disabled elsewhere → stop this loop
+                wait = self._seconds_until_next(task)
                 if wait > 0:
                     await asyncio.sleep(wait)
-
-                await self._execute_schedule(schedule)
-
-                schedule.next_run = (
+                task = self.store.get(task_id)  # re-read (may have changed)
+                if task is None or not task.enabled:
+                    return
+                await self._execute(task)
+                next_run = (
                     datetime.now(timezone.utc)
-                    + timedelta(seconds=schedule.interval_seconds)
+                    + timedelta(seconds=task.interval_seconds)
                 ).isoformat()
-                self._save()
+                self.store.update(task_id, next_run=next_run)
         except asyncio.CancelledError:
             pass
         except Exception:
-            logger.exception("Schedule loop %s crashed", schedule.id)
+            logger.exception("Schedule loop %s crashed", task_id)
 
-    async def _execute_schedule(
-        self, schedule: SnapshotSchedule
-    ) -> Dict[str, Any]:
-        """FR-SCH-010 — dispatch through the handler registry.
-
-        KL-SCH-005 — per-job lock prevents the ``run_now`` ↔
-        interval-loop race for the same schedule. Both call paths
-        funnel here.
-
-        FR-SCH-013 — every execution writes one audit row attributed
-        to the synthetic ``scheduler`` principal so automated runs
-        are distinguishable from operator / anonymous traffic.
-        """
-        async with self._lock_for(schedule.id):
-            handler = _HANDLERS.get(schedule.job_type)
-            if handler is None:
-                msg = (
-                    f"No handler registered for job_type "
-                    f"{schedule.job_type!r}. Registered: "
-                    f"{list_job_types()}"
-                )
-                logger.error("Schedule %s: %s", schedule.id, msg)
-                schedule.last_run = datetime.now(timezone.utc).isoformat()
-                schedule.last_result = f"error: {msg}"
-                self._save()
-                self._audit_run(schedule, success=False, error=msg)
-                return {
-                    "success": False,
-                    "schedule_id": schedule.id,
-                    "error": msg,
-                }
-
-            logger.info(
-                "Running scheduled job (%s): %s",
-                schedule.job_type, schedule.id,
-            )
-            now = datetime.now(timezone.utc)
-            ctx = self._job_context()
+    async def _execute(self, task: Task) -> Dict[str, Any]:
+        async with self._lock_for(task.id):
+            now_iso = datetime.now(timezone.utc).isoformat()
             try:
-                result = await handler(schedule, ctx)
+                result = await execute_task_action(task, self._ctx())
+            except ValueError as e:  # no handler registered
+                msg = str(e)
+                logger.error("Schedule %s: %s", task.id, msg)
+                self.store.set_run_result(task.id, last_run=now_iso,
+                                          last_result=f"error: {msg}")
+                self._audit_run(task, success=False, error=msg)
+                return {"success": False, "schedule_id": task.id, "error": msg}
             except Exception as e:
-                logger.exception(
-                    "Schedule %s (%s) failed",
-                    schedule.id, schedule.job_type,
-                )
-                schedule.last_run = now.isoformat()
-                schedule.last_result = f"error: {e}"
-                self._save()
-                self._audit_run(schedule, success=False, error=str(e))
-                return {
-                    "success": False,
-                    "schedule_id": schedule.id,
-                    "job_type": schedule.job_type,
-                    "error": str(e),
-                }
+                logger.exception("Schedule %s (%s) failed", task.id, task.action_type)
+                self.store.set_run_result(task.id, last_run=now_iso,
+                                          last_result=f"error: {e}")
+                self._audit_run(task, success=False, error=str(e))
+                return {"success": False, "schedule_id": task.id,
+                        "job_type": task.action_type, "error": str(e)}
 
-            # Handler is expected to return a dict with at least
-            # ``success`` + a human-readable ``summary``. We propagate
-            # the full body so callers (run_now via REST/MCP) see
-            # everything; we also persist the summary to last_result
-            # so the next list_schedules call shows progress at a
-            # glance.
             success = bool(result.get("success", True))
-            summary = result.get("summary") or _default_summary(result)
-            schedule.last_run = now.isoformat()
-            schedule.last_result = summary
-            self._save()
-            self._audit_run(schedule, success=success, summary=summary)
-            result.setdefault("schedule_id", schedule.id)
-            result.setdefault("job_type", schedule.job_type)
+            summary = result.get("summary") or _task_handlers.default_summary(result)
+            self.store.set_run_result(task.id, last_run=now_iso, last_result=summary)
+            self._audit_run(task, success=success, summary=summary)
+            result.setdefault("schedule_id", task.id)
+            result.setdefault("job_type", task.action_type)
             return result
 
-    def _audit_run(
-        self,
-        schedule: SnapshotSchedule,
-        *,
-        success: bool,
-        summary: str = "",
-        error: str = "",
-    ) -> None:
-        """FR-SCH-013 — attribute every scheduled execution to the
-        synthetic ``scheduler`` principal so the audit log
-        distinguishes automated runs from operator + anonymous
-        actions.
-        """
+    def _audit_run(self, task: Task, *, success: bool, summary: str = "",
+                   error: str = "") -> None:
         try:
             from admz import audit as _audit_mod
             _audit_mod.audit_log.record(
                 requester="scheduler",
                 auth_source="scheduler",
-                action=f"scheduler.run.{schedule.job_type}",
-                resource=f"schedule:{schedule.id}",
+                action=f"scheduler.run.{task.action_type}",
+                resource=f"schedule:{task.id}",
                 details={
-                    "interval_seconds": schedule.interval_seconds,
-                    "tag_filter": schedule.tag_filter,
-                    "device_ids": schedule.device_ids,
+                    "interval_seconds": task.interval_seconds,
+                    "tag_filter": task.tag_filter,
+                    "device_ids": task.device_ids,
                     "summary": summary,
                 },
                 success=success,
                 error_message=error,
             )
-        except Exception:  # pragma: no cover — never let audit break a run
+        except Exception:  # pragma: no cover
             logger.exception("scheduler audit row failed")
 
-    def _seconds_until_next(self, schedule: SnapshotSchedule) -> float:
-        if not schedule.next_run:
+    def _seconds_until_next(self, task: Task) -> float:
+        if not task.next_run:
             return 0
         try:
-            next_dt = datetime.fromisoformat(schedule.next_run)
+            next_dt = datetime.fromisoformat(task.next_run)
             if next_dt.tzinfo is None:
                 next_dt = next_dt.replace(tzinfo=timezone.utc)
             now = datetime.now(timezone.utc)
             return max(0, (next_dt - now).total_seconds())
         except (ValueError, TypeError):
             return 0
-
-    # ----- Persistence (cross-process safe; KL-SCH-006) -----
-    #
-    # The schedules file is shared by every process that builds Components —
-    # the uvicorn web/API server AND each chatbot MCP-pool subprocess
-    # (ADMZ_MCP_NO_SCHEDULER=1). Writes therefore MERGE rather than overwrite:
-    # a process upserts the schedules it owns and preserves the rest, so a
-    # subprocess creating a schedule can't clobber the server's (which is
-    # exactly the bug this fixes), and the server's frequent post-run saves
-    # can't drop a chat-created one. Deletes are explicit (remove_schedule).
-
-    def _read_raw(self) -> Dict[str, Any]:
-        if not self.schedule_path.exists():
-            return {}
-        try:
-            with open(self.schedule_path) as f:
-                return json.load(f) or {}
-        except Exception:
-            logger.exception("Failed to read schedules file %s", self.schedule_path)
-            return {}
-
-    def _write_raw(self, data: Dict[str, Any]) -> None:
-        self.schedule_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.schedule_path.with_name(self.schedule_path.name + ".tmp")
-        with open(tmp, "w") as f:
-            json.dump(data, f, indent=2)
-        tmp.replace(self.schedule_path)  # atomic rename on the same filesystem
-
-    def _save(self):
-        # Merge: keep on-disk entries we don't own, upsert the ones we do.
-        data = self._read_raw()
-        for sid, s in self.schedules.items():
-            data[sid] = s.to_dict()
-        self._write_raw(data)
-
-    def _load(self):
-        for sid, sdata in self._read_raw().items():
-            try:
-                self.schedules[sid] = SnapshotSchedule.from_dict(sdata)
-            except Exception:
-                logger.exception(
-                    "Skipping bad schedule %s in %s", sid, self.schedule_path
-                )
-
-
-# ---------------------------------------------------------------------------
-# Built-in job handlers
-# ---------------------------------------------------------------------------
-
-
-def _default_summary(result: Dict[str, Any]) -> str:
-    """Fallback ``last_result`` string when a handler omits ``summary``."""
-    if not result.get("success", True):
-        return f"error: {result.get('error', 'unknown')}"
-    return "completed"
-
-
-@register_job_handler("snapshot")
-async def _run_snapshot_job(
-    schedule: SnapshotSchedule, ctx: JobContext,
-) -> Dict[str, Any]:
-    """FR-SCH-010 — re-implements the previous hardcoded snapshot
-    behavior as a registered handler. No semantic change."""
-    if ctx.snapshot_engine is None:
-        return {
-            "success": False,
-            "error": "scheduler not configured with snapshot_engine",
-            "summary": "error: snapshot_engine missing",
-        }
-    snapshots = await ctx.snapshot_engine.snapshot_fleet(
-        device_ids=schedule.device_ids,
-        tag_filter=schedule.tag_filter,
-        message=f"Scheduled: {schedule.description}",
-    )
-    succeeded = sum(1 for s in snapshots if s.succeeded_facets)
-    failed = sum(
-        1 for s in snapshots if s.failed_facets and not s.succeeded_facets
-    )
-    summary = (
-        f"{succeeded} succeeded, {failed} failed"
-        if failed
-        else f"{succeeded} succeeded"
-    )
-    return {
-        "success": True,
-        "devices_snapshot": len(snapshots),
-        "succeeded": succeeded,
-        "failed": failed,
-        "summary": summary,
-    }
-
-
-@register_job_handler("drift_audit")
-async def _run_drift_audit_job(
-    schedule: SnapshotSchedule, ctx: JobContext,
-) -> Dict[str, Any]:
-    """FR-SCH-011 — scheduled configuration audit.
-
-    Runs ``DriftDetector.check_fleet_drift`` over the schedule's
-    scope (``device_ids`` / ``tag_filter`` for now; hierarchy fields
-    land under FR-SCH-012). Each check records an *observation* of the
-    live config into the git repo (ADR-0031 slice 2; commit-on-change)
-    and feeds the alert store inside ``check_drift`` itself — the
-    transition (if any) rides back on each report's
-    ``alert_transition``. (Previously this handler re-ran
-    ``process_report`` on reports the detector had already processed,
-    so the second pass always saw "no change" and the job's alert
-    count was perpetually zero.)
-    """
-    if ctx.drift_detector is None:
-        return {
-            "success": False,
-            "error": "scheduler not configured with drift_detector",
-            "summary": "error: drift_detector missing",
-        }
-
-    reports = await ctx.drift_detector.check_fleet_drift(
-        tag_filter=schedule.tag_filter,
-    )
-
-    # KL-DRF-004 — count the transitions the detector's alert store
-    # recorded for this sweep (devices with unchanged drift state
-    # contribute none).
-    new_alerts = [
-        r.alert_transition
-        for r in reports
-        if getattr(r, "alert_transition", None)
-    ]
-
-    drifted = sum(1 for r in reports if r.has_drift)
-    clean = len(reports) - drifted
-    transitions = {
-        "appeared": 0, "changed": 0, "cleared": 0,
-    }
-    for t in new_alerts:
-        transitions[t] = transitions.get(t, 0) + 1
-    summary = (
-        f"checked {len(reports)} device(s): "
-        f"{drifted} drifted / {clean} clean, "
-        f"{len(new_alerts)} new alert(s) "
-        f"({transitions['appeared']}↑ {transitions['changed']}↔ "
-        f"{transitions['cleared']}↓)"
-    )
-
-    return {
-        "success": True,
-        "checked": len(reports),
-        "drifted": drifted,
-        "clean": clean,
-        "new_alerts": len(new_alerts),
-        "transitions": transitions,
-        "summary": summary,
-    }
-
-
-@register_job_handler("survey")
-async def _run_survey_job(
-    schedule: SnapshotSchedule, ctx: JobContext,
-) -> Dict[str, Any]:
-    """Scheduled survey/contributor run (read-only discovery -> PR / offline bundle).
-
-    Gated by the ``survey_mode_enabled`` fleet setting; ``run_survey`` returns
-    ``status='disabled'`` (a no-op) when the operator has not opted in. The
-    collector is synchronous (wraps the atlas refresh tool), so it runs in a
-    worker thread to avoid blocking the scheduler loop.
-    """
-    import asyncio
-
-    from admz.survey.runner import run_survey
-
-    report = await asyncio.to_thread(
-        run_survey, submit=True, device_ids=schedule.device_ids
-    )
-    d = report.to_dict()
-    d["success"] = report.status not in ("error",)
-    d["summary"] = f"survey: {report.status} — {report.message}"
-    return d

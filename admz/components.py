@@ -321,6 +321,12 @@ def build_components(
         git_repo=git_repo,
     )
 
+    # ADR-0037: schedule tasks live in the unified SQLite tasks store. Bind it
+    # to the resolved DB path at app-build time (not the import-time singleton)
+    # so each app — including isolated tests — uses the right database.
+    from admz.tasks.store import TaskStore, _default_db_path
+    task_store = TaskStore(str(_default_db_path()))
+
     scheduler = SnapshotScheduler(
         snapshot_engine=snapshot_engine,
         schedule_path=schedule_path,
@@ -328,6 +334,7 @@ def build_components(
         # drift_audit handler can call check_fleet_drift without
         # reaching for a global.
         drift_detector=drift_detector,
+        store=task_store,
     )
 
     # Health monitor: background poller that maintains the

@@ -56,6 +56,16 @@ class TestPerDomainModules:
             "cancel_device_recovery",
         }
 
+    def test_tasks_module_has_one_tool(self):
+        from admz.mcp.tools import tasks
+        names = {t.name for t in tasks.TOOLS}
+        assert names == {"list_tasks"}
+
+    def test_audit_module_has_one_tool(self):
+        from admz.mcp.tools import audit
+        names = {t.name for t in audit.TOOLS}
+        assert names == {"search_audit_log"}
+
     def test_firmware_module_has_three_tools(self):
         from admz.mcp.tools import firmware
         names = {t.name for t in firmware.TOOLS}
@@ -74,8 +84,8 @@ class TestPerDomainModules:
 class TestMigratedToolsAggregate:
     def test_migrated_tools_count(self):
         from admz.mcp.tools import MIGRATED_TOOLS
-        # 2 + 5 + 2 + 1 + 3 (recovery) + 3 = 16
-        assert len(MIGRATED_TOOLS) == 16
+        # 2 + 5 + 2 + 1 + 3 (recovery) + 1 (tasks) + 1 (audit) + 3 = 18
+        assert len(MIGRATED_TOOLS) == 18
 
     def test_migrated_tools_all_named(self):
         from admz.mcp.tools import MIGRATED_TOOLS
@@ -145,6 +155,8 @@ async def test_mcp_server_list_tools_includes_migrated_names(tmp_path, monkeypat
         "queue_device_recovery",
         "list_device_recovery",
         "cancel_device_recovery",
+        "list_tasks",
+        "search_audit_log",
         "download_firmware",
         "import_firmware",
         "list_cached_firmware",

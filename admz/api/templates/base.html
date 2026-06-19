@@ -101,9 +101,9 @@
         <span class="label">Devices</span>
         {% if nav.active_site %}<span class="badge-mini">{{ nav.active_site.count }}</span>{% endif %}
       </a>
-      <a class="nav-item {{ 'active' if active == 'schedules' }}" href="/schedules">
-        <span class="ico"><i data-lucide="clock"></i></span>
-        <span class="label">Schedules</span>
+      <a class="nav-item {{ 'active' if active == 'tasks' }}" href="/tasks">
+        <span class="ico"><i data-lucide="list-checks"></i></span>
+        <span class="label">Tasks</span>
       </a>
       <a class="nav-item {{ 'active' if active == 'auditlog' }}" href="/audit-log">
         <span class="ico"><i data-lucide="shield"></i></span>

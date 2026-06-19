@@ -1,6 +1,6 @@
 # ADMZ MCP Tools Reference
 
-Complete reference for the **50 tools** the ADMZ MCP server exposes.
+Complete reference for the **52 tools** the ADMZ MCP server exposes.
 
 > Note: a `get_credentials` MCP tool used to exist. It was **removed**
 > (CR-1) because returning plaintext passwords into LLM context violates
@@ -153,6 +153,39 @@ Cancel a still-pending deferred recovery by id.
 - **Args:** `pending_id` (required)
 - **Returns:** `{success, cancelled, message}` (`success: false` if it
   already fired or the id is unknown)
+
+### `list_tasks`
+Unified view of ALL automated tasks (ADR-0037): time-based **schedules**
+(recurring snapshot / drift_audit / survey) AND trigger-based **detection** tasks
+(one-shot — e.g. re-provision when a device returns factory-defaulted). Use for
+"what's scheduled or queued?". Read-only. Creating/managing still uses the
+per-kind tools (`create_snapshot_schedule` …, `queue_device_recovery` …), which
+share the same store.
+- **Args:** optional `device_id` (tasks targeting it), optional `kind`
+  (`schedule` | `detection`)
+- **Returns:** `{success, count, tasks:[{id, trigger_kind, action_type, when,
+  status, …}]}` — `when` reads "every 6h" or "when on_needs_setup"
+
+---
+
+## 🧾 Audit search
+
+### `search_audit_log`
+Search the who-did-what audit log — every operation, **approval**, schedule run,
+recovery, login, and config change. Answers "who factory-defaulted device X?",
+"who approved the reboot of Y?", "what did `<user>` change today?", "what failed
+in the last day?". Read-only. The definitive "who did the destructive thing" row
+is usually `confirm.approve` (carries the approver + device + operation).
+- **Args (all optional, AND-ed):** `device_id` (matches resource + details),
+  `actor` (requester substring), `action` (substring, e.g. `execute_operation`,
+  `confirm.approve`, `recovery`), `query` (free text), `within` (`'24h'`/`'7d'`),
+  `since`/`before` (ISO-8601 or unix), `success` (bool), `limit` (default 30,
+  max 200). Always pass a time range to keep results relevant.
+- **Returns:** `{success, count, window, entries:[{time, actor, auth_source,
+  action, resource, success, summary, error}]}` — `summary` is a curated digest
+  (op / approved_by / risk / …), never the raw args.
+- For **drift over time** use `get_drift_alerts` instead — drift transitions live
+  in a separate table, not the audit log.
 
 ---
 

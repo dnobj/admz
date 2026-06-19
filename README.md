@@ -84,7 +84,7 @@ registry.add_account("camera-lobby-01", "default", {
 python -m admz mcp
 ```
 
-The server exposes 50 tools across these areas:
+The server exposes 52 tools across these areas:
 
 | Area | Tools |
 |---|---|

@@ -33,12 +33,14 @@ from typing import List
 from mcp.types import Tool
 
 from admz.mcp.tools import (
+    audit,
     firmware,
     fleet,
     knowledge,
     provision,
     recovery,
     schedules,
+    tasks,
 )
 
 # Order is deliberate: same grouping as the original list_tools()
@@ -50,6 +52,8 @@ MIGRATED_TOOLS: List[Tool] = (
     + fleet.TOOLS
     + provision.TOOLS
     + recovery.TOOLS
+    + tasks.TOOLS
+    + audit.TOOLS
     + firmware.TOOLS
 )
 
