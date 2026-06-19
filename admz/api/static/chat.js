@@ -66,6 +66,12 @@
     var message = messageEl.value.trim();
     if (!message) return;
 
+    // Clear the composer immediately on send — the message is already
+    // captured and echoed as the user bubble; the field shouldn't hold the
+    // sent text for the whole turn.
+    messageEl.value = "";
+    messageEl.style.height = "auto";
+
     if (emptyState) emptyState.style.display = "none";
 
     renderUserBubble(message);
@@ -91,9 +97,7 @@
       .finally(function () {
         sendBtn.disabled = false;
         sendBtn.classList.remove("disabled");
-        messageEl.value = "";
-        messageEl.style.height = "auto";
-        messageEl.focus();
+        messageEl.focus();  // composer was already cleared on send
         resolveAllPending(assistantBubble); // backstop if stream ended early
         removeTyping(assistantBubble);
       });
@@ -919,8 +923,16 @@
   if (scrim) scrim.addEventListener("click", closeDrawer);
   var convClose = document.getElementById("conv-close");
   if (convClose) convClose.addEventListener("click", closeDrawer);
-  var convNew = document.getElementById("conv-new");
-  if (convNew) convNew.addEventListener("click", newConversation);
+  // "+ New chat" via event delegation so it fires regardless of when the
+  // drawer DOM is (re)rendered or the icon is swapped by lucide. Covers both
+  // the drawer button (#conv-new) and the composer button (#composer-new).
+  document.addEventListener("click", function (e) {
+    if (!e.target || !e.target.closest) return;
+    if (e.target.closest("#conv-new") || e.target.closest("#composer-new")) {
+      e.preventDefault();
+      newConversation();
+    }
+  });
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && drawer && drawer.classList.contains("open")) closeDrawer();
   });
