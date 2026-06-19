@@ -540,6 +540,7 @@ label { font-size: 12.5px; color: var(--text-muted); }
 .result-row.green { background: var(--green-bg); border-color: var(--green-bd); color: var(--green-fg); }
 .result-row.grey  { background: var(--grey-bg);  border-color: var(--grey-bd);  color: var(--grey-fg); }
 .result-row.red   { background: var(--red-bg);   border-color: var(--red-bd);   color: var(--red-fg); }
+.result-row.amber { background: var(--amber-bg); border-color: var(--amber-bd); color: var(--amber-fg); }
 
 /* ── Pending-action widget ────────────────────────────────────────────── */
 .pending-widget { border: 1px solid var(--accent-bd); border-radius: 8px; background: var(--accent-soft); overflow: hidden; }
