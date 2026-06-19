@@ -21,6 +21,18 @@ class BaseExecutor(ABC):
     def family(self) -> str:
         """API family this executor handles (e.g., 'vapix', 'acs')."""
 
+    def self_heals(self) -> bool:
+        """Whether this family relearns a device's scheme/auth on the wire.
+
+        Edge devices (VAPIX) do — the executor connect-probes and corrects the
+        stored connectivity profile, which the gate then persists (ADR-0039).
+        Server targets (e.g. ACS Pro) authenticate per-connection and do NOT
+        rewrite stored auth, so they return False and the gate skips the
+        persist step. Defaults True (the historical single-family behavior);
+        a module's ``self_heals()`` must agree with its executor's.
+        """
+        return True
+
     @abstractmethod
     async def execute(
         self,

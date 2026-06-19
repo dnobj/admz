@@ -1668,7 +1668,7 @@ class ADMZMCPServer:
                     )
 
             try:
-                # ADR-0038 (P2): table-driven dispatch. The 52-arm if/elif
+                # ADR-0039 (P2): table-driven dispatch. The 52-arm if/elif
                 # chain became a single lookup into the dispatch table; handlers
                 # are free (ctx, args) functions (shims to self._method in this
                 # phase). An unknown tool raises ValueError -> the InternalError

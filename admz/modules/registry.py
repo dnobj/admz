@@ -1,4 +1,4 @@
-"""Module registry — discovers and merges the platform's modules (ADR-0038).
+"""Module registry — discovers and merges the platform's modules (ADR-0039).
 
 Leaf-light: imports only stdlib + the contract. ``discover()`` performs an
 *explicit, ordered* import of each module's ``get_module()`` at call time (no

@@ -1,4 +1,4 @@
-"""ADMZ platform modules (ADR-0038).
+"""ADMZ platform modules (ADR-0039).
 
 ADMZ is a **platform** (auth/audit, the confirmation gate, the unified task
 store, the chatbot host, the web shell) plus one or more **modules**, each

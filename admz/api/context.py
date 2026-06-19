@@ -70,7 +70,7 @@ class AppContext:
 
     @property
     def module_registry(self):
-        # ADR-0038: the discovered platform modules (devices, …). Read by the
+        # ADR-0039: the discovered platform modules (devices, …). Read by the
         # web nav, the MCP tool surface, and the chatbot prompt assembly.
         return self._components.module_registry
 

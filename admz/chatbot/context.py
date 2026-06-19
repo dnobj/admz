@@ -35,7 +35,7 @@ def _resolve_registry() -> Optional[Any]:
 
 
 def build_module_prompt_sections(ctx: Any = None) -> str:
-    """Join every platform module's system-prompt fragment (ADR-0038).
+    """Join every platform module's system-prompt fragment (ADR-0039).
 
     Empty in the device-only deployment (the devices module contributes no
     section), so the assembled prompt is unchanged. A module like ACS Pro (PR2)

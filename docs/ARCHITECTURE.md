@@ -221,10 +221,20 @@ two-gate safety for free.
 
 ## Pluggable points
 
+- **Platform modules** (ADR-0039) — ADMZ is a platform plus pluggable
+  **modules**, each packaging a manageable domain behind one contract
+  (`admz/modules/contract.py`): `executors()`, `mcp_tools()`, `routers()`,
+  `nav_section()`, `build_prompt_section()`, `self_heals()`. Module #1 is
+  `devices` (Axis edge devices via VAPIX). Add a module by writing
+  `admz/modules/<id>/` with a `get_module()` and appending one
+  `register_module()` line in `ModuleRegistry.discover()`; the merge helpers
+  then surface it across MCP (tool dispatch), the web nav, and the chatbot
+  prompt. The registry is built once in `build_components` and stored on
+  `Components`.
 - **API families** — add a new executor by implementing `BaseExecutor`
-  and registering it in `executors` dict on the MCP server. Catalog
-  picks up via the family namespace (`axis_api_atlas` data dirs
-  `vapix/`, and future `acs/`, etc.).
+  (set `self_heals()` False for server targets that authenticate per
+  connection). A module contributes it via `executors()`. Catalog picks up
+  via the family namespace (`axis_api_atlas` data dirs `vapix/`, `acs-pro/`).
 - **Discovery protocols** — add a new module under `discovery/` extending
   `DiscoveryProtocolBase`, then register it in
   `orchestrator.DiscoveryOrchestrator`.

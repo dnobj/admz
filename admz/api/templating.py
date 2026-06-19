@@ -62,7 +62,7 @@ def _registry():
 
 
 def _module_registry():
-    """The discovered platform-module set (ADR-0038), for module nav sections.
+    """The discovered platform-module set (ADR-0039), for module nav sections.
 
     Prefers the app context's registry; falls back to an on-demand discovery so
     the nav renders in tests / before the context is initialized. Discovery is
@@ -105,7 +105,7 @@ def build_nav(request) -> Dict[str, Any]:
     """Assemble the chrome navigation context for the active request.
 
     Returns the hierarchy data (org_name, sites[], active_site, tags[],
-    active_tag, principal) plus a data-driven ``sections`` list (ADR-0038)
+    active_tag, principal) plus a data-driven ``sections`` list (ADR-0039)
     that the sidebar renders without hardcoding items.
     """
     nav = _build_nav_data(request)
@@ -229,7 +229,7 @@ def _build_nav_data(request) -> Dict[str, Any]:
 
 
 def _assemble_nav_sections(nav: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Build the data-driven sidebar (ADR-0038, user nav decision 2026-06-19).
+    """Build the data-driven sidebar (ADR-0039, user nav decision 2026-06-19).
 
     The sidebar is a list of sections:
       * **Core** — pinned at the top, no header/divider: Console, Devices,

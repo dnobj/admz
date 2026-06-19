@@ -1,4 +1,4 @@
-"""Table-driven MCP tool dispatch (ADR-0038, PR1-P2).
+"""Table-driven MCP tool dispatch (ADR-0039, PR1-P2).
 
 ``call_tool``'s outer wrapper in ``server.py`` (validate → anonymous-gate →
 try/except/finally-audit) stays byte-identical; only the inner 52-arm

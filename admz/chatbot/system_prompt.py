@@ -344,7 +344,7 @@ def build_system_prompt(
     round-trip; when omitted (or empty) the prompt is unchanged and the
     model falls back to calling the tools.
 
-    ``module_sections`` (ADR-0038) is the joined system-prompt fragment each
+    ``module_sections`` (ADR-0039) is the joined system-prompt fragment each
     platform module contributes (e.g. the ACS Pro serial/MAC correlation
     guidance). Empty when no module contributes one — in which case the prompt
     is byte-identical to before the slot existed.
@@ -391,7 +391,7 @@ def build_system_prompt(
             f"{common_ops.strip()}\n"
         )
 
-    # ADR-0038: module-contributed guidance (empty in the device-only
+    # ADR-0039: module-contributed guidance (empty in the device-only
     # deployment → the prompt is byte-identical to before this slot existed).
     module_section_text = ""
     if module_sections and module_sections.strip():

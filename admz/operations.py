@@ -198,8 +198,11 @@ async def run_execution_tail(
     # method was wrong), persist the corrected profile so the next call uses
     # it directly. Best-effort — a backend without update_device_info (e.g.
     # Vault, pending H-4) just keeps re-healing per call.
+    # ADR-0039: only persist for families that self-heal (edge devices). A
+    # server target (ACS Pro) authenticates per-connection and must not have
+    # its stored auth rewritten — a no-op for vapix (self_heals() defaults True).
     learned = getattr(result, "learned_auth", None)
-    if learned:
+    if learned and getattr(executor, "self_heals", lambda: True)():
         _persist_learned_auth(registry, device_id, device.get("auth"), learned)
 
     return result

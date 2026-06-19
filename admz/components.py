@@ -54,7 +54,7 @@ class Components:
     drift_detector: DriftDetector
     scheduler: SnapshotScheduler
     health_monitor: HealthMonitor
-    # ADR-0038: the discovered module set. MCP (tools), the web layer (nav),
+    # ADR-0039: the discovered module set. MCP (tools), the web layer (nav),
     # and the chatbot host (prompt sections) all read this rather than a global.
     module_registry: ModuleRegistry
 
@@ -287,7 +287,7 @@ def build_components(
     catalog = CatalogLoader(catalog_path)
     resolver = CatalogResolver(catalog)
 
-    # ADR-0038: build executors through the module registry. Discovery is an
+    # ADR-0039: build executors through the module registry. Discovery is an
     # explicit, ordered import of each module's get_module(); the devices
     # module contributes {"vapix": VapixExecutor(...)} exactly as the old
     # hardcoded literal did. The registry is stored on Components so the MCP,

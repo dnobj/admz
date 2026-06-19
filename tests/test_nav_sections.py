@@ -1,4 +1,4 @@
-"""Data-driven sidebar sections (ADR-0038, nav decision 2026-06-19).
+"""Data-driven sidebar sections (ADR-0039, nav decision 2026-06-19).
 
 The sidebar is now a list of sections rendered by base.html:
   * Core — pinned, no header: Console, Devices, Tasks, Audit log, Settings.

@@ -1,4 +1,4 @@
-"""The module contract (ADR-0038).
+"""The module contract (ADR-0039).
 
 A *module* packages one manageable domain (edge devices, ACS Pro, …) behind a
 small, uniform surface the platform composes. The platform calls each module's
