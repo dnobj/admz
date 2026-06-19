@@ -61,6 +61,26 @@ def _registry():
         return None
 
 
+def _module_registry():
+    """The discovered platform-module set (ADR-0038), for module nav sections.
+
+    Prefers the app context's registry; falls back to an on-demand discovery so
+    the nav renders in tests / before the context is initialized. Discovery is
+    pure and cheap (it imports + lists modules; it does not build executors).
+    """
+    try:
+        from admz.api.context import get_context
+
+        return get_context().module_registry
+    except Exception:
+        try:
+            from admz.modules.registry import ModuleRegistry
+
+            return ModuleRegistry().discover()
+        except Exception:
+            return None
+
+
 def _initials(name: str) -> str:
     if not name:
         return "AD"
@@ -84,9 +104,17 @@ def _device_health(device: Dict[str, Any]) -> str:
 def build_nav(request) -> Dict[str, Any]:
     """Assemble the chrome navigation context for the active request.
 
-    Returns a dict with: org_name, sites[], active_site, tags[],
-    active_tag, principal{name,initials}.
+    Returns the hierarchy data (org_name, sites[], active_site, tags[],
+    active_tag, principal) plus a data-driven ``sections`` list (ADR-0038)
+    that the sidebar renders without hardcoding items.
     """
+    nav = _build_nav_data(request)
+    nav["sections"] = _assemble_nav_sections(nav)
+    return nav
+
+
+def _build_nav_data(request) -> Dict[str, Any]:
+    """The hierarchy lookups: org/site/tags/principal (no presentation)."""
     reg = _registry()
     nav: Dict[str, Any] = {
         "org_name": "ADMZ",
@@ -198,6 +226,88 @@ def build_nav(request) -> Dict[str, Any]:
             )
 
     return nav
+
+
+def _assemble_nav_sections(nav: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Build the data-driven sidebar (ADR-0038, user nav decision 2026-06-19).
+
+    The sidebar is a list of sections:
+      * **Core** — pinned at the top, no header/divider: Console, Devices,
+        Tasks, Audit log, Settings (fixed order). The **tags move UNDER
+        Devices** as a child sub-nav (``children[]``) — no longer a standalone
+        "Tags" section below the divider.
+      * **Module sections** — each platform module contributes its own
+        divider-separated section (optional header + 1..N items). Empty in PR1
+        (the devices module folds into Core); ACS Pro adds one in PR2.
+
+    Every child carries a ``tag`` key (None for non-tag children) so a single
+    template rule — active iff ``active == key and nav.active_tag == tag`` —
+    works for both the device tag sub-nav and future module sub-navs.
+    """
+    active_site = nav.get("active_site")
+    site_count = active_site["count"] if active_site else None
+
+    # Devices' tag sub-nav (only when a site is active).
+    device_children: List[Dict[str, Any]] = []
+    if active_site:
+        device_children.append(
+            {
+                "key": "fleet", "label": "All devices", "href": "/devices",
+                "icon": "tag", "count": site_count, "tag": None,
+            }
+        )
+        for t in nav.get("tags", []):
+            device_children.append(
+                {
+                    "key": "fleet", "label": t["name"],
+                    "href": f"/devices?tag={t['id']}",
+                    "icon": "tag", "count": t["count"], "tag": t["id"],
+                }
+            )
+
+    core = {
+        "id": "core",
+        "title": "",
+        "items": [
+            {"key": "console", "label": "Console", "href": "/chat",
+             "icon": "sparkles", "accent": True, "badge": "⌘K"},
+            {"key": "fleet", "label": "Devices", "href": "/devices",
+             "icon": "layout-grid", "badge": site_count, "children": device_children},
+            {"key": "tasks", "label": "Tasks", "href": "/tasks", "icon": "list-checks", "badge": None},
+            {"key": "auditlog", "label": "Audit log", "href": "/audit-log", "icon": "shield", "badge": None},
+            {"key": "settings", "label": "Settings", "href": "/settings", "icon": "settings", "badge": None},
+        ],
+    }
+
+    sections: List[Dict[str, Any]] = [core]
+
+    # Module sections (PR2+). Each NavSection → a divider-separated group.
+    reg = _module_registry()
+    if reg is not None:
+        try:
+            for sec in reg.nav_sections_all(nav):
+                sections.append(
+                    {
+                        "id": sec.id,
+                        "title": sec.title,
+                        "items": [
+                            {
+                                "key": it.key, "label": it.label, "href": it.href,
+                                "icon": it.icon,
+                                "children": [
+                                    {"key": c.key, "label": c.label, "href": c.href,
+                                     "icon": c.icon, "tag": None, "count": None}
+                                    for c in it.children
+                                ],
+                            }
+                            for it in sec.items
+                        ],
+                    }
+                )
+        except Exception:
+            pass  # nav must render even if a module's nav_section raises
+
+    return sections
 
 
 # ── Jinja filters ─────────────────────────────────────────────────────────

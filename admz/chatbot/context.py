@@ -34,6 +34,31 @@ def _resolve_registry() -> Optional[Any]:
         return None
 
 
+def build_module_prompt_sections(ctx: Any = None) -> str:
+    """Join every platform module's system-prompt fragment (ADR-0038).
+
+    Empty in the device-only deployment (the devices module contributes no
+    section), so the assembled prompt is unchanged. A module like ACS Pro (PR2)
+    returns its correlation guidance here. Degrades to "" on any failure so it
+    can never break a chat turn.
+    """
+    try:
+        from admz.api.context import get_context
+
+        reg = get_context().module_registry
+    except Exception:  # noqa: BLE001
+        try:
+            from admz.modules.registry import ModuleRegistry
+
+            reg = ModuleRegistry().discover()
+        except Exception:  # noqa: BLE001
+            return ""
+    try:
+        return "\n\n".join(reg.prompt_sections_all(ctx))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _health_by_id() -> dict:
     """device_id -> cached health status string (online/unreachable/…)."""
     out: dict = {}
