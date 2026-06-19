@@ -699,11 +699,11 @@ class HealthMonitor:
         Public so operators (or tests) can trigger a sweep
         on-demand without waiting for the next interval.
         """
-        # The sweep is also when one-shot deferred actions get evaluated —
+        # The sweep is also when one-shot detection tasks get evaluated —
         # expire stale ones up front so they can't fire late.
         try:
-            from admz.fleet.pending_actions import pending_actions
-            pending_actions.expire_stale()
+            from admz.tasks.store import tasks_store
+            tasks_store.expire_stale()
         except Exception:  # noqa: BLE001
             pass
 
@@ -791,55 +791,50 @@ class HealthMonitor:
         return len(devices)
 
     async def _fire_pending(self, device_id: str, status_value: str) -> None:
-        """Evaluate + launch any pre-authorized deferred actions for this
-        device whose trigger its new state now satisfies. Atomic claim →
-        fire-once; launched async so it can't stall the sweep."""
+        """Evaluate + launch any pre-authorized detection tasks for this device
+        whose event its new state now satisfies. Atomic claim → fire-once;
+        launched async so it can't stall the sweep."""
         try:
-            from admz.fleet.pending_actions import (
-                pending_actions, trigger_for_status,
-            )
-            trig = trigger_for_status(status_value)
-            if trig is None:
+            from admz.tasks.store import event_for_status, tasks_store
+            ev = event_for_status(status_value)
+            if ev is None:
                 return
-            for action_row in pending_actions.claim_for_trigger(device_id, trig):
-                asyncio.create_task(self._run_pending(action_row))
+            for task in tasks_store.claim_for_event(device_id, ev):
+                asyncio.create_task(self._run_pending(task))
         except Exception:  # noqa: BLE001
             logger.debug(
-                "pending-action evaluation failed for %s", device_id, exc_info=True
+                "detection-task evaluation failed for %s", device_id, exc_info=True
             )
 
-    async def _run_pending(self, action_row: Dict[str, Any]) -> None:
-        """Execute one claimed (pre-authorized) deferred action + audit it."""
+    async def _run_pending(self, task) -> None:
+        """Execute one claimed (pre-authorized) detection task + audit it."""
         from types import SimpleNamespace
 
         from admz.audit import record_event
-        from admz.fleet.pending_actions import (
-            execute_pending_action, pending_actions,
-        )
+        from admz.tasks.handlers import execute_task_action
+        from admz.tasks.store import tasks_store
 
-        pid = action_row.get("id")
-        did = action_row.get("device_id")
-        action = action_row.get("action") or {}
+        pid = task.id
+        did = task.device_id
         principal = SimpleNamespace(
-            name=action_row.get("approved_by") or "deferred",
+            name=task.approved_by or "deferred",
             source="deferred-trigger",
         )
         try:
-            await execute_pending_action(action, did)
-            pending_actions.mark(pid, "done")
+            await execute_task_action(task)
+            tasks_store.mark(pid, "done")
             record_event(
                 principal, "deferred_action_fired", resource=f"device:{did}",
-                details={"id": pid, "action": action.get("action"),
-                         "trigger": action_row.get("trigger")},
+                details={"id": pid, "action": task.action_type, "trigger": task.event},
             )
         except Exception as exc:  # noqa: BLE001
-            pending_actions.mark(pid, "failed", str(exc)[:300])
-            logger.warning("deferred action %s for %s failed: %s", pid, did, exc)
+            tasks_store.mark(pid, "failed", str(exc)[:300])
+            logger.warning("detection task %s for %s failed: %s", pid, did, exc)
             try:
                 record_event(
                     principal, "deferred_action_failed", resource=f"device:{did}",
                     success=False, error_message=str(exc)[:300],
-                    details={"id": pid, "action": action.get("action")},
+                    details={"id": pid, "action": task.action_type},
                 )
             except Exception:  # noqa: BLE001
                 pass

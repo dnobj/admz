@@ -118,7 +118,6 @@ class TestReprovisionHandler:
         from admz.fleet.pending_actions import execute_pending_action
         from admz.recovery_actions import register_recovery_handlers
 
-        monkeypatch.setattr("admz.fleet.pending_actions._HANDLERS", {})
         called = {}
 
         async def fake_provision(catalog, executors, registry, *, device_id, host, username="root"):
@@ -142,8 +141,6 @@ class TestReprovisionHandler:
     async def test_handler_raises_on_provision_failure(self, monkeypatch):
         from admz.fleet.pending_actions import execute_pending_action
         from admz.recovery_actions import register_recovery_handlers
-
-        monkeypatch.setattr("admz.fleet.pending_actions._HANDLERS", {})
 
         async def fake_provision(*a, **k):
             return {"success": False, "error": "device rejected user"}

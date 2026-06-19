@@ -107,3 +107,36 @@ class TestListAndCancel:
     def test_cancel_missing_id(self, server):
         res = server._cancel_device_recovery({})
         assert res["success"] is False
+
+
+class TestListTasks:
+    def _isolated_store(self, tmp_path, monkeypatch):
+        import admz.tasks.store as sm
+        from admz.tasks.store import TaskStore
+        ts = TaskStore(str(tmp_path / "admz.db"))
+        monkeypatch.setattr(sm, "tasks_store", ts)
+        return ts
+
+    def test_list_unified(self, server, tmp_path, monkeypatch):
+        from admz.tasks.store import EVENT_NEEDS_SETUP
+        ts = self._isolated_store(tmp_path, monkeypatch)
+        ts.create_schedule(description="nightly", interval_seconds=86400,
+                           action_type="snapshot")
+        ts.create_detection(device_id="cam-1", event=EVENT_NEEDS_SETUP,
+                            action_type="reprovision")
+        res = server._list_tasks({})
+        assert res["success"] and res["count"] == 2
+        kinds = {t["trigger_kind"] for t in res["tasks"]}
+        assert kinds == {"schedule", "detection"}
+        whens = {t["when"] for t in res["tasks"]}
+        assert any(w.startswith("every") for w in whens)
+        assert any(w.startswith("when") for w in whens)
+
+    def test_list_filter_kind(self, server, tmp_path, monkeypatch):
+        from admz.tasks.store import EVENT_NEEDS_SETUP
+        ts = self._isolated_store(tmp_path, monkeypatch)
+        ts.create_schedule(description="s", interval_seconds=60, action_type="snapshot")
+        ts.create_detection(device_id="cam-1", event=EVENT_NEEDS_SETUP,
+                            action_type="reprovision")
+        assert server._list_tasks({"kind": "detection"})["count"] == 1
+        assert server._list_tasks({"kind": "schedule"})["count"] == 1

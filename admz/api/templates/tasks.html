@@ -1,0 +1,369 @@
+{% extends "base.html" %}
+{% block nav_active %}tasks{% endblock %}
+{% block title %}Tasks{% endblock %}
+{% block crumb_tail %}Tasks{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="pt">
+    <h1 class="page-title">Tasks</h1>
+    <p class="page-sub">Automated work — <strong>scheduled</strong> (recurring: snapshot, drift audit) and <strong>triggered</strong> (one-shot, fires on a detection — e.g. re-provision when a device returns factory-defaulted).</p>
+  </div>
+  <div class="page-actions"><button id="new-schedule-btn" class="btn primary" type="button"><i data-lucide="plus"></i> New schedule</button></div>
+</div>
+
+<div class="note-band" style="margin-bottom:16px">
+  <i data-lucide="shield"></i>
+  <span>Scheduled jobs only read devices + write the git config repo. Triggered tasks run only pre-authorized actions when their condition is met.</span>
+</div>
+
+<div class="seg" id="kind-filter" style="margin-bottom:14px">
+  <button class="seg-btn active" data-kind="">All</button>
+  <button class="seg-btn" data-kind="schedule">Scheduled</button>
+  <button class="seg-btn" data-kind="detection">Triggered</button>
+</div>
+
+<table class="data-table" id="tasks-table">
+  <thead><tr><th>Kind</th><th>Task</th><th>When</th><th>Target</th><th>Last run</th><th>Status</th><th></th></tr></thead>
+  <tbody id="tasks-body"><tr><td colspan="7" class="page-sub" style="padding:14px">Loading…</td></tr></tbody>
+</table>
+<div class="empty-state hidden" id="tasks-empty"><i data-lucide="list-checks"></i><div style="margin-top:10px">No active tasks. <a href="#" id="empty-new-link">Create a schedule</a>, or queue a recovery from a device's page.</div></div>
+
+<!-- Recent history — terminal triggered tasks (done / cancelled / failed) -->
+<div id="task-history" class="hidden" style="margin-top:24px">
+  <h2 class="page-title" style="font-size:15px;margin:0 0 2px">Recent activity</h2>
+  <p class="page-sub" style="margin:0 0 10px">The last few triggered tasks that completed, fired, or were cancelled.</p>
+  <table class="data-table" id="history-table">
+    <thead><tr><th>Kind</th><th>Task</th><th>When</th><th>Target</th><th>Outcome</th></tr></thead>
+    <tbody id="history-body"></tbody>
+  </table>
+</div>
+
+<!-- New-schedule modal -->
+<div class="modal-overlay hidden" id="sched-modal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 style="margin:0;font-size:17px">New scheduled task</h2>
+      <button class="modal-x" type="button" id="sched-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="fld">
+        <label for="f-jobtype">Job</label>
+        <select id="f-jobtype"></select>
+        <div class="hint" id="f-jobhint"></div>
+      </div>
+      <div class="fld">
+        <label for="f-desc">Name</label>
+        <input type="text" id="f-desc" placeholder="e.g. Nightly drift check" autocomplete="off">
+      </div>
+      <div class="fld">
+        <label>Run on</label>
+        <div class="radio-row">
+          <label class="rb"><input type="radio" name="scope" value="all" checked> All devices</label>
+          <label class="rb"><input type="radio" name="scope" value="tag"> Tag</label>
+          <input type="text" id="f-tag" placeholder="tag name" disabled style="flex:1">
+        </div>
+      </div>
+      <div class="fld">
+        <label>Every</label>
+        <div class="cadence-row">
+          <input type="number" id="f-num" value="1" min="1" step="1" style="width:90px">
+          <select id="f-unit">
+            <option value="m">minutes</option>
+            <option value="h" selected>hours</option>
+            <option value="d">days</option>
+          </select>
+        </div>
+      </div>
+      <label class="check"><input type="checkbox" id="f-enabled" checked> Enabled (start running immediately)</label>
+      <div id="sched-error" class="err hidden"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" type="button" id="sched-cancel">Cancel</button>
+      <button class="btn primary" type="button" id="sched-create"><i data-lucide="check"></i> Create schedule</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<style>
+.seg { display:inline-flex; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+.seg-btn { background:var(--surface); border:none; color:var(--text-faint); padding:6px 14px; font-size:13px; cursor:pointer; border-right:1px solid var(--border); }
+.seg-btn:last-child { border-right:none; }
+.seg-btn.active { background:var(--panel); color:var(--text); font-weight:600; }
+.toggle { background: var(--border); border: none; cursor: pointer; }
+.kind-chip { font-size:11px; font-weight:600; padding:2px 8px; border-radius:99px; border:1px solid var(--border); }
+.kind-schedule { color:var(--accent,#60a5fa); }
+.kind-detection { color:var(--fg-amber,#fbbf24); }
+.st-chip { font-size:11px; font-weight:600; }
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center; z-index: 50; backdrop-filter: blur(2px); }
+.modal-card { width: 460px; max-width: calc(100vw - 32px); background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: 0 24px 60px rgba(0,0,0,.4); overflow: hidden; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--border); }
+.modal-x { background: none; border: none; font-size: 22px; line-height: 1; color: var(--text-faint); cursor: pointer; }
+.modal-x:hover { color: var(--text); }
+.modal-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+.modal-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--border); }
+.fld { display: flex; flex-direction: column; gap: 6px; }
+.fld label { font-size: 12px; font-weight: 600; color: var(--text-faint); text-transform: uppercase; letter-spacing: .03em; }
+.fld input[type=text], .fld input[type=number], .fld select, #f-jobtype { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 13px; }
+.hint { font-size: 12px; color: var(--text-faint); }
+.radio-row, .cadence-row { display: flex; align-items: center; gap: 12px; }
+.rb { display: inline-flex !important; align-items: center; gap: 5px; font-size: 13px !important; font-weight: 400 !important; text-transform: none !important; letter-spacing: 0 !important; color: var(--text) !important; cursor: pointer; }
+.check { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text); cursor: pointer; }
+.err { color: var(--fg-red,#f87171); font-size: 13px; }
+</style>
+<script>
+const JOB_LABELS = {
+  snapshot:    { label: 'Snapshot config (commit to git)', hint: 'Reads each device’s config and commits a versioned snapshot. Sets/advances baselines.', icon: 'camera' },
+  drift_audit: { label: 'Check drift', hint: 'Re-reads live config and records drift vs. the blessed baseline. Read-only.', icon: 'radar' },
+  survey:      { label: 'Survey (contribute to the API atlas)', hint: 'Bundles anonymized capability data for the axis-api-atlas project.', icon: 'upload-cloud' },
+  reprovision: { label: 'Re-provision', hint: 'Creates the admin from the fleet default password when the device returns factory-defaulted.', icon: 'wrench' },
+};
+const EVENT_LABELS = { on_needs_setup: 'when factory-defaulted', on_online: 'when back online' };
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+function humanizeSeconds(s) {
+  s = parseInt(s, 10) || 0;
+  if (s % 86400 === 0 && s >= 86400) return (s/86400) + 'd';
+  if (s % 3600 === 0 && s >= 3600) return (s/3600) + 'h';
+  if (s % 60 === 0 && s >= 60) return (s/60) + 'm';
+  return s + 's';
+}
+function fmtLocal(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso); if (isNaN(d.getTime())) return '—';
+  return d.toLocaleString(undefined, { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+}
+
+let CURRENT_KIND = '';
+const HISTORY_LIMIT = 10;
+const TERMINAL = new Set(['done', 'failed', 'cancelled', 'expired', 'fired']);
+
+function fmtUnix(secs) {
+  if (!secs) return '';
+  const d = new Date(secs * 1000);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+async function loadTasks() {
+  let tasks = [];
+  try {
+    const r = await fetch('/api/tasks');
+    if (r.ok) tasks = (await r.json()).tasks || [];
+  } catch (e) {}
+
+  // Active = schedules + still-pending detections. History = terminal detections.
+  let active = tasks.filter(t => t.trigger_kind === 'schedule' || t.status === 'pending');
+  const history = tasks.filter(t => t.trigger_kind === 'detection' && TERMINAL.has(t.status));
+  if (CURRENT_KIND) active = active.filter(t => t.trigger_kind === CURRENT_KIND);
+
+  const tbl = document.getElementById('tasks-table');
+  const empty = document.getElementById('tasks-empty');
+  if (!active.length) {
+    tbl.classList.add('hidden'); empty.classList.remove('hidden');
+  } else {
+    tbl.classList.remove('hidden'); empty.classList.add('hidden');
+    document.getElementById('tasks-body').innerHTML = active.map(renderRow).join('');
+  }
+
+  // History section: newest first, last N — hidden under the Scheduled filter.
+  const histWrap = document.getElementById('task-history');
+  if (history.length && CURRENT_KIND !== 'schedule') {
+    const recent = history.slice()
+      .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))
+      .slice(0, HISTORY_LIMIT);
+    document.getElementById('history-body').innerHTML = recent.map(renderHistoryRow).join('');
+    histWrap.classList.remove('hidden');
+  } else {
+    histWrap.classList.add('hidden');
+  }
+  if (window.lucide) lucide.createIcons();
+}
+
+function renderHistoryRow(t) {
+  const meta = JOB_LABELS[t.action_type] || { label: t.action_type, icon: 'clock' };
+  const when = EVENT_LABELS[t.event] || ('when ' + (t.event || '?'));
+  const target = t.device_id ? esc(t.device_id)
+    : (t.tag_filter ? 'tag: ' + esc(t.tag_filter) : 'all devices');
+  const sem = t.status === 'done' ? 'var(--fg-green,#4ade80)'
+    : t.status === 'failed' ? 'var(--fg-red,#f87171)' : 'var(--text-faint)';
+  const queued = t.created_at ? '<div class="sub mono" style="color:var(--text-faint)">queued ' + esc(fmtUnix(t.created_at)) + '</div>' : '';
+  return '<tr style="opacity:.75"><td><span class="kind-chip kind-detection">Triggered</span></td>'
+    + '<td><div class="device-name-cell"><span class="type-tile"><i data-lucide="' + meta.icon + '"></i></span>'
+    + '<div><div class="nm" style="font-family:var(--sans);font-weight:600">' + esc(t.description || t.id) + '</div>'
+    + '<div class="sub mono">' + esc(t.action_type) + '</div></div></div></td>'
+    + '<td class="mono">' + esc(when) + '</td><td>' + target + '</td>'
+    + '<td><span class="st-chip" style="color:' + sem + '">' + esc(t.status) + '</span>' + queued + '</td></tr>';
+}
+
+function renderRow(t) {
+  const meta = JOB_LABELS[t.action_type] || { label: t.action_type, icon: 'clock' };
+  const isSched = t.trigger_kind === 'schedule';
+  const when = isSched ? ('every ' + humanizeSeconds(t.interval_seconds))
+                       : (EVENT_LABELS[t.event] || ('when ' + (t.event || '?')));
+  let target = 'all devices';
+  if (t.device_id) target = esc(t.device_id);
+  else if (t.tag_filter) target = 'tag: ' + esc(t.tag_filter);
+  else if (t.device_ids && t.device_ids.length) target = esc(t.device_ids.join(', '));
+
+  const kindChip = '<span class="kind-chip kind-' + t.trigger_kind + '">'
+    + (isSched ? 'Scheduled' : 'Triggered') + '</span>';
+
+  let statusCell, actions;
+  if (isSched) {
+    const on = t.enabled;
+    statusCell = '<button class="toggle ' + (on ? 'on' : '') + '" type="button" data-enabled="'
+      + (on ? '1' : '0') + '" title="' + (on ? 'Enabled — click to pause' : 'Paused — click to enable')
+      + '" onclick="toggleTask(\'' + t.id + '\', this)"><span class="knob"></span></button>';
+    actions = '<button class="btn ghost sm" onclick="runTask(\'' + t.id + '\', this)" title="Run once now"><i data-lucide="play"></i></button>'
+      + '<button class="btn ghost sm" style="color:var(--fg-red,#f87171)" onclick="deleteTask(\'' + t.id + '\', \'schedule\')" title="Delete"><i data-lucide="trash-2"></i></button>';
+  } else {
+    const sem = t.status === 'pending' ? 'var(--fg-amber,#fbbf24)' : t.status === 'done' ? 'var(--fg-green,#4ade80)' : t.status === 'failed' ? 'var(--fg-red,#f87171)' : 'var(--text-faint)';
+    statusCell = '<span class="st-chip" style="color:' + sem + '">' + esc(t.status) + '</span>';
+    actions = t.status === 'pending'
+      ? '<button class="btn ghost sm" onclick="deleteTask(\'' + t.id + '\', \'detection\')" title="Cancel"><i data-lucide="x"></i> Cancel</button>'
+      : '';
+  }
+
+  return '<tr><td>' + kindChip + '</td>'
+    + '<td><div class="device-name-cell"><span class="type-tile"><i data-lucide="' + meta.icon + '"></i></span>'
+    + '<div><div class="nm" style="font-family:var(--sans);font-weight:600">' + esc(t.description || t.id)
+    + '</div><div class="sub mono">' + esc(t.action_type) + '</div></div></div></td>'
+    + '<td class="mono">' + esc(when) + '</td>'
+    + '<td>' + target + '</td>'
+    + '<td class="mono">' + fmtLocal(t.last_run) + '</td>'
+    + '<td>' + statusCell + '</td>'
+    + '<td style="text-align:right;white-space:nowrap">' + actions + '</td></tr>';
+}
+
+// filter segment
+document.querySelectorAll('#kind-filter .seg-btn').forEach(b => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('#kind-filter .seg-btn').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    CURRENT_KIND = b.getAttribute('data-kind');
+    loadTasks();
+  });
+});
+
+// ── Row actions (unified /api/tasks) ──
+async function toggleTask(id, el) {
+  const now = el.getAttribute('data-enabled') === '1';
+  el.disabled = true;
+  try {
+    const r = await fetch('/api/tasks/' + encodeURIComponent(id), {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({enabled: !now}) });
+    if (r.ok) { el.setAttribute('data-enabled', now ? '0' : '1'); el.classList.toggle('on', !now); }
+  } catch (e) {}
+  el.disabled = false;
+}
+async function runTask(id, btn) {
+  btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i>'; if (window.lucide) lucide.createIcons();
+  try {
+    const r = await fetch('/api/tasks/' + encodeURIComponent(id) + '/run', { method: 'POST' });
+    btn.innerHTML = r.ok ? '<i data-lucide="check"></i>' : '<i data-lucide="x"></i>'; if (window.lucide) lucide.createIcons();
+    setTimeout(loadTasks, 700);
+  } catch (e) { btn.disabled = false; }
+}
+async function deleteTask(id, kind) {
+  const msg = kind === 'detection' ? 'Cancel this triggered task?' : 'Delete this scheduled task? It stops the recurring job.';
+  if (!confirm(msg)) return;
+  try {
+    const r = await fetch('/api/tasks/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (r.ok) loadTasks(); else { const d = await r.json(); alert('Failed: ' + (d.detail || r.status)); }
+  } catch (e) { alert('Request failed.'); }
+}
+
+// ── New-schedule modal ──
+const modal = document.getElementById('sched-modal');
+function openModal() {
+  document.getElementById('sched-error').classList.add('hidden');
+  populateJobTypes();
+  modal.classList.remove('hidden');
+  document.getElementById('f-desc').focus();
+  if (window.lucide) lucide.createIcons();
+}
+function closeModal() { modal.classList.add('hidden'); }
+document.getElementById('new-schedule-btn')?.addEventListener('click', openModal);
+document.getElementById('empty-new-link')?.addEventListener('click', (e) => { e.preventDefault(); openModal(); });
+document.getElementById('sched-close').addEventListener('click', closeModal);
+document.getElementById('sched-cancel').addEventListener('click', closeModal);
+modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+
+async function populateJobTypes() {
+  const sel = document.getElementById('f-jobtype');
+  if (sel.dataset.loaded) return;
+  let types = ['snapshot', 'drift_audit'];
+  try {
+    const r = await fetch('/api/tasks/action-types');
+    if (r.ok) { const d = await r.json(); if (Array.isArray(d.action_types) && d.action_types.length) types = d.action_types; }
+  } catch (_) {}
+  // Schedulable jobs only (detection-only actions like reprovision are queued from a device).
+  types = types.filter(t => t !== 'reprovision');
+  types.sort((a, b) => (a === 'drift_audit' ? -1 : b === 'drift_audit' ? 1 : a === 'snapshot' ? -1 : b === 'snapshot' ? 1 : 0));
+  sel.innerHTML = types.map(t => '<option value="' + t + '">' + ((JOB_LABELS[t] || {}).label || t) + '</option>').join('');
+  sel.dataset.loaded = '1';
+  updateJobHint();
+}
+function updateJobHint() {
+  const meta = JOB_LABELS[document.getElementById('f-jobtype').value] || {};
+  document.getElementById('f-jobhint').textContent = meta.hint || '';
+}
+document.getElementById('f-jobtype').addEventListener('change', updateJobHint);
+document.querySelectorAll('input[name="scope"]').forEach(r => {
+  r.addEventListener('change', () => {
+    const tag = document.getElementById('f-tag');
+    tag.disabled = document.querySelector('input[name="scope"]:checked').value !== 'tag';
+    if (!tag.disabled) tag.focus();
+  });
+});
+function slugify(s) { return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'job'; }
+
+document.getElementById('sched-create').addEventListener('click', async () => {
+  const btn = document.getElementById('sched-create');
+  const errEl = document.getElementById('sched-error');
+  errEl.classList.add('hidden');
+  const jobType = document.getElementById('f-jobtype').value;
+  const desc = document.getElementById('f-desc').value.trim();
+  const num = parseInt(document.getElementById('f-num').value, 10);
+  const unit = document.getElementById('f-unit').value;
+  const scope = document.querySelector('input[name="scope"]:checked').value;
+  const tag = document.getElementById('f-tag').value.trim();
+  const enabled = document.getElementById('f-enabled').checked;
+  if (!desc) { errEl.textContent = 'Give the task a name.'; errEl.classList.remove('hidden'); return; }
+  if (!num || num < 1) { errEl.textContent = 'Cadence must be at least 1.'; errEl.classList.remove('hidden'); return; }
+  if (scope === 'tag' && !tag) { errEl.textContent = 'Enter a tag, or choose All devices.'; errEl.classList.remove('hidden'); return; }
+
+  const body = {
+    trigger_kind: 'schedule',
+    task_id: slugify(desc) + '-' + Date.now().toString(36),
+    description: desc,
+    action_type: jobType,
+    interval: String(num) + unit,
+    tag_filter: scope === 'tag' ? tag : null,
+  };
+  btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i> Creating…'; if (window.lucide) lucide.createIcons();
+  try {
+    const resp = await fetch('/api/tasks', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    const data = await resp.json();
+    if (resp.ok) {
+      if (!enabled) {
+        try { await fetch('/api/tasks/' + encodeURIComponent(body.task_id), {
+          method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({enabled: false}) }); } catch (_) {}
+      }
+      closeModal(); loadTasks();
+    } else {
+      errEl.textContent = data.detail || 'Failed to create task.'; errEl.classList.remove('hidden');
+      btn.disabled = false; btn.innerHTML = '<i data-lucide="check"></i> Create schedule'; if (window.lucide) lucide.createIcons();
+    }
+  } catch (e) {
+    errEl.textContent = 'Request failed.'; errEl.classList.remove('hidden');
+    btn.disabled = false; btn.innerHTML = '<i data-lucide="check"></i> Create schedule'; if (window.lucide) lucide.createIcons();
+  }
+});
+
+loadTasks();
+</script>
+{% endblock %}

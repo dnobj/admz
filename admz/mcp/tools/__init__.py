@@ -39,6 +39,7 @@ from admz.mcp.tools import (
     provision,
     recovery,
     schedules,
+    tasks,
 )
 
 # Order is deliberate: same grouping as the original list_tools()
@@ -50,6 +51,7 @@ MIGRATED_TOOLS: List[Tool] = (
     + fleet.TOOLS
     + provision.TOOLS
     + recovery.TOOLS
+    + tasks.TOOLS
     + firmware.TOOLS
 )
 
