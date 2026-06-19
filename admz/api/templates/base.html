@@ -99,18 +99,25 @@
         <div class="nav-group-head"><span class="section-label">{{ sec.title }}</span></div>
         {% endif %}
         {% for it in sec['items'] %}{# bracket access: dict.items is a method #}
-        <a class="nav-item {{ 'accent' if it.accent }} {{ 'active' if active == it.key }}" href="{{ it.href }}">
+        {# Parent is "active" for its own page; an item WITH a tag sub-nav
+           (Devices) highlights only when no tag is selected — i.e. it IS the
+           "all devices" selection. #}
+        <a class="nav-item {{ 'accent' if it.accent }} {{ 'active' if active == it.key and (not it.children or not nav.active_tag) }}" href="{{ it.href }}">
           <span class="ico"><i data-lucide="{{ it.icon }}"></i></span>
           <span class="label">{{ it.label }}</span>
           {% if it.badge is not none %}<span class="badge-mini">{{ it.badge }}</span>{% endif %}
         </a>
-        {% for ch in it.children or [] %}
-        <a class="group-row {{ 'active' if active == ch.key and nav.active_tag == ch.tag }}" href="{{ ch.href }}">
+        {# Tag sub-nav: indented, shown only while this item is the active page
+           (collapses when you navigate away). #}
+        {% if it.children and active == it.key %}
+        {% for ch in it.children %}
+        <a class="group-row {{ 'active' if nav.active_tag == ch.tag }}" href="{{ ch.href }}">
           <span class="ico"><i data-lucide="{{ ch.icon }}"></i></span>
           <span class="label">{{ ch.label }}</span>
           {% if ch.count is not none %}<span class="count">{{ ch.count }}</span>{% endif %}
         </a>
         {% endfor %}
+        {% endif %}
         {% if it.key == 'console' %}<div style="height:6px"></div>{% endif %}
         {% endfor %}
       {% endfor %}

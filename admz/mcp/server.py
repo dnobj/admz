@@ -323,6 +323,10 @@ class ADMZMCPServer:
         self.catalog = components.catalog
         self.resolver = components.resolver
         self.executors = components.executors
+        # ADR-0039/0040: discovered platform modules (devices, acs_pro). Drives
+        # the module tool surface below; a module self-gates its tools (ACS Pro
+        # returns none until connected).
+        self.module_registry = components.module_registry
         self.plan_engine = components.plan_engine
         self.git_repo = components.git_repo
         self.snapshot_engine = components.snapshot_engine
@@ -1575,6 +1579,13 @@ class ADMZMCPServer:
                 *MIGRATED_TOOLS,
             ]
 
+            # ADR-0039/0040: append platform-module tools after the device
+            # tools. Each module self-gates (ACS Pro contributes none until a
+            # server is connected), so the frozen device-tool order is
+            # unchanged when no module is enabled.
+            tools.extend(
+                spec.tool for spec in self.module_registry.tool_specs_all()
+            )
             return tools
 
         @self.server.call_tool()
@@ -1674,6 +1685,13 @@ class ADMZMCPServer:
                 # phase). An unknown tool raises ValueError -> the InternalError
                 # envelope, exactly as the old `else` branch did.
                 handler = TOOL_HANDLERS.get(name)
+                if handler is None:
+                    # ADR-0039/0040: fall back to a platform-module tool handler
+                    # (e.g. ACS Pro). Module handlers share the (ctx, args) shape.
+                    for spec in self.module_registry.tool_specs_all():
+                        if spec.tool.name == name:
+                            handler = spec.handler
+                            break
                 if handler is None:
                     raise ValueError(f"Unknown tool: {name}")
                 result = await handler(ToolCtx(server=self), arguments)

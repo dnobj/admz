@@ -247,15 +247,11 @@ def _assemble_nav_sections(nav: Dict[str, Any]) -> List[Dict[str, Any]]:
     active_site = nav.get("active_site")
     site_count = active_site["count"] if active_site else None
 
-    # Devices' tag sub-nav (only when a site is active).
+    # Devices' tag sub-nav (only when a site is active). No "All devices" row —
+    # the Devices item itself is "all" (active when no ?tag is selected). The
+    # sub-nav is rendered by base.html only while Devices is the active page.
     device_children: List[Dict[str, Any]] = []
     if active_site:
-        device_children.append(
-            {
-                "key": "fleet", "label": "All devices", "href": "/devices",
-                "icon": "tag", "count": site_count, "tag": None,
-            }
-        )
         for t in nav.get("tags", []):
             device_children.append(
                 {

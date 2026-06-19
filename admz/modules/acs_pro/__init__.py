@@ -1,0 +1,91 @@
+"""ACS Pro module (#2): Axis Camera Station Pro (read-only v1, ADR-0040).
+
+A pluggable platform module (ADR-0039). Its **entire footprint** — nav item,
+MCP tools, and chatbot prompt section — is gated on :func:`acs_enabled`, so
+until the operator connects a server from Settings → Modules, ACS Pro adds
+nothing to the UI or the tool surface.
+
+Auth is Negotiate as the ADMZ process identity (no stored password). v1 is
+read-only; cameras correlate to ADMZ devices by MAC. The executor is always
+registered (cheap, harmless) so the family resolves; only the *visible* surface
+is gated.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from admz.modules.contract import Module, NavItem, NavSection, ToolSpec
+
+_PROMPT_SECTION = """\
+# Axis Camera Station Pro (ACS Pro) is connected
+
+An ACS Pro video-management server is connected (read-only in this version). Its
+cameras map to ADMZ devices by **MAC address** (serial number is a fallback).
+
+- To answer "is <device> in ACS / recording in ACS?", call
+  `acs_find_camera_for_device` with the ADMZ `device_id` — it returns the
+  matched ACS camera(s). Then use `acs_get_recording_status` for recording state.
+- `acs_list_cameras` / `acs_list_devices` enumerate what ACS knows;
+  `acs_get_api_version` / `acs_get_system` report server status.
+- ACS tools are READ-ONLY here — you cannot start/stop recording or change ACS
+  config. Don't claim you did."""
+
+
+def _executors() -> Dict[str, object]:
+    from admz.modules.acs_pro.executor import AcsProExecutor
+
+    return {"acs-pro": AcsProExecutor()}
+
+
+def _mcp_tools() -> List[ToolSpec]:
+    from admz.modules.acs_pro.config import acs_enabled
+
+    if not acs_enabled():
+        return []
+    from admz.modules.acs_pro.tools import tool_specs
+
+    return tool_specs()
+
+
+def _nav_section(ctx: Any = None) -> Optional[NavSection]:
+    from admz.modules.acs_pro.config import acs_enabled
+
+    if not acs_enabled():
+        return None
+    return NavSection(
+        id="acs_pro",
+        title="ACS Pro",
+        items=(NavItem(key="acs", label="Cameras", href="/acs", icon="cctv"),),
+    )
+
+
+def _prompt_section(ctx: Any = None) -> str:
+    from admz.modules.acs_pro.config import acs_enabled
+
+    return _PROMPT_SECTION if acs_enabled() else ""
+
+
+def _routers():
+    from admz.modules.acs_pro.routes import router
+
+    return [(router, "")]
+
+
+def _self_heals() -> bool:
+    return False
+
+
+def get_module() -> Module:
+    return Module(
+        id="acs_pro",
+        family="acs-pro",
+        title="Axis Camera Station Pro",
+        catalog_family="acs-pro",
+        executors=_executors,
+        mcp_tools=_mcp_tools,
+        routers=_routers,
+        nav_section=_nav_section,
+        build_prompt_section=_prompt_section,
+        self_heals=_self_heals,
+    )
