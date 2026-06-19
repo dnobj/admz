@@ -68,6 +68,12 @@ class AppContext:
     def health_monitor(self):
         return self._components.health_monitor
 
+    @property
+    def module_registry(self):
+        # ADR-0039: the discovered platform modules (devices, …). Read by the
+        # web nav, the MCP tool surface, and the chatbot prompt assembly.
+        return self._components.module_registry
+
 
 _ctx: Optional[AppContext] = None
 

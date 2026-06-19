@@ -29,7 +29,7 @@ from axis_api_atlas.catalog.loader import CatalogLoader
 from axis_api_atlas.catalog.resolver import CatalogResolver
 from admz.device_registry import DeviceRegistry
 from admz.executor.base import BaseExecutor
-from admz.executor.vapix import VapixExecutor
+from admz.modules.registry import ModuleRegistry
 from admz.plans.engine import PlanEngine
 from admz.snapshot.drift import DriftDetector
 from admz.snapshot.engine import SnapshotEngine
@@ -54,6 +54,9 @@ class Components:
     drift_detector: DriftDetector
     scheduler: SnapshotScheduler
     health_monitor: HealthMonitor
+    # ADR-0039: the discovered module set. MCP (tools), the web layer (nav),
+    # and the chatbot host (prompt sections) all read this rather than a global.
+    module_registry: ModuleRegistry
 
 
 def _default_catalog_path() -> str:
@@ -284,10 +287,14 @@ def build_components(
     catalog = CatalogLoader(catalog_path)
     resolver = CatalogResolver(catalog)
 
-    vapix_executor = VapixExecutor(
-        retries=int(os.getenv("ADMZ_VAPIX_RETRIES", "1"))
-    )
-    executors: Dict[str, BaseExecutor] = {"vapix": vapix_executor}
+    # ADR-0039: build executors through the module registry. Discovery is an
+    # explicit, ordered import of each module's get_module(); the devices
+    # module contributes {"vapix": VapixExecutor(...)} exactly as the old
+    # hardcoded literal did. The registry is stored on Components so the MCP,
+    # web, and chatbot surfaces share the same module set.
+    module_registry = ModuleRegistry()
+    module_registry.discover()
+    executors: Dict[str, BaseExecutor] = module_registry.executors_for_all()
 
     plan_engine = PlanEngine(
         catalog=catalog,
@@ -358,4 +365,5 @@ def build_components(
         drift_detector=drift_detector,
         scheduler=scheduler,
         health_monitor=health_monitor,
+        module_registry=module_registry,
     )

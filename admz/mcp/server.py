@@ -79,6 +79,7 @@ from admz.snapshot.drift import DriftDetector
 from admz.snapshot.scheduler import SnapshotScheduler, SnapshotSchedule, parse_interval
 from admz.discovery import discover_devices as run_network_discovery
 from admz.mcp.tools import MIGRATED_TOOLS
+from admz.mcp.dispatch import ToolCtx, TOOL_HANDLERS
 from admz.exceptions import (
     ADMZError,
     DeviceNotFoundError,
@@ -1667,206 +1668,15 @@ class ADMZMCPServer:
                     )
 
             try:
-                # Route to appropriate handler
-                if name == "list_devices":
-                    result = await self._list_devices()
-                elif name == "get_device":
-                    result = await self._get_device(arguments["device_id"])
-                elif name == "get_device_health":
-                    result = await self._get_device_health(arguments["device_id"])
-                elif name == "get_fleet_health":
-                    result = await self._get_fleet_health()
-                elif name == "await_device_recovery":
-                    result = await self._await_device_recovery(arguments)
-                elif name == "search_devices":
-                    result = await self._search_devices(arguments)
-                elif name == "list_accounts":
-                    result = await self._list_accounts(arguments["device_id"])
-                elif name == "register_device":
-                    result = await self._register_device(
-                        arguments["device_id"],
-                        arguments["device_info"],
-                        arguments.get("accounts"),
-                    )
-                elif name == "add_account":
-                    result = await self._add_account(
-                        arguments["device_id"],
-                        arguments["account_id"],
-                        arguments["account_data"],
-                    )
-                elif name == "update_device":
-                    result = await self._update_device(
-                        arguments["device_id"],
-                        arguments["updates"],
-                    )
-                elif name == "update_device_tags":
-                    result = await self._update_device_tags(
-                        arguments["device_id"],
-                        arguments.get("add") or [],
-                        arguments.get("remove") or [],
-                    )
-                elif name == "delete_device":
-                    result = await self._delete_device(arguments["device_id"])
-                elif name == "delete_account":
-                    result = await self._delete_account(
-                        arguments["device_id"],
-                        arguments["account_id"],
-                    )
-                elif name == "capture_credentials":
-                    result = await self._capture_credentials(arguments)
-                elif name == "check_capture_status":
-                    result = await self._check_capture_status(
-                        arguments["token"],
-                    )
-                # --- Catalog + Execution tools ---
-                elif name == "query_catalog":
-                    result = await self._query_catalog(
-                        arguments["device_id"],
-                        arguments["intent"],
-                        arguments.get("family", "vapix"),
-                    )
-                elif name == "query_knowledge":
-                    result = await self._query_knowledge(
-                        arguments["device_id"],
-                        arguments.get("topic", ""),
-                    )
-                elif name == "check_api_support":
-                    result = await self._check_api_support(
-                        arguments["device_id"],
-                        arguments.get("api_id"),
-                    )
-                elif name == "execute_operation":
-                    result = await self._execute_operation(
-                        arguments["device_id"],
-                        arguments["operation_id"],
-                        arguments.get("params", {}),
-                        arguments.get("family", "vapix"),
-                    )
-                elif name == "confirm_dangerous_operation":
-                    result = await self._confirm_dangerous(
-                        arguments["confirm_token"],
-                    )
-                # --- Plan tools ---
-                elif name == "create_plan":
-                    result = await self._create_plan(
-                        arguments["description"],
-                        arguments["steps"],
-                        arguments.get("on_failure", "stop"),
-                    )
-                elif name == "execute_plan":
-                    result = await self._execute_plan(
-                        arguments["plan_id"],
-                        arguments.get("confirm_dangerous", False),
-                    )
-                elif name == "get_plan_status":
-                    result = await self._get_plan_status(
-                        arguments["plan_id"],
-                    )
-                # --- Snapshot / Restore tools ---
-                elif name == "snapshot_device":
-                    result = await self._snapshot_device(
-                        arguments["device_id"],
-                        arguments.get("message"),
-                    )
-                elif name == "snapshot_fleet":
-                    result = await self._snapshot_fleet(
-                        arguments.get("tag_filter"),
-                        arguments.get("message"),
-                    )
-                elif name == "restore_device":
-                    result = await self._restore_device(
-                        arguments["device_id"],
-                        arguments.get("ref"),
-                        arguments.get("facets"),
-                    )
-                elif name == "accept_baseline":
-                    result = await self._accept_baseline(
-                        arguments["device_id"],
-                        arguments.get("commit_sha"),
-                    )
-                elif name == "diff_device":
-                    result = await self._diff_device(
-                        arguments["device_id"],
-                        arguments.get("ref_a", "HEAD~1"),
-                        arguments.get("ref_b", "HEAD"),
-                    )
-                elif name == "check_drift":
-                    result = await self._check_drift(
-                        arguments.get("device_id"),
-                        arguments.get("tag_filter"),
-                    )
-                elif name == "get_drift_alerts":
-                    result = await self._get_drift_alerts(arguments)
-                # --- Credential probe ---
-                elif name == "test_device_credentials":
-                    result = await self._test_credentials(arguments)
-                # --- Discovery tools ---
-                elif name == "discover_network_devices":
-                    result = await self._discover_network_devices(arguments)
-                elif name == "register_discovered_device":
-                    result = await self._register_discovered_device(arguments)
-                elif name == "reconcile_device_addresses":
-                    result = await self._reconcile_device_addresses(arguments)
-                # --- Schedule tools ---
-                elif name == "create_snapshot_schedule":
-                    result = await self._create_snapshot_schedule(
-                        arguments["schedule_id"],
-                        arguments["description"],
-                        arguments["interval"],
-                        arguments.get("tag_filter"),
-                        arguments.get("device_ids"),
-                        arguments.get("job_type") or "snapshot",
-                    )
-                elif name == "list_snapshot_schedules":
-                    result = await self._list_snapshot_schedules()
-                elif name == "update_snapshot_schedule":
-                    result = await self._update_snapshot_schedule(
-                        arguments["schedule_id"],
-                        arguments,
-                    )
-                elif name == "delete_snapshot_schedule":
-                    result = await self._delete_snapshot_schedule(
-                        arguments["schedule_id"],
-                    )
-                elif name == "run_snapshot_schedule":
-                    result = await self._run_snapshot_schedule(
-                        arguments["schedule_id"],
-                    )
-                # --- Fleet settings ---
-                elif name == "get_fleet_settings":
-                    result = await self._get_fleet_settings()
-                elif name == "set_fleet_setting":
-                    result = await self._set_fleet_setting(
-                        arguments["key"], arguments.get("value"),
-                    )
-                # --- Provisioning ---
-                elif name == "provision_device":
-                    result = await self._provision_device(arguments)
-                # --- Deferred recovery ---
-                elif name == "queue_device_recovery":
-                    result = self._queue_device_recovery(arguments)
-                elif name == "list_device_recovery":
-                    result = self._list_device_recovery(arguments)
-                elif name == "cancel_device_recovery":
-                    result = self._cancel_device_recovery(arguments)
-                elif name == "list_tasks":
-                    result = self._list_tasks(arguments)
-                elif name == "search_audit_log":
-                    result = self._search_audit_log(arguments)
-                # --- Firmware ---
-                elif name == "download_firmware":
-                    result = await self._download_firmware(arguments)
-                elif name == "import_firmware":
-                    result = await self._import_firmware(arguments)
-                elif name == "list_cached_firmware":
-                    result = await self._list_cached_firmware()
-                # --- Temporary credentials ---
-                elif name == "create_temp_credentials":
-                    result = await self._create_temp_credentials(arguments)
-                elif name == "cleanup_temp_credentials":
-                    result = await self._cleanup_temp_credentials(arguments)
-                else:
+                # ADR-0039 (P2): table-driven dispatch. The 52-arm if/elif
+                # chain became a single lookup into the dispatch table; handlers
+                # are free (ctx, args) functions (shims to self._method in this
+                # phase). An unknown tool raises ValueError -> the InternalError
+                # envelope, exactly as the old `else` branch did.
+                handler = TOOL_HANDLERS.get(name)
+                if handler is None:
                     raise ValueError(f"Unknown tool: {name}")
+                result = await handler(ToolCtx(server=self), arguments)
 
                 audit_success = True
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]

@@ -89,50 +89,31 @@
   <div class="layout">
 
     {% block sidebar %}
+    {# Data-driven sidebar (ADR-0039). nav.sections = pinned Core (Console,
+       Devices+tag sub-nav, Tasks, Audit log, Settings) + one section per
+       platform module (divider + optional header + items). #}
     <aside class="sidebar">
-      <a class="nav-item accent {{ 'active' if active == 'console' }}" href="/chat">
-        <span class="ico"><i data-lucide="sparkles"></i></span>
-        <span class="label">Console</span>
-        <span class="badge-mini">⌘K</span>
-      </a>
-      <div style="height:6px"></div>
-      <a class="nav-item {{ 'active' if active == 'fleet' }}" href="/devices">
-        <span class="ico"><i data-lucide="layout-grid"></i></span>
-        <span class="label">Devices</span>
-        {% if nav.active_site %}<span class="badge-mini">{{ nav.active_site.count }}</span>{% endif %}
-      </a>
-      <a class="nav-item {{ 'active' if active == 'tasks' }}" href="/tasks">
-        <span class="ico"><i data-lucide="list-checks"></i></span>
-        <span class="label">Tasks</span>
-      </a>
-      <a class="nav-item {{ 'active' if active == 'auditlog' }}" href="/audit-log">
-        <span class="ico"><i data-lucide="shield"></i></span>
-        <span class="label">Audit log</span>
-      </a>
-      <a class="nav-item {{ 'active' if active == 'settings' }}" href="/settings">
-        <span class="ico"><i data-lucide="settings"></i></span>
-        <span class="label">Settings</span>
-      </a>
-
-      {% if nav.active_site %}
-      <div class="nav-divider"></div>
-      <div class="nav-group-head">
-        <span class="section-label">Tags</span>
-        <span class="right">{{ nav.active_site.short }}</span>
-      </div>
-      <a class="group-row {{ 'active' if active == 'fleet' and not nav.active_tag }}" href="/devices">
-        <span class="ico"><i data-lucide="tag"></i></span>
-        <span class="label">All devices</span>
-        <span class="count">{{ nav.active_site.count }}</span>
-      </a>
-      {% for t in nav.tags %}
-      <a class="group-row {{ 'active' if active == 'fleet' and nav.active_tag == t.id }}" href="/devices?tag={{ t.id }}">
-        <span class="ico"><i data-lucide="tag"></i></span>
-        <span class="label">{{ t.name }}</span>
-        <span class="count">{{ t.count }}</span>
-      </a>
+      {% for sec in nav.sections or [] %}
+        {% if not loop.first %}<div class="nav-divider"></div>{% endif %}
+        {% if sec.title %}
+        <div class="nav-group-head"><span class="section-label">{{ sec.title }}</span></div>
+        {% endif %}
+        {% for it in sec['items'] %}{# bracket access: dict.items is a method #}
+        <a class="nav-item {{ 'accent' if it.accent }} {{ 'active' if active == it.key }}" href="{{ it.href }}">
+          <span class="ico"><i data-lucide="{{ it.icon }}"></i></span>
+          <span class="label">{{ it.label }}</span>
+          {% if it.badge is not none %}<span class="badge-mini">{{ it.badge }}</span>{% endif %}
+        </a>
+        {% for ch in it.children or [] %}
+        <a class="group-row {{ 'active' if active == ch.key and nav.active_tag == ch.tag }}" href="{{ ch.href }}">
+          <span class="ico"><i data-lucide="{{ ch.icon }}"></i></span>
+          <span class="label">{{ ch.label }}</span>
+          {% if ch.count is not none %}<span class="count">{{ ch.count }}</span>{% endif %}
+        </a>
+        {% endfor %}
+        {% if it.key == 'console' %}<div style="height:6px"></div>{% endif %}
+        {% endfor %}
       {% endfor %}
-      {% endif %}
     </aside>
     {% endblock %}
 
