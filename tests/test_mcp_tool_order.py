@@ -96,3 +96,20 @@ def test_list_tools_order_is_frozen():
 def test_list_tools_has_no_duplicates():
     names = _live_tool_order()
     assert len(names) == len(set(names)), "duplicate tool name in list_tools"
+
+
+def test_dispatch_table_matches_list_tools():
+    """Every advertised tool must have a dispatch handler, and vice-versa.
+
+    The P2 refactor split the schema list (list_tools) from the dispatch table
+    (TOOL_HANDLERS). This guards against the two drifting — a tool advertised
+    but unhandled (or handled but unadvertised) is a bug.
+    """
+    from admz.mcp.dispatch import TOOL_HANDLERS
+
+    advertised = set(_live_tool_order())
+    handled = set(TOOL_HANDLERS)
+    assert advertised == handled, {
+        "advertised_only": sorted(advertised - handled),
+        "handled_only": sorted(handled - advertised),
+    }
