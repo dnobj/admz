@@ -26,7 +26,7 @@ from typing import AsyncIterator, Optional
 
 from dataclasses import dataclass, field
 
-from fastapi import APIRouter, Body, Depends, Form, Request
+from fastapi import APIRouter, Body, Depends, Form, HTTPException, Request
 from pydantic import BaseModel, Field
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
@@ -38,6 +38,7 @@ from admz.chatbot.client import (
     ChatbotDependencyMissing,
     ChatbotNotConfigured,
     ChatbotTurnError,
+    generate_conversation_title,
     run_turn,
     stream_turn,
 )
@@ -320,11 +321,126 @@ async def chat_submit(
 async def chat_clear(
     principal: Principal = Depends(get_current_principal),
 ):
-    """Reset the principal's conversation — drop both the interaction
-    pointer and the chat history rows."""
-    _sessions().clear(principal.name)
-    _sessions().clear_history(principal.name)
+    """Start a *new* conversation.
+
+    The previous conversation is preserved (it stays in the history
+    list — nothing is deleted); only the session pointer is reset and a
+    fresh, empty active conversation is created. The console's "New chat"
+    button posts here for the no-JS path; the drawer uses the JSON route.
+    """
+    _sessions().clear(principal.name)  # drop interaction + active pointer
+    _sessions().create_conversation(principal.name)  # fresh active conversation
     return RedirectResponse(url="/chat", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Conversation history — JSON surface for the console's left drawer.
+# Every route is scoped to the signed-in principal; touching another
+# principal's conversation returns 404 (it simply isn't visible).
+# ---------------------------------------------------------------------------
+
+
+class _ConversationCreate(BaseModel):
+    title: str = ""
+
+
+class _ConversationRename(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+
+
+@router.get("/api/chat/conversations", tags=["chat"])
+async def api_list_conversations(
+    principal: Principal = Depends(get_current_principal),
+):
+    """List the principal's conversations, newest-first."""
+    return {
+        "conversations": _sessions().list_conversations(principal.name),
+        "active": _sessions().get_active_conversation(principal.name),
+    }
+
+
+@router.post("/api/chat/conversations", tags=["chat"])
+async def api_create_conversation(
+    body: _ConversationCreate = Body(default_factory=_ConversationCreate),
+    principal: Principal = Depends(get_current_principal),
+):
+    """Start a new conversation and make it active (the drawer's '+ New chat')."""
+    title = (body.title or "").strip()[:200]
+    cid = _sessions().create_conversation(
+        principal.name,
+        title=title,
+        title_source="manual" if title else "pending",
+    )
+    record_event(
+        principal,
+        action="chat.conversation_create",
+        resource=f"conversation:{cid}",
+    )
+    return {"id": cid}
+
+
+@router.get("/api/chat/conversations/{conversation_id}", tags=["chat"])
+async def api_get_conversation(
+    conversation_id: str,
+    principal: Principal = Depends(get_current_principal),
+):
+    """Full transcript of one conversation (rendered when reopened)."""
+    meta = _sessions().get_conversation(principal.name, conversation_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {
+        "id": meta["id"],
+        "title": meta["title"],
+        "title_source": meta["title_source"],
+        "messages": _sessions().get_messages(principal.name, conversation_id),
+    }
+
+
+@router.post("/api/chat/conversations/{conversation_id}/activate", tags=["chat"])
+async def api_activate_conversation(
+    conversation_id: str,
+    principal: Principal = Depends(get_current_principal),
+):
+    """Switch the active conversation — subsequent turns continue this one."""
+    if not _sessions().set_active_conversation(principal.name, conversation_id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"ok": True, "active": conversation_id}
+
+
+@router.patch("/api/chat/conversations/{conversation_id}", tags=["chat"])
+async def api_rename_conversation(
+    conversation_id: str,
+    body: _ConversationRename,
+    principal: Principal = Depends(get_current_principal),
+):
+    """Rename a conversation (pins the title — no longer auto-retitled)."""
+    title = body.title.strip()[:200]
+    if not title:
+        raise HTTPException(status_code=400, detail="Title must not be empty")
+    if not _sessions().rename_conversation(principal.name, conversation_id, title):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    record_event(
+        principal,
+        action="chat.conversation_rename",
+        resource=f"conversation:{conversation_id}",
+    )
+    return {"ok": True, "title": title}
+
+
+@router.delete("/api/chat/conversations/{conversation_id}", tags=["chat"])
+async def api_delete_conversation(
+    conversation_id: str,
+    principal: Principal = Depends(get_current_principal),
+):
+    """Delete a conversation and all of its messages."""
+    if not _sessions().delete_conversation(principal.name, conversation_id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    record_event(
+        principal,
+        action="chat.conversation_delete",
+        resource=f"conversation:{conversation_id}",
+    )
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -561,6 +677,31 @@ async def _run_chat_turn(
             )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning("Failed to append chat history: %s", exc)
+
+        # One-time LLM title: on the conversation's first turn, upgrade the
+        # provisional snippet title to a terse generated one. Best-effort —
+        # a failure leaves the snippet title and never affects the response.
+        try:
+            conv_id = _sessions().get_active_conversation(principal.name)
+            meta = (
+                _sessions().get_conversation(principal.name, conv_id)
+                if conv_id else None
+            )
+            if (
+                meta
+                and meta["message_count"] == 2  # exactly one turn so far
+                and meta["title_source"] in ("pending", "snippet")
+            ):
+                title = await generate_conversation_title(
+                    api_key=config.api_key,
+                    model=chosen_model,
+                    user_message=message,
+                    assistant_message=summary.response,
+                )
+                if title:
+                    _sessions().set_title(principal.name, conv_id, title, "llm")
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("conversation title step skipped: %s", exc)
 
     # Record usage + audit (best-effort).
     try:

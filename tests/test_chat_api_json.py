@@ -508,6 +508,104 @@ class TestJsonChatHistory:
         assert sess_module.chat_sessions.get_history("anonymous") == []
 
 
+class TestJsonChatConversationTitles:
+    def test_first_turn_generates_llm_title(self, client):
+        _seed_api_key()
+        import admz.chatbot.sessions as sess_module
+
+        async def fake_title(**kwargs):
+            return "Generated Title"
+
+        with patch(
+            "admz.api.routes.chat.stream_turn",
+            side_effect=_fake_stream(text="ans"),
+        ), patch(
+            "admz.api.routes.chat.generate_conversation_title",
+            side_effect=fake_title,
+        ):
+            client.post("/api/chat", json={"message": "first question"})
+
+        store = sess_module.chat_sessions
+        cid = store.get_active_conversation("anonymous")
+        meta = store.get_conversation("anonymous", cid)
+        assert meta["title"] == "Generated Title"
+        assert meta["title_source"] == "llm"
+
+    def test_title_generated_only_once(self, client):
+        _seed_api_key()
+        calls = {"n": 0}
+
+        async def fake_title(**kwargs):
+            calls["n"] += 1
+            return "Title One"
+
+        with patch(
+            "admz.api.routes.chat.stream_turn",
+            side_effect=_fake_stream(text="ans"),
+        ), patch(
+            "admz.api.routes.chat.generate_conversation_title",
+            side_effect=fake_title,
+        ):
+            client.post("/api/chat", json={"message": "first"})
+            client.post("/api/chat", json={"message": "second"})
+
+        assert calls["n"] == 1  # only the conversation's first turn is titled
+
+    def test_falls_back_to_snippet_when_llm_blank(self, client):
+        _seed_api_key()
+        import admz.chatbot.sessions as sess_module
+
+        async def empty_title(**kwargs):
+            return ""
+
+        with patch(
+            "admz.api.routes.chat.stream_turn",
+            side_effect=_fake_stream(text="ans"),
+        ), patch(
+            "admz.api.routes.chat.generate_conversation_title",
+            side_effect=empty_title,
+        ):
+            client.post(
+                "/api/chat",
+                json={"message": "Has the lobby camera drifted from baseline?"},
+            )
+
+        store = sess_module.chat_sessions
+        cid = store.get_active_conversation("anonymous")
+        meta = store.get_conversation("anonymous", cid)
+        assert meta["title_source"] == "snippet"
+        assert meta["title"].startswith("Has the lobby camera")
+
+    def test_clear_starts_new_conversation_preserving_old(self, client):
+        _seed_api_key()
+        import admz.chatbot.sessions as sess_module
+
+        async def no_title(**kwargs):
+            return ""
+
+        with patch(
+            "admz.api.routes.chat.stream_turn",
+            side_effect=_fake_stream(text="ans"),
+        ), patch(
+            "admz.api.routes.chat.generate_conversation_title",
+            side_effect=no_title,
+        ):
+            client.post("/api/chat", json={"message": "first convo"})
+
+        store = sess_module.chat_sessions
+        first_cid = store.get_active_conversation("anonymous")
+
+        # "New chat" — switches to a fresh empty conversation, keeps the old.
+        r = client.post("/chat/clear")
+        assert r.status_code == 303
+        new_cid = store.get_active_conversation("anonymous")
+        assert new_cid and new_cid != first_cid
+        assert store.get_history("anonymous") == []  # new conversation is empty
+
+        ids = {c["id"] for c in store.list_conversations("anonymous")}
+        assert first_cid in ids and new_cid in ids  # old one preserved
+
+
 class TestJsonChatAudit:
     def test_successful_turn_audited_with_via_chatbot(self, client):
         _seed_api_key()
@@ -546,3 +644,87 @@ class TestJsonChatAudit:
         rejects = [e for e in entries if e.action == "chat_budget_exceeded"]
         assert len(rejects) == 1
         assert rejects[0].success is False
+
+
+class TestConversationRoutes:
+    def _store(self):
+        import admz.chatbot.sessions as sess_module
+        return sess_module.chat_sessions
+
+    def test_list_empty(self, client):
+        r = client.get("/api/chat/conversations")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["conversations"] == [] and body["active"] is None
+
+    def test_create_activates_and_lists(self, client):
+        cid = client.post("/api/chat/conversations", json={}).json()["id"]
+        body = client.get("/api/chat/conversations").json()
+        assert body["active"] == cid
+        assert [c["id"] for c in body["conversations"]] == [cid]
+        assert body["conversations"][0]["active"] is True
+
+    def test_create_with_title_is_manual(self, client):
+        cid = client.post(
+            "/api/chat/conversations", json={"title": "Pinned"}
+        ).json()["id"]
+        meta = client.get(f"/api/chat/conversations/{cid}").json()
+        assert meta["title"] == "Pinned" and meta["title_source"] == "manual"
+
+    def test_get_messages(self, client):
+        store = self._store()
+        store.append_turn("anonymous", "hi", "hello")
+        cid = store.get_active_conversation("anonymous")
+        msgs = client.get(f"/api/chat/conversations/{cid}").json()["messages"]
+        assert [m["text"] for m in msgs] == ["hi", "hello"]
+
+    def test_get_unknown_404(self, client):
+        assert client.get("/api/chat/conversations/nope").status_code == 404
+
+    def test_get_foreign_404(self, client):
+        other = self._store().create_conversation(r"AXIS\other")
+        assert client.get(f"/api/chat/conversations/{other}").status_code == 404
+
+    def test_activate_switches(self, client):
+        store = self._store()
+        a = client.post("/api/chat/conversations", json={}).json()["id"]
+        b = client.post("/api/chat/conversations", json={}).json()["id"]
+        assert store.get_active_conversation("anonymous") == b
+        r = client.post(f"/api/chat/conversations/{a}/activate")
+        assert r.status_code == 200 and r.json()["active"] == a
+        assert store.get_active_conversation("anonymous") == a
+
+    def test_activate_foreign_404(self, client):
+        other = self._store().create_conversation(r"AXIS\other")
+        r = client.post(f"/api/chat/conversations/{other}/activate")
+        assert r.status_code == 404
+
+    def test_rename(self, client):
+        cid = client.post("/api/chat/conversations", json={}).json()["id"]
+        r = client.patch(
+            f"/api/chat/conversations/{cid}", json={"title": "Renamed"}
+        )
+        assert r.status_code == 200
+        meta = client.get(f"/api/chat/conversations/{cid}").json()
+        assert meta["title"] == "Renamed" and meta["title_source"] == "manual"
+
+    def test_rename_empty_rejected(self, client):
+        cid = client.post("/api/chat/conversations", json={}).json()["id"]
+        r = client.patch(f"/api/chat/conversations/{cid}", json={"title": ""})
+        assert r.status_code in (400, 422)
+
+    def test_rename_foreign_404(self, client):
+        other = self._store().create_conversation(r"AXIS\other")
+        r = client.patch(f"/api/chat/conversations/{other}", json={"title": "x"})
+        assert r.status_code == 404
+
+    def test_delete(self, client):
+        cid = client.post("/api/chat/conversations", json={}).json()["id"]
+        assert client.delete(f"/api/chat/conversations/{cid}").status_code == 200
+        assert client.get(f"/api/chat/conversations/{cid}").status_code == 404
+
+    def test_delete_foreign_404(self, client):
+        store = self._store()
+        other = store.create_conversation(r"AXIS\other")
+        assert client.delete(f"/api/chat/conversations/{other}").status_code == 404
+        assert store.get_conversation(r"AXIS\other", other) is not None

@@ -27,6 +27,9 @@ conversationally.
   diffing, forking, and restore
 - **Detects drift** between live device state and the git baseline
 - **Schedules recurring snapshots** for unattended fleet backup
+- **Keeps conversation history** in the console — named, listable
+  conversations (LLM-titled) you can look up and continue from a
+  left slide-out pane (ADR-0038)
 
 ## Installation
 

@@ -185,8 +185,19 @@ static_dir.mkdir(exist_ok=True)
 templates = Jinja2Templates(directory=str(template_dir))
 from admz.api.templating import configure as _configure_templates  # noqa: E402
 _configure_templates(templates)
+class _NoCacheStatic(StaticFiles):
+    """Serve static assets with ``Cache-Control: no-cache`` so browsers always
+    revalidate (cheap 304 via ETag when unchanged) instead of silently serving
+    a stale ``chat.js``/CSS from heuristic cache after a deploy."""
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 if static_dir.exists():
-    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+    app.mount("/static", _NoCacheStatic(directory=str(static_dir)), name="static")
 
 
 # Routers — the JSON API surface

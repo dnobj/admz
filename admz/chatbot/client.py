@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import random
+import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -385,6 +386,78 @@ def _result_from_response(response: Any, model: str) -> TurnResult:
         input_tokens=input_tokens,
         output_tokens=output_tokens,
     )
+
+
+# ---------------------------------------------------------------------------
+# Conversation titles
+# ---------------------------------------------------------------------------
+
+
+def _clean_title(raw: str, max_chars: int) -> str:
+    """Normalize a model-emitted title: one line, no quotes/punctuation,
+    collapsed whitespace, length-capped with an ellipsis."""
+    t = (raw or "").strip()
+    if not t:
+        return ""
+    t = t.splitlines()[0]
+    t = re.sub(r"\s+", " ", t).strip().strip("\"'`").strip()
+    t = t.rstrip(".!,;:").strip()
+    if len(t) > max_chars:
+        t = t[: max_chars - 1].rstrip() + "…"
+    return t
+
+
+async def generate_conversation_title(
+    *,
+    api_key: str,
+    model: str,
+    user_message: str,
+    assistant_message: str,
+    max_chars: int = 48,
+) -> str:
+    """Generate a terse 3–5 word conversation title from the first turn.
+
+    A single non-streaming, no-tools, low-token Gemini call. **Best-effort**:
+    returns ``""`` on any failure (missing key, SDK error, empty response) so
+    callers fall back to the snippet title. Never raises. Sees only the
+    already-stored (gate-cleaned) user/assistant text — no secrets.
+    """
+    if not api_key or not user_message:
+        return ""
+    try:
+        genai = _import_genai()
+        client = genai.Client(api_key=api_key)
+        aio = getattr(client, "aio", None)
+        models = getattr(aio, "models", None) if aio else None
+        gen = getattr(models, "generate_content", None) if models else None
+        if gen is None:
+            return ""
+        sys_inst = (
+            "You name chat conversations. Reply with ONLY a terse 3-5 word "
+            "title in Title Case — no quotes, no trailing punctuation, no "
+            "preamble. It must describe the topic; never answer the question."
+        )
+        prompt = (
+            "Title this conversation:\n\n"
+            f"User: {user_message[:600]}\n"
+            f"Assistant: {assistant_message[:600]}"
+        )
+        config = {
+            "system_instruction": sys_inst,
+            "max_output_tokens": 24,
+            # No thinking — titling is trivial and budget=0 sidesteps the
+            # empty-candidate quirk that dynamic (-1) can trigger.
+            "thinking_config": {"thinking_budget": 0},
+        }
+        resp = await gen(
+            model=model,
+            contents=prompt,
+            config=_build_generate_config(config),
+        )
+        return _clean_title(_response_text(resp), max_chars)
+    except Exception as exc:  # best-effort — title is non-essential
+        logger.debug("conversation title generation failed: %s", exc)
+        return ""
 
 
 # ---------------------------------------------------------------------------

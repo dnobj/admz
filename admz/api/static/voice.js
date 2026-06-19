@@ -83,11 +83,13 @@
       .catch(() => {});
   }
 
-  // Show the dropdowns relevant to the selected mode.
+  // Show the dropdown rows relevant to the selected mode. (Toggle the
+  // settings-popover row, falling back to the <select> for older markup.)
   function syncModeUI() {
     const dict = currentMode() === "dictate";
-    [modelSel, voiceSel].forEach((el) => { if (el) el.style.display = dict ? "none" : ""; });
-    if (sttSel) sttSel.style.display = dict ? "" : "none";
+    const row = (el) => (el && el.closest(".cs-row")) || el;
+    [modelSel, voiceSel].forEach((el) => { const r = row(el); if (r) r.style.display = dict ? "none" : ""; });
+    const sr = row(sttSel); if (sr) sr.style.display = dict ? "" : "none";
   }
   if (modeSel) { modeSel.addEventListener("change", syncModeUI); syncModeUI(); }
 

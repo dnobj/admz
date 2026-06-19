@@ -7,6 +7,8 @@
 <div class="console {{ 'embed' if embed else '' }}">
 
   <div class="console-head">
+    <button class="icon-btn sm" type="button" id="conv-toggle"
+      title="Conversations" aria-label="Show conversations"><i data-lucide="panel-left"></i></button>
     <span class="spark"><i data-lucide="sparkles"></i></span>
     <div style="min-width:0">
       <div class="ch-title">ADMZ Console</div>
@@ -19,6 +21,17 @@
     <button class="icon-btn sm" type="button" title="Close console" onclick="if(parent.admzCloseDock)parent.admzCloseDock()"><i data-lucide="x"></i></button>
     {% endif %}
   </div>
+
+  {# Conversation history — left slide-out pane (chat.js drives it). #}
+  <div class="conv-scrim" id="conv-scrim" hidden></div>
+  <aside class="conv-drawer" id="conv-drawer" aria-hidden="true" aria-label="Conversations">
+    <div class="conv-drawer-head">
+      <button class="btn primary sm" type="button" id="conv-new"><i data-lucide="plus"></i> New chat</button>
+      <span class="spacer"></span>
+      <button class="icon-btn sm" type="button" id="conv-close" title="Close" aria-label="Close"><i data-lucide="x"></i></button>
+    </div>
+    <div class="conv-list" id="conv-list"></div>
+  </aside>
 
   {% if not configured %}
   <div style="padding:14px 24px 0"><div class="console-col" style="padding:0">
@@ -94,29 +107,35 @@
             {% if not configured %}disabled{% endif %}><i data-lucide="send-horizontal"></i></button>
         </div>
         <div class="composer-foot">
-          {% if not embed %}
-          <span class="safety"><i data-lucide="shield"></i>
-            Dangerous operations always require explicit approval — the two-gate model applies to AI and humans alike.</span>
-          {% else %}<span style="flex:1"></span>{% endif %}
           <span id="voice-status" class="voice-status" aria-live="polite"></span>
-          <select id="voice-mode" title="Voice mode: realtime conversation, or dictate (speak → text)">
-            <option value="realtime">🎙 Realtime</option>
-            <option value="dictate">✍ Dictate</option>
-          </select>
-          <select id="voice-model" title="Realtime voice model"></select>
-          <select id="voice-name" title="Spoken voice"></select>
-          <select id="stt-model" title="Dictate transcription model" style="display:none"></select>
-          <label for="model" style="font-size:12px">Model</label>
-          <select id="model" name="model">
-            {% for m in selectable_models %}
-            <option value="{{ m }}" {% if m == last_model %}selected{% endif %}>{{ m }}</option>
-            {% endfor %}
-          </select>
+          <span style="flex:1"></span>
+          <div class="composer-settings-wrap">
+            <button id="composer-settings-btn" type="button" class="icon-btn sm"
+              title="Chat & voice settings" aria-haspopup="true" aria-expanded="false"><i data-lucide="settings-2"></i></button>
+            <div id="composer-settings" class="composer-settings" role="menu" hidden>
+              <div class="cs-row"><label for="model">Model</label>
+                <select id="model" name="model">
+                  {% for m in selectable_models %}
+                  <option value="{{ m }}" {% if m == last_model %}selected{% endif %}>{{ m }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="cs-head">Voice</div>
+              <div class="cs-row"><label for="voice-mode">Mode</label>
+                <select id="voice-mode" title="Voice mode: realtime conversation, or dictate (speak → text)">
+                  <option value="realtime">🎙 Realtime</option>
+                  <option value="dictate">✍ Dictate</option>
+                </select>
+              </div>
+              <div class="cs-row"><label for="voice-model">Model</label>
+                <select id="voice-model" title="Realtime voice model"></select></div>
+              <div class="cs-row"><label for="voice-name">Voice</label>
+                <select id="voice-name" title="Spoken voice"></select></div>
+              <div class="cs-row"><label for="stt-model">Transcription</label>
+                <select id="stt-model" title="Dictate transcription model"></select></div>
+            </div>
+          </div>
         </div>
-      </form>
-
-      <form method="POST" action="/chat/clear">
-        <button type="submit" class="btn subtle sm">Clear chat history</button>
       </form>
     </div>
   </div>
