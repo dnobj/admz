@@ -107,29 +107,35 @@
             {% if not configured %}disabled{% endif %}><i data-lucide="send-horizontal"></i></button>
         </div>
         <div class="composer-foot">
-          {% if not embed %}
-          <span class="safety"><i data-lucide="shield"></i>
-            Dangerous operations always require explicit approval — the two-gate model applies to AI and humans alike.</span>
-          {% else %}<span style="flex:1"></span>{% endif %}
           <span id="voice-status" class="voice-status" aria-live="polite"></span>
-          <select id="voice-mode" title="Voice mode: realtime conversation, or dictate (speak → text)">
-            <option value="realtime">🎙 Realtime</option>
-            <option value="dictate">✍ Dictate</option>
-          </select>
-          <select id="voice-model" title="Realtime voice model"></select>
-          <select id="voice-name" title="Spoken voice"></select>
-          <select id="stt-model" title="Dictate transcription model" style="display:none"></select>
-          <label for="model" style="font-size:12px">Model</label>
-          <select id="model" name="model">
-            {% for m in selectable_models %}
-            <option value="{{ m }}" {% if m == last_model %}selected{% endif %}>{{ m }}</option>
-            {% endfor %}
-          </select>
+          <span style="flex:1"></span>
+          <div class="composer-settings-wrap">
+            <button id="composer-settings-btn" type="button" class="icon-btn sm"
+              title="Chat & voice settings" aria-haspopup="true" aria-expanded="false"><i data-lucide="settings-2"></i></button>
+            <div id="composer-settings" class="composer-settings" role="menu" hidden>
+              <div class="cs-row"><label for="model">Model</label>
+                <select id="model" name="model">
+                  {% for m in selectable_models %}
+                  <option value="{{ m }}" {% if m == last_model %}selected{% endif %}>{{ m }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="cs-head">Voice</div>
+              <div class="cs-row"><label for="voice-mode">Mode</label>
+                <select id="voice-mode" title="Voice mode: realtime conversation, or dictate (speak → text)">
+                  <option value="realtime">🎙 Realtime</option>
+                  <option value="dictate">✍ Dictate</option>
+                </select>
+              </div>
+              <div class="cs-row"><label for="voice-model">Model</label>
+                <select id="voice-model" title="Realtime voice model"></select></div>
+              <div class="cs-row"><label for="voice-name">Voice</label>
+                <select id="voice-name" title="Spoken voice"></select></div>
+              <div class="cs-row"><label for="stt-model">Transcription</label>
+                <select id="stt-model" title="Dictate transcription model"></select></div>
+            </div>
+          </div>
         </div>
-      </form>
-
-      <form method="POST" action="/chat/clear">
-        <button id="composer-new" type="submit" class="btn subtle sm"><i data-lucide="plus"></i> New chat</button>
       </form>
     </div>
   </div>

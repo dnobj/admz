@@ -29,6 +29,26 @@
 
   if (!form || !transcript || !sendBtn) return;
 
+  // ── Composer settings popover (gear): model + voice dropdowns. ──────────
+  (function () {
+    var btn = document.getElementById("composer-settings-btn");
+    var panel = document.getElementById("composer-settings");
+    if (!btn || !panel) return;
+    function close() { panel.hidden = true; btn.setAttribute("aria-expanded", "false"); }
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var open = panel.hidden;
+      panel.hidden = !open;
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    document.addEventListener("click", function (e) {
+      if (!panel.hidden && !panel.contains(e.target) && !btn.contains(e.target)) close();
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && !panel.hidden) close();
+    });
+  })();
+
   // ── Suggestion buttons fill the composer and send. ──────────────────────
   document.querySelectorAll(".suggest-btn").forEach(function (btn) {
     btn.addEventListener("click", function () {
@@ -959,12 +979,11 @@
   if (scrim) scrim.addEventListener("click", closeDrawer);
   var convClose = document.getElementById("conv-close");
   if (convClose) convClose.addEventListener("click", closeDrawer);
-  // "+ New chat" via event delegation so it fires regardless of when the
-  // drawer DOM is (re)rendered or the icon is swapped by lucide. Covers both
-  // the drawer button (#conv-new) and the composer button (#composer-new).
+  // "+ New chat" (drawer) via event delegation so it fires regardless of when
+  // the drawer DOM is (re)rendered or the icon is swapped by lucide.
   document.addEventListener("click", function (e) {
     if (!e.target || !e.target.closest) return;
-    if (e.target.closest("#conv-new") || e.target.closest("#composer-new")) {
+    if (e.target.closest("#conv-new")) {
       e.preventDefault();
       newConversation();
     }
