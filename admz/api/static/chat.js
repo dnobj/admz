@@ -877,6 +877,42 @@
       .catch(function () {});
   }
 
+  // On load, resume the active conversation in the main view so the screen
+  // matches what the next message continues (instead of a misleadingly blank
+  // transcript). "New chat" stays the explicit way to start fresh. Display-only:
+  // we render the last RESTORE_MAX messages; the LLM context window is capped
+  // separately server-side.
+  var RESTORE_MAX = 60; // ~30 turns shown on resume
+  function restoreActiveConversation() {
+    // Only restore into a genuinely empty transcript — skip the no-JS,
+    // server-rendered fallback turn (which omits the #chat-empty marker).
+    if (!emptyState || transcript.children.length) return;
+    fetch("/api/chat/conversations", { headers: { Accept: "application/json" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data || !data.active) return;
+        var meta = (data.conversations || []).filter(function (c) {
+          return c.id === data.active;
+        })[0];
+        if (!meta || !meta.message_count) return; // active conversation is empty
+        return fetch("/api/chat/conversations/" + encodeURIComponent(data.active), {
+          headers: { Accept: "application/json" },
+        })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (conv) {
+            if (!conv || !conv.messages || !conv.messages.length) return;
+            if (transcript.children.length) return; // user already started typing/sending
+            if (emptyState) emptyState.style.display = "none";
+            conv.messages.slice(-RESTORE_MAX).forEach(function (m) {
+              replayMessage(m.role, m.text);
+            });
+            icons();
+            transcript.scrollIntoView(false);
+          });
+      })
+      .catch(function () {});
+  }
+
   function newConversation() {
     fetch("/api/chat/conversations", {
       method: "POST",
@@ -936,4 +972,7 @@
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && drawer && drawer.classList.contains("open")) closeDrawer();
   });
+
+  // Resume the active conversation on Console load (display-only).
+  restoreActiveConversation();
 })();
