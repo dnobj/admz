@@ -219,6 +219,13 @@
 .row-ignore-btn:hover { color: var(--fg-red, #f87171); border-color: var(--border-strong); }
 .row-ignore-btn svg { width: 13px; height: 13px; vertical-align: middle; }
 .row-ignore-btn:disabled { opacity: .4; cursor: default; }
+.drift-group-head td { background: var(--surface); border-bottom: 1px solid var(--border); }
+.drift-group-head .grp-cell { cursor: pointer; user-select: none; color: var(--text); font-weight: 600; font-size: 12px; }
+.drift-group-cb { width: 14px; height: 14px; cursor: pointer; accent-color: var(--accent, #FFCC33); vertical-align: middle; }
+.grp-chev { width: 13px; height: 13px; vertical-align: -2px; transition: transform .15s; color: var(--text-muted); }
+.drift-group-head.grp-open .grp-chev { transform: rotate(90deg); }
+.grp-name { font-family: monospace; }
+.grp-count { display: inline-block; margin-left: 7px; padding: 0 6px; border-radius: 99px; background: var(--border); color: var(--text-faint); font-size: 11px; font-weight: 600; }
 .ignore-menu { position: absolute; z-index: 60; min-width: 220px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.45); padding: 6px; }
 .ignore-menu .ig-head { font-size: 11px; color: var(--text-faint); padding: 5px 8px 7px; text-transform: uppercase; letter-spacing: .04em; }
 .ignore-menu .ig-opt { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--text); font-size: 13px; padding: 7px 9px; border-radius: 6px; cursor: pointer; }
@@ -313,6 +320,18 @@ function toggleReadOnly(td) {
   if (chev) chev.style.transform = showing ? '' : 'rotate(90deg)';
 }
 
+// Collapse/expand one drift category group (e.g. root.Antitailgate).
+function toggleDriftGroup(cell) {
+  const head = cell.closest('tr');
+  if (!head) return;
+  const g = head.getAttribute('data-group');
+  const open = head.classList.toggle('grp-open');
+  const tbody = head.parentElement;
+  Array.from(tbody.querySelectorAll('tr.drift-field-row')).forEach(r => {
+    if (r.getAttribute('data-group') === g) r.style.display = open ? '' : 'none';
+  });
+}
+
 async function loadDiff(did) {
   const loadingEl = document.getElementById('loading-' + did);
   try {
@@ -357,7 +376,18 @@ function renderDiff(did, data) {
       // Read-only "observed" fields (ACAP run-state, etc.) aren't revertable
       // and just add noise to the actionable diff — render them collapsed
       // below the revertable rows, behind a toggle.
-      const mkRow = (f, hidden) => {
+      // Category of a field for grouping — the first two segments of its full
+      // root.* key (e.g. root.Antitailgate, root.Image); non-param facets group
+      // under their facet name.
+      const catOf = (f) => {
+        const ck = f.canonical_key || ((f.facet || '') + ':' + (f.path || ''));
+        if (ck.indexOf('root.') === 0) {
+          const segs = ck.split('.');
+          return segs.length >= 2 ? segs.slice(0, 2).join('.') : ck;
+        }
+        return f.facet || ck.split(/[:.]/)[0] || 'other';
+      };
+      const mkRow = (f, hidden, group) => {
         const chip = f.facet ? '<span class="facet-chip">' + esc(f.facet) + '</span>' : '';
         // `revertable` may be absent (older cache) — treat as revertable then.
         const rv = (f.revertable !== false);
@@ -368,6 +398,7 @@ function renderDiff(did, data) {
             + ' data-did="' + esc(did) + '"'
             + ' data-facet="' + esc(f.facet || '') + '"'
             + ' data-path="' + esc(f.path) + '"'
+            + ' data-group="' + esc(group || '') + '"'
             + ' data-canonical="' + esc(ck) + '">'
           : '<span class="field-noselect" title="Not auto-revertable (' + esc(reason) + ')">—</span>';
         const roTag = rv ? '' : '<span class="ro-tag">' + esc(reason) + '</span>';
@@ -375,8 +406,12 @@ function renderDiff(did, data) {
         // facet fields like ACAP run-state), since ignore covers any field.
         const ign = '<button type="button" class="row-ignore-btn" title="Exclude this field from tracking"'
           + ' data-did="' + esc(did) + '" data-canonical="' + esc(ck) + '"><i data-lucide="eye-off"></i></button>';
-        const cls = (rv ? '' : 'row-readonly') + (hidden ? ' ro-collapsed' : '');
-        return '<tr class="' + cls + '"' + (hidden ? ' style="display:none"' : '') + '>'
+        // Revertable rows belong to a collapsible category group; read-only rows
+        // stay in the single bottom block (ro-collapsed, found by toggleReadOnly).
+        const cls = rv ? 'drift-field-row' : 'row-readonly ro-collapsed';
+        const dg = rv ? ' data-group="' + esc(group || '') + '"' : '';
+        const style = hidden ? ' style="display:none"' : '';
+        return '<tr class="' + cls + '"' + dg + style + '>'
           + '<td class="col-sel">' + sel + '</td>'
           + '<td class="col-path">' + chip + esc(f.path) + roTag + '</td>'
           + '<td class="col-base">' + esc(f.expected) + '</td>'
@@ -385,14 +420,34 @@ function renderDiff(did, data) {
       };
       const rvFields = fields.filter(f => f.revertable !== false);
       const roFields = fields.filter(f => f.revertable === false);
-      let rows = rvFields.map(f => mkRow(f, false)).join('');
+
+      // Bucket revertable fields by category, alphabetical. For a large drift set
+      // (e.g. a factory-defaulted device), start groups collapsed so the operator
+      // sees a tidy list of categories they can select/collapse as a unit.
+      const buckets = {};
+      rvFields.forEach(f => { const c = catOf(f); (buckets[c] = buckets[c] || []).push(f); });
+      const cats = Object.keys(buckets).sort();
+      const collapsed = rvFields.length > 8;
+      let rows = '';
+      cats.forEach(c => {
+        const items = buckets[c];
+        rows += '<tr class="drift-group-head' + (collapsed ? '' : ' grp-open') + '" data-group="' + esc(c) + '">'
+          + '<td class="col-sel"><input type="checkbox" class="drift-group-cb" checked'
+          + ' data-did="' + esc(did) + '" data-group="' + esc(c) + '" title="Select all in ' + esc(c) + '"></td>'
+          + '<td colspan="4" class="grp-cell" onclick="toggleDriftGroup(this)">'
+          + '<i data-lucide="chevron-right" class="grp-chev"></i> '
+          + '<span class="grp-name">' + esc(c) + '</span>'
+          + '<span class="grp-count">' + items.length + '</span></td></tr>';
+        rows += items.map(f => mkRow(f, collapsed, c)).join('');
+      });
+      // Read-only observed fields: one collapsed block at the bottom.
       if (roFields.length) {
         rows += '<tr class="ro-group-head"><td colspan="5" onclick="toggleReadOnly(this)"'
           + ' style="cursor:pointer;color:var(--text-muted);font-size:12px;padding:8px 6px;user-select:none">'
           + '<i data-lucide="chevron-right" class="ro-chev" style="width:13px;height:13px;vertical-align:-2px;transition:transform .15s"></i> '
           + roFields.length + ' read-only observed change' + (roFields.length !== 1 ? 's' : '')
           + ' (not revertable)</td></tr>';
-        rows += roFields.map(f => mkRow(f, true)).join('');
+        rows += roFields.map(f => mkRow(f, true, '')).join('');
       }
       const anyRevertable = rvFields.length > 0;
       const headSel = anyRevertable
@@ -405,18 +460,44 @@ function renderDiff(did, data) {
         + '<th style="color:var(--fg-amber,#fbbf24)">Live (drifted)</th>'
         + '<th class="col-ign" title="Exclude from tracking"></th></tr></thead>'
         + '<tbody>' + rows + '</tbody></table>';
-      // Wire per-field selection (the diff table was just re-rendered).
+
+      // ── Wire selection: master ↔ group ↔ per-field (the table was re-rendered) ──
       const headEl = diffWrap.querySelector('.drift-field-all');
       const cbs = Array.from(diffWrap.querySelectorAll('.drift-field-cb'));
+      const groupCbs = Array.from(diffWrap.querySelectorAll('.drift-group-cb'));
+      const membersOf = (g) => cbs.filter(c => c.getAttribute('data-group') === g);
+      const syncGroup = (g) => {
+        const gc = groupCbs.find(x => x.getAttribute('data-group') === g);
+        const m = membersOf(g);
+        if (!gc || !m.length) return;
+        const n = m.filter(c => c.checked).length;
+        gc.checked = n === m.length;
+        gc.indeterminate = n > 0 && n < m.length;
+      };
+      const syncMaster = () => {
+        if (!headEl) return;
+        const n = cbs.filter(c => c.checked).length;
+        headEl.checked = cbs.length > 0 && n === cbs.length;
+        headEl.indeterminate = n > 0 && n < cbs.length;
+      };
       if (headEl) headEl.addEventListener('change', () => {
-        cbs.forEach(cb => { cb.checked = headEl.checked; });
+        cbs.forEach(c => { c.checked = headEl.checked; });
+        groupCbs.forEach(g => { g.checked = headEl.checked; g.indeterminate = false; });
+        headEl.indeterminate = false;
         updateRevertBtn(did);
       });
-      cbs.forEach(cb => cb.addEventListener('change', () => {
-        if (headEl) headEl.checked = cbs.length > 0 && cbs.every(c => c.checked);
+      groupCbs.forEach(gc => gc.addEventListener('change', () => {
+        membersOf(gc.getAttribute('data-group')).forEach(c => { c.checked = gc.checked; });
+        gc.indeterminate = false;
+        syncMaster();
         updateRevertBtn(did);
       }));
-      // Wire per-row "exclude from tracking".
+      cbs.forEach(cb => cb.addEventListener('change', () => {
+        syncGroup(cb.getAttribute('data-group'));
+        syncMaster();
+        updateRevertBtn(did);
+      }));
+      // Per-row "exclude from tracking".
       diffWrap.querySelectorAll('.row-ignore-btn').forEach(b => b.addEventListener('click', (e) => {
         e.stopPropagation();
         openIgnoreMenu(b, did, [b.getAttribute('data-canonical')]);

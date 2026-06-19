@@ -693,21 +693,19 @@ async def audit_log_page(request: Request):
     )
 
 
-@router.get("/schedules", response_class=HTMLResponse)
-async def schedules_page(request: Request):
-    """Schedules — recurring snapshot/audit/firmware/restore jobs."""
-    from admz.api.context import get_context
-
-    schedules = []
-    try:
-        ctx = get_context()
-        schedules = [s.to_dict() for s in ctx.scheduler.list_schedules()]
-    except Exception:
-        schedules = []
+@router.get("/tasks", response_class=HTMLResponse)
+async def tasks_page(request: Request):
+    """Tasks — unified scheduled (recurring) + triggered (detection) work.
+    The page fetches /api/tasks client-side."""
     return templates.TemplateResponse(
-        "schedules.html",
-        {"request": request, "title": "Schedules", "schedules": schedules},
+        "tasks.html", {"request": request, "title": "Tasks"},
     )
+
+
+@router.get("/schedules")
+async def schedules_redirect():
+    """Back-compat: Schedules merged into Tasks (ADR-0037)."""
+    return RedirectResponse(url="/tasks", status_code=307)
 
 
 def _fmt_snapshot_date(iso: Optional[str]) -> Optional[str]:

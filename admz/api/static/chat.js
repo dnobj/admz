@@ -454,7 +454,8 @@
         if (!resp.ok || !resp.body) {
           renderApprovalDone(card, "error",
             resp.body && resp.body.status === "expired_or_not_found"
-              ? "This confirmation link has expired." : "Could not load confirmation details.");
+              ? "This confirmation link is invalid or has expired — ask me to run the action again."
+              : "Could not load confirmation details.");
           // A card that can't load is dead — drop its pinned chip so it
           // doesn't linger (e.g. a phantom/expired token).
           removePinnedAction("confirm", token);
