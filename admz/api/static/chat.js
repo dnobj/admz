@@ -132,16 +132,16 @@
           case "done":
             renderUsageFooter(assistantBubble, parsed.data);
             resolveAllPending(assistantBubble); // turn ended → tools finished
-            // Scan the *complete* assistant text once, now that streaming is
-            // done. (Scanning incrementally in appendText could match a token
-            // chunk-split mid-stream — a partial id ≥20 chars — and render a
-            // phantom "expired" approval card. The authoritative confirm_url
-            // already came through the tool_result above; this only catches a
-            // URL that appears solely in prose.)
+            // Approval/capture widgets are built ONLY from the structured
+            // tool_result above (the authoritative source). A /confirm or
+            // /capture URL that appears solely in the model's prose was
+            // fabricated — the model wrote a link without actually calling the
+            // gate, so the token isn't a real session. We deliberately do NOT
+            // render a widget for it (that produced the misleading "invalid or
+            // has expired" approval card); instead we flag it honestly.
             try {
               var fullText = assistantBubble.querySelector(".at-blocks").textContent;
-              scanForTokens(fullText, CONFIRM_URL_RE, "confirm");
-              scanForTokens(fullText, CAPTURE_URL_RE, "capture");
+              flagUnbackedLinks(fullText, assistantBubble);
             } catch (_) {}
             break;
           case "error": renderError(assistantBubble, parsed.data.message); break;
@@ -215,7 +215,8 @@
 
   var CONFIRM_URL_RE = /\/confirm\/([A-Za-z0-9_-]{20,})/g;
   var CAPTURE_URL_RE = /\/capture\/([A-Za-z0-9_-]{20,})/g;
-  var seenTokens = new Set();
+  var seenTokens = new Set();   // tokens that arrived via a structured tool_result (real)
+  var warnedTokens = new Set(); // fabricated tokens we've already flagged
 
   function appendText(bubble, chunk) {
     currentTextBlock(bubble).textContent += chunk;
@@ -226,6 +227,8 @@
     // complete text). See the SSE switch above.
   }
 
+  // Render approval/capture widgets from an AUTHORITATIVE source (a structured
+  // tool_result). Tokens it surfaces are recorded in seenTokens as "real".
   function scanForTokens(buffer, re, kind) {
     re.lastIndex = 0;
     var m;
@@ -237,6 +240,42 @@
       if (kind === "confirm") { renderApprovalCard(token); addPinnedAction("confirm", token); }
       else if (kind === "capture") { renderCaptureCard(token); addPinnedAction("capture", token); }
     }
+  }
+
+  function _matchTokens(buffer, re) {
+    re.lastIndex = 0;
+    var out = [], m;
+    while ((m = re.exec(buffer)) !== null) out.push(m[1]);
+    return out;
+  }
+
+  // A real /confirm|/capture token always arrives via a structured tool_result
+  // (recorded in seenTokens). A token that appears ONLY in the model's prose was
+  // fabricated — the model wrote an approval link without actually invoking the
+  // gate, so there is no session behind it. Don't render a widget for it (that
+  // produced the misleading "invalid or has expired" card); flag it honestly so
+  // the user knows nothing was actually started.
+  function flagUnbackedLinks(buffer, bubble) {
+    var unbacked = false;
+    [["confirm", CONFIRM_URL_RE], ["capture", CAPTURE_URL_RE]].forEach(function (pair) {
+      _matchTokens(buffer, pair[1]).forEach(function (token) {
+        var key = pair[0] + ":" + token;
+        if (seenTokens.has(key) || warnedTokens.has(key)) return; // real, or already flagged
+        warnedTokens.add(key);
+        unbacked = true;
+      });
+    });
+    if (!unbacked) return;
+    var warn = document.createElement("div");
+    warn.className = "result-row amber";
+    warn.innerHTML = ico("alert-triangle") + "<span></span>";
+    warn.querySelector("span").textContent =
+      "The assistant wrote an approval link but never actually started the " +
+      "operation, so there's nothing to approve here. Ask it to run the action " +
+      "again — a real approval will appear automatically when it does.";
+    if (bubble && bubble.parentNode) bubble.parentNode.insertBefore(warn, bubble.nextSibling);
+    else transcript.appendChild(warn);
+    icons();
   }
 
   // ── Tool-call card ──────────────────────────────────────────────────────
