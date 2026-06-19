@@ -82,6 +82,35 @@ async def acs_test(request: Request):
     return res
 
 
+@router.get("/api/acs/events")
+async def acs_events(request: Request):
+    """Search the ACS event log (lazy-loaded by the /acs Events panel + agents).
+
+    Query params: hours (window), count, type (EventLogType substring), device
+    (camera-name substring).
+    """
+    from admz.api.context import get_context
+
+    from admz.modules.acs_pro.events import search_events
+
+    q = request.query_params
+
+    def _num(name, default):
+        try:
+            return float(q.get(name)) if q.get(name) else default
+        except (TypeError, ValueError):
+            return default
+
+    ctx = get_context()
+    return await search_events(
+        ctx.catalog, ctx.executors,
+        hours_back=_num("hours", 24),
+        count=int(_num("count", 200)),
+        type_filter=q.get("type") or None,
+        device_filter=q.get("device") or None,
+    )
+
+
 @router.get("/acs", response_class=HTMLResponse)
 async def acs_page(request: Request):
     from admz.api.context import get_context

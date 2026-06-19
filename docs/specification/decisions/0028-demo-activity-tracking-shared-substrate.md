@@ -1,6 +1,9 @@
 # ADR-0028: Demo / activity tracking as a bounded module on ADMZ's shared substrate
 
-**Status:** Accepted (forward-looking / discussion-captured — not yet a committed implementation plan).
+**Status:** Accepted (forward-looking / discussion-captured). **Operationalized by
+[ADR-0041](0041-activity-observability-module.md)** (2026-06-19), which commits the
+layered plan now that the substrate exists (module platform, ACS connection,
+detections engine) and ships layer 1 (ACS log search) verified against a live server.
 **Date:** 2026-06-04.
 **Relates to:** ADR-0027 (ConfigCollector / ACS integration layer), [requirements/multi-target-support.md](../requirements/multi-target-support.md) (FR-MT-013), [personas/experience-center-operator.md](../personas/experience-center-operator.md), [requirements/observability.md](../requirements/observability.md), [requirements/hierarchy.md](../requirements/hierarchy.md)
 

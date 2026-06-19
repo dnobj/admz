@@ -50,6 +50,18 @@ async def _acs_get_recording_status(ctx, a):
     return await acs_call(ctx, "RecordingControlFacade:GetRecordingStatus", a or {})
 
 
+async def _acs_search_events(ctx, a):
+    from admz.modules.acs_pro.events import search_events
+
+    return await search_events(
+        ctx.server.catalog, ctx.server.executors,
+        hours_back=float(a.get("hours", 24)),
+        count=int(a.get("count", 200)),
+        type_filter=a.get("type"),
+        device_filter=a.get("device"),
+    )
+
+
 async def _acs_find_camera_for_device(ctx, a):
     """Join an ADMZ device to its ACS camera(s) by MAC (serial fallback)."""
     from admz.modules.acs_pro.correlate import correlate_device_to_cameras
@@ -135,6 +147,29 @@ def tool_specs() -> List[ToolSpec]:
                 inputSchema={"type": "object", "properties": {}, "required": []},
             ),
             _acs_get_recording_status,
+        ),
+        ToolSpec(
+            Tool(
+                name="acs_search_events",
+                description=(
+                    "Search the ACS Pro event log over a recent time window. "
+                    "Returns normalized events (recordings started/stopped, "
+                    "etc.) newest-first. Read-only. Use to answer 'what "
+                    "happened in ACS in the last N hours' or 'when was <camera> "
+                    "last recording'."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "hours": {"type": "number", "description": "Look-back window in hours (default 24)."},
+                        "count": {"type": "integer", "description": "Max events to return (default 200)."},
+                        "type": {"type": "string", "description": "Substring filter on EventLogType (e.g. 'Recording'), case-insensitive."},
+                        "device": {"type": "string", "description": "Substring filter on the camera/device name, case-insensitive."},
+                    },
+                    "required": [],
+                },
+            ),
+            _acs_search_events,
         ),
         ToolSpec(
             Tool(
