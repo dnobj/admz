@@ -46,6 +46,9 @@ def nav_registry(monkeypatch):
     ]
     import admz.api.templating as templating
     monkeypatch.setattr(templating, "_registry", lambda: _FakeRegistry(devices))
+    # Isolate from real module enablement (e.g. ACS Pro toggled on in the live
+    # DB) so these core/tags structure assertions are deterministic.
+    monkeypatch.setattr(templating, "_module_registry", lambda: None)
 
 
 def _core(nav):
@@ -81,8 +84,9 @@ class TestNavSections:
 
         devices = next(it for it in _core(nav)["items"] if it["key"] == "fleet")
         labels = [c["label"] for c in devices["children"]]
-        assert labels[0] == "All devices"
-        assert set(labels[1:]) == {"camera", "lab", "Untagged"}
+        # Children are the tags only — no "All devices" row (the Devices item
+        # itself is "all", selected when no ?tag is active).
+        assert set(labels) == {"camera", "lab", "Untagged"}
         # Device badge mirrors the active site's device count.
         assert devices["badge"] == 3
 
@@ -93,8 +97,7 @@ class TestNavSections:
             it for it in _core(build_nav(_FakeReq()))["items"] if it["key"] == "fleet"
         )
         children = {c["label"]: c for c in devices["children"]}
-        # "All devices" has tag=None so it matches when no ?tag is selected.
-        assert children["All devices"]["tag"] is None
+        assert "All devices" not in children  # dropped — parent serves "all"
         assert children["lab"]["tag"] == "lab"
         assert children["Untagged"]["tag"] == "untagged"
         # Each child also carries its own active key (the device page key).
