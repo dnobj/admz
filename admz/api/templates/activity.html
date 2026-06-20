@@ -61,13 +61,32 @@
         : 'Ingest is off. Toggle “Live ingest” to start streaming device events.';
       status.textContent = d.count + ' event' + (d.count === 1 ? '' : 's');
       if (!d.events.length) { body.innerHTML = '<tr><td colspan="4" class="page-sub" style="padding:12px">No events yet' + (ing.enabled ? '' : ' — ingest is off') + '.</td></tr>'; return; }
-      body.innerHTML = d.events.map(function (e) {
+      body.innerHTML = d.events.map(function (e, i) {
         var t = (e.ts || '').replace('T', ' ').slice(0, 23);
         var cat = (e.data && e.data.category) || '';
-        return '<tr><td class="page-sub" style="font-family:var(--mono);white-space:nowrap">' + esc(t) +
+        var full = esc(JSON.stringify(e, null, 2));
+        return '<tr class="ev-row" data-i="' + i + '" style="cursor:pointer" title="Click to see the full event packet">' +
+          '<td class="page-sub" style="font-family:var(--mono);white-space:nowrap">' +
+          '<i data-lucide="chevron-right" class="ev-caret" style="width:13px;height:13px;vertical-align:-2px;opacity:.5"></i> ' + esc(t) +
           '</td><td><span class="badge">' + esc(cat) + '</span></td><td>' + esc(e.summary || e.type) +
-          '</td><td>' + esc(e.device_name || e.device_id || '—') + '</td></tr>';
+          '</td><td>' + esc(e.device_name || e.device_id || '—') + '</td></tr>' +
+          '<tr class="ev-detail" data-i="' + i + '" hidden><td colspan="4" style="padding:0">' +
+          '<pre style="margin:0;padding:10px 14px;background:var(--panel2);border-left:2px solid var(--accent,#888);' +
+          'font-family:var(--mono);font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;' +
+          'overflow:auto;max-height:340px">' + full + '</pre></td></tr>';
       }).join('');
+      body.querySelectorAll('.ev-row').forEach(function (row) {
+        row.addEventListener('click', function () {
+          var det = body.querySelector('.ev-detail[data-i="' + row.getAttribute('data-i') + '"]');
+          var caret = row.querySelector('.ev-caret');
+          if (det) {
+            det.hidden = !det.hidden;
+            if (caret) caret.setAttribute('data-lucide', det.hidden ? 'chevron-right' : 'chevron-down');
+            if (window.lucide) window.lucide.createIcons();
+          }
+        });
+      });
+      if (window.lucide) window.lucide.createIcons();
     } catch (e) { status.textContent = '✗ ' + e; }
   }
 
