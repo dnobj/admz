@@ -37,6 +37,8 @@ from admz.snapshot.git_repo import GitRepo
 from admz.snapshot.restore import RestoreBuilder
 from admz.snapshot.scheduler import SnapshotScheduler
 from admz.fleet.health import HealthMonitor
+from admz.events.store import EventStore
+from admz.events.ingest import EventIngestSupervisor
 
 
 @dataclass
@@ -57,6 +59,10 @@ class Components:
     # ADR-0039: the discovered module set. MCP (tools), the web layer (nav),
     # and the chatbot host (prompt sections) all read this rather than a global.
     module_registry: ModuleRegistry
+    # ADR-0041: the live device-event store + the per-device WS ingest supervisor
+    # (off by default; gated on the event_ingest_enabled fleet flag).
+    event_store: EventStore
+    event_supervisor: EventIngestSupervisor
 
 
 def _default_catalog_path() -> str:
@@ -353,6 +359,13 @@ def build_components(
         executors=executors,
     )
 
+    # ADR-0041: live device-event subsystem. The store is bound to the resolved
+    # DB path; the supervisor maintains one WS stream per device but only when
+    # the event_ingest_enabled fleet flag is on (.start() is a no-op otherwise).
+    from admz.events.store import _default_db_path as _events_db_path
+    event_store = EventStore(str(_events_db_path()))
+    event_supervisor = EventIngestSupervisor(registry=registry, store=event_store)
+
     return Components(
         registry=registry,
         catalog=catalog,
@@ -366,4 +379,6 @@ def build_components(
         scheduler=scheduler,
         health_monitor=health_monitor,
         module_registry=module_registry,
+        event_store=event_store,
+        event_supervisor=event_supervisor,
     )

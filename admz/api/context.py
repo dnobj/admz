@@ -74,6 +74,14 @@ class AppContext:
         # web nav, the MCP tool surface, and the chatbot prompt assembly.
         return self._components.module_registry
 
+    @property
+    def event_store(self):
+        return self._components.event_store
+
+    @property
+    def event_supervisor(self):
+        return self._components.event_supervisor
+
 
 _ctx: Optional[AppContext] = None
 

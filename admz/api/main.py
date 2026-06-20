@@ -29,6 +29,7 @@ from admz.api.routes import (
     devices,
     discovery,
     drift as drift_route,
+    events as events_route,
     health as health_route,
     plans,
     schedules,
@@ -118,6 +119,14 @@ async def lifespan(app: FastAPI):
     # always safe to call here.
     await ctx.health_monitor.start()
 
+    # ADR-0041: live device-event ingest supervisor. Opt-in via the
+    # event_ingest_enabled fleet setting; .start() is a no-op when off.
+    try:
+        await ctx.event_supervisor.start()
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("event ingest start failed", exc_info=True)
+
     # Phase 7: spin up the per-principal MCP subprocess pool so the
     # first chat turn doesn't pay subprocess-spawn latency.
     from admz.chatbot.mcp_pool import mcp_pool
@@ -127,6 +136,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await mcp_pool.stop()
+        try:
+            await ctx.event_supervisor.stop()
+        except Exception:  # noqa: BLE001
+            pass
         await ctx.health_monitor.stop()
         await ctx.scheduler.stop()
         # Best-effort cleanup; close() is a no-op for backends that
@@ -211,6 +224,7 @@ app.include_router(tasks_route.router, prefix="/api", tags=["tasks"])
 app.include_router(api_keys_route.router, prefix="/api", tags=["api-keys"])
 app.include_router(audit_route.router, prefix="/api", tags=["audit"])
 app.include_router(drift_route.router, prefix="/api", tags=["drift"])
+app.include_router(events_route.router, tags=["events"])
 # Health routes already include /api in their paths.
 app.include_router(health_route.router, tags=["health"])
 

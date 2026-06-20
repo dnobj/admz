@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block nav_active %}activity{% endblock %}
+{% block title %}Activity{% endblock %}
+{% block crumb_tail %}Activity{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="pt">
+    <h1 class="page-title">Activity</h1>
+    <p class="page-sub">Live device-event feed — motion, object detection, I/O, PTZ, tampering, storage and system events streamed straight from your devices over WebSocket. Read-only.</p>
+  </div>
+  <div class="page-actions">
+    <label class="page-sub" style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" id="ev-enable" {{ 'checked' if status.enabled }}>
+      Live ingest
+    </label>
+  </div>
+</div>
+
+<div class="note-band" id="ev-band" style="margin-bottom:16px">
+  <i data-lucide="radio"></i>
+  <span id="ev-ingest">{% if status.enabled %}Ingest on — {{ status.connected }}/{{ status.streams }} device streams connected.{% else %}Ingest is off. Toggle “Live ingest” to start streaming device events.{% endif %}</span>
+</div>
+
+<div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+  <span class="page-sub" style="margin-right:2px">Filter</span>
+  {% for chip in [['All',''],['Motion','Motion'],['Object','Object'],['I/O','IO'],['PTZ','PTZController'],['Storage','Storage'],['Tamper','Casing'],['System','Status']] %}
+  <button class="btn sm ghost ev-chip" data-type="{{ chip[1] }}" type="button">{{ chip[0] }}</button>
+  {% endfor %}
+  <input id="ev-device" placeholder="device name" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text);min-width:150px">
+  <button class="btn sm" id="ev-refresh" type="button"><i data-lucide="refresh-cw"></i> Refresh</button>
+  <span id="ev-status" class="page-sub" aria-live="polite"></span>
+</div>
+
+<table class="data-table">
+  <thead><tr><th style="width:200px">Time (UTC)</th><th style="width:90px">Kind</th><th>Event</th><th>Device</th></tr></thead>
+  <tbody id="ev-body"><tr><td colspan="4" class="page-sub" style="padding:12px">Loading…</td></tr></tbody>
+</table>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+  var body = document.getElementById('ev-body');
+  if (!body) return;
+  var typeFilter = '';
+  function esc(s) { var d = document.createElement('div'); d.textContent = (s == null ? '' : String(s)); return d.innerHTML; }
+
+  async function loadEvents() {
+    var device = document.getElementById('ev-device').value.trim();
+    var status = document.getElementById('ev-status');
+    var qs = new URLSearchParams({ source: 'device', limit: '300' });
+    if (typeFilter) qs.set('type', typeFilter);
+    if (device) qs.set('device', device);
+    try {
+      var d = await (await fetch('/api/events?' + qs.toString())).json();
+      if (!d.success) { status.textContent = '✗ ' + (d.message || 'error'); return; }
+      var ing = d.ingest || {};
+      document.getElementById('ev-ingest').textContent = ing.enabled
+        ? ('Ingest on — ' + ing.connected + '/' + ing.streams + ' device streams connected.')
+        : 'Ingest is off. Toggle “Live ingest” to start streaming device events.';
+      status.textContent = d.count + ' event' + (d.count === 1 ? '' : 's');
+      if (!d.events.length) { body.innerHTML = '<tr><td colspan="4" class="page-sub" style="padding:12px">No events yet' + (ing.enabled ? '' : ' — ingest is off') + '.</td></tr>'; return; }
+      body.innerHTML = d.events.map(function (e) {
+        var t = (e.ts || '').replace('T', ' ').slice(0, 23);
+        var cat = (e.data && e.data.category) || '';
+        return '<tr><td class="page-sub" style="font-family:var(--mono);white-space:nowrap">' + esc(t) +
+          '</td><td><span class="badge">' + esc(cat) + '</span></td><td>' + esc(e.summary || e.type) +
+          '</td><td>' + esc(e.device_name || e.device_id || '—') + '</td></tr>';
+      }).join('');
+    } catch (e) { status.textContent = '✗ ' + e; }
+  }
+
+  document.getElementById('ev-refresh').addEventListener('click', loadEvents);
+  document.getElementById('ev-device').addEventListener('keydown', function (e) { if (e.key === 'Enter') loadEvents(); });
+  document.querySelectorAll('.ev-chip').forEach(function (chip) {
+    chip.addEventListener('click', function () { typeFilter = chip.getAttribute('data-type') || ''; loadEvents(); });
+  });
+
+  document.getElementById('ev-enable').addEventListener('change', async function (e) {
+    var on = e.target.checked;
+    e.target.disabled = true;
+    try {
+      await fetch('/api/events/control', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: on }) });
+    } catch (err) { /* ignore */ }
+    e.target.disabled = false;
+    setTimeout(loadEvents, 800);
+  });
+
+  loadEvents();
+  setInterval(loadEvents, 4000);  // near-live: poll the store
+})();
+</script>
+{% endblock %}

@@ -26,6 +26,11 @@ httpx>=0.27.0
 scapy>=2.5.0
 pysnmp>=6.0.0
 
+# ADR-0041: outbound WebSocket client for the live device-event stream
+# (VAPIX ws-data-stream). Already present transitively via google-genai;
+# pinned explicitly since admz/events/wsstream.py depends on it directly.
+websockets>=13.0
+
 # Chatbot LLM client — Gemini 3.1 + native MCP tool surface.
 # Optional: the /chat route is disabled when no API key is configured,
 # and the package itself is only imported lazily inside admz/chatbot/.

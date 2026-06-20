@@ -70,6 +70,15 @@ async def set_active_site(site_id: str, request: Request):
     return resp
 
 
+@router.get("/activity", response_class=HTMLResponse)
+async def activity_page(request: Request, ctx: AppContext = Depends(get_context)):
+    """Live activity feed (ADR-0041 layer 2) — the device-event timeline."""
+    return templates.TemplateResponse(
+        "activity.html",
+        {"request": request, "title": "Activity", "status": ctx.event_supervisor.status()},
+    )
+
+
 @router.get("/devices", response_class=HTMLResponse)
 async def devices_page(
     request: Request,

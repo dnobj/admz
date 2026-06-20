@@ -270,6 +270,7 @@ def _assemble_nav_sections(nav: Dict[str, Any]) -> List[Dict[str, Any]]:
             {"key": "fleet", "label": "Devices", "href": "/devices",
              "icon": "layout-grid", "badge": site_count, "children": device_children},
             {"key": "tasks", "label": "Tasks", "href": "/tasks", "icon": "list-checks", "badge": None},
+            {"key": "activity", "label": "Activity", "href": "/activity", "icon": "activity", "badge": None},
             {"key": "auditlog", "label": "Audit log", "href": "/audit-log", "icon": "shield", "badge": None},
             {"key": "settings", "label": "Settings", "href": "/settings", "icon": "settings", "badge": None},
         ],
