@@ -44,6 +44,8 @@
   var body = document.getElementById('ev-body');
   if (!body) return;
   var typeFilter = '';
+  var expanded = new Set();   // event ids the user has open (survive a refresh)
+  var ingestOn = false;       // only auto-poll while live ingest is running
   function esc(s) { var d = document.createElement('div'); d.textContent = (s == null ? '' : String(s)); return d.innerHTML; }
 
   async function loadEvents() {
@@ -56,34 +58,38 @@
       var d = await (await fetch('/api/events?' + qs.toString())).json();
       if (!d.success) { status.textContent = '✗ ' + (d.message || 'error'); return; }
       var ing = d.ingest || {};
+      ingestOn = !!ing.enabled;
       document.getElementById('ev-ingest').textContent = ing.enabled
         ? ('Ingest on — ' + ing.connected + '/' + ing.streams + ' device streams connected.')
         : 'Ingest is off. Toggle “Live ingest” to start streaming device events.';
       status.textContent = d.count + ' event' + (d.count === 1 ? '' : 's');
       if (!d.events.length) { body.innerHTML = '<tr><td colspan="4" class="page-sub" style="padding:12px">No events yet' + (ing.enabled ? '' : ' — ingest is off') + '.</td></tr>'; return; }
-      body.innerHTML = d.events.map(function (e, i) {
+      body.innerHTML = d.events.map(function (e) {
         var t = (e.ts || '').replace('T', ' ').slice(0, 23);
         var cat = (e.data && e.data.category) || '';
         var full = esc(JSON.stringify(e, null, 2));
-        return '<tr class="ev-row" data-i="' + i + '" style="cursor:pointer" title="Click to see the full event packet">' +
+        var open = expanded.has(e.id);  // preserve open rows across refresh
+        return '<tr class="ev-row" data-eid="' + esc(e.id) + '" style="cursor:pointer" title="Click to see the full event packet">' +
           '<td class="page-sub" style="font-family:var(--mono);white-space:nowrap">' +
-          '<i data-lucide="chevron-right" class="ev-caret" style="width:13px;height:13px;vertical-align:-2px;opacity:.5"></i> ' + esc(t) +
+          '<i data-lucide="' + (open ? 'chevron-down' : 'chevron-right') + '" class="ev-caret" style="width:13px;height:13px;vertical-align:-2px;opacity:.5"></i> ' + esc(t) +
           '</td><td><span class="badge">' + esc(cat) + '</span></td><td>' + esc(e.summary || e.type) +
           '</td><td>' + esc(e.device_name || e.device_id || '—') + '</td></tr>' +
-          '<tr class="ev-detail" data-i="' + i + '" hidden><td colspan="4" style="padding:0">' +
+          '<tr class="ev-detail" data-eid="' + esc(e.id) + '"' + (open ? '' : ' hidden') + '><td colspan="4" style="padding:0">' +
           '<pre style="margin:0;padding:10px 14px;background:var(--panel2);border-left:2px solid var(--accent,#888);' +
           'font-family:var(--mono);font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;' +
           'overflow:auto;max-height:340px">' + full + '</pre></td></tr>';
       }).join('');
       body.querySelectorAll('.ev-row').forEach(function (row) {
         row.addEventListener('click', function () {
-          var det = body.querySelector('.ev-detail[data-i="' + row.getAttribute('data-i') + '"]');
+          var eid = row.getAttribute('data-eid');
+          var det = body.querySelector('.ev-detail[data-eid="' + eid + '"]');
           var caret = row.querySelector('.ev-caret');
-          if (det) {
-            det.hidden = !det.hidden;
-            if (caret) caret.setAttribute('data-lucide', det.hidden ? 'chevron-right' : 'chevron-down');
-            if (window.lucide) window.lucide.createIcons();
-          }
+          if (!det) return;
+          var nowHidden = !det.hidden;
+          det.hidden = nowHidden;
+          if (nowHidden) expanded.delete(eid); else expanded.add(eid);
+          if (caret) caret.setAttribute('data-lucide', nowHidden ? 'chevron-right' : 'chevron-down');
+          if (window.lucide) window.lucide.createIcons();
         });
       });
       if (window.lucide) window.lucide.createIcons();
@@ -108,7 +114,10 @@
   });
 
   loadEvents();
-  setInterval(loadEvents, 4000);  // near-live: poll the store
+  // Only auto-refresh while ingest is live AND no row is open — a static feed
+  // (ingest off) never reloads, and reading an expanded packet is never
+  // interrupted. Collapse the row to resume live updates.
+  setInterval(function () { if (ingestOn && expanded.size === 0) loadEvents(); }, 4000);
 })();
 </script>
 {% endblock %}
