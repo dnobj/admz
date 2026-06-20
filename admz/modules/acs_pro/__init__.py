@@ -33,8 +33,22 @@ cameras map to ADMZ devices by **MAC address** (serial number is a fallback).
   **detection/analytics** log (Motion, Object detection, Action rule) — use it
   for "was there motion on <camera>?" / "recent object detections".
   `acs_get_recorded_event_types` lists the detection categories.
-- ACS tools are READ-ONLY here — you cannot start/stop recording or change ACS
-  config. Don't claim you did."""
+
+## ACS control actions (service-affecting — gated)
+
+These change ACS/camera state and are SERVICE-AFFECTING: each returns a
+confirmation the operator must approve in a web widget before it runs. Never
+claim an action happened until it's confirmed.
+- Recording: `acs_start_recording` / `acs_stop_recording`; annotate with
+  `acs_add_bookmark`.
+- PTZ (camera-addressed by `camera_id` from `acs_list_cameras`): `acs_ptz_move`
+  (left/right/up/down), `acs_ptz_zoom`, `acs_ptz_center`,
+  `acs_goto_preset` / `acs_ptz_goto_preset_token`.
+- Smart Client steering (by `machine_name`, defaults to this server's host):
+  `acs_client_live_view`, `acs_client_go_to_cameras`,
+  `acs_client_start_playback` / `acs_client_pause_playback`,
+  `acs_client_set_playback_position`, `acs_client_set_playback_speed`. These only
+  work if that Smart Client is running."""
 
 
 def _executors() -> Dict[str, object]:

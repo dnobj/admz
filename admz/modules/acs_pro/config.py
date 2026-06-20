@@ -23,6 +23,9 @@ _DEFAULT: Dict[str, Any] = {
     "server_url": "",      # host or IP of the ACS Pro server
     "port": DEFAULT_PORT,
     "verify_tls": False,    # ACS ships a self-signed cert by default
+    # ClientCommands target a named Smart Client; default to this box's hostname
+    # (the single-operator local deploy — ADMZ runs where the client runs).
+    "client_machine_name": "",
 }
 
 
@@ -50,7 +53,16 @@ def acs_config() -> Dict[str, Any]:
     except (TypeError, ValueError):
         cfg["port"] = DEFAULT_PORT
     cfg["verify_tls"] = bool(cfg.get("verify_tls"))
+    cfg["client_machine_name"] = str(cfg.get("client_machine_name") or "").strip()
     return cfg
+
+
+def client_machine_name() -> str:
+    """Target Smart Client for ClientCommands — the configured name, or this
+    box's hostname as the default (single-operator local deploy)."""
+    import socket
+
+    return acs_config().get("client_machine_name") or socket.gethostname()
 
 
 def acs_enabled() -> bool:
@@ -80,6 +92,7 @@ def save_acs_config(
     server_url: str,
     port: int = DEFAULT_PORT,
     verify_tls: bool = False,
+    client_machine_name: str = "",
 ) -> Dict[str, Any]:
     """Persist the ACS Pro config; returns the normalized stored config."""
     cfg = {
@@ -87,6 +100,7 @@ def save_acs_config(
         "server_url": (server_url or "").strip(),
         "port": int(port or DEFAULT_PORT),
         "verify_tls": bool(verify_tls),
+        "client_machine_name": (client_machine_name or "").strip(),
     }
     _settings().set(FLEET_KEY, json.dumps(cfg))
     return acs_config()

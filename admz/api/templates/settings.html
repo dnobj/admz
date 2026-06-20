@@ -206,6 +206,9 @@
           <input id="acs-port" type="number" value="{{ acs.port }}"
             style="width:100%;box-sizing:border-box;margin-top:4px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text)"></label>
       </div>
+      <label class="page-sub" style="display:block;margin-top:10px;max-width:520px">Smart Client machine name <span style="opacity:.7">(optional — for live-view / playback control; defaults to this server's hostname)</span>
+        <input id="acs-client" value="{{ acs.client_machine_name }}" placeholder="this server's hostname (default)"
+          style="width:100%;box-sizing:border-box;margin-top:4px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text)"></label>
       <label class="page-sub" style="display:block;margin-top:10px"><input id="acs-verify" type="checkbox" {{ 'checked' if acs.verify_tls }}> Verify TLS certificate (ACS ships a self-signed cert by default — leave off unless you've installed a trusted one)</label>
       <label class="page-sub" style="display:block;margin-top:6px"><input id="acs-enabled" type="checkbox" {{ 'checked' if acs.enabled }}> Enable — show ACS Pro in the sidebar and chatbot</label>
       <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
@@ -244,6 +247,7 @@ function acsBody() {
     port: parseInt(document.getElementById('acs-port').value, 10) || 29204,
     verify_tls: document.getElementById('acs-verify').checked,
     enabled: document.getElementById('acs-enabled').checked,
+    client_machine_name: (document.getElementById('acs-client').value || '').trim(),
   };
 }
 function acsMsg(t) { const m = document.getElementById('acs-msg'); if (m) m.textContent = t; }
