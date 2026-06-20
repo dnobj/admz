@@ -58,6 +58,7 @@ async def acs_save_config(request: Request):
         server_url=body.get("server_url", ""),
         port=body.get("port", DEFAULT_PORT),
         verify_tls=bool(body.get("verify_tls")),
+        client_machine_name=body.get("client_machine_name", ""),
     )
     return {"success": True, "config": cfg}
 
@@ -143,32 +144,48 @@ async def acs_detections(request: Request):
 
 @router.post("/api/acs/action")
 async def acs_action(request: Request):
-    """Gated ACS camera action (start/stop recording) from the /acs buttons.
+    """Gated ACS action from the /acs buttons (recording, live view, preset).
 
     Routes through the confirmation gate (risk_level: action → url_only), so the
     response is the blocked/confirm envelope; the UI then opens /confirm/{token}.
+    A short allowlist keeps the buttons declarative; richer control is chat/MCP.
     """
     from admz.api.context import get_context
 
     from admz.operations import execute_gated_operation
+    from admz.modules.acs_pro.config import client_machine_name
     from admz.modules.acs_pro.registry_view import ACS_DEVICE_ID, AcsRegistryView
 
     body = await request.json()
     op = (body.get("op") or "").lower()
     camera_id = body.get("camera_id")
-    op_ids = {
-        "start": "RecordingControlFacade:StartRecording",
-        "stop": "RecordingControlFacade:StopRecording",
-    }
-    if op not in op_ids or not camera_id:
+
+    if op in ("start", "stop"):
+        if not camera_id:
+            return JSONResponse({"success": False, "error": "BadRequest", "message": "camera_id required."}, status_code=400)
+        op_id = "RecordingControlFacade:StartRecording" if op == "start" else "RecordingControlFacade:StopRecording"
+        params = {"cameraId": {"Id": camera_id}}
+    elif op == "goto-preset":
+        token = body.get("preset_token")
+        if not camera_id or not token:
+            return JSONResponse({"success": False, "error": "BadRequest", "message": "camera_id and preset_token required."}, status_code=400)
+        op_id = "PtzFacade:GotoPresetToken"
+        params = {"cameraId": {"Id": camera_id}, "presetToken": str(token)}
+    elif op == "live-view":
+        op_id = "ClientCommandsFacade:GoToLiveView"
+        params = {"machineName": (body.get("machine_name") or "").strip() or client_machine_name()}
+        if camera_id:
+            op_id = "ClientCommandsFacade:GoToCameras"
+            params["cameraIds"] = [{"Id": camera_id}]
+    else:
         return JSONResponse(
-            {"success": False, "error": "BadRequest", "message": "op must be start|stop with a camera_id."},
+            {"success": False, "error": "BadRequest", "message": "op must be start|stop|goto-preset|live-view."},
             status_code=400,
         )
+
     ctx = get_context()
     return await execute_gated_operation(
-        device_id=ACS_DEVICE_ID, operation_id=op_ids[op], family="acs-pro",
-        params={"cameraId": {"Id": camera_id}},
+        device_id=ACS_DEVICE_ID, operation_id=op_id, family="acs-pro", params=params,
         catalog=ctx.catalog, registry=AcsRegistryView(ctx.registry), executors=ctx.executors,
     )
 

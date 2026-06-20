@@ -153,11 +153,99 @@ async def _acs_goto_preset(ctx, a):
     })
 
 
+# --- PTZ (camera-addressed, gated) ------------------------------------------
+_PTZ_DIRECTIONS = {"left": 0, "right": 1, "up": 2, "down": 3}
+
+
+async def _acs_ptz_move(ctx, a):
+    d = a["direction"]
+    if isinstance(d, str):
+        d = _PTZ_DIRECTIONS.get(d.lower().strip(), d)
+    return await acs_gated_action(ctx, "PtzFacade:Move", {
+        "cameraId": {"Id": a["camera_id"]},
+        "direction": int(d),
+    })
+
+
+async def _acs_ptz_zoom(ctx, a):
+    return await acs_gated_action(ctx, "PtzFacade:Zoom", {
+        "cameraId": {"Id": a["camera_id"]},
+        "steps": int(a["steps"]),
+    })
+
+
+async def _acs_ptz_center(ctx, a):
+    return await acs_gated_action(ctx, "PtzFacade:Center", {
+        "cameraId": {"Id": a["camera_id"]},
+        "coordinates": {
+            "X": int(a["x"]), "Y": int(a["y"]),
+            "ImageWidth": int(a["image_width"]), "ImageHeight": int(a["image_height"]),
+        },
+    })
+
+
+async def _acs_ptz_goto_preset_token(ctx, a):
+    return await acs_gated_action(ctx, "PtzFacade:GotoPresetToken", {
+        "cameraId": {"Id": a["camera_id"]},
+        "presetToken": str(a["preset_token"]),
+    })
+
+
+# --- ClientCommands (steer a named Smart Client, gated) ---------------------
+def _machine(a) -> str:
+    from admz.modules.acs_pro.config import client_machine_name
+
+    return (a.get("machine_name") or "").strip() or client_machine_name()
+
+
+async def _acs_client_live_view(ctx, a):
+    return await acs_gated_action(ctx, "ClientCommandsFacade:GoToLiveView",
+                                  {"machineName": _machine(a)})
+
+
+async def _acs_client_go_to_cameras(ctx, a):
+    cams = a.get("camera_ids") or ([a["camera_id"]] if a.get("camera_id") else [])
+    return await acs_gated_action(ctx, "ClientCommandsFacade:GoToCameras", {
+        "machineName": _machine(a),
+        "cameraIds": [{"Id": c} for c in cams],
+    })
+
+
+async def _acs_client_start_playback(ctx, a):
+    return await acs_gated_action(ctx, "ClientCommandsFacade:StartPlayback",
+                                  {"machineName": _machine(a)})
+
+
+async def _acs_client_pause_playback(ctx, a):
+    return await acs_gated_action(ctx, "ClientCommandsFacade:PausePlayback",
+                                  {"machineName": _machine(a)})
+
+
+async def _acs_client_set_playback_position(ctx, a):
+    return await acs_gated_action(ctx, "ClientCommandsFacade:SetPlaybackPositionUtc", {
+        "machineName": _machine(a),
+        "position": str(a["position"]),
+    })
+
+
+async def _acs_client_set_playback_speed(ctx, a):
+    return await acs_gated_action(ctx, "ClientCommandsFacade:SetPlaybackSpeed", {
+        "machineName": _machine(a),
+        "speed": float(a["speed"]),
+    })
+
+
 # --- schemas ----------------------------------------------------------------
 _CAMERA_ID_PROP = {
     "camera_id": {
         "type": "string",
         "description": "The ACS CameraId.Id (from acs_list_cameras or acs_find_camera_for_device).",
+    }
+}
+_MACHINE_PROP = {
+    "machine_name": {
+        "type": "string",
+        "description": "Target ACS Smart Client machine name. Optional — defaults to this server's hostname.",
     }
 }
 def _range_props() -> Dict[str, Any]:
@@ -359,5 +447,171 @@ def tool_specs() -> List[ToolSpec]:
                 },
             ),
             _acs_goto_preset,
+        ),
+        ToolSpec(
+            Tool(
+                name="acs_ptz_move",
+                description=(
+                    "Nudge an ACS PTZ camera one step left/right/up/down. "
+                    "SERVICE-AFFECTING — requires confirmation."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        **_CAMERA_ID_PROP,
+                        "direction": {"type": "string", "enum": ["left", "right", "up", "down"],
+                                      "description": "Direction to move."},
+                    },
+                    "required": ["camera_id", "direction"],
+                },
+            ),
+            _acs_ptz_move,
+        ),
+        ToolSpec(
+            Tool(
+                name="acs_ptz_zoom",
+                description=(
+                    "Zoom an ACS PTZ camera by a number of steps (positive = in, "
+                    "negative = out). SERVICE-AFFECTING — requires confirmation."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        **_CAMERA_ID_PROP,
+                        "steps": {"type": "integer", "description": "Zoom steps; positive in, negative out."},
+                    },
+                    "required": ["camera_id", "steps"],
+                },
+            ),
+            _acs_ptz_zoom,
+        ),
+        ToolSpec(
+            Tool(
+                name="acs_ptz_center",
+                description=(
+                    "Center an ACS PTZ camera on an image pixel (click-to-center). "
+                    "SERVICE-AFFECTING — requires confirmation."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        **_CAMERA_ID_PROP,
+                        "x": {"type": "integer", "description": "Target X within the image."},
+                        "y": {"type": "integer", "description": "Target Y within the image."},
+                        "image_width": {"type": "integer", "description": "Image width the X/Y are relative to."},
+                        "image_height": {"type": "integer", "description": "Image height the X/Y are relative to."},
+                    },
+                    "required": ["camera_id", "x", "y", "image_width", "image_height"],
+                },
+            ),
+            _acs_ptz_center,
+        ),
+        ToolSpec(
+            Tool(
+                name="acs_ptz_goto_preset_token",
+                description=(
+                    "Move an ACS PTZ camera to a preset by its string token. "
+                    "SERVICE-AFFECTING — requires confirmation."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        **_CAMERA_ID_PROP,
+                        "preset_token": {"type": "string", "description": "The preset token."},
+                    },
+                    "required": ["camera_id", "preset_token"],
+                },
+            ),
+            _acs_ptz_goto_preset_token,
+        ),
+        ToolSpec(
+            Tool(
+                name="acs_client_live_view",
+                description=(
+                    "Switch a running ACS Smart Client to live view. Targets the "
+                    "client named `machine_name` (defaults to this server's "
+                    "hostname). SERVICE-AFFECTING — requires confirmation. Only "
+                    "works if that client is running."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {**_MACHINE_PROP},
+                    "required": [],
+                },
+            ),
+            _acs_client_live_view,
+        ),
+        ToolSpec(
+            Tool(
+                name="acs_client_go_to_cameras",
+                description=(
+                    "Open specific cameras in a running ACS Smart Client's view. "
+                    "SERVICE-AFFECTING — requires confirmation."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        **_MACHINE_PROP,
+                        "camera_ids": {"type": "array", "items": {"type": "string"},
+                                       "description": "ACS CameraId.Id values to show."},
+                        "camera_id": {"type": "string", "description": "A single camera id (shortcut)."},
+                    },
+                    "required": [],
+                },
+            ),
+            _acs_client_go_to_cameras,
+        ),
+        ToolSpec(
+            Tool(
+                name="acs_client_start_playback",
+                description="Start playback in a running ACS Smart Client. SERVICE-AFFECTING — requires confirmation.",
+                inputSchema={"type": "object", "properties": {**_MACHINE_PROP}, "required": []},
+            ),
+            _acs_client_start_playback,
+        ),
+        ToolSpec(
+            Tool(
+                name="acs_client_pause_playback",
+                description="Pause playback in a running ACS Smart Client. SERVICE-AFFECTING — requires confirmation.",
+                inputSchema={"type": "object", "properties": {**_MACHINE_PROP}, "required": []},
+            ),
+            _acs_client_pause_playback,
+        ),
+        ToolSpec(
+            Tool(
+                name="acs_client_set_playback_position",
+                description=(
+                    "Seek the ACS Smart Client's playback to a UTC time. "
+                    "SERVICE-AFFECTING — requires confirmation."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        **_MACHINE_PROP,
+                        "position": {"type": "string", "description": "UTC time 'YYYY-MM-DD HH:MM:SS' to seek to."},
+                    },
+                    "required": ["position"],
+                },
+            ),
+            _acs_client_set_playback_position,
+        ),
+        ToolSpec(
+            Tool(
+                name="acs_client_set_playback_speed",
+                description=(
+                    "Set the ACS Smart Client's playback speed factor (1.0 = "
+                    "normal, 2.0 = 2x, 0.5 = half). SERVICE-AFFECTING — requires "
+                    "confirmation."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        **_MACHINE_PROP,
+                        "speed": {"type": "number", "description": "Speed factor (e.g. 1.0, 2.0, 0.5)."},
+                    },
+                    "required": ["speed"],
+                },
+            ),
+            _acs_client_set_playback_speed,
         ),
     ]
