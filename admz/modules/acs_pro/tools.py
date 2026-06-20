@@ -62,6 +62,24 @@ async def _acs_search_events(ctx, a):
     )
 
 
+async def _acs_get_recorded_events(ctx, a):
+    from admz.modules.acs_pro.events import search_detections
+
+    return await search_detections(
+        ctx.server.catalog, ctx.server.executors,
+        hours_back=float(a.get("hours", 24)),
+        count=int(a.get("count", 2000)),
+        type_filter=a.get("type"),
+        device_filter=a.get("device"),
+    )
+
+
+async def _acs_get_recorded_event_types(ctx, a):
+    from admz.modules.acs_pro.events import recorded_event_types
+
+    return await recorded_event_types(ctx.server.catalog, ctx.server.executors)
+
+
 async def _acs_find_camera_for_device(ctx, a):
     """Join an ADMZ device to its ACS camera(s) by MAC (serial fallback)."""
     from admz.modules.acs_pro.correlate import correlate_device_to_cameras
@@ -225,6 +243,45 @@ def tool_specs() -> List[ToolSpec]:
                 },
             ),
             _acs_search_events,
+        ),
+        ToolSpec(
+            Tool(
+                name="acs_get_recorded_events",
+                description=(
+                    "Search the ACS Pro detection/analytics log over a recent "
+                    "time window — Motion, Object detection, Action rule, "
+                    "Failover, Manual. Per-camera, duration-bounded "
+                    "(start/end), newest-first. Read-only. Use for 'was there "
+                    "motion on <camera> in the last N hours' or 'show recent "
+                    "object detections'. (Distinct from acs_search_events, "
+                    "which is the system event log: recordings, camera up/down, "
+                    "disk warnings.)"
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "hours": {"type": "number", "description": "Look-back window in hours (default 24)."},
+                        "count": {"type": "integer", "description": "Max events to return (default 2000)."},
+                        "type": {"type": "string", "description": "Substring filter on the detection type (e.g. 'Motion', 'Object'), case-insensitive."},
+                        "device": {"type": "string", "description": "Substring filter on the camera name, case-insensitive."},
+                    },
+                    "required": [],
+                },
+            ),
+            _acs_get_recorded_events,
+        ),
+        ToolSpec(
+            Tool(
+                name="acs_get_recorded_event_types",
+                description=(
+                    "List the detection/analytics event categories ACS Pro "
+                    "tracks (Motion, Object detection, Action rule, Failover, "
+                    "Manual), each with a title/description. Read-only. Use to "
+                    "learn what acs_get_recorded_events can return."
+                ),
+                inputSchema={"type": "object", "properties": {}, "required": []},
+            ),
+            _acs_get_recorded_event_types,
         ),
         ToolSpec(
             Tool(

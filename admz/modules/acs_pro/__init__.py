@@ -28,6 +28,11 @@ cameras map to ADMZ devices by **MAC address** (serial number is a fallback).
   matched ACS camera(s). Then use `acs_get_recording_status` for recording state.
 - `acs_list_cameras` / `acs_list_devices` enumerate what ACS knows;
   `acs_get_api_version` / `acs_get_system` report server status.
+- Two event streams: `acs_search_events` is the **system** log (recordings,
+  camera up/down, disk warnings); `acs_get_recorded_events` is the
+  **detection/analytics** log (Motion, Object detection, Action rule) — use it
+  for "was there motion on <camera>?" / "recent object detections".
+  `acs_get_recorded_event_types` lists the detection categories.
 - ACS tools are READ-ONLY here — you cannot start/stop recording or change ACS
   config. Don't claim you did."""
 
