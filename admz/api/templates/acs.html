@@ -54,9 +54,33 @@
   <button class="btn sm" id="ev-refresh" type="button"><i data-lucide="refresh-cw"></i> Refresh</button>
   <span id="ev-status" class="page-sub" aria-live="polite"></span>
 </div>
+<div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+  <span class="page-sub" style="margin-right:2px">Quick filter</span>
+  {% for chip in ['All', 'Recording', 'CameraStatus', 'DiskWarning'] %}
+  <button class="btn sm ghost ev-chip" data-type="{{ '' if chip == 'All' else chip }}" type="button">{{ chip }}</button>
+  {% endfor %}
+</div>
 <table class="data-table">
   <thead><tr><th style="width:200px">Time (UTC)</th><th>Event</th><th>Camera</th></tr></thead>
   <tbody id="ev-body"><tr><td colspan="3" class="page-sub" style="padding:12px">Loading…</td></tr></tbody>
+</table>
+
+<h2 class="page-title" style="font-size:15px;margin:24px 0 2px">Detections</h2>
+<p class="page-sub" style="margin:0 0 10px">Live from the ACS analytics log — motion, object detection, action rules. Read-only.</p>
+<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+  <label class="page-sub" style="display:flex;align-items:center;gap:6px">Window
+    <select id="det-hours" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text)">
+      <option value="1">1h</option><option value="6">6h</option>
+      <option value="24" selected>24h</option><option value="168">7d</option>
+    </select></label>
+  <input id="det-type" placeholder="type filter (e.g. Motion)" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text);min-width:170px">
+  <input id="det-device" placeholder="camera name filter" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text);min-width:150px">
+  <button class="btn sm" id="det-refresh" type="button"><i data-lucide="refresh-cw"></i> Refresh</button>
+  <span id="det-status" class="page-sub" aria-live="polite"></span>
+</div>
+<table class="data-table">
+  <thead><tr><th style="width:200px">Time (UTC)</th><th>Detection</th><th>Camera</th></tr></thead>
+  <tbody id="det-body"><tr><td colspan="3" class="page-sub" style="padding:12px">Loading…</td></tr></tbody>
 </table>
 
 {% else %}
@@ -102,6 +126,45 @@
     document.getElementById(id).addEventListener('keydown', function (e) { if (e.key === 'Enter') loadAcsEvents(); });
   });
   loadAcsEvents();
+
+  // Quick-filter chips: set the type filter and reload.
+  document.querySelectorAll('.ev-chip').forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      document.getElementById('ev-type').value = chip.getAttribute('data-type') || '';
+      loadAcsEvents();
+    });
+  });
+
+  // Detections panel (analytics log) — same renderer, different endpoint.
+  var detBody = document.getElementById('det-body');
+  async function loadAcsDetections() {
+    var hours = document.getElementById('det-hours').value;
+    var type = document.getElementById('det-type').value.trim();
+    var device = document.getElementById('det-device').value.trim();
+    var status = document.getElementById('det-status');
+    status.textContent = 'Loading…';
+    var qs = new URLSearchParams({ hours: hours, count: '2000' });
+    if (type) qs.set('type', type);
+    if (device) qs.set('device', device);
+    try {
+      var r = await fetch('/api/acs/detections?' + qs.toString());
+      var d = await r.json();
+      if (!d.success) { status.textContent = '✗ ' + (d.message || 'error'); detBody.innerHTML = ''; return; }
+      status.textContent = d.count + ' detection' + (d.count === 1 ? '' : 's') + (d.more ? ' (more available)' : '') + ' · last ' + d.window_hours + 'h';
+      if (!d.events.length) { detBody.innerHTML = '<tr><td colspan="3" class="page-sub" style="padding:12px">No detections in this window.</td></tr>'; return; }
+      detBody.innerHTML = d.events.map(function (e) {
+        var t = (e.ts || '').replace('T', ' ').slice(0, 23);
+        return '<tr><td class="page-sub" style="font-family:var(--mono);white-space:nowrap">' + esc(t) +
+          '</td><td>' + esc(e.type) + '</td><td>' + esc(e.device_name || '—') + '</td></tr>';
+      }).join('');
+    } catch (e) { status.textContent = '✗ ' + e; }
+  }
+  document.getElementById('det-refresh').addEventListener('click', loadAcsDetections);
+  document.getElementById('det-hours').addEventListener('change', loadAcsDetections);
+  ['det-type', 'det-device'].forEach(function (id) {
+    document.getElementById(id).addEventListener('keydown', function (e) { if (e.key === 'Enter') loadAcsDetections(); });
+  });
+  loadAcsDetections();
 
   // Recording buttons → gated action → confirm widget.
   document.querySelectorAll('.acs-rec').forEach(function (btn) {

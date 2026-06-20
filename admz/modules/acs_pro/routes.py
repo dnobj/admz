@@ -111,6 +111,36 @@ async def acs_events(request: Request):
     )
 
 
+@router.get("/api/acs/detections")
+async def acs_detections(request: Request):
+    """Search the ACS detection/analytics log (Motion, Object detection, …).
+
+    Lazy-loaded by the /acs Detections panel + agents. Query params: hours
+    (window), count, type (detection-type substring), device (camera-name
+    substring).
+    """
+    from admz.api.context import get_context
+
+    from admz.modules.acs_pro.events import search_detections
+
+    q = request.query_params
+
+    def _num(name, default):
+        try:
+            return float(q.get(name)) if q.get(name) else default
+        except (TypeError, ValueError):
+            return default
+
+    ctx = get_context()
+    return await search_detections(
+        ctx.catalog, ctx.executors,
+        hours_back=_num("hours", 24),
+        count=int(_num("count", 2000)),
+        type_filter=q.get("type") or None,
+        device_filter=q.get("device") or None,
+    )
+
+
 @router.post("/api/acs/action")
 async def acs_action(request: Request):
     """Gated ACS camera action (start/stop recording) from the /acs buttons.
