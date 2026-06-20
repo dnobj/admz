@@ -148,10 +148,15 @@ async def _approve_session(
 
     from admz import operations
 
+    # Wrap the registry so an approved ACS-Pro action (synthetic 'acs-server'
+    # target) resolves to the configured server at the execution tail. The view
+    # is transparent for every device session (it only intercepts 'acs-server').
+    from admz.modules.acs_pro.registry_view import AcsRegistryView
+
     outcome = await operations.execute_approved_session(
         session,
         catalog=ctx.catalog,
-        registry=ctx.registry,
+        registry=AcsRegistryView(ctx.registry),
         executors=ctx.executors,
         plan_engine=ctx.plan_engine,
         git_repo=ctx.git_repo,

@@ -82,6 +82,67 @@ async def acs_test(request: Request):
     return res
 
 
+@router.get("/api/acs/events")
+async def acs_events(request: Request):
+    """Search the ACS event log (lazy-loaded by the /acs Events panel + agents).
+
+    Query params: hours (window), count, type (EventLogType substring), device
+    (camera-name substring).
+    """
+    from admz.api.context import get_context
+
+    from admz.modules.acs_pro.events import search_events
+
+    q = request.query_params
+
+    def _num(name, default):
+        try:
+            return float(q.get(name)) if q.get(name) else default
+        except (TypeError, ValueError):
+            return default
+
+    ctx = get_context()
+    return await search_events(
+        ctx.catalog, ctx.executors,
+        hours_back=_num("hours", 24),
+        count=int(_num("count", 200)),
+        type_filter=q.get("type") or None,
+        device_filter=q.get("device") or None,
+    )
+
+
+@router.post("/api/acs/action")
+async def acs_action(request: Request):
+    """Gated ACS camera action (start/stop recording) from the /acs buttons.
+
+    Routes through the confirmation gate (risk_level: action → url_only), so the
+    response is the blocked/confirm envelope; the UI then opens /confirm/{token}.
+    """
+    from admz.api.context import get_context
+
+    from admz.operations import execute_gated_operation
+    from admz.modules.acs_pro.registry_view import ACS_DEVICE_ID, AcsRegistryView
+
+    body = await request.json()
+    op = (body.get("op") or "").lower()
+    camera_id = body.get("camera_id")
+    op_ids = {
+        "start": "RecordingControlFacade:StartRecording",
+        "stop": "RecordingControlFacade:StopRecording",
+    }
+    if op not in op_ids or not camera_id:
+        return JSONResponse(
+            {"success": False, "error": "BadRequest", "message": "op must be start|stop with a camera_id."},
+            status_code=400,
+        )
+    ctx = get_context()
+    return await execute_gated_operation(
+        device_id=ACS_DEVICE_ID, operation_id=op_ids[op], family="acs-pro",
+        params={"cameraId": {"Id": camera_id}},
+        catalog=ctx.catalog, registry=AcsRegistryView(ctx.registry), executors=ctx.executors,
+    )
+
+
 @router.get("/acs", response_class=HTMLResponse)
 async def acs_page(request: Request):
     from admz.api.context import get_context

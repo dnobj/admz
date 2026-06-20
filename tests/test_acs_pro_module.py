@@ -279,10 +279,15 @@ class TestMcpSurface:
         res = _run(handler(ListToolsRequest(method="tools/list")))
         names = [t.name for t in res.root.tools]
 
-        # The frozen device tools come first, unchanged; ACS appends after.
+        from admz.modules.acs_pro.tools import tool_specs as acs_tool_specs
+
+        # The frozen device tools come first, unchanged; the ACS tools append
+        # after (count derived from the module so adding an ACS tool is fine).
         assert names[: len(EXPECTED_TOOL_ORDER)] == EXPECTED_TOOL_ORDER
-        assert "acs_find_camera_for_device" in names[len(EXPECTED_TOOL_ORDER):]
-        assert len(names) == len(EXPECTED_TOOL_ORDER) + 6
+        appended = names[len(EXPECTED_TOOL_ORDER):]
+        assert "acs_find_camera_for_device" in appended
+        assert "acs_search_events" in appended
+        assert len(names) == len(EXPECTED_TOOL_ORDER) + len(acs_tool_specs())
         # The server resolves ACS handlers via the module registry (not the
         # static device TOOL_HANDLERS).
         assert any(
