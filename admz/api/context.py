@@ -82,6 +82,14 @@ class AppContext:
     def event_supervisor(self):
         return self._components.event_supervisor
 
+    @property
+    def detection_store(self):
+        return self._components.detection_store
+
+    @property
+    def detection_evaluator(self):
+        return self._components.detection_evaluator
+
 
 _ctx: Optional[AppContext] = None
 

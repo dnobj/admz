@@ -84,8 +84,9 @@ class TestPerDomainModules:
 class TestMigratedToolsAggregate:
     def test_migrated_tools_count(self):
         from admz.mcp.tools import MIGRATED_TOOLS
-        # 2 + 5 + 2 + 1 + 3 (recovery) + 1 (tasks) + 1 (audit) + 3 = 18
-        assert len(MIGRATED_TOOLS) == 18
+        # 2 + 5 + 2 + 1 + 3 (recovery) + 1 (tasks) + 1 (audit) + 3 (firmware)
+        # + 1 (activity: search_activity) = 19
+        assert len(MIGRATED_TOOLS) == 19
 
     def test_migrated_tools_all_named(self):
         from admz.mcp.tools import MIGRATED_TOOLS

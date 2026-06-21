@@ -39,6 +39,8 @@ from admz.snapshot.scheduler import SnapshotScheduler
 from admz.fleet.health import HealthMonitor
 from admz.events.store import EventStore
 from admz.events.ingest import EventIngestSupervisor
+from admz.events.detections import DetectionStore
+from admz.events.evaluator import DetectionEvaluator
 
 
 @dataclass
@@ -63,6 +65,10 @@ class Components:
     # (off by default; gated on the event_ingest_enabled fleet flag).
     event_store: EventStore
     event_supervisor: EventIngestSupervisor
+    # ADR-0041 layer 3: event-pattern detection rules + the evaluator that fires
+    # them (the supervisor's on_event callback).
+    detection_store: DetectionStore
+    detection_evaluator: DetectionEvaluator
 
 
 def _default_catalog_path() -> str:
@@ -364,7 +370,13 @@ def build_components(
     # the event_ingest_enabled fleet flag is on (.start() is a no-op otherwise).
     from admz.events.store import _default_db_path as _events_db_path
     event_store = EventStore(str(_events_db_path()))
-    event_supervisor = EventIngestSupervisor(registry=registry, store=event_store)
+    # ADR-0041 layer 3: event-pattern detections. The evaluator is the
+    # supervisor's on_event callback, so it's built first.
+    detection_store = DetectionStore(str(_events_db_path()))
+    detection_evaluator = DetectionEvaluator(registry=registry, store=detection_store)
+    event_supervisor = EventIngestSupervisor(
+        registry=registry, store=event_store, on_event=detection_evaluator.evaluate,
+    )
 
     return Components(
         registry=registry,
@@ -381,4 +393,6 @@ def build_components(
         module_registry=module_registry,
         event_store=event_store,
         event_supervisor=event_supervisor,
+        detection_store=detection_store,
+        detection_evaluator=detection_evaluator,
     )

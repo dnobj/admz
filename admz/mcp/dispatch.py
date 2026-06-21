@@ -268,6 +268,10 @@ async def _search_audit_log(ctx, a):
     return ctx.server._search_audit_log(a)
 
 
+async def _search_activity(ctx, a):
+    return ctx.server._search_activity(a)
+
+
 # --- Firmware ----------------------------------------------------------------
 async def _download_firmware(ctx, a):
     return await ctx.server._download_firmware(a)
@@ -339,6 +343,7 @@ TOOL_HANDLERS: Dict[str, ToolHandler] = {
     "cancel_device_recovery": _cancel_device_recovery,
     "list_tasks": _list_tasks,
     "search_audit_log": _search_audit_log,
+    "search_activity": _search_activity,
     "download_firmware": _download_firmware,
     "import_firmware": _import_firmware,
     "list_cached_firmware": _list_cached_firmware,

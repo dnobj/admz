@@ -48,6 +48,19 @@
   var ingestOn = false;       // only auto-poll while live ingest is running
   function esc(s) { var d = document.createElement('div'); d.textContent = (s == null ? '' : String(s)); return d.innerHTML; }
 
+  // Build a detection-builder seed from an event: scope to its device, its
+  // category + topic-leaf, and suggest a condition from the first data field
+  // (e.g. an I/O port's state=1). The user refines it in the builder.
+  function detSeed(e) {
+    var data = e.data || {};
+    var inner = data.data || {};
+    var seed = { device_id: e.device_id || '', category: data.category || '', topic: data.leaf || '',
+                 name: (e.device_name || e.device_id || 'event') + ' · ' + (data.leaf || data.category || 'event') };
+    var keys = Object.keys(inner);
+    if (keys.length) { seed.cond_key = keys[0]; seed.cond_op = 'eq'; seed.cond_val = String(inner[keys[0]]); }
+    return seed;
+  }
+
   async function loadEvents() {
     var device = document.getElementById('ev-device').value.trim();
     var status = document.getElementById('ev-status');
@@ -69,12 +82,15 @@
         var cat = (e.data && e.data.category) || '';
         var full = esc(JSON.stringify(e, null, 2));
         var open = expanded.has(e.id);  // preserve open rows across refresh
+        var seed = esc(JSON.stringify(detSeed(e)));
         return '<tr class="ev-row" data-eid="' + esc(e.id) + '" style="cursor:pointer" title="Click to see the full event packet">' +
           '<td class="page-sub" style="font-family:var(--mono);white-space:nowrap">' +
           '<i data-lucide="' + (open ? 'chevron-down' : 'chevron-right') + '" class="ev-caret" style="width:13px;height:13px;vertical-align:-2px;opacity:.5"></i> ' + esc(t) +
           '</td><td><span class="badge">' + esc(cat) + '</span></td><td>' + esc(e.summary || e.type) +
           '</td><td>' + esc(e.device_name || e.device_id || '—') + '</td></tr>' +
           '<tr class="ev-detail" data-eid="' + esc(e.id) + '"' + (open ? '' : ' hidden') + '><td colspan="4" style="padding:0">' +
+          '<div style="display:flex;justify-content:flex-end;padding:8px 14px 0">' +
+          '<button class="btn sm ev-mkdet" type="button" data-seed="' + seed + '"><i data-lucide="zap"></i> Create detection from this event</button></div>' +
           '<pre style="margin:0;padding:10px 14px;background:var(--panel2);border-left:2px solid var(--accent,#888);' +
           'font-family:var(--mono);font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;' +
           'overflow:auto;max-height:340px">' + full + '</pre></td></tr>';
@@ -90,6 +106,13 @@
           if (nowHidden) expanded.delete(eid); else expanded.add(eid);
           if (caret) caret.setAttribute('data-lucide', nowHidden ? 'chevron-right' : 'chevron-down');
           if (window.lucide) window.lucide.createIcons();
+        });
+      });
+      body.querySelectorAll('.ev-mkdet').forEach(function (btn) {
+        btn.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          try { sessionStorage.setItem('admz_det_seed', btn.getAttribute('data-seed') || '{}'); } catch (e) {}
+          window.location.href = '/tasks#new-detection';
         });
       });
       if (window.lucide) window.lucide.createIcons();

@@ -3287,6 +3287,38 @@ class ADMZMCPServer:
             out.append(d)
         return {"success": True, "count": len(out), "tasks": out}
 
+    def _search_activity(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Search the live device-event store (ADR-0041). Read-only."""
+        import time as _time
+
+        from admz.events.store import EventStore
+
+        win = self._parse_audit_window(arguments.get("within"))
+        since_ms = int((_time.time() - win) * 1000) if win else None
+        limit = max(1, min(int(arguments.get("limit") or 50), 500))
+        events = EventStore().query(
+            source="device",
+            type_filter=arguments.get("type"),
+            device_id=arguments.get("device_id"),
+            device_filter=arguments.get("device"),
+            since_ms=since_ms,
+            limit=limit,
+        )
+        # Trim each event to the fields an agent reasons over (drop the raw
+        # nested data envelope; the summary + category carry the signal).
+        out = []
+        for e in events:
+            data = e.get("data") or {}
+            out.append({
+                "ts": e.get("ts"),
+                "device_id": e.get("device_id"),
+                "device_name": e.get("device_name"),
+                "type": e.get("type"),
+                "category": data.get("category"),
+                "summary": e.get("summary"),
+            })
+        return {"success": True, "count": len(out), "events": out}
+
     async def _provision_device(
         self, arguments: Dict[str, Any]
     ) -> Dict[str, Any]:
