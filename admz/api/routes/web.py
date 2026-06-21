@@ -75,7 +75,9 @@ async def activity_page(request: Request, ctx: AppContext = Depends(get_context)
     """Live activity feed (ADR-0041 layer 2) — the device-event timeline."""
     return templates.TemplateResponse(
         "activity.html",
-        {"request": request, "title": "Activity", "status": ctx.event_supervisor.status()},
+        {"request": request, "title": "Activity",
+         "status": ctx.event_supervisor.status(),
+         "acs_status": ctx.acs_event_poller.status()},
     )
 
 

@@ -9,11 +9,17 @@
     <h1 class="page-title">Activity</h1>
     <p class="page-sub">Live device-event feed — motion, object detection, I/O, PTZ, tampering, storage and system events streamed straight from your devices over WebSocket. Read-only.</p>
   </div>
-  <div class="page-actions">
+  <div class="page-actions" style="display:flex;gap:16px;align-items:center">
     <label class="page-sub" style="display:flex;align-items:center;gap:8px">
       <input type="checkbox" id="ev-enable" {{ 'checked' if status.enabled }}>
-      Live ingest
+      Device ingest
     </label>
+    {% if acs_status and acs_status.enabled is defined %}
+    <label class="page-sub" style="display:flex;align-items:center;gap:8px" title="Poll ACS Pro for action-rule firings (no push API, so polled)">
+      <input type="checkbox" id="ev-acs-enable" {{ 'checked' if acs_status.enabled }}>
+      ACS rule ingest
+    </label>
+    {% endif %}
   </div>
 </div>
 
@@ -23,8 +29,14 @@
 </div>
 
 <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
-  <span class="page-sub" style="margin-right:2px">Filter</span>
-  {% for chip in [['All',''],['Motion','Motion'],['Object','Object'],['I/O','IO'],['PTZ','PTZController'],['Storage','Storage'],['Tamper','Casing'],['System','Status']] %}
+  <span class="page-sub" style="margin-right:2px">Source</span>
+  <select id="ev-source" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text)">
+    <option value="">All</option>
+    <option value="device">Device</option>
+    <option value="acs">ACS rules</option>
+  </select>
+  <span class="page-sub" style="margin:0 2px 0 8px">Type</span>
+  {% for chip in [['All',''],['Motion','Motion'],['Object','Object'],['I/O','IO'],['PTZ','PTZController'],['Storage','Storage'],['Tamper','Casing'],['System','Status'],['ACS rule','ActionRule']] %}
   <button class="btn sm ghost ev-chip" data-type="{{ chip[1] }}" type="button">{{ chip[0] }}</button>
   {% endfor %}
   <input id="ev-device" placeholder="device name" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text);min-width:150px">
@@ -63,18 +75,25 @@
 
   async function loadEvents() {
     var device = document.getElementById('ev-device').value.trim();
+    var source = document.getElementById('ev-source').value;
     var status = document.getElementById('ev-status');
-    var qs = new URLSearchParams({ source: 'device', limit: '300' });
+    var qs = new URLSearchParams({ limit: '300' });
+    if (source) qs.set('source', source);
     if (typeFilter) qs.set('type', typeFilter);
     if (device) qs.set('device', device);
     try {
       var d = await (await fetch('/api/events?' + qs.toString())).json();
       if (!d.success) { status.textContent = '✗ ' + (d.message || 'error'); return; }
       var ing = d.ingest || {};
-      ingestOn = !!ing.enabled;
-      document.getElementById('ev-ingest').textContent = ing.enabled
-        ? ('Ingest on — ' + ing.connected + '/' + ing.streams + ' device streams connected.')
-        : 'Ingest is off. Toggle “Live ingest” to start streaming device events.';
+      var acs = d.acs_ingest || {};
+      ingestOn = !!ing.enabled || !!acs.enabled;   // keep auto-refreshing if either is live
+      var parts = [];
+      parts.push(ing.enabled ? ('Device ingest on — ' + ing.connected + '/' + ing.streams + ' streams')
+                             : 'Device ingest off');
+      if (acs.enabled !== undefined) parts.push(acs.enabled
+        ? ('ACS rule ingest on — ' + (acs.fired_total || 0) + ' fired' + (acs.last_error ? ' (err: ' + esc(acs.last_error) + ')' : ''))
+        : 'ACS rule ingest off');
+      document.getElementById('ev-ingest').textContent = parts.join(' · ') + '.';
       status.textContent = d.count + ' event' + (d.count === 1 ? '' : 's');
       if (!d.events.length) { body.innerHTML = '<tr><td colspan="4" class="page-sub" style="padding:12px">No events yet' + (ing.enabled ? '' : ' — ingest is off') + '.</td></tr>'; return; }
       body.innerHTML = d.events.map(function (e) {
@@ -121,19 +140,27 @@
 
   document.getElementById('ev-refresh').addEventListener('click', loadEvents);
   document.getElementById('ev-device').addEventListener('keydown', function (e) { if (e.key === 'Enter') loadEvents(); });
+  document.getElementById('ev-source').addEventListener('change', loadEvents);
   document.querySelectorAll('.ev-chip').forEach(function (chip) {
     chip.addEventListener('click', function () { typeFilter = chip.getAttribute('data-type') || ''; loadEvents(); });
   });
 
-  document.getElementById('ev-enable').addEventListener('change', async function (e) {
-    var on = e.target.checked;
-    e.target.disabled = true;
+  async function toggleIngest(field, on, el) {
+    el.disabled = true;
+    var b = {}; b[field] = on;
     try {
       await fetch('/api/events/control', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: on }) });
+        body: JSON.stringify(b) });
     } catch (err) { /* ignore */ }
-    e.target.disabled = false;
+    el.disabled = false;
     setTimeout(loadEvents, 800);
+  }
+  document.getElementById('ev-enable').addEventListener('change', function (e) {
+    toggleIngest('enabled', e.target.checked, e.target);
+  });
+  var acsToggle = document.getElementById('ev-acs-enable');
+  if (acsToggle) acsToggle.addEventListener('change', function (e) {
+    toggleIngest('acs_enabled', e.target.checked, e.target);
   });
 
   loadEvents();

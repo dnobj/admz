@@ -114,6 +114,14 @@
         <label for="d-name">Name</label>
         <input type="text" id="d-name" placeholder="e.g. Front-door motion → snapshot" autocomplete="off">
       </div>
+      <div class="fld" id="d-source-wrap" hidden>
+        <label for="d-source">Event source</label>
+        <select id="d-source">
+          <option value="device">Device events (live, push)</option>
+          <option value="acs">ACS Pro action rules (polled)</option>
+        </select>
+        <div class="hint" id="d-source-hint"></div>
+      </div>
 
       <div class="grp-label">When this event arrives</div>
       <div class="fld">
@@ -128,6 +136,7 @@
           <input type="text" id="d-device" placeholder="device id" disabled style="flex:1">
         </div>
       </div>
+      <div id="d-device-match">
       <div class="fld">
         <label for="d-category">Event category</label>
         <select id="d-category">
@@ -162,6 +171,15 @@
           <input type="text" id="d-cond-val" placeholder="value" style="flex:1">
         </div>
         <div class="hint">Matches a field inside the event's <code>data</code> (e.g. <code>state = 1</code> for an active I/O port).</div>
+      </div>
+      </div><!-- /d-device-match -->
+      <div id="d-acs-match" hidden>
+        <div class="hint" style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);line-height:1.5">
+          Fires whenever <strong>any</strong> ACS Pro action rule fires. ACS firings are
+          <strong>anonymous</strong> (no rule name) and camera-scoped — ACS exposes no rule identity over its
+          API. Optionally narrow to one ACS camera by putting its camera Id in the
+          “One device” box above; otherwise it matches every camera.
+        </div>
       </div>
 
       <div class="grp-label">…do this</div>
@@ -502,7 +520,7 @@ const ACTION_LABELS = {
   drift_audit: { label: 'Check drift', hint: 'Re-reads live config and records drift vs. baseline. Read-only.', icon: 'radar', service: false },
   acs_action:  { label: 'ACS record / bookmark', hint: 'Fires an ACS Pro recording action. Service-affecting — fires without an approval prompt.', icon: 'video', service: true },
 };
-const CATEGORY_LABELS = { motion:'Motion', object:'Object', io:'I/O', ptz:'PTZ', storage:'Storage', audio:'Audio', tamper:'Tamper', network:'Network', light:'Light', call:'Call', system:'System' };
+const CATEGORY_LABELS = { motion:'Motion', object:'Object', io:'I/O', ptz:'PTZ', storage:'Storage', audio:'Audio', tamper:'Tamper', network:'Network', light:'Light', call:'Call', system:'System', action_rule:'Action rule' };
 let DET_META = { action_types: ['notify', 'snapshot', 'drift_audit'], service_affecting: ['acs_action'], acs_enabled: false };
 
 function detScopeText(d) {
@@ -608,6 +626,15 @@ function updateDetActionUI() {
   document.getElementById('d-notify-wrap').classList.toggle('hidden', at !== 'notify');
   document.getElementById('d-acs-wrap').classList.toggle('hidden', at !== 'acs_action');
 }
+function detSource() { return document.getElementById('d-source').value || 'device'; }
+function updateDetSourceUI() {
+  const acs = detSource() === 'acs';
+  document.getElementById('d-device-match').hidden = acs;
+  document.getElementById('d-acs-match').hidden = !acs;
+  document.getElementById('d-source-hint').textContent = acs
+    ? 'Polled from ACS Pro (no push API). Fires on any ACS action-rule firing.'
+    : 'Live device events streamed over WebSocket.';
+}
 function openDetModal(prefill) {
   document.getElementById('det-error').classList.add('hidden');
   // reset
@@ -624,6 +651,10 @@ function openDetModal(prefill) {
   document.getElementById('d-acs-camera').value = '';
   document.getElementById('d-acs-authz').checked = false;
   document.getElementById('d-cooldown').value = '60';
+  // event source — only offer ACS when the module is connected
+  document.getElementById('d-source-wrap').hidden = !DET_META.acs_enabled;
+  document.getElementById('d-source').value = (prefill && prefill.source) || 'device';
+  updateDetSourceUI();
   populateDetActions();
   if (prefill && prefill.device_id) {
     document.querySelector('input[name="d-scope"][value="device"]').checked = true;
@@ -641,6 +672,7 @@ document.getElementById('det-close').addEventListener('click', closeDetModal);
 document.getElementById('det-cancel').addEventListener('click', closeDetModal);
 detModal.addEventListener('click', (e) => { if (e.target === detModal) closeDetModal(); });
 document.getElementById('d-action').addEventListener('change', updateDetActionUI);
+document.getElementById('d-source').addEventListener('change', updateDetSourceUI);
 document.querySelectorAll('input[name="d-scope"]').forEach(r => {
   r.addEventListener('change', () => {
     const v = document.querySelector('input[name="d-scope"]:checked').value;
@@ -666,14 +698,19 @@ document.getElementById('det-create').addEventListener('click', async () => {
   const action_type = document.getElementById('d-action').value;
   const cooldown = parseInt(document.getElementById('d-cooldown').value, 10) || 0;
 
+  const source = detSource();
   function fail(msg) { errEl.textContent = msg; errEl.classList.remove('hidden'); }
   if (scope === 'tag' && !tag) return fail('Enter a tag, or choose Any device.');
   if (scope === 'device' && !device_id) return fail('Enter a device id, or choose Any device.');
 
   const match = {};
-  if (category) match.category = category;
-  if (topic) match.topic = topic;
-  if (condKey) match.condition = { key: condKey, op: condOp, value: condVal };
+  if (source === 'acs') {
+    match.category = 'action_rule';   // ACS firings are anonymous; match the category
+  } else {
+    if (category) match.category = category;
+    if (topic) match.topic = topic;
+    if (condKey) match.condition = { key: condKey, op: condOp, value: condVal };
+  }
 
   const action_params = {};
   let pre_authorized = false;
@@ -691,7 +728,7 @@ document.getElementById('det-create').addEventListener('click', async () => {
 
   const body = {
     name: name || (ACTION_LABELS[action_type] || {}).label || action_type,
-    source: 'device',
+    source: source,
     device_id: scope === 'device' ? device_id : null,
     tag: scope === 'tag' ? tag : null,
     match, action_type, action_params, pre_authorized,

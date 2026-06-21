@@ -128,6 +128,14 @@ async def lifespan(app: FastAPI):
         import logging
         logging.getLogger(__name__).warning("event ingest start failed", exc_info=True)
 
+    # ADR-0041: ACS Pro action-rule poller. Opt-in via acs_event_ingest_enabled
+    # (and requires the ACS module connected); .start() is a no-op when off.
+    try:
+        await ctx.acs_event_poller.start()
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("acs event poller start failed", exc_info=True)
+
     # Phase 7: spin up the per-principal MCP subprocess pool so the
     # first chat turn doesn't pay subprocess-spawn latency.
     from admz.chatbot.mcp_pool import mcp_pool
@@ -139,6 +147,10 @@ async def lifespan(app: FastAPI):
         await mcp_pool.stop()
         try:
             await ctx.event_supervisor.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await ctx.acs_event_poller.stop()
         except Exception:  # noqa: BLE001
             pass
         await ctx.health_monitor.stop()

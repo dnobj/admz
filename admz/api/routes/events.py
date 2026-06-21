@@ -43,27 +43,45 @@ async def list_events(request: Request):
         "count": len(events),
         "events": events,
         "ingest": ctx.event_supervisor.status(),
+        "acs_ingest": ctx.acs_event_poller.status(),
     }
 
 
 @router.get("/api/events/status")
 async def events_status():
-    return get_context().event_supervisor.status()
+    ctx = get_context()
+    return {**ctx.event_supervisor.status(), "acs": ctx.acs_event_poller.status()}
 
 
 @router.post("/api/events/control")
 async def events_control(request: Request):
     """Enable/disable live ingest at runtime (persists the fleet flag + (re)starts
-    or stops the per-device WS streams without a server restart)."""
+    or stops the per-device WS streams without a server restart).
+
+    Pass ``{"enabled": bool}`` for the device WS ingest, and/or
+    ``{"acs_enabled": bool}`` for the ACS Pro action-rule poller (independent)."""
     body = await request.json()
-    enabled = bool(body.get("enabled"))
     from admz.fleet_settings import fleet_settings
 
-    fleet_settings.set("event_ingest_enabled", "true" if enabled else "false")
     ctx = get_context()
-    if enabled:
-        await ctx.event_supervisor.start()
-        await ctx.event_supervisor.reconcile()
-    else:
-        await ctx.event_supervisor.stop()
-    return {"success": True, "status": ctx.event_supervisor.status()}
+    if "enabled" in body:
+        enabled = bool(body.get("enabled"))
+        fleet_settings.set("event_ingest_enabled", "true" if enabled else "false")
+        if enabled:
+            await ctx.event_supervisor.start()
+            await ctx.event_supervisor.reconcile()
+        else:
+            await ctx.event_supervisor.stop()
+    if "acs_enabled" in body:
+        acs_on = bool(body.get("acs_enabled"))
+        fleet_settings.set("acs_event_ingest_enabled", "true" if acs_on else "false")
+        if acs_on:
+            await ctx.acs_event_poller.stop()   # reset high-water + restart cleanly
+            await ctx.acs_event_poller.start()
+        else:
+            await ctx.acs_event_poller.stop()
+    return {
+        "success": True,
+        "status": ctx.event_supervisor.status(),
+        "acs": ctx.acs_event_poller.status(),
+    }

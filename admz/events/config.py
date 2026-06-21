@@ -33,6 +33,24 @@ RECONNECT_MAX_DELAY = 120.0
 WSSESSION_TIMEOUT = 10.0
 WS_OPEN_TIMEOUT = 15.0
 
+# ACS Pro action-rule poller (ADR-0041 — ACS has NO push API, so we POLL the
+# recorded-events log for "Action Rule" firings). Separate flag from the device
+# WS ingest; both off by default.
+ACS_POLL_INTERVAL_SECONDS = 30.0
+ACS_LOOKBACK_HOURS = 0.5            # window fetched each poll (generous vs the interval)
+ACS_POLL_MAX_EVENTS = 2000
+
+
+def acs_event_ingest_enabled() -> bool:
+    """True only when the operator enabled the ACS action-rule poller. Also
+    requires the ACS Pro module to be connected (checked by the poller)."""
+    if os.getenv("ADMZ_ACS_EVENT_INGEST") == "1":
+        return True
+    try:
+        return str(_settings().get("acs_event_ingest_enabled") or "").lower() in ("1", "true", "yes", "on")
+    except Exception:  # noqa: BLE001
+        return False
+
 
 def _settings():
     from admz.fleet_settings import fleet_settings

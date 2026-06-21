@@ -83,6 +83,10 @@ class AppContext:
         return self._components.event_supervisor
 
     @property
+    def acs_event_poller(self):
+        return self._components.acs_event_poller
+
+    @property
     def detection_store(self):
         return self._components.detection_store
 

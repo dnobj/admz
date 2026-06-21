@@ -39,6 +39,7 @@ from admz.snapshot.scheduler import SnapshotScheduler
 from admz.fleet.health import HealthMonitor
 from admz.events.store import EventStore
 from admz.events.ingest import EventIngestSupervisor
+from admz.events.acs_ingest import AcsActionRulePoller
 from admz.events.detections import DetectionStore
 from admz.events.evaluator import DetectionEvaluator
 
@@ -65,6 +66,7 @@ class Components:
     # (off by default; gated on the event_ingest_enabled fleet flag).
     event_store: EventStore
     event_supervisor: EventIngestSupervisor
+    acs_event_poller: AcsActionRulePoller
     # ADR-0041 layer 3: event-pattern detection rules + the evaluator that fires
     # them (the supervisor's on_event callback).
     detection_store: DetectionStore
@@ -377,6 +379,13 @@ def build_components(
     event_supervisor = EventIngestSupervisor(
         registry=registry, store=event_store, on_event=detection_evaluator.evaluate,
     )
+    # ACS Pro has no push API, so action-rule firings are POLLED into the same
+    # store + evaluator as device events (source="acs"). Off until both the ACS
+    # module and acs_event_ingest_enabled are on.
+    acs_event_poller = AcsActionRulePoller(
+        catalog=catalog, executors=executors, store=event_store,
+        on_event=detection_evaluator.evaluate,
+    )
 
     return Components(
         registry=registry,
@@ -393,6 +402,7 @@ def build_components(
         module_registry=module_registry,
         event_store=event_store,
         event_supervisor=event_supervisor,
+        acs_event_poller=acs_event_poller,
         detection_store=detection_store,
         detection_evaluator=detection_evaluator,
     )
