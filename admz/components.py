@@ -42,6 +42,7 @@ from admz.events.ingest import EventIngestSupervisor
 from admz.events.acs_ingest import AcsActionRulePoller
 from admz.events.detections import DetectionStore
 from admz.events.evaluator import DetectionEvaluator
+from admz.events.watched import WatchedEventStore
 
 
 @dataclass
@@ -67,6 +68,7 @@ class Components:
     event_store: EventStore
     event_supervisor: EventIngestSupervisor
     acs_event_poller: AcsActionRulePoller
+    watched_event_store: WatchedEventStore
     # ADR-0041 layer 3: event-pattern detection rules + the evaluator that fires
     # them (the supervisor's on_event callback).
     detection_store: DetectionStore
@@ -386,6 +388,9 @@ def build_components(
         catalog=catalog, executors=executors, store=event_store,
         on_event=detection_evaluator.evaluate,
     )
+    # Watched events: a passive library of bookmarked event patterns (no worker,
+    # no evaluator, no ingest dependency — it just feeds the detection builder).
+    watched_event_store = WatchedEventStore(str(_events_db_path()))
 
     return Components(
         registry=registry,
@@ -403,6 +408,7 @@ def build_components(
         event_store=event_store,
         event_supervisor=event_supervisor,
         acs_event_poller=acs_event_poller,
+        watched_event_store=watched_event_store,
         detection_store=detection_store,
         detection_evaluator=detection_evaluator,
     )

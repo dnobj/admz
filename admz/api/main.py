@@ -27,6 +27,7 @@ from admz.api.routes import (
     chat as chat_route,
     confirm,
     detections as detections_route,
+    watched_events as watched_events_route,
     devices,
     discovery,
     drift as drift_route,
@@ -239,6 +240,7 @@ app.include_router(audit_route.router, prefix="/api", tags=["audit"])
 app.include_router(drift_route.router, prefix="/api", tags=["drift"])
 app.include_router(events_route.router, tags=["events"])
 app.include_router(detections_route.router, tags=["detections"])
+app.include_router(watched_events_route.router, tags=["watched-events"])
 # Health routes already include /api in their paths.
 app.include_router(health_route.router, tags=["health"])
 

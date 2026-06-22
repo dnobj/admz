@@ -110,6 +110,11 @@
       <button class="modal-x" type="button" id="det-close" aria-label="Close">&times;</button>
     </div>
     <div class="modal-body">
+      <div class="fld hidden" id="d-fromwatch-wrap">
+        <label for="d-fromwatch">Start from a watched event</label>
+        <select id="d-fromwatch"><option value="">— blank —</option></select>
+        <div class="hint">Pre-fills the trigger below from one of your <a href="/activity">watched events</a>.</div>
+      </div>
       <div class="fld">
         <label for="d-name">Name</label>
         <input type="text" id="d-name" placeholder="e.g. Front-door motion → snapshot" autocomplete="off">
@@ -635,6 +640,34 @@ function updateDetSourceUI() {
     ? 'Polled from ACS Pro (no push API). Fires on any ACS action-rule firing.'
     : 'Live device events streamed over WebSocket.';
 }
+
+// ── "Start from a watched event" picker ──
+let WATCHED = [];
+async function loadWatchedForPicker() {
+  try { const r = await fetch('/api/watched-events'); if (r.ok) WATCHED = (await r.json()).watched || []; }
+  catch (e) { WATCHED = []; }
+}
+function seedFromWatched(w) {
+  const m = w.match || {};
+  const seed = { name: w.name || '', source: w.source || 'device', device_id: w.device_id || '',
+                 category: m.category || '', topic: m.topic || '' };
+  if (m.condition && m.condition.key) { seed.cond_key = m.condition.key; seed.cond_op = m.condition.op || 'eq'; seed.cond_val = m.condition.value; }
+  return seed;
+}
+function populateWatchedPicker() {
+  const wrap = document.getElementById('d-fromwatch-wrap');
+  const sel = document.getElementById('d-fromwatch');
+  if (!WATCHED.length) { wrap.classList.add('hidden'); return; }
+  wrap.classList.remove('hidden');
+  sel.innerHTML = '<option value="">— blank —</option>' +
+    WATCHED.map(w => '<option value="' + esc(w.id) + '">' + esc(w.name || w.id) + '</option>').join('');
+  sel.value = '';
+}
+document.getElementById('d-fromwatch').addEventListener('change', function () {
+  const w = WATCHED.find(x => x.id === this.value);
+  if (w) openDetModal(seedFromWatched(w));   // openDetModal fully resets + re-seeds (re-entrant)
+});
+
 function openDetModal(prefill) {
   document.getElementById('det-error').classList.add('hidden');
   // reset
@@ -656,6 +689,7 @@ function openDetModal(prefill) {
   document.getElementById('d-source').value = (prefill && prefill.source) || 'device';
   updateDetSourceUI();
   populateDetActions();
+  populateWatchedPicker();
   if (prefill && prefill.device_id) {
     document.querySelector('input[name="d-scope"][value="device"]').checked = true;
     const dev = document.getElementById('d-device'); dev.disabled = false; dev.value = prefill.device_id;
@@ -752,10 +786,12 @@ document.getElementById('det-create').addEventListener('click', async () => {
   try { seed = JSON.parse(sessionStorage.getItem('admz_det_seed') || 'null'); } catch (e) {}
   sessionStorage.removeItem('admz_det_seed');
   history.replaceState(null, '', '/tasks');
-  // loadDetections populates DET_META (acs_enabled, action list) before the modal opens.
-  loadDetections().then(() => openDetModal(seed || {}));
+  // loadDetections populates DET_META (acs_enabled, action list) + watched events
+  // before the modal opens, so the source list + picker are ready.
+  Promise.all([loadDetections(), loadWatchedForPicker()]).then(() => openDetModal(seed || {}));
 })();
 
 loadDetections();
+loadWatchedForPicker();
 </script>
 {% endblock %}

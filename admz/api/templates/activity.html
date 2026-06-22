@@ -28,6 +28,22 @@
   <span id="ev-ingest">{% if status.enabled %}Ingest on — {{ status.connected }}/{{ status.streams }} device streams connected.{% else %}Ingest is off. Toggle “Live ingest” to start streaming device events.{% endif %}</span>
 </div>
 
+<!-- Watched events — bookmarked event patterns; managed here, picked from later in the detection builder -->
+<div id="watched-section" style="margin-bottom:18px">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+    <i data-lucide="bookmark" style="width:15px;height:15px;opacity:.7"></i>
+    <h2 class="page-title" style="font-size:15px;margin:0">Watched events</h2>
+    <span id="watched-count" class="page-sub"></span>
+  </div>
+  <p class="page-sub" style="margin:0 0 8px">Event patterns you’ve bookmarked. Turn one into a standing rule with <strong>Convert to detection</strong>, or pick it from <a href="/tasks">the detection builder</a>.</p>
+  <table class="data-table" id="watched-table" hidden>
+    <thead><tr><th>Name</th><th>On event</th><th>Scope</th><th>Notes</th><th></th></tr></thead>
+    <tbody id="watched-body"></tbody>
+  </table>
+  <div class="empty-state" id="watched-empty" style="padding:14px"><i data-lucide="bookmark-plus"></i>
+    <div style="margin-top:6px">No watched events yet — expand an event below and click <strong>Watch this event</strong>.</div></div>
+</div>
+
 <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
   <span class="page-sub" style="margin-right:2px">Source</span>
   <select id="ev-source" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text)">
@@ -58,7 +74,42 @@
   var typeFilter = '';
   var expanded = new Set();   // event ids the user has open (survive a refresh)
   var ingestOn = false;       // only auto-poll while live ingest is running
+  var BY_ID = {};             // id → full event (so buttons don't stuff JSON into attributes)
+  var WATCHED = [];           // current watched-event library (for the panel + "Watching" state)
   function esc(s) { var d = document.createElement('div'); d.textContent = (s == null ? '' : String(s)); return d.innerHTML; }
+
+  var CAT_LABELS = { motion:'Motion', object:'Object', io:'I/O', ptz:'PTZ', storage:'Storage', audio:'Audio',
+    tamper:'Tamper', network:'Network', light:'Light', call:'Call', system:'System', action_rule:'Action rule' };
+  function matchText(m) {
+    m = m || {}; var bits = [];
+    if (m.category) bits.push(CAT_LABELS[m.category] || m.category);
+    if (m.topic) bits.push('“' + esc(m.topic) + '”');
+    if (m.condition && m.condition.key) { var c = m.condition;
+      bits.push(c.op === 'exists' ? (esc(c.key) + ' exists')
+        : (esc(c.key) + ' ' + (c.op === 'ne' ? '≠' : '=') + ' ' + esc(c.value))); }
+    return bits.length ? bits.join(' · ') : 'any event';
+  }
+  function scopeText(w) { return w.device_id ? esc(w.device_id) : (w.tag ? 'tag: ' + esc(w.tag) : 'any device'); }
+
+  // Build the watched-event POST body (source + scope + match) from a live event,
+  // mirroring how the detection builder derives its match from detSeed(e).
+  function eventToWatchBody(e) {
+    var s = detSeed(e), match = {};
+    if (s.category) match.category = s.category;
+    if (s.topic) match.topic = s.topic;
+    if (s.cond_key) match.condition = { key: s.cond_key, op: s.cond_op || 'eq', value: s.cond_val };
+    return { name: s.name, source: e.source || 'device', device_id: s.device_id || null, tag: null, match: match };
+  }
+  function watchKey(o) { return JSON.stringify([o.source || 'device', o.device_id || '', o.tag || '', o.match || {}]); }
+  function isWatched(e) { var k = watchKey(eventToWatchBody(e)); return WATCHED.some(function (w) { return watchKey(w) === k; }); }
+  // The detection-builder seed shape (same as detSeed output) from a watched event.
+  function seedFromWatched(w) {
+    var m = w.match || {};
+    var seed = { name: w.name || '', source: w.source || 'device', device_id: w.device_id || '',
+                 category: m.category || '', topic: m.topic || '' };
+    if (m.condition && m.condition.key) { seed.cond_key = m.condition.key; seed.cond_op = m.condition.op || 'eq'; seed.cond_val = m.condition.value; }
+    return seed;
+  }
 
   // Build a detection-builder seed from an event: scope to its device, its
   // category + topic-leaf, and suggest a condition from the first data field
@@ -96,20 +147,24 @@
       document.getElementById('ev-ingest').textContent = parts.join(' · ') + '.';
       status.textContent = d.count + ' event' + (d.count === 1 ? '' : 's');
       if (!d.events.length) { body.innerHTML = '<tr><td colspan="4" class="page-sub" style="padding:12px">No events yet' + (ing.enabled ? '' : ' — ingest is off') + '.</td></tr>'; return; }
+      BY_ID = {};  // reset the id→event lookup each render (avoid unbounded growth)
       body.innerHTML = d.events.map(function (e) {
+        BY_ID[e.id] = e;   // keep the full event by id — no fragile JSON-in-attribute
         var t = (e.ts || '').replace('T', ' ').slice(0, 23);
         var cat = (e.data && e.data.category) || '';
         var full = esc(JSON.stringify(e, null, 2));
         var open = expanded.has(e.id);  // preserve open rows across refresh
-        var seed = esc(JSON.stringify(detSeed(e)));
+        var watched = isWatched(e);
         return '<tr class="ev-row" data-eid="' + esc(e.id) + '" style="cursor:pointer" title="Click to see the full event packet">' +
           '<td class="page-sub" style="font-family:var(--mono);white-space:nowrap">' +
           '<i data-lucide="' + (open ? 'chevron-down' : 'chevron-right') + '" class="ev-caret" style="width:13px;height:13px;vertical-align:-2px;opacity:.5"></i> ' + esc(t) +
           '</td><td><span class="badge">' + esc(cat) + '</span></td><td>' + esc(e.summary || e.type) +
           '</td><td>' + esc(e.device_name || e.device_id || '—') + '</td></tr>' +
           '<tr class="ev-detail" data-eid="' + esc(e.id) + '"' + (open ? '' : ' hidden') + '><td colspan="4" style="padding:0">' +
-          '<div style="display:flex;justify-content:flex-end;padding:8px 14px 0">' +
-          '<button class="btn sm ev-mkdet" type="button" data-seed="' + seed + '"><i data-lucide="zap"></i> Create detection from this event</button></div>' +
+          '<div style="display:flex;justify-content:flex-end;gap:8px;padding:8px 14px 0">' +
+          '<button class="btn sm ghost ev-watch" type="button" data-eid="' + esc(e.id) + '"' + (watched ? ' disabled' : '') + '>' +
+          '<i data-lucide="' + (watched ? 'check' : 'bookmark-plus') + '"></i> ' + (watched ? 'Watching' : 'Watch this event') + '</button>' +
+          '<button class="btn sm ev-mkdet" type="button" data-eid="' + esc(e.id) + '"><i data-lucide="zap"></i> Create detection from this event</button></div>' +
           '<pre style="margin:0;padding:10px 14px;background:var(--panel2);border-left:2px solid var(--accent,#888);' +
           'font-family:var(--mono);font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;' +
           'overflow:auto;max-height:340px">' + full + '</pre></td></tr>';
@@ -130,8 +185,16 @@
       body.querySelectorAll('.ev-mkdet').forEach(function (btn) {
         btn.addEventListener('click', function (ev) {
           ev.stopPropagation();
-          try { sessionStorage.setItem('admz_det_seed', btn.getAttribute('data-seed') || '{}'); } catch (e) {}
+          var e = BY_ID[btn.getAttribute('data-eid')];
+          if (!e) return;
+          try { sessionStorage.setItem('admz_det_seed', JSON.stringify(detSeed(e))); } catch (x) {}
           window.location.href = '/tasks#new-detection';
+        });
+      });
+      body.querySelectorAll('.ev-watch').forEach(function (btn) {
+        btn.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          watchEvent(BY_ID[btn.getAttribute('data-eid')], btn);
         });
       });
       if (window.lucide) window.lucide.createIcons();
@@ -163,7 +226,65 @@
     toggleIngest('acs_enabled', e.target.checked, e.target);
   });
 
-  loadEvents();
+  // ── Watched events (bookmarked patterns) — loaded independently of the live
+  //    feed's 4s timer so the management list is never clobbered by a refresh. ──
+  async function loadWatched() {
+    try { var d = await (await fetch('/api/watched-events')).json(); WATCHED = (d && d.watched) || []; }
+    catch (e) { WATCHED = []; }
+    var tbl = document.getElementById('watched-table');
+    var empty = document.getElementById('watched-empty');
+    var count = document.getElementById('watched-count');
+    count.textContent = WATCHED.length ? '(' + WATCHED.length + ')' : '';
+    if (!WATCHED.length) { tbl.hidden = true; empty.hidden = false; }
+    else {
+      empty.hidden = true; tbl.hidden = false;
+      document.getElementById('watched-body').innerHTML = WATCHED.map(function (w) {
+        return '<tr><td style="font-weight:600">' + esc(w.name || w.id) + '</td>' +
+          '<td class="page-sub" style="font-family:var(--mono)">' + matchText(w.match) + '</td>' +
+          '<td>' + scopeText(w) + '</td>' +
+          '<td class="page-sub">' + esc(w.notes || '') + '</td>' +
+          '<td style="text-align:right;white-space:nowrap">' +
+          '<button class="btn sm ghost wa-conv" data-id="' + esc(w.id) + '" title="Turn into a detection rule"><i data-lucide="zap"></i> Convert to detection</button> ' +
+          '<button class="btn sm ghost wa-edit" data-id="' + esc(w.id) + '" title="Rename / add a note"><i data-lucide="pencil"></i></button> ' +
+          '<button class="btn sm ghost wa-del" data-id="' + esc(w.id) + '" style="color:var(--fg-red,#f87171)" title="Delete"><i data-lucide="trash-2"></i></button></td></tr>';
+      }).join('');
+      document.querySelectorAll('.wa-conv').forEach(function (b) { b.addEventListener('click', function () { convertWatched(b.getAttribute('data-id')); }); });
+      document.querySelectorAll('.wa-edit').forEach(function (b) { b.addEventListener('click', function () { editWatched(b.getAttribute('data-id')); }); });
+      document.querySelectorAll('.wa-del').forEach(function (b) { b.addEventListener('click', function () { deleteWatched(b.getAttribute('data-id')); }); });
+    }
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  async function watchEvent(e, btn) {
+    if (!e) return;
+    btn.disabled = true;
+    try {
+      var r = await fetch('/api/watched-events', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(eventToWatchBody(e)) });
+      if (r.ok) { btn.innerHTML = '<i data-lucide="check"></i> Watching'; if (window.lucide) window.lucide.createIcons(); loadWatched(); }
+      else { btn.disabled = false; }
+    } catch (x) { btn.disabled = false; }
+  }
+  function convertWatched(id) {
+    var w = WATCHED.find(function (x) { return x.id === id; }); if (!w) return;
+    try { sessionStorage.setItem('admz_det_seed', JSON.stringify(seedFromWatched(w))); } catch (x) {}
+    window.location.href = '/tasks#new-detection';
+  }
+  async function editWatched(id) {
+    var w = WATCHED.find(function (x) { return x.id === id; }); if (!w) return;
+    var name = prompt('Name for this watched event:', w.name || ''); if (name === null) return;
+    var notes = prompt('Notes (optional):', w.notes || ''); if (notes === null) notes = w.notes || '';
+    try { await fetch('/api/watched-events/' + encodeURIComponent(id), { method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name, notes: notes }) }); } catch (x) {}
+    loadWatched();
+  }
+  async function deleteWatched(id) {
+    if (!confirm('Delete this watched event? (Detections you already created from it are unaffected.)')) return;
+    try { await fetch('/api/watched-events/' + encodeURIComponent(id), { method: 'DELETE' }); } catch (x) {}
+    loadWatched(); loadEvents();   // refresh feed so the "Watching" state updates
+  }
+
+  loadWatched().then(loadEvents);   // populate WATCHED before the first feed render
   // Only auto-refresh while ingest is live AND no row is open — a static feed
   // (ingest off) never reloads, and reading an expanded packet is never
   // interrupted. Collapse the row to resume live updates.
