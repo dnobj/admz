@@ -190,6 +190,74 @@ async def acs_action(request: Request):
     )
 
 
+@router.post("/api/acs/rule-fired")
+async def acs_rule_fired(request: Request):
+    """Inbound webhook for ACS "Send HTTP Notification" actions — a real-time,
+    rule-named firing signal (the only supported way to detect ANY rule firing).
+
+    Auth is the shared webhook token (this path is exempt from session auth); ACS
+    can't do Negotiate. On a valid call we normalize the firing into a
+    ``source="acs"`` event, append it to the store (so it shows in Activity with
+    the rule NAME), and run the detection evaluator so ACS-source detections fire.
+    """
+    from admz.api.context import get_context
+    from admz.audit import record_event
+    from admz.modules.acs_pro.webhook import normalize_webhook, token_ok
+
+    # Body may be JSON or form-encoded (operator-templated); be liberal.
+    body: dict = {}
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {"message": str(body)}
+    except Exception:  # noqa: BLE001
+        try:
+            form = await request.form()
+            body = {k: v for k, v in form.items()}
+        except Exception:  # noqa: BLE001
+            body = {}
+
+    if not token_ok(request, body):
+        return JSONResponse({"success": False, "error": "Unauthorized",
+                             "message": "Missing or invalid ACS webhook token."}, status_code=401)
+
+    rec = normalize_webhook(body)
+    ctx = get_context()
+    try:
+        ctx.event_store.append(rec)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        await ctx.detection_evaluator.evaluate(rec)
+    except Exception:  # noqa: BLE001
+        pass
+    # Audit the firing (synthetic principal; never log the token / raw secrets).
+    try:
+        from types import SimpleNamespace
+        record_event(SimpleNamespace(name="acs-webhook", source="acs-webhook"),
+                     "acs.rule_fired", resource="acs:action-rule",
+                     details={"rule": rec["data"].get("rule_name"),
+                              "camera": rec["data"].get("camera_id") or rec.get("device_name")})
+    except Exception:  # noqa: BLE001
+        pass
+    return {"success": True, "event_id": rec["id"], "rule": rec["data"].get("rule_name")}
+
+
+@router.post("/api/acs/webhook-token/regenerate")
+async def acs_webhook_regenerate(request: Request):
+    """Rotate the webhook shared secret (authenticated operator action)."""
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+    from admz.audit import record_event
+    from admz.modules.acs_pro.webhook import regenerate_token
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+    tok = regenerate_token()
+    record_event(principal, "acs.webhook_token.regenerate", resource="acs:webhook")
+    return {"success": True, "token": tok}
+
+
 @router.get("/acs", response_class=HTMLResponse)
 async def acs_page(request: Request):
     from admz.api.context import get_context
@@ -210,6 +278,10 @@ async def acs_page(request: Request):
         if cams.get("success"):
             cameras = (cams.get("data") or {}).get("Cameras") or []
 
+    from admz.modules.acs_pro.webhook import WEBHOOK_PATH, get_token
+    import os as _os
+    host = request.headers.get("host") or f"127.0.0.1:{_os.getenv('ADMZ_PORT', '4242')}"
+    scheme = request.url.scheme or "http"
     return templates.TemplateResponse(
         "acs.html",
         {
@@ -220,5 +292,7 @@ async def acs_page(request: Request):
             "version": version.get("data") if reachable else None,
             "error": None if reachable else version.get("message"),
             "cameras": cameras,
+            "webhook_url": f"{scheme}://{host}{WEBHOOK_PATH}",
+            "webhook_token": get_token(),
         },
     )

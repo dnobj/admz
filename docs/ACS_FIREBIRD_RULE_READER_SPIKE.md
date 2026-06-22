@@ -1,7 +1,21 @@
 # Spike plan: ACS Pro action-rule reader (Firebird DB)
 
 **Status:** proposed spike — NOT yet built. Opt-in, read-only, gated on operator-supplied DB access.
-**Related:** ADR-0040 (ACS Pro module), ADR-0041 (activity/observability), `admz/events/acs_ingest.py` (anonymous firing ingest).
+**Related:** ADR-0040 (ACS Pro module), ADR-0041 (activity/observability), `admz/events/acs_ingest.py`
+(anonymous, recording-only firing ingest), `admz/modules/acs_pro/webhook.py` (the supported real-time
+firing path — but requires a one-time per-rule "Send HTTP Notification" action).
+
+## Two goals (the DB is the only path to either without touching the rule)
+
+1. **Named rule inventory** — list configured action rules (name + condition + action). [original goal]
+2. **Generic firing detection WITHOUT modifying the rule** — detect when *any* action rule fires,
+   regardless of its action. Established (live, 2026-06-22) that ACS exposes **no** such signal via its
+   API: every recorded/event-log/alarm/event/audit/trigger/data-search facade read returns an opaque
+   `400` (only recording-action firings surface, via `RecordedEventFacade`); the only Axis-documented
+   firing notification is the per-rule "Send HTTP Notification" action (the **webhook**, now built —
+   real-time + rule-named, but it *is* a one-time per-rule edit). So for rules the operator can't/won't
+   edit, the **only** no-modification option is reading the ACS DB directly for a firing/alarm/event-log
+   row. This spike must determine whether such a queryable table exists and is stable.
 
 ## Why
 
@@ -47,7 +61,15 @@ So the **only** ground-truth source for rule definitions is the ACS server's own
    notification/…).
 3. **Correlate** a couple of known rules (e.g. the user's test rules) DB-row ↔ ACS-client UI ↔ the
    anonymous firing's `CameraId`, to confirm we can resolve firing → named rule.
-4. **Decide**: is the schema stable/clear enough to read safely? Document the exact tables/columns.
+4. **Hunt for a firing/alarm/event-log table (goal 2).** Look for a table that records *every* rule
+   trigger (not just recordings/alarms) — candidate names: `*ALARM*`, `*EVENT*LOG*`, `*RULE*LOG*`,
+   `*TRIGGER*`, `*AUDIT*`. **Verify by firing**: with the user's "test" rule (external-HTTPS trigger,
+   non-recording), snapshot the table, fire the rule via `TriggerFacade:ActivateDeactivateTrigger`,
+   re-snapshot, and check for a new row that names the rule. If a row appears, this is the
+   no-modification generic firing signal — a poller over this table feeds the same `source="acs"`
+   event path as the webhook.
+5. **Decide**: is the schema stable/clear enough to read safely? Document the exact tables/columns,
+   and whether the firing table (4) exists. If it doesn't, the webhook remains the only firing path.
 
 ## Approach / steps
 

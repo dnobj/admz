@@ -18,6 +18,34 @@
   <span>Connected to <strong>{{ cfg.server_url }}:{{ cfg.port }}</strong>{% if version %} · API {{ version.get('Major', '?') }}.{{ version.get('Minor', '?') }}{% if version.get('ProductMajor') is not none %} · Product {{ version.get('ProductMajor') }}.{{ version.get('ProductMinor') }}{% endif %}{% endif %} · authenticated via Negotiate.</span>
 </div>
 
+<!-- Rule-firing webhook — the only way to detect ANY action-rule firing in real time -->
+<div style="border:1px solid var(--border);border-radius:var(--radius-lg,10px);padding:14px 16px;margin-bottom:18px;background:var(--surface)">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+    <i data-lucide="webhook" style="width:16px;height:16px;opacity:.8"></i>
+    <h2 class="page-title" style="font-size:15px;margin:0">Detect rule firings (webhook)</h2>
+  </div>
+  <p class="page-sub" style="margin:0 0 10px">ACS exposes no API that reports when an action rule fires. The supported way is to add a one-time <strong>“Send HTTP Notification”</strong> action to each rule you want to track, pointing at this URL. ADMZ then shows the firing on the <a href="/activity">Activity feed</a> (with the rule name) and runs any matching <a href="/tasks">ACS detections</a> — in real time.</p>
+  <div style="display:grid;grid-template-columns:max-content 1fr max-content;gap:8px 10px;align-items:center;font-size:13px">
+    <label class="page-sub">URL</label>
+    <input id="wh-url" readonly value="{{ webhook_url }}" style="padding:6px 9px;border:1px solid var(--border);border-radius:6px;background:var(--panel2);color:var(--text);font-family:var(--mono)">
+    <button class="btn sm ghost" type="button" onclick="copyField('wh-url', this)">Copy</button>
+    <label class="page-sub">Token</label>
+    <input id="wh-token" readonly value="{{ webhook_token }}" type="password" style="padding:6px 9px;border:1px solid var(--border);border-radius:6px;background:var(--panel2);color:var(--text);font-family:var(--mono)">
+    <span style="white-space:nowrap"><button class="btn sm ghost" type="button" onclick="toggleToken(this)">Show</button>
+      <button class="btn sm ghost" type="button" onclick="copyField('wh-token', this)">Copy</button>
+      <button class="btn sm ghost" type="button" id="wh-regen" style="color:var(--fg-red,#f87171)">Regenerate</button></span>
+  </div>
+  <details style="margin-top:10px">
+    <summary class="page-sub" style="cursor:pointer">How to configure it in ACS</summary>
+    <div class="page-sub" style="margin-top:6px;line-height:1.6">
+      In ACS: <em>Configuration → Recordings and events → Action rules → (your rule) → add an action → “Send HTTP Notification”</em>.
+      Set the URL above; under credentials use any username and paste the <strong>token</strong> as the password (HTTP Basic). For the message body, send JSON like:
+      <pre style="margin:6px 0 0;padding:8px 10px;background:var(--panel2);border-radius:6px;font-family:var(--mono);font-size:12px;white-space:pre-wrap">{"rule":"&lt;rule name&gt;","camera":"&lt;device name&gt;","time":"&lt;timestamp&gt;"}</pre>
+      (Use ACS’s notification variables for the values. Only the body is up to you — ADMZ accepts <code>rule</code>/<code>ruleName</code>/<code>name</code>, <code>camera</code>/<code>source</code>, <code>message</code>.)
+    </div>
+  </details>
+</div>
+
 <table class="data-table">
   <thead><tr><th>Camera</th><th>Model</th><th>ACS camera id</th><th style="width:330px">Actions</th></tr></thead>
   <tbody>
@@ -96,9 +124,34 @@
 
 {% block extra_js %}
 <script>
+// Webhook card helpers (global — called from inline onclick).
+function copyField(id, btn) {
+  var el = document.getElementById(id); if (!el) return;
+  var wasPw = el.type === 'password'; if (wasPw) el.type = 'text';
+  try { navigator.clipboard.writeText(el.value); } catch (e) { el.select(); document.execCommand('copy'); }
+  if (wasPw) el.type = 'password';
+  var t = btn.textContent; btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = t; }, 1200);
+}
+function toggleToken(btn) {
+  var el = document.getElementById('wh-token'); if (!el) return;
+  if (el.type === 'password') { el.type = 'text'; btn.textContent = 'Hide'; }
+  else { el.type = 'password'; btn.textContent = 'Show'; }
+}
 (function () {
   var body = document.getElementById('ev-body');
   if (!body) return;  // only on the connected page
+
+  var regen = document.getElementById('wh-regen');
+  if (regen) regen.addEventListener('click', async function () {
+    if (!confirm('Regenerate the webhook token? Any ACS rule using the old token will stop reporting until updated.')) return;
+    regen.disabled = true;
+    try {
+      var r = await fetch('/api/acs/webhook-token/regenerate', { method: 'POST' });
+      var d = await r.json();
+      if (d.success && d.token) { var f = document.getElementById('wh-token'); f.value = d.token; f.type = 'text'; }
+    } catch (e) { alert('Failed to regenerate.'); }
+    regen.disabled = false;
+  });
   function esc(s) { var d = document.createElement('div'); d.textContent = (s == null ? '' : String(s)); return d.innerHTML; }
   async function loadAcsEvents() {
     var hours = document.getElementById('ev-hours').value;
