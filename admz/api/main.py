@@ -137,6 +137,15 @@ async def lifespan(app: FastAPI):
         import logging
         logging.getLogger(__name__).warning("acs event poller start failed", exc_info=True)
 
+    # ADR-0041: ACS Pro Firebird firing poller — named rule firings read from a
+    # read-only copy of ACS's embedded DB (no per-rule edit). Opt-in via
+    # acs_firebird_enabled + ACS connected + driver/files present; no-op when off.
+    try:
+        await ctx.acs_firebird_poller.start()
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("acs firebird poller start failed", exc_info=True)
+
     # Phase 7: spin up the per-principal MCP subprocess pool so the
     # first chat turn doesn't pay subprocess-spawn latency.
     from admz.chatbot.mcp_pool import mcp_pool
@@ -152,6 +161,10 @@ async def lifespan(app: FastAPI):
             pass
         try:
             await ctx.acs_event_poller.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await ctx.acs_firebird_poller.stop()
         except Exception:  # noqa: BLE001
             pass
         await ctx.health_monitor.stop()

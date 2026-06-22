@@ -142,6 +142,31 @@ async def acs_detections(request: Request):
     )
 
 
+@router.get("/api/acs/rules")
+async def acs_rules():
+    """The named action-rule inventory, read from ACS's embedded Firebird config
+    DB (read-only copy; no rule edit). Returns ``{success, available, reason,
+    rules:[{id,name,enabled,actions[]}]}``. ``available`` is False (with a reason,
+    not an error) when Firebird isn't enabled/installed — the UI degrades quietly.
+    """
+    import asyncio
+
+    from admz.modules.acs_pro.firebird import firebird_available, firebird_enabled, list_rules
+
+    if not firebird_enabled():
+        return {"success": True, "available": False,
+                "reason": "Firebird reader disabled", "rules": []}
+    ok, reason = firebird_available()
+    if not ok:
+        return {"success": True, "available": False, "reason": reason, "rules": []}
+    try:
+        rules = await asyncio.to_thread(list_rules)
+    except Exception as exc:  # noqa: BLE001
+        return {"success": False, "available": True,
+                "reason": f"read failed: {exc}", "rules": []}
+    return {"success": True, "available": True, "reason": "ok", "rules": rules}
+
+
 @router.post("/api/acs/action")
 async def acs_action(request: Request):
     """Gated ACS action from the /acs buttons (recording, live view, preset).
@@ -282,6 +307,10 @@ async def acs_page(request: Request):
     import os as _os
     host = request.headers.get("host") or f"127.0.0.1:{_os.getenv('ADMZ_PORT', '4242')}"
     scheme = request.url.scheme or "http"
+
+    # Firebird firing-reader status (named rule firings without a per-rule edit).
+    from admz.modules.acs_pro.firebird import firebird_available, firebird_enabled
+    fb_available, fb_reason = firebird_available()
     return templates.TemplateResponse(
         "acs.html",
         {
@@ -294,5 +323,9 @@ async def acs_page(request: Request):
             "cameras": cameras,
             "webhook_url": f"{scheme}://{host}{WEBHOOK_PATH}",
             "webhook_token": get_token(),
+            "firebird_enabled": firebird_enabled(),
+            "firebird_available": fb_available,
+            "firebird_reason": fb_reason,
+            "firebird_status": ctx.acs_firebird_poller.status(),
         },
     )

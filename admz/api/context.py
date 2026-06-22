@@ -87,6 +87,10 @@ class AppContext:
         return self._components.acs_event_poller
 
     @property
+    def acs_firebird_poller(self):
+        return self._components.acs_firebird_poller
+
+    @property
     def watched_event_store(self):
         return self._components.watched_event_store
 

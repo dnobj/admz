@@ -46,6 +46,31 @@
   </details>
 </div>
 
+<!-- Firebird firing reader — named firings without a per-rule edit (reads ACS's embedded DB read-only) -->
+<div style="border:1px solid var(--border);border-radius:var(--radius-lg,10px);padding:14px 16px;margin-bottom:18px;background:var(--surface)">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+    <i data-lucide="database" style="width:16px;height:16px;opacity:.8"></i>
+    <h2 class="page-title" style="font-size:15px;margin:0">Detect rule firings (Firebird, no rule edit)</h2>
+  </div>
+  <p class="page-sub" style="margin:0 0 10px">Reads a <strong>read-only copy</strong> of ACS's embedded config + log databases on this host. Catches <strong>named</strong> action-rule firings <em>without modifying any rule</em> — but only firings ACS logs as alarms, and it uses ACS's unsupported internal DB. Best paired with the webhook above (webhook = real-time + every rule; Firebird = zero-touch inventory + alarm firings).</p>
+  {% if firebird_available %}
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px">
+    <label style="display:flex;align-items:center;gap:7px;cursor:pointer">
+      <input type="checkbox" id="fb-toggle" {% if firebird_enabled and firebird_status.running %}checked{% endif %}>
+      <span>Poll for rule firings (every 30s)</span>
+    </label>
+    <span id="fb-status" class="page-sub" aria-live="polite">{% if firebird_status.running %}Running · {{ firebird_status.fired_total }} fired since start{% else %}Off{% endif %}</span>
+    <button class="btn sm ghost" id="fb-load-rules" type="button" style="margin-left:auto"><i data-lucide="list"></i> Configured action rules</button>
+  </div>
+  <div id="fb-rules" style="margin-top:10px"></div>
+  {% else %}
+  <div class="note-band amber" style="margin:0">
+    <i data-lucide="alert-triangle"></i>
+    <span>Firebird reader unavailable: {{ firebird_reason }}. {% if not firebird_enabled %}Enable it with the <code>acs_firebird_enabled</code> fleet setting once the driver/DB are present.{% endif %}</span>
+  </div>
+  {% endif %}
+</div>
+
 <table class="data-table">
   <thead><tr><th>Camera</th><th>Model</th><th>ACS camera id</th><th style="width:330px">Actions</th></tr></thead>
   <tbody>
@@ -153,6 +178,46 @@ function toggleToken(btn) {
     regen.disabled = false;
   });
   function esc(s) { var d = document.createElement('div'); d.textContent = (s == null ? '' : String(s)); return d.innerHTML; }
+
+  // Firebird firing-reader toggle + rule inventory.
+  var fbToggle = document.getElementById('fb-toggle');
+  if (fbToggle) fbToggle.addEventListener('change', async function () {
+    var on = fbToggle.checked;
+    var st = document.getElementById('fb-status');
+    fbToggle.disabled = true; st.textContent = on ? 'Starting…' : 'Stopping…';
+    try {
+      var r = await fetch('/api/events/control', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ firebird_enabled: on }),
+      });
+      var d = await r.json();
+      var fb = (d && d.acs_firebird) || {};
+      if (on && !fb.running) {
+        st.textContent = '✗ ' + (fb.last_error || fb.reason || 'could not start');
+        fbToggle.checked = false;
+      } else {
+        st.textContent = fb.running ? ('Running · ' + (fb.fired_total || 0) + ' fired since start') : 'Off';
+      }
+    } catch (e) { st.textContent = '✗ ' + e; fbToggle.checked = !on; }
+    fbToggle.disabled = false;
+  });
+  var fbLoad = document.getElementById('fb-load-rules');
+  if (fbLoad) fbLoad.addEventListener('click', async function () {
+    var box = document.getElementById('fb-rules');
+    fbLoad.disabled = true; box.innerHTML = '<span class="page-sub">Loading…</span>';
+    try {
+      var r = await fetch('/api/acs/rules');
+      var d = await r.json();
+      if (!d.available) { box.innerHTML = '<span class="page-sub">Unavailable: ' + esc(d.reason) + '</span>'; fbLoad.disabled = false; return; }
+      if (!d.rules.length) { box.innerHTML = '<span class="page-sub">No configured action rules found.</span>'; fbLoad.disabled = false; return; }
+      box.innerHTML = '<table class="data-table" style="margin-top:4px"><thead><tr><th>Rule</th><th style="width:90px">Enabled</th><th>Actions</th></tr></thead><tbody>' +
+        d.rules.map(function (ru) {
+          return '<tr><td>' + esc(ru.name) + '</td><td>' + (ru.enabled ? 'Yes' : '<span class="page-sub">No</span>') +
+            '</td><td class="page-sub">' + esc((ru.actions || []).join(', ') || '—') + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    } catch (e) { box.innerHTML = '<span class="page-sub">✗ ' + esc(String(e)) + '</span>'; }
+    fbLoad.disabled = false;
+  });
   async function loadAcsEvents() {
     var hours = document.getElementById('ev-hours').value;
     var type = document.getElementById('ev-type').value.trim();

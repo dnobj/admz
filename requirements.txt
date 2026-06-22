@@ -31,6 +31,12 @@ pysnmp>=6.0.0
 # pinned explicitly since admz/events/wsstream.py depends on it directly.
 websockets>=13.0
 
+# ADR-0041 (ACS Pro module, optional): read-only reader for ACS Pro's embedded
+# Firebird databases — named action-rule firings without a per-rule edit. Only
+# used when acs_firebird_enabled is on (Windows hosts running ACS); imported
+# lazily inside admz/modules/acs_pro/firebird.py so non-ACS hosts never need it.
+firebird-driver>=1.10; platform_system == "Windows"
+
 # Chatbot LLM client — Gemini 3.1 + native MCP tool surface.
 # Optional: the /chat route is disabled when no API key is configured,
 # and the package itself is only imported lazily inside admz/chatbot/.

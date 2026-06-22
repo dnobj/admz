@@ -40,6 +40,7 @@ from admz.fleet.health import HealthMonitor
 from admz.events.store import EventStore
 from admz.events.ingest import EventIngestSupervisor
 from admz.events.acs_ingest import AcsActionRulePoller
+from admz.events.acs_firebird_ingest import AcsFirebirdPoller
 from admz.events.detections import DetectionStore
 from admz.events.evaluator import DetectionEvaluator
 from admz.events.watched import WatchedEventStore
@@ -68,6 +69,7 @@ class Components:
     event_store: EventStore
     event_supervisor: EventIngestSupervisor
     acs_event_poller: AcsActionRulePoller
+    acs_firebird_poller: AcsFirebirdPoller
     watched_event_store: WatchedEventStore
     # ADR-0041 layer 3: event-pattern detection rules + the evaluator that fires
     # them (the supervisor's on_event callback).
@@ -388,6 +390,11 @@ def build_components(
         catalog=catalog, executors=executors, store=event_store,
         on_event=detection_evaluator.evaluate,
     )
+    # Reads ACS's embedded Firebird LOG (copy → read) for NAMED rule firings — no
+    # rule edit needed. Off unless acs_firebird_enabled + ACS connected + driver present.
+    acs_firebird_poller = AcsFirebirdPoller(
+        store=event_store, on_event=detection_evaluator.evaluate,
+    )
     # Watched events: a passive library of bookmarked event patterns (no worker,
     # no evaluator, no ingest dependency — it just feeds the detection builder).
     watched_event_store = WatchedEventStore(str(_events_db_path()))
@@ -408,6 +415,7 @@ def build_components(
         event_store=event_store,
         event_supervisor=event_supervisor,
         acs_event_poller=acs_event_poller,
+        acs_firebird_poller=acs_firebird_poller,
         watched_event_store=watched_event_store,
         detection_store=detection_store,
         detection_evaluator=detection_evaluator,
