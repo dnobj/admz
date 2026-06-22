@@ -1,6 +1,41 @@
 # Spike plan: ACS Pro action-rule reader (Firebird DB)
 
-**Status:** proposed spike — NOT yet built. Opt-in, read-only, gated on operator-supplied DB access.
+**Status:** ✅ **SPIKE COMPLETE & VALIDATED (2026-06-22)** — both goals proven live on the deployment
+host. Reader NOT yet built (awaiting go-ahead). Opt-in, read-only.
+
+## Spike results (2026-06-22) — VALIDATED
+
+ACS Pro v6.16 runs on the **same host as ADMZ**. It uses PostgreSQL for one subsystem but the classic
+**Firebird 3** `.FDB` files are live at `C:\ProgramData\Axis Communications\AXIS Camera Station Server\`:
+`ACS.FDB` (config), `ACS_LOGS.FDB` (logs), `ACS_RECORDINGS.FDB`. Engine = embedded Firebird 3
+(`...\Core\Server 6.16.19560\Firebird3_x64\fbclient.dll`; no network port). Connected **read-only against
+a copy** via the Python `firebird-driver` (installed) + the ACS `fbclient.dll`, creds **SYSDBA / masterkey**.
+
+- **Goal 1 — named rule inventory: ACHIEVED.** `ACS.FDB.RULE` (id, NAME, IS_ENABLED, …), `ACS.FDB.ACTION`
+  (ACTION_TYPE, RULE_ID, URL/METHOD/BODY for HTTP-notify, MESSAGE, PORT_ID/NEW_STATE for I/O, …), and a
+  `"TRIGGER"` table (conditions). The user's rule reads as **id 18086, name "External Trigger Example",
+  enabled** (the "test" we'd been firing is its trigger/alarm *title*).
+- **Goal 2 — generic firing detection WITHOUT modifying the rule: ACHIEVED (for alarm-raising rules).**
+  `ACS_LOGS.FDB.LOG` has `DISCRIMINATOR ∈ {AuditEventLogEntity, AlarmEntity}` and columns
+  `RULE_ID, RULE_NAME, TRIGGER_TYPE, TITLE, DESCRIPTION, CAMERA_IDS, "TIMESTAMP"`. **The `AlarmEntity`
+  rows are NAMED rule firings** — and they contained the exact external-trigger firings the recorded-events
+  **API could not see**. **Live-proven**: fired the rule → `AlarmEntity` count 32→33, a fresh row
+  `("2026-06-22 12:34:51","External Trigger Example","test")` appeared within seconds — captured, named, no
+  rule edit. Caveat: only `AlarmEntity` (alarm-action) firings log here; a rule whose action is purely
+  I/O/preset/HTTP (no alarm, no record) is still not logged anywhere — but **alarm-raising rules are exactly
+  the "I want to be notified" ones**, so this covers the real use case. ``"TIMESTAMP"``/``"TRIGGER"`` are
+  Firebird reserved words → must be quoted.
+
+**Recommended build:** a read-only `admz/modules/acs_pro/firebird.py` — auto-discover the `.FDB` + `fbclient.dll`
+from the ACS install; **read the LIVE DB via a second read-only Firebird attachment** (Firebird 3 supports
+concurrent attachments — validate carefully; avoid 22 MB copy-per-poll); (a) expose the named rule
+**inventory** (and de-anonymize the polled recorded-events firings by camera+time), and (b) **poll `LOG` for
+new `AlarmEntity` rows** (`ID > high-water`) → feed the same `source="acs"` event path as the webhook, but
+**without any rule modification**. Gate on a fleet flag; SYSDBA/masterkey + paths from the install.
+
+---
+
+**Status (original plan below):** proposed spike — gated on operator-supplied DB access.
 **Related:** ADR-0040 (ACS Pro module), ADR-0041 (activity/observability), `admz/events/acs_ingest.py`
 (anonymous, recording-only firing ingest), `admz/modules/acs_pro/webhook.py` (the supported real-time
 firing path — but requires a one-time per-rule "Send HTTP Notification" action).
