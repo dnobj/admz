@@ -34,7 +34,16 @@ logger = logging.getLogger(__name__)
 
 # Shipped, always-on GLOBAL patterns (treated as global rules). Intentionally
 # tiny — operators add the rest. New fleet-wide defaults go here over time.
-_GLOBAL_IGNORE_PATTERNS: tuple = ()
+_GLOBAL_IGNORE_PATTERNS: tuple = (
+    # The device's *observed* live IPv6 addresses — runtime state, not settable
+    # config (the whole eth0.* subtree is already RESTORE_EXCLUDE / read-only in
+    # the network facet). SLAAC/DHCPv6/temporary globals rotate with the network,
+    # so this field "drifts" on nearly every check with nothing an operator can
+    # act on. The settable static IPv6 config lives under root.Network.IPv6.*
+    # (singular IPAddress) and is untouched by this rule; observed IPv4 churn is
+    # intentionally left tracked (subnet moves can be meaningful).
+    "root.Network.eth0.IPv6.IPAddresses",
+)
 
 #: Legacy flat list (newline/comma separated), still editable in Settings; read
 #: as implicit global rules.

@@ -1066,7 +1066,9 @@ class TestIgnoreList:
                 return "root.A.Pass\n  root.B.*  \n\nroot.C, root.D" if k == ig.USER_SETTING_KEY else None
         monkeypatch.setattr(fs, "fleet_settings", _Stub())
         pats = ig.get_ignore_patterns()
-        assert pats == ["root.A.Pass", "root.B.*", "root.C", "root.D"]
+        # Built-in globals come first, then the operator's textarea patterns.
+        assert pats == list(ig._GLOBAL_IGNORE_PATTERNS) + [
+            "root.A.Pass", "root.B.*", "root.C", "root.D"]
 
     def test_user_patterns_empty_and_error_safe(self, monkeypatch):
         import admz.snapshot.ignore as ig
@@ -1107,9 +1109,10 @@ class TestScopedIgnoreRules:
             {"key": "applications:vmd.status", "scope": "tag:lab"},
             {"key": "root.G", "scope": "global"},
         ]))
+        G = set(ig._GLOBAL_IGNORE_PATTERNS)  # always-on built-in globals
         assert {r["key"] for r in ig.applicable_rules("CAM1", ["lab"])} == {
-            "root.A", "applications:vmd.status", "root.G"}
-        assert {r["key"] for r in ig.applicable_rules("CAM2", [])} == {"root.G"}
+            "root.A", "applications:vmd.status", "root.G"} | G
+        assert {r["key"] for r in ig.applicable_rules("CAM2", [])} == {"root.G"} | G
         assert ig.is_ignored("root.A.x", "CAM1", [])          # group match, device scope
         assert not ig.is_ignored("root.A.x", "CAM2", [])      # other device unaffected
         assert ig.is_ignored("applications:vmd.status", "CAMx", ["lab"])
@@ -1127,6 +1130,24 @@ class TestScopedIgnoreRules:
         assert ("root.Legacy", "global") in keys              # legacy -> global rule
         assert not ig.is_ignored("root.Weird", "CAM1", ["lab"])  # unknown scope never matches
         assert ig.is_ignored("root.Legacy", "CAM1", [])
+
+    def test_global_default_ignores_observed_ipv6(self, monkeypatch):
+        """Shipped default: the device's *observed* IPv6 address list is network
+        churn (SLAAC/DHCPv6 rotation), so it's ignored fleet-wide with no rule —
+        while the settable static IPv6 config and other read-only fields (e.g.
+        NTP server) stay tracked, and observed IPv4 churn stays visible."""
+        import admz.snapshot.ignore as ig
+        self._stub(monkeypatch)  # no user/scoped rules — only the built-in globals
+        assert "root.Network.eth0.IPv6.IPAddresses" in ig._GLOBAL_IGNORE_PATTERNS
+        # observed runtime IPv6 list → ignored for any device, no scope needed
+        assert ig.is_ignored("root.Network.eth0.IPv6.IPAddresses", "CAMx", [])
+        # settable static IPv6 config (singular) is NOT swept up by the rule
+        assert not ig.is_ignored("root.Network.IPv6.IPAddress", "CAMx", [])
+        assert not ig.is_ignored("root.Network.IPv6.DefaultRouter", "CAMx", [])
+        # other observed/read-only fields stay tracked (e.g. the NTP server)
+        assert not ig.is_ignored("root.Time.NTP.Server", "CAMx", [])
+        # observed IPv4 churn intentionally left visible (subnet moves matter)
+        assert not ig.is_ignored("root.Network.eth0.IPv4.IPAddress", "CAMx", [])
 
     def test_add_remove_dedupe(self, monkeypatch):
         import admz.snapshot.ignore as ig
