@@ -42,7 +42,8 @@ _COLS = ("id", "ts", "ts_ms", "source", "type", "device_id", "device_name", "sum
 
 
 def _default_db_path() -> Path:
-    return Path(os.getenv("ADMZ_DB_PATH", str(Path.home() / ".admz" / "admz.db")))
+    from admz.paths import db_path
+    return db_path()
 
 
 class EventStore:

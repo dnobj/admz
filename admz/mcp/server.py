@@ -60,7 +60,7 @@ from admz.firmware.downloader import (
     scan_firmware_files,
     import_firmware_files,
     default_download_dirs,
-    _DEFAULT_FIRMWARE_DIR,
+    _default_firmware_dir,
     FirmwareNotAvailableError,
     FirmwareDownloadError,
     FirmwareLoginRequiredError,
@@ -3788,7 +3788,7 @@ class ADMZMCPServer:
         cached = list_cached_firmware()
         return {
             "success": True,
-            "firmware_dir": _DEFAULT_FIRMWARE_DIR,
+            "firmware_dir": _default_firmware_dir(),
             "total_files": len(cached),
             "files": cached,
         }

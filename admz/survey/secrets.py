@@ -33,7 +33,8 @@ DEFAULT_REDACTION = "hash-serial"
 
 
 def _key_path() -> Path:
-    return Path(os.getenv("ADMZ_KEY_PATH", str(Path.home() / ".admz" / "admz.key")))
+    from admz.paths import key_path
+    return key_path()
 
 
 def _fernet():

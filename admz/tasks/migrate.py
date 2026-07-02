@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 
 
 def _default_schedules_path() -> Path:
-    return Path.home() / ".admz" / "schedules.json"
+    from admz.paths import schedules_path
+    return schedules_path()
 
 
 def migrate_legacy(

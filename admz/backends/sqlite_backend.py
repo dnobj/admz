@@ -194,17 +194,18 @@ class SQLiteDeviceRegistry(DeviceRegistry):
 
     Args:
         db_path: Path to the SQLite database file.
-                 Defaults to ``~/.admz/admz.db``.
+                 Defaults to ``ADMZ_HOME/admz.db`` (``~/.admz/admz.db``).
         key_path: Path to the Fernet encryption key file.
-                  Defaults to ``~/.admz/admz.key``.
+                  Defaults to ``ADMZ_HOME/admz.key`` (``~/.admz/admz.key``).
 
     Environment Variables:
+        ADMZ_HOME: Override the data directory (ADR-0042).
         ADMZ_DB_PATH: Override the database file path.
         ADMZ_KEY_PATH: Override the key file path.
 
     Example::
 
-        registry = SQLiteDeviceRegistry()              # ~/.admz/admz.db
+        registry = SQLiteDeviceRegistry()              # ADMZ_HOME/admz.db
         registry = SQLiteDeviceRegistry("/tmp/test.db") # custom path
     """
 
@@ -213,14 +214,10 @@ class SQLiteDeviceRegistry(DeviceRegistry):
         db_path: Optional[str] = None,
         key_path: Optional[str] = None,
     ):
-        default_dir = Path.home() / ".admz"
+        from admz import paths
 
-        self._db_path = Path(
-            db_path or os.getenv("ADMZ_DB_PATH", str(default_dir / "admz.db"))
-        )
-        self._key_path = Path(
-            key_path or os.getenv("ADMZ_KEY_PATH", str(default_dir / "admz.key"))
-        )
+        self._db_path = Path(db_path) if db_path else paths.db_path()
+        self._key_path = Path(key_path) if key_path else paths.key_path()
 
         # Ensure parent directories exist
         self._db_path.parent.mkdir(parents=True, exist_ok=True)

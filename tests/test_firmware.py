@@ -846,14 +846,14 @@ class TestUploadPathAllowList:
 
     def test_allows_path_inside_cache(self, tmp_path, monkeypatch):
         from admz.executor import vapix as vapix_module
-        monkeypatch.setattr(vapix_module, "_UPLOAD_ROOT", tmp_path)
+        monkeypatch.setattr(vapix_module, "_upload_root", lambda: tmp_path)
         fw = tmp_path / "fw.bin"
         fw.write_bytes(b"x")
         assert vapix_module._upload_path_allowed(str(fw)) is True
 
     def test_rejects_path_outside_cache(self, tmp_path, monkeypatch):
         from admz.executor import vapix as vapix_module
-        monkeypatch.setattr(vapix_module, "_UPLOAD_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(vapix_module, "_upload_root", lambda: tmp_path / "cache")
         outside = tmp_path / "secret.key"
         outside.write_bytes(b"x")
         assert vapix_module._upload_path_allowed(str(outside)) is False
@@ -862,7 +862,7 @@ class TestUploadPathAllowList:
         from admz.executor import vapix as vapix_module
         cache = tmp_path / "cache"
         cache.mkdir()
-        monkeypatch.setattr(vapix_module, "_UPLOAD_ROOT", cache)
+        monkeypatch.setattr(vapix_module, "_upload_root", lambda: cache)
         secret = tmp_path / "admz.key"
         secret.write_bytes(b"x")
         sneaky = str(cache / ".." / "admz.key")
@@ -872,7 +872,7 @@ class TestUploadPathAllowList:
         """execute() returns a failed StepResult with staging guidance,
         without attempting the file read or any HTTP."""
         from admz.executor import vapix as vapix_module
-        monkeypatch.setattr(vapix_module, "_UPLOAD_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(vapix_module, "_upload_root", lambda: tmp_path / "cache")
         outside = tmp_path / "outside.bin"
         outside.write_bytes(b"x")
         executor = VapixExecutor(timeout=1.0, retries=0)
@@ -891,7 +891,7 @@ class TestUploadPathAllowList:
         from admz.executor import vapix as vapix_module
         cache = tmp_path / "cache"
         cache.mkdir()
-        monkeypatch.setattr(vapix_module, "_UPLOAD_ROOT", cache)
+        monkeypatch.setattr(vapix_module, "_upload_root", lambda: cache)
         executor = VapixExecutor(timeout=1.0, retries=0)
         result = _run(executor.execute(
             self._upload_op(), self._device(), self._creds(),

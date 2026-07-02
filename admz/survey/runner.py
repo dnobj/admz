@@ -36,8 +36,8 @@ def _bundle_id() -> str:
 
 
 def _work_dir() -> Path:
-    import os
-    return Path(os.getenv("ADMZ_SURVEY_WORK", str(Path.home() / ".admz" / "survey-work")))
+    from admz.paths import survey_work_dir
+    return survey_work_dir()
 
 
 @dataclass

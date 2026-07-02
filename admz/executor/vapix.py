@@ -28,11 +28,13 @@ logger = logging.getLogger(__name__)
 # H-3 (review 2026-06-10): file uploads may only read from the firmware
 # cache. The upload path reaches the executor via caller-supplied operation
 # params (e.g. a chatbot tool call), so an unconstrained path would let a
-# caller read ANY host file (~/.admz/admz.key, the SQLite DB, ...) and
-# exfiltrate it to a device it controls. Mirrors
-# admz.firmware.downloader._DEFAULT_FIRMWARE_DIR (not imported — the
-# executor stays a leaf module).
-_UPLOAD_ROOT = Path.home() / ".admz" / "firmware"
+# caller read ANY host file (the Fernet key, the SQLite DB, ...) and
+# exfiltrate it to a device it controls. Resolved at CALL time via
+# admz.paths (ADR-0042) so ADMZ_HOME set after import is honored; admz.paths
+# imports only stdlib, so the executor stays a leaf module.
+def _upload_root() -> Path:
+    from admz.paths import firmware_dir
+    return firmware_dir()
 
 
 def _auth_method_from_challenge(header: Optional[str]) -> Optional[str]:
@@ -60,7 +62,7 @@ def _upload_path_allowed(file_path: str) -> bool:
     """
     try:
         resolved = Path(file_path).resolve()
-        root = _UPLOAD_ROOT.resolve()
+        root = _upload_root().resolve()
     except (OSError, ValueError):
         return False
     return resolved == root or root in resolved.parents
@@ -140,7 +142,7 @@ class VapixExecutor(BaseExecutor):
                     success=False,
                     error=(
                         "Upload file_path must be inside the firmware "
-                        f"cache ({_UPLOAD_ROOT}); got: {request.file_path}. "
+                        f"cache ({_upload_root()}); got: {request.file_path}. "
                         "Use download_firmware or import_firmware to "
                         "stage the file first."
                     ),

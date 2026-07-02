@@ -121,9 +121,8 @@ CREATE TABLE IF NOT EXISTS fleet_settings (
 
 def _default_db_path() -> Path:
     """Resolve the shared ADMZ SQLite database path."""
-    return Path(
-        os.getenv("ADMZ_DB_PATH", str(Path.home() / ".admz" / "admz.db"))
-    )
+    from admz.paths import db_path
+    return db_path()
 
 
 class FleetSettings:

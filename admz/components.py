@@ -86,29 +86,24 @@ def _default_catalog_path() -> str:
 
 
 def _default_config_repo_path() -> str:
-    return os.getenv(
-        "ADMZ_CONFIG_REPO_PATH",
-        os.path.join(os.path.expanduser("~"), ".admz", "config-repo"),
-    )
+    from admz.paths import config_repo_dir
+    return str(config_repo_dir())
 
 
 def _default_schedule_path() -> str:
-    return os.path.join(
-        os.path.expanduser("~"), ".admz", "schedules.json"
-    )
+    from admz.paths import schedules_path
+    return str(schedules_path())
 
 
 def _default_repo_path_root() -> str:
     """Parent dir under which new Org repos auto-create.
 
     Each Org's actual repo lives at ``{root}/{org_id}/``. Operators
-    override via ``ADMZ_REPO_PATH_ROOT``. The default keeps everything
-    under the existing ~/.admz/ family.
+    override via ``ADMZ_REPO_PATH_ROOT``; the default keeps everything
+    under the ADMZ_HOME family (ADR-0042).
     """
-    return os.getenv(
-        "ADMZ_REPO_PATH_ROOT",
-        os.path.join(os.path.expanduser("~"), ".admz", "repos"),
-    )
+    from admz.paths import repos_root
+    return str(repos_root())
 
 
 def _detect_existing_origin(repo_path: str) -> str:

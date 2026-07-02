@@ -122,9 +122,8 @@ CREATE INDEX IF NOT EXISTS idx_drift_alerts_device ON drift_alerts(device_id);
 
 
 def _default_db_path() -> Path:
-    return Path(
-        os.getenv("ADMZ_DB_PATH", str(Path.home() / ".admz" / "admz.db"))
-    )
+    from admz.paths import db_path
+    return db_path()
 
 
 def _signature_for(report: DriftReport) -> str:

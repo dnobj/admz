@@ -42,7 +42,8 @@ GITHUB_API = "https://api.github.com"
 
 
 def _offline_root() -> Path:
-    return Path(os.getenv("ADMZ_SURVEY_OUT", str(Path.home() / ".admz" / "survey-out")))
+    from admz.paths import survey_out_dir
+    return survey_out_dir()
 
 
 def write_offline(bundle_root: Path, *, out_dir: Optional[Path] = None) -> Path:

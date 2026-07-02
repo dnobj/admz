@@ -87,7 +87,8 @@ _COL_KEYS = [c.strip() for c in _COLS.split(",")]
 
 
 def _default_db_path() -> Path:
-    return Path(os.getenv("ADMZ_DB_PATH", str(Path.home() / ".admz" / "admz.db")))
+    from admz.paths import db_path
+    return db_path()
 
 
 def _now_iso() -> str:
