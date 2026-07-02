@@ -461,6 +461,11 @@ class VapixExecutor(BaseExecutor):
             return template  # literal string, no placeholders
 
         elif isinstance(template, dict):
+            if not template:
+                # An authored empty object is a literal (e.g. the /vapix/call
+                # command bodies {"axcall:GetSIPConfiguration": {}}) — dropping
+                # it would delete the command key itself.
+                return {}
             resolved = {}
             for k, v in template.items():
                 val = self._resolve_template(v, params)
@@ -603,10 +608,16 @@ class VapixExecutor(BaseExecutor):
         # Resolve the entire body template recursively
         body = self._resolve_template(body_template, params) or {}
 
-        # Backward compat: if template resolution didn't produce a "params"
-        # key but user provided params, put them there (e.g., operations
-        # with no typed placeholders yet)
-        if "params" not in body and params:
+        # Backward compat: JSON-RPC envelope bodies ({apiVersion, method, ...})
+        # get leftover params under a "params" key (operations with no typed
+        # placeholders yet). Command-keyed bodies (the /vapix/call service:
+        # {"axcall:GetSIPConfiguration": {}}) have no "method" envelope and
+        # reject stray keys — never inject there.
+        if (
+            "params" not in body
+            and params
+            and (not body_template or "method" in body)
+        ):
             body["params"] = params
 
         timeout_val = request_spec.get("timeout")

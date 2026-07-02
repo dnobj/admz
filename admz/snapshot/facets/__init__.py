@@ -20,6 +20,7 @@ from admz.snapshot.facets import (  # noqa: F401
     network,
     ntp,
     other_params,
+    sip,
     stream_profiles,
     time_api,
     time_config,
