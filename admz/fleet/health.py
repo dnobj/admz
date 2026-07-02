@@ -142,6 +142,13 @@ class DeviceHealthRecord:
     # Bonus fields we get from systemReady when authenticated probe works:
     uptime_seconds: Optional[int] = None
     bootid: Optional[str] = None
+    # SD-card presence from disks-list.cgi (authenticated probes only):
+    # the device's own status word ("disconnected" = empty slot, "OK" =
+    # card working, "no_slot" = device has no SD slot) + card size in kB.
+    # None = unknown (probe didn't run / failed) — the sweep then keeps
+    # the previous value instead of blanking it.
+    sd_status: Optional[str] = None
+    sd_total_kb: Optional[int] = None
     # Transient: model/serial/firmware lifted from the basicdeviceinfo
     # credential-check response (when it ran). Not persisted to the health
     # store — the sweep flushes it to the device registry instead.
@@ -158,6 +165,8 @@ class DeviceHealthRecord:
             "last_error": self.last_error,
             "uptime_seconds": self.uptime_seconds,
             "bootid": self.bootid,
+            "sd_status": self.sd_status,
+            "sd_total_kb": self.sd_total_kb,
         }
 
 
@@ -176,9 +185,18 @@ CREATE TABLE IF NOT EXISTS device_health (
     consecutive_failures   INTEGER NOT NULL DEFAULT 0,
     last_error             TEXT NOT NULL DEFAULT '',
     uptime_seconds         INTEGER,
-    bootid                 TEXT
+    bootid                 TEXT,
+    sd_status              TEXT,
+    sd_total_kb            INTEGER
 );
 """
+
+# Columns added after the table first shipped; applied via ALTER TABLE for
+# databases created before them (CREATE TABLE IF NOT EXISTS won't).
+_MIGRATION_COLUMNS = (
+    ("sd_status", "TEXT"),
+    ("sd_total_kb", "INTEGER"),
+)
 
 
 def _default_db_path() -> Path:
@@ -203,6 +221,13 @@ class DeviceHealthStore:
         try:
             with self._connect() as conn:
                 conn.executescript(_SCHEMA)
+                for col, coltype in _MIGRATION_COLUMNS:
+                    try:
+                        conn.execute(
+                            f"ALTER TABLE device_health ADD COLUMN {col} {coltype}"
+                        )
+                    except sqlite3.OperationalError:
+                        pass  # already there (fresh table or prior migration)
                 conn.commit()
         except sqlite3.Error as exc:  # pragma: no cover — defensive
             logger.warning("DeviceHealthStore table creation failed: %s", exc)
@@ -214,8 +239,9 @@ class DeviceHealthStore:
             conn.execute(
                 "INSERT INTO device_health "
                 "(device_id, status, last_check, last_seen_online, latency_ms, "
-                " consecutive_failures, last_error, uptime_seconds, bootid) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                " consecutive_failures, last_error, uptime_seconds, bootid, "
+                " sd_status, sd_total_kb) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(device_id) DO UPDATE SET "
                 "  status               = excluded.status, "
                 "  last_check           = excluded.last_check, "
@@ -224,7 +250,9 @@ class DeviceHealthStore:
                 "  consecutive_failures = excluded.consecutive_failures, "
                 "  last_error           = excluded.last_error, "
                 "  uptime_seconds       = excluded.uptime_seconds, "
-                "  bootid               = excluded.bootid",
+                "  bootid               = excluded.bootid, "
+                "  sd_status            = excluded.sd_status, "
+                "  sd_total_kb          = excluded.sd_total_kb",
                 (
                     record.device_id,
                     record.status.value,
@@ -235,6 +263,8 @@ class DeviceHealthStore:
                     record.last_error,
                     record.uptime_seconds,
                     record.bootid,
+                    record.sd_status,
+                    record.sd_total_kb,
                 ),
             )
             conn.commit()
@@ -247,7 +277,7 @@ class DeviceHealthStore:
             row = conn.execute(
                 "SELECT device_id, status, last_check, last_seen_online, "
                 "       latency_ms, consecutive_failures, last_error, "
-                "       uptime_seconds, bootid "
+                "       uptime_seconds, bootid, sd_status, sd_total_kb "
                 "FROM device_health WHERE device_id=?",
                 (device_id,),
             ).fetchone()
@@ -265,6 +295,8 @@ class DeviceHealthStore:
             last_error=row[6],
             uptime_seconds=row[7],
             bootid=row[8],
+            sd_status=row[9],
+            sd_total_kb=row[10],
         )
 
     def list_all(self) -> List[DeviceHealthRecord]:
@@ -273,7 +305,7 @@ class DeviceHealthStore:
             rows = conn.execute(
                 "SELECT device_id, status, last_check, last_seen_online, "
                 "       latency_ms, consecutive_failures, last_error, "
-                "       uptime_seconds, bootid "
+                "       uptime_seconds, bootid, sd_status, sd_total_kb "
                 "FROM device_health ORDER BY device_id"
             ).fetchall()
         finally:
@@ -289,6 +321,8 @@ class DeviceHealthStore:
                 last_error=r[6],
                 uptime_seconds=r[7],
                 bootid=r[8],
+                sd_status=r[9],
+                sd_total_kb=r[10],
             )
             for r in rows
         ]
@@ -393,6 +427,52 @@ async def _confirm_credentials(
     except Exception:
         facts = {}
     return True, facts
+
+
+SD_PROBE_OP = "disks-list.cgi:list-disks"
+
+
+async def _probe_sd_card(
+    *,
+    catalog: Any,
+    executor: Any,
+    device_info: Dict[str, Any],
+    device_id: str,
+    credentials: Dict[str, Any],
+    timeout_seconds: float,
+) -> "tuple[Optional[str], Optional[int]]":
+    """SD-card presence via ``disks-list.cgi`` (authoritative status attr).
+
+    Returns ``(status, total_kb)``; ``(None, None)`` on any failure — the
+    sweep treats that as *unknown* and keeps the previous stored value.
+    Cheap read-only CGI, same order of cost as the basicdeviceinfo
+    credential check that already runs each sweep.
+    """
+    try:
+        op = catalog.get_operation("vapix", SD_PROBE_OP)
+    except Exception:
+        op = None
+    if op is None:
+        return None, None
+    try:
+        result = await asyncio.wait_for(
+            executor.execute(
+                op.to_executor_dict(),
+                {**device_info, "device_id": device_id},
+                credentials,
+                {"diskid": "all"},
+            ),
+            timeout=timeout_seconds + 2,
+        )
+    except Exception:
+        return None, None
+    if not getattr(result, "success", False):
+        return None, None
+    try:
+        from admz.device_facts import extract_sd_card
+        return extract_sd_card(getattr(result, "parsed_data", None))
+    except Exception:
+        return None, None
 
 
 async def probe_device(
@@ -568,6 +648,15 @@ async def probe_device(
                         bootid=bootid_str,
                     )
 
+            # Same opportunistic pattern as the facts refresh: while we're
+            # authenticated anyway, note whether an SD card is actually
+            # inserted (disks-list status — root.Storage params can't tell).
+            sd_status, sd_total_kb = await _probe_sd_card(
+                catalog=catalog, executor=executor, device_info=device_info,
+                device_id=device_id, credentials=credentials,
+                timeout_seconds=timeout_seconds,
+            )
+
             return DeviceHealthRecord(
                 device_id=device_id,
                 status=DeviceHealthStatus.ONLINE,
@@ -577,6 +666,8 @@ async def probe_device(
                 consecutive_failures=0,
                 uptime_seconds=uptime_int,
                 bootid=bootid_str,
+                sd_status=sd_status,
+                sd_total_kb=sd_total_kb,
                 observed_facts=observed or None,
             )
 
@@ -759,6 +850,11 @@ class HealthMonitor:
                         record.last_seen_online = prev.last_seen_online
                     # Else (ONLINE): consecutive_failures already 0 and
                     # last_seen_online already set to now.
+                    if record.sd_status is None:
+                        # SD probe didn't run or failed this sweep — keep the
+                        # last known value rather than flapping to unknown.
+                        record.sd_status = prev.sd_status
+                        record.sd_total_kb = prev.sd_total_kb
 
                 self.store.upsert(record)
 

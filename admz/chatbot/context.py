@@ -60,19 +60,38 @@ def build_module_prompt_sections(ctx: Any = None) -> str:
 
 
 def _health_by_id() -> dict:
-    """device_id -> cached health status string (online/unreachable/…)."""
+    """device_id -> cached health record (status, SD-card presence, …)."""
     out: dict = {}
     try:
         from admz.fleet.health import device_health_store
 
         for rec in device_health_store.list_all():
             try:
-                out[rec.device_id] = rec.status.value
+                out[rec.device_id] = rec
             except Exception:  # noqa: BLE001
                 continue
     except Exception:  # noqa: BLE001
         pass
     return out
+
+
+def _sd_label(rec: Any) -> str:
+    """SD-card presence as a short roster tag, or "" when unknown.
+
+    Health-cadence data from disks-list.cgi — the status attr is the
+    authoritative inserted/not signal (slot config params are not)."""
+    status = getattr(rec, "sd_status", None)
+    if not status:
+        return ""
+    if status == "no_slot":
+        return "sd: no slot"
+    if status == "disconnected":
+        return "sd: none"
+    total_kb = getattr(rec, "sd_total_kb", None)
+    size = f" {total_kb / 1048576:.0f}GB" if total_kb else ""
+    if status == "OK":
+        return f"sd: inserted{size} OK"
+    return f"sd: inserted{size} ({status})"
 
 
 def _drift_label(device: dict) -> str:
@@ -142,9 +161,17 @@ def build_device_roster(registry: Optional[Any] = None) -> str:
 
         if d.get("host"):
             parts.append(str(d["host"]))
-        parts.append(health.get(did, "unknown"))
+        rec = health.get(did)
+        try:
+            parts.append(rec.status.value if rec is not None else "unknown")
+        except Exception:  # noqa: BLE001
+            parts.append("unknown")
         if d.get("firmware_version"):
             parts.append(f"fw {d['firmware_version']}")
+        if rec is not None:
+            sd = _sd_label(rec)
+            if sd:
+                parts.append(sd)
         drift = _drift_label(d)
         if drift:
             parts.append(drift)

@@ -143,6 +143,8 @@
         <div class="keyval"><span class="k">Status</span>
           <span class="v"><span class="health-cell" data-health-cell="{{ device.device_id }}">
             <span class="status-dot sem-grey"><span class="core"></span></span><span class="health-label">Unknown</span></span></span></div>
+        <div class="keyval" id="dd-sd-row" style="display:none"><span class="k">SD card</span>
+          <span class="v" id="dd-sd-value"></span></div>
       </div>
     </div>
 
@@ -330,6 +332,20 @@ const HEALTH = {
       cell.querySelector('.status-dot').className = 'status-dot sem-'+h.sem+(status==='online'?' pulse':'');
       cell.querySelector('.health-label').textContent = h.label + (rec && rec.latency_ms!=null ? ' · '+rec.latency_ms+'ms' : '');
     });
+    // SD-card presence (disks-list status, mined on the health cadence)
+    const mine = byId[{{ device.device_id|tojson }}];
+    if (mine && mine.sd_status) {
+      const s = mine.sd_status;
+      let label;
+      if (s === 'no_slot') label = 'No SD slot';
+      else if (s === 'disconnected') label = 'Not inserted';
+      else {
+        const size = mine.sd_total_kb ? ' · ' + (mine.sd_total_kb/1048576).toFixed(1) + ' GB' : '';
+        label = (s === 'OK' ? 'Inserted · OK' : 'Inserted · ' + s) + size;
+      }
+      document.getElementById('dd-sd-value').textContent = label;
+      document.getElementById('dd-sd-row').style.display = '';
+    }
   } catch(_) {}
 })();
 
