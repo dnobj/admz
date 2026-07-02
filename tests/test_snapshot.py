@@ -1149,8 +1149,10 @@ class TestScopedIgnoreRules:
         assert ig.is_ignored("root.Time.NTP.VolatileServer", "CAMx", [])
         assert ig.is_ignored("root.Network.DHCP.VendorClass", "CAMx", [])
         assert ig.is_ignored("root.Network.UPnP.FriendlyName", "CAMx", [])
+        # read-only NTP mirror — the ntp facet (PR #97) tracks NTP
+        # authoritatively (and revertably), so the mirror only double-reports
+        assert ig.is_ignored("root.Time.NTP.Server", "CAMx", [])
         # kept: real config / meaningful signals (per the review)
-        assert not ig.is_ignored("root.Time.NTP.Server", "CAMx", [])              # configured NTP
         assert not ig.is_ignored("root.Network.IPv6.IPAddress", "CAMx", [])       # static IPv6 config
         assert not ig.is_ignored("root.Network.IPv6.DefaultRouter", "CAMx", [])   # static gw config
         assert not ig.is_ignored("root.Network.eth0.IPAddress", "CAMx", [])       # observed IPv4 kept

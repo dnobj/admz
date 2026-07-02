@@ -79,6 +79,12 @@ _SEED_DEFAULT_RULES: tuple = (
     {"key": "root.Network.VolatileHostName.HostName", "scope": "global"},
     # Derived UPnP name ("AXIS <model> - <mac>").
     {"key": "root.Network.UPnP.FriendlyName", "scope": "global"},
+    # Read-only param MIRROR of the NTP client config. The ntp facet (PR #97)
+    # now tracks NTP authoritatively via ntp.cgi — and is revertable — so the
+    # mirror only double-reports. It also doesn't round-trip deterministically
+    # (observed live: DHCP-mode mirror flips 0.0.0.0 <-> '' across config
+    # writes). The DHCP-provided list (NTP.VolatileServer) is seeded above.
+    {"key": "root.Time.NTP.Server", "scope": "global"},
 )
 
 
