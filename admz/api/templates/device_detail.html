@@ -11,6 +11,8 @@
   <span class="last">{{ device.nickname or device.device_id }}</span>
 </div>
 
+<div id="onboarding-banner" class="message" style="display:none;margin-bottom:14px"></div>
+
 <div class="page-header">
   <div class="pt" style="display:flex;align-items:center;gap:14px">
     <span class="type-tile" style="width:40px;height:40px"><i data-lucide="video"></i></span>
@@ -320,6 +322,27 @@ const HEALTH = {
   auth_failed:{sem:'amber',label:'Auth failed'}, needs_setup:{sem:'amber',label:'Needs setup'},
   unknown:{sem:'grey',label:'Unknown'},
 };
+
+// One-line onboarding outcome after an Add Device redirect (?onboarding=…)
+(() => {
+  const status = new URLSearchParams(window.location.search).get('onboarding');
+  if (!status) return;
+  const NOTES = {
+    provisioned: ['success', 'Device was factory-defaulted — an admin account was provisioned automatically from fleet settings.'],
+    fleet_credentials_saved: ['success', 'Fleet default credentials authenticated and were saved for this device.'],
+    already_credentialed: ['success', 'Stored credentials verified — device is ready.'],
+    provision_failed: ['error', 'Automatic provisioning failed — see the health status below.'],
+    error: ['error', 'Credential onboarding could not run — set credentials from the Accounts section.'],
+  };
+  const note = NOTES[status];
+  if (!note) return;
+  const banner = document.getElementById('onboarding-banner');
+  banner.textContent = note[1];
+  banner.className = 'message ' + note[0];
+  banner.style.display = 'block';
+  // Drop the param so a refresh doesn't re-announce it.
+  history.replaceState(null, '', window.location.pathname);
+})();
 (async () => {
   try {
     const resp = await fetch('/api/fleet/health'); if (!resp.ok) return;

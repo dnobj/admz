@@ -26,6 +26,7 @@ EXPECTED_TOOL_ORDER = [
     "search_devices",
     "list_accounts",
     "register_device",
+    "onboard_device",
     "add_account",
     "update_device",
     "update_device_tags",

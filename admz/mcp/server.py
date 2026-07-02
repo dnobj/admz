@@ -618,6 +618,32 @@ class ADMZMCPServer:
                     },
                 ),
                 Tool(
+                    name="onboard_device",
+                    description=(
+                        "Resolve credentials for a registered device that has none "
+                        "(or whose stored credentials stopped working) — all "
+                        "server-side, no password enters this conversation. "
+                        "Order: verify stored credentials; if the device is "
+                        "factory-defaulted, auto-provision an admin account from "
+                        "fleet settings; else try the fleet default credential "
+                        "pair and save it if it authenticates. Only when none of "
+                        "those work does it open a credential-capture session "
+                        "(shown to the user as a secure form card in the ADMZ "
+                        "console). register_device already runs this "
+                        "automatically for new devices."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID to onboard",
+                            },
+                        },
+                        "required": ["device_id"],
+                    },
+                ),
+                Tool(
                     name="add_account",
                     description=(
                         "Add a new account to an existing device. Requires device_id, "
@@ -1911,13 +1937,72 @@ class ADMZMCPServer:
         device_info: Dict[str, Any],
         accounts: Optional[Dict[str, Dict[str, Any]]],
     ) -> Dict[str, Any]:
-        """Register a new device."""
+        """Register a new device, then resolve its credentials automatically."""
         self.registry.add_device(device_id, device_info, accounts)
+        onboarding = await self._onboard_device(device_id)
         return {
             "success": True,
-            "message": f"Device '{device_id}' registered successfully",
+            "message": (
+                f"Device '{device_id}' registered. "
+                + str(onboarding.get("message", ""))
+            ).strip(),
             "device_id": device_id,
+            "onboarding": onboarding,
         }
+
+    async def _onboard_device(self, device_id: str) -> Dict[str, Any]:
+        """Resolve a device's credentials without any password entering
+        context: verify stored creds / auto-provision a factory-default
+        device from fleet settings / try-and-save the fleet credential
+        pair — and only if none of those work, open a capture session
+        (the chat console renders it as a secure credential-form card).
+        """
+        from admz.onboarding import (
+            ALREADY_CREDENTIALED,
+            CREDENTIALS_NEEDED,
+            FLEET_CREDENTIALS_SAVED,
+            PROVISIONED,
+            onboard_device_credentials,
+        )
+
+        result = await onboard_device_credentials(
+            device_id=device_id,
+            registry=self.registry,
+            catalog=self.catalog,
+            executors=self.executors,
+        )
+        status = result.get("status")
+        if status == ALREADY_CREDENTIALED:
+            result["message"] = "Stored credentials verified — device is ready."
+        elif status == PROVISIONED:
+            result["message"] = (
+                "Device was factory-defaulted; an admin account was "
+                "provisioned automatically from fleet settings "
+                f"(password source: {result.get('password_source')}). "
+                "The password was stored server-side and is not available here."
+            )
+        elif status == FLEET_CREDENTIALS_SAVED:
+            result["message"] = (
+                "The fleet default credentials authenticated and were saved "
+                "as this device's account — no user action needed."
+            )
+        elif status == CREDENTIALS_NEEDED:
+            session = capture_store.create_session(
+                device_id=device_id,
+                purpose="Device onboarding — automatic resolution failed",
+            )
+            base_url = os.getenv("ADMZ_BASE_URL", "http://localhost:4242").rstrip("/")
+            result["capture_url"] = f"{base_url}/capture/{session.token}"
+            result["capture_token"] = session.token
+            result["message"] = (
+                "Automatic credential resolution failed "
+                f"({result.get('reason', 'unknown')}). A credential capture "
+                "session was opened — the ADMZ console displays it as a "
+                "secure form card in this chat. Tell the user to click the "
+                "card and enter the device's credentials there; do NOT "
+                "repeat the raw URL in your reply."
+            )
+        return result
 
     async def _add_account(
         self,
@@ -2069,9 +2154,12 @@ class ADMZMCPServer:
         result: Dict[str, Any] = {
             "success": True,
             "message": (
-                "Credential capture URL generated. "
-                "Present this link to the user — credentials entered via "
-                "this URL will NOT appear in the chat context."
+                "Credential capture session created. The ADMZ console "
+                "displays it as a secure form card in this chat — tell the "
+                "user to click the card and enter credentials there (they "
+                "never enter the chat context). Do NOT repeat the raw URL "
+                "in your reply; only share the URL if the user is not in "
+                "the ADMZ console."
             ),
             "url": url,
             "token": session.token,
@@ -2084,9 +2172,11 @@ class ADMZMCPServer:
             result["device_ids"] = all_ids
             result["device_count"] = len(all_ids)
             result["message"] = (
-                f"Batch credential capture URL generated for {len(all_ids)} devices. "
-                "Present this link to the user — one form submission saves "
-                "credentials to all listed devices."
+                f"Batch credential capture session created for {len(all_ids)} "
+                "devices — one form submission saves credentials to all of "
+                "them. The ADMZ console displays it as a secure form card in "
+                "this chat; tell the user to click the card. Do NOT repeat "
+                "the raw URL in your reply."
             )
 
         return result
@@ -2832,13 +2922,15 @@ class ADMZMCPServer:
             "tags": arguments.get("tags", []),
         }
         self.registry.add_device(device_id, device_info)
+        onboarding = await self._onboard_device(device_id)
         return {
             "success": True,
             "message": (
-                f"Device '{device_id}' registered. Use capture_credentials "
-                "to set credentials via the out-of-band URL flow."
-            ),
+                f"Device '{device_id}' registered. "
+                + str(onboarding.get("message", ""))
+            ).strip(),
             "device_id": device_id,
+            "onboarding": onboarding,
         }
 
     async def _reconcile_device_addresses(

@@ -1,6 +1,6 @@
 # ADMZ MCP Tools Reference
 
-Complete reference for the **52 tools** the ADMZ MCP server exposes.
+Complete reference for the **53 tools** the ADMZ MCP server exposes.
 
 > Note: a `get_credentials` MCP tool used to exist. It was **removed**
 > (CR-1) because returning plaintext passwords into LLM context violates
@@ -42,10 +42,23 @@ Search by tags, location, or model.
 - **Returns:** `{success, count, devices, filters}`
 
 ### `register_device`
-Add a new device.
+Add a new device, then resolve its credentials automatically (see
+`onboard_device` for the resolution order).
 - **Args:** `device_id`, `device_info` (object), `accounts` (object, optional)
-- **Returns:** `{success, device_id}`
+- **Returns:** `{success, device_id, onboarding: {status, …}}`
 - **Errors:** `BackendError` (duplicate)
+
+### `onboard_device`
+Resolve credentials for a registered device server-side — no password
+enters the conversation. Order: verify stored credentials
+(`already_credentialed`) → factory-defaulted device auto-provisioned from
+fleet settings (`provisioned`) → fleet `default_username`/`default_password`
+pair tried and saved if it authenticates (`fleet_credentials_saved`) →
+otherwise a capture session is opened (`credentials_needed` +
+`capture_url`; the chat console renders it as a secure form card).
+`register_device` runs this automatically for new devices.
+- **Args:** `device_id`
+- **Returns:** `{status, device_id, message, …}` (never a password)
 
 ### `update_device`
 Merge updates into a device's information.
@@ -226,9 +239,10 @@ Add a discovered device to the registry.
 - **Args:** `device_id`, `ip_address`, `mac_address` (optional),
   `model` (optional), `hostname` (optional), `device_type` (optional),
   `tags` (array, optional)
-- **Returns:** `{success, device_id}`
-- The device is created without credentials. Use `capture_credentials`
-  to set them via the OOB flow.
+- **Returns:** `{success, device_id, onboarding: {status, …}}`
+- Credential onboarding runs automatically after registration (same flow
+  as `onboard_device`); a capture session is opened only when the
+  automatic resolution fails.
 
 ### `reconcile_device_addresses`
 Run a discovery scan and update any registered device whose **MAC** now

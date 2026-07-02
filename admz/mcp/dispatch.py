@@ -70,6 +70,10 @@ async def _list_accounts(ctx, a):
     return await ctx.server._list_accounts(a["device_id"])
 
 
+async def _onboard_device(ctx, a):
+    return await ctx.server._onboard_device(a["device_id"])
+
+
 async def _register_device(ctx, a):
     return await ctx.server._register_device(
         a["device_id"], a["device_info"], a.get("accounts")
@@ -304,6 +308,7 @@ TOOL_HANDLERS: Dict[str, ToolHandler] = {
     "search_devices": _search_devices,
     "list_accounts": _list_accounts,
     "register_device": _register_device,
+    "onboard_device": _onboard_device,
     "add_account": _add_account,
     "update_device": _update_device,
     "update_device_tags": _update_device_tags,

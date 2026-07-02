@@ -93,7 +93,8 @@ async def execute_on_host(
 
 
 def store_provisioned_creds(
-    registry: Any, device_id: str, username: str, password: str
+    registry: Any, device_id: str, username: str, password: str,
+    purpose: str = "Provisioned by provision_device",
 ) -> None:
     """Store the provisioned admin credential as the device's ``default``
     account (replacing any existing one)."""
@@ -101,7 +102,7 @@ def store_provisioned_creds(
         "username": username,
         "password": password,
         "account_type": "admin",
-        "purpose": "Provisioned by provision_device",
+        "purpose": purpose,
     }
     if registry.account_exists(device_id, "default"):
         registry.remove_account(device_id, "default")
