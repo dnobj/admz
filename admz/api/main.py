@@ -111,6 +111,15 @@ async def lifespan(app: FastAPI):
             "task context install failed", exc_info=True
         )
 
+    # Seed shipped default ignore rules (observed network/DHCP churn) into
+    # the operator-editable store, once each — idempotent + deletion-safe.
+    try:
+        from admz.snapshot.ignore import seed_default_rules
+        seed_default_rules()
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("ignore-rule seeding failed", exc_info=True)
+
     await ctx.scheduler.start()
 
     # Device health monitor: opt-in via the health_monitor_enabled
