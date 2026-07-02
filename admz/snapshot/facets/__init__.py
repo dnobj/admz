@@ -16,6 +16,7 @@ from admz.snapshot.facets import (  # noqa: F401
     events,
     image,
     network,
+    ntp,
     other_params,
     stream_profiles,
     time_config,

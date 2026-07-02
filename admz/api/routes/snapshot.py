@@ -886,7 +886,12 @@ async def check_drift(
                 fld["canonical_key"] = facet.canonical_key(fld.get("path"))
             revertable = False
             reason = "read-only"
-            if str(fld.get("expected")) == "<missing>":
+            if facet is not None and facet.op_revertable(fld.get("path")):
+                # API-backed facet: revert writes the whole baseline object
+                # through the facet's own setter — covers value changes AND
+                # live-added fields (the write-back removes additions).
+                revertable = True
+            elif str(fld.get("expected")) == "<missing>":
                 reason = "added"  # appeared live; no baseline value to restore
             elif facet is not None and facet.revert_param(
                 fld.get("path"), fld.get("expected")

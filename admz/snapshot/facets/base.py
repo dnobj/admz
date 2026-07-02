@@ -112,6 +112,35 @@ class FacetAdapter(ABC):
         """
         return None
 
+    def op_revertable(self, path: str) -> bool:
+        """Whether a targeted revert can write this field back through the
+        facet's OWN API (see build_revert_ops) rather than param.cgi. Drives
+        the drift report's ``revertable`` annotation for API-backed facets.
+
+        Note this may be True even when the field *appeared* live
+        (``expected == "<missing>"``): op-level revert writes the whole
+        baseline object, which removes live additions — something the
+        param.cgi path can never do. Default: no op-level revert."""
+        return False
+
+    def build_revert_ops(
+        self,
+        drifted: "List[tuple[str, Any]]",
+        baseline_doc: Dict[str, Any],
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Facet-level targeted revert for API-backed facets (ntp, schedules,
+        MQTT bridge, ...): their config is a single object behind a dedicated
+        setter op, so reverting even ONE drifted field means writing the full
+        baseline object back.
+
+        ``drifted`` is this facet's drifted (path, baseline_value) pairs —
+        informational, since the write is whole-object; ``baseline_doc`` is
+        the facet's full YAML doc at the device's baseline commit. Return
+        plan-step dicts (``{"operation_id", "params", "description"}`` —
+        device_id/risk are added by the plan builder), or None when this facet
+        has no op-level revert (the default; param facets use revert_param)."""
+        return None
+
     def canonical_key(self, path: str) -> str:
         """The cross-facet identifier for a drifted/serialized field — what the
         ignore list matches against, so one rule model addresses any config
