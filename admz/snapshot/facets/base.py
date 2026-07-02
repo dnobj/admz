@@ -66,8 +66,15 @@ class FacetAdapter(ABC):
     ) -> bool:
         model = device_info.get("model", "")
         device_type = device_info.get("device_type", "")
-        family = device_info.get("api_family", "vapix")
-        firmware = device_info.get("firmware", "")
+        family = device_info.get("api_family") or "vapix"
+        # The registry stores the observed firmware as ``firmware_version``
+        # (refresh-info); ``firmware`` is a legacy/alternate field. Missing →
+        # "" so a min_firmware criterion correctly fails closed.
+        firmware = (
+            device_info.get("firmware")
+            or device_info.get("firmware_version")
+            or ""
+        )
 
         if criteria.device_types and device_type not in criteria.device_types:
             return False
@@ -125,20 +132,21 @@ class FacetAdapter(ABC):
 
     def build_revert_ops(
         self,
-        drifted: "List[tuple[str, Any]]",
+        drifted: "List[tuple[str, Any, Any]]",
         baseline_doc: Dict[str, Any],
     ) -> Optional[List[Dict[str, Any]]]:
         """Facet-level targeted revert for API-backed facets (ntp, schedules,
-        MQTT bridge, ...): their config is a single object behind a dedicated
-        setter op, so reverting even ONE drifted field means writing the full
-        baseline object back.
+        MQTT bridge, ...): their config lives behind dedicated setter ops, so
+        reverting a drifted field means writing the baseline object back.
 
-        ``drifted`` is this facet's drifted (path, baseline_value) pairs —
-        informational, since the write is whole-object; ``baseline_doc`` is
-        the facet's full YAML doc at the device's baseline commit. Return
-        plan-step dicts (``{"operation_id", "params", "description"}`` —
-        device_id/risk are added by the plan builder), or None when this facet
-        has no op-level revert (the default; param facets use revert_param)."""
+        ``drifted`` is this facet's drifted (path, baseline_value, live_value)
+        triples — ``"<missing>"`` marks a side where the field is absent, which
+        collection facets use to distinguish update vs re-create vs delete.
+        ``baseline_doc`` is the facet's full YAML doc at the device's baseline
+        commit. Return plan-step dicts (``{"operation_id", "params",
+        "description"}`` — device_id/risk are added by the plan builder), or
+        None when this facet has no op-level revert (the default; param facets
+        use revert_param)."""
         return None
 
     def canonical_key(self, path: str) -> str:

@@ -226,7 +226,9 @@ class RestoreBuilder:
                 continue
             try:
                 steps_for_facet = facet.build_revert_ops(
-                    [(f.path, f.expected) for f in fields], baseline_doc
+                    [(f.path, f.expected, getattr(f, "actual", None))
+                     for f in fields],
+                    baseline_doc,
                 )
             except Exception:  # noqa: BLE001 — one bad facet must not kill the plan
                 logger.warning(

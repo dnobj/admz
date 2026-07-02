@@ -630,11 +630,15 @@ class VapixExecutor(BaseExecutor):
         sub_path = operation.get("path", "")
         full_path = base_path + sub_path
 
-        # Substitute path parameters
+        # Substitute path parameters. A param consumed by the path must NOT
+        # also ride in the JSON body (PATCH /schedules/{id1} with body
+        # {"id1": ..., "data": ...} confuses strict config-rest handlers).
+        body_params = dict(params)
         for k, v in params.items():
             placeholder = "{" + k + "}"
             if placeholder in full_path:
-                full_path = full_path.replace(placeholder, v)
+                full_path = full_path.replace(placeholder, str(v))
+                body_params.pop(k, None)
 
         request_spec = operation.get("request", {})
         timeout_val = request_spec.get("timeout")
@@ -643,7 +647,7 @@ class VapixExecutor(BaseExecutor):
         return ExecutionRequest(
             method=operation.get("method", "GET"),
             path=full_path,
-            json_body=params if params else None,
+            json_body=body_params if body_params else None,
             content_type="application/json"
             if operation.get("method", "GET") != "GET"
             else None,

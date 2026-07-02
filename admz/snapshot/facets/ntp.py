@@ -103,7 +103,7 @@ class NtpFacet(FacetAdapter):
         params = self._setter_params(baseline_doc)
         if params is None:
             return None
-        fields = ", ".join(sorted(p for p, _ in drifted)) or "config"
+        fields = ", ".join(sorted(p for p, *_ in drifted)) or "config"
         return [{
             "operation_id": "ntp.cgi:setNTPClientConfiguration",
             "params": params,
