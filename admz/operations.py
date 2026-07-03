@@ -147,6 +147,34 @@ def blocked_envelope(
     }
 
 
+def missing_credentials_warning(
+    registry: Any, device_id: str, family: str = "vapix"
+) -> str:
+    """Non-empty warning when the device has no stored credentials.
+
+    Every gated vapix operation authenticates, so approving one against a
+    credential-less device just burns the approval on a 401. Best-effort:
+    no registry at gate time (some callers pass None) or a lookup error
+    means no warning — the gate itself must never break on this check.
+    """
+    if family != "vapix" or registry is None:
+        return ""
+    try:
+        creds = registry.get_credentials(device_id)
+    except AccountNotFoundError:
+        creds = None
+    except Exception:  # noqa: BLE001 - backend hiccup: can't tell, don't cry wolf
+        return ""
+    if creds and creds.get("password"):
+        return ""
+    return (
+        "NOTE: ADMZ has no stored credentials for this device — this "
+        "operation requires authentication and will fail with 401 if "
+        "approved. Set credentials first (onboard the device or use the "
+        "credential capture form)."
+    )
+
+
 # --------------------------------------------------------------------------
 # The execution tail (formerly duplicated in server.py, catalog.py, engine.py)
 # --------------------------------------------------------------------------
@@ -301,6 +329,14 @@ async def execute_gated_operation(
             reason = op.service_impact
         else:
             reason = block_reason(risk, level)
+        # Don't let the user approve something doomed to 401: every gated
+        # vapix op authenticates, so if ADMZ holds no credentials for the
+        # device, say so on the confirm card BEFORE they click approve.
+        # (Live case: an approved factory reset failed with 401 because the
+        # device had never been onboarded.)
+        cred_warning = missing_credentials_warning(registry, device_id, family)
+        if cred_warning:
+            reason = f"{reason} {cred_warning}".strip()
         session = store.create_session(
             device_id=device_id,
             operation_id=operation_id,
@@ -311,7 +347,11 @@ async def execute_gated_operation(
             danger_description=reason,
             ttl=CONFIRM_TOKEN_TTL_SECONDS,
         )
-        return blocked_envelope(session, reason=reason)
+        env = blocked_envelope(session, reason=reason)
+        if cred_warning:
+            env["credential_warning"] = cred_warning
+            env["message"] = f"{env.get('message', '')} {cred_warning}".strip()
+        return env
 
     result = await run_execution_tail(
         device_id=device_id,

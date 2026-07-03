@@ -2402,8 +2402,9 @@ class ADMZMCPServer:
                 family=family,
                 params=params or {},
                 catalog=self.catalog,
-                # registry/executors are only used on the execute path; a gated
-                # op returns the blocked envelope before touching them.
+                # executors are only used on the execute path; the gate also
+                # reads the registry to warn when the device has no stored
+                # credentials (the approval would just fail with 401).
                 registry=getattr(self, "registry", None),
                 executors=getattr(self, "executors", None),
             )

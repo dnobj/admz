@@ -128,6 +128,71 @@ async def test_reason_prefers_danger_description(store, monkeypatch):
     assert "wipes all settings" in result["reason"]
 
 
+# --- credential warning on the gate ----------------------------------------
+# A gated vapix op against a device with no stored credentials will 401 on
+# approval — the confirm card must say so BEFORE the user clicks approve
+# (live case: an approved factory reset burned on 401, P3408 2026-07-03).
+
+
+class _NoCredsRegistry(_FakeRegistry):
+    def get_credentials(self, device_id):
+        from admz.exceptions import AccountNotFoundError
+
+        raise AccountNotFoundError("no account")
+
+
+class _BrokenRegistry(_FakeRegistry):
+    def get_credentials(self, device_id):
+        raise RuntimeError("backend down")
+
+
+@pytest.mark.asyncio
+async def test_gate_warns_when_device_has_no_credentials(store, monkeypatch):
+    monkeypatch.setattr(operations, "resolve_confirmation", lambda r: "url_and_password")
+    result = await operations.execute_gated_operation(
+        device_id="dev", operation_id="test:op", family="vapix", params={},
+        catalog=_FakeCatalog("dangerous"), registry=_NoCredsRegistry(),
+        executors=_executors(), store=store,
+    )
+    assert result["blocked"] is True
+    assert "no stored credentials" in result["credential_warning"]
+    assert "no stored credentials" in result["message"]
+    # …and the confirm page / chat approval card render danger_description:
+    session = store.get_session(result["confirm_token"])
+    assert "no stored credentials" in session.danger_description
+
+
+@pytest.mark.asyncio
+async def test_gate_no_warning_when_credentials_stored(store, monkeypatch):
+    monkeypatch.setattr(operations, "resolve_confirmation", lambda r: "url_only")
+    result = await operations.execute_gated_operation(
+        device_id="dev", operation_id="test:op", family="vapix", params={},
+        catalog=_FakeCatalog("service-affecting"), registry=_FakeRegistry(),
+        executors=_executors(), store=store,
+    )
+    assert result["blocked"] is True
+    assert "credential_warning" not in result
+    session = store.get_session(result["confirm_token"])
+    assert "no stored credentials" not in session.danger_description
+
+
+def test_warning_helper_edges():
+    # No registry at gate time / non-vapix family / backend hiccup → silent.
+    assert operations.missing_credentials_warning(None, "dev") == ""
+    assert operations.missing_credentials_warning(_NoCredsRegistry(), "dev", "acs-pro") == ""
+    assert operations.missing_credentials_warning(_BrokenRegistry(), "dev") == ""
+    # Missing account or empty password → warn.
+    assert "no stored credentials" in operations.missing_credentials_warning(
+        _NoCredsRegistry(), "dev")
+
+    class _EmptyPw(_FakeRegistry):
+        def get_credentials(self, device_id):
+            return {"username": "root", "password": ""}
+
+    assert "no stored credentials" in operations.missing_credentials_warning(
+        _EmptyPw(), "dev")
+
+
 # --- run_execution_tail typed errors --------------------------------------
 
 
