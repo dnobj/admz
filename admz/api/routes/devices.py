@@ -856,6 +856,22 @@ async def queue_recovery(
             status_code=400,
             detail="Only 'reprovision' is queueable here; remove a device via DELETE.",
         )
+
+    # Non-interactive callers take the confirmation widget — same policy as
+    # /api/tasks (the console's Recovery card is exempt: a human clicked it).
+    from admz.tasks.gated import describe_create, gate_task_write, is_interactive
+    if not is_interactive(principal):
+        spec = {
+            "trigger_kind": "detection", "action_type": "reprovision",
+            "device_id": device_id, "event": "on_needs_setup",
+            "action_params": {"username": req.username},
+            "description": (
+                f"Re-provision {device_id} when it returns factory-defaulted"
+            ),
+        }
+        return gate_task_write("create_task", device_id, spec,
+                               describe_create(spec))
+
     pid = pending_actions.create(
         device_id=device_id,
         action={"action": "reprovision", "username": req.username},

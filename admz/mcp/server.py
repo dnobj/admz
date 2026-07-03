@@ -2978,39 +2978,40 @@ class ADMZMCPServer:
         any registered job (snapshot, drift_audit, …) through the
         same tool. Defaults to 'snapshot' for back-compat with the
         original tool contract."""
-        from admz.snapshot.scheduler import list_job_types
+        from admz.tasks.gated import (
+            TaskSpecError,
+            describe_create,
+            gate_task_write,
+            validate_create_spec,
+        )
 
-        if job_type not in list_job_types():
-            return {
-                "success": False,
-                "error": (
-                    f"Unknown job_type {job_type!r}. "
-                    f"Registered: {list_job_types()}."
-                ),
-            }
+        spec = {
+            "trigger_kind": "schedule",
+            "action_type": job_type,
+            "task_id": schedule_id,
+            "description": description,
+            "interval": interval,
+            "tag_filter": tag_filter,
+            "device_ids": device_ids,
+        }
+        # Fail fast on a bad spec so the user isn't asked to approve a
+        # creation that would only error after their click.
         try:
-            interval_seconds = parse_interval(interval)
-        except ValueError as e:
+            validate_create_spec(spec, self.registry)
+        except TaskSpecError as e:
             return {"success": False, "error": str(e)}
 
-        schedule = SnapshotSchedule(
-            id=schedule_id,
-            description=description,
-            interval_seconds=interval_seconds,
-            tag_filter=tag_filter,
-            device_ids=device_ids,
-            job_type=job_type,
-        )
-        self.scheduler.add_schedule(schedule)
-
-        return {
-            "success": True,
-            "message": (
-                f"Schedule '{schedule_id}' created — {job_type} every "
-                f"{schedule.interval_human}"
-            ),
-            "schedule": schedule.to_dict(),
-        }
+        # Creating standing behavior gates like any other write — the task
+        # is written only when the user approves the card.
+        target = f"tag:{tag_filter}" if tag_filter else (
+            device_ids[0] if device_ids else "fleet")
+        env = gate_task_write(
+            "create_task", target, spec, describe_create(spec))
+        env["message"] = (
+            f"{env.get('message', '')} The schedule '{schedule_id}' will be "
+            "created only when the user approves the confirmation card."
+        ).strip()
+        return env
 
     async def _list_snapshot_schedules(self) -> Dict[str, Any]:
         schedules = self.scheduler.list_schedules()
@@ -3023,31 +3024,31 @@ class ADMZMCPServer:
     async def _update_snapshot_schedule(
         self, schedule_id: str, updates: Dict[str, Any]
     ) -> Dict[str, Any]:
-        kwargs = {}
+        from admz.tasks.gated import describe_update, gate_task_write
+
+        # Fail fast: unknown schedule / bad interval shouldn't reach a card.
+        task = self.scheduler.store.get(schedule_id)
+        if task is None:
+            return {"success": False,
+                    "error": f"Schedule not found: {schedule_id}"}
         if "interval" in updates:
             try:
-                kwargs["interval_seconds"] = parse_interval(updates["interval"])
+                parse_interval(updates["interval"])
             except ValueError as e:
                 return {"success": False, "error": str(e)}
-        if "enabled" in updates:
-            kwargs["enabled"] = updates["enabled"]
-        if "tag_filter" in updates:
-            kwargs["tag_filter"] = updates["tag_filter"]
-        if "description" in updates:
-            kwargs["description"] = updates["description"]
 
-        schedule = self.scheduler.update_schedule(schedule_id, **kwargs)
-        if not schedule:
-            return {
-                "success": False,
-                "error": f"Schedule not found: {schedule_id}",
-            }
-
-        return {
-            "success": True,
-            "message": f"Schedule '{schedule_id}' updated",
-            "schedule": schedule.to_dict(),
-        }
+        fields = {k: updates[k] for k in
+                  ("interval", "enabled", "tag_filter", "description")
+                  if k in updates}
+        payload = {"task_id": schedule_id, **fields}
+        env = gate_task_write(
+            "update_task", schedule_id, payload,
+            describe_update(schedule_id, fields))
+        env["message"] = (
+            f"{env.get('message', '')} The changes apply only when the user "
+            "approves the confirmation card."
+        ).strip()
+        return env
 
     async def _delete_snapshot_schedule(
         self, schedule_id: str
@@ -3212,22 +3213,29 @@ class ADMZMCPServer:
         if intent != "reprovision":
             return {"success": False,
                     "error": f"Unsupported intent '{intent}' (only 'reprovision')"}
-        pid = pending_actions.create(
-            device_id=device_id,
-            action={"action": "reprovision", "username": username},
-            trigger=TRIGGER_NEEDS_SETUP,
-            approved_by=self.principal.name,
-            description=f"Re-provision {device_id} when it returns factory-defaulted",
-        )
-        return {
-            "success": True, "queued": True, "pending_id": pid,
-            "device_id": device_id, "trigger": TRIGGER_NEEDS_SETUP,
-            "message": (
-                "Re-provision queued. It fires on the next health check once the "
-                "device reports factory-defaulted (now, or after a future reset). "
-                "Requires the health monitor to be enabled."
+        # A detection task is standing behavior — it now takes the same
+        # confirmation card as any other write (the widget click IS the
+        # pre-authorization; approved_by records who clicked).
+        from admz.tasks.gated import describe_create, gate_task_write
+
+        spec = {
+            "trigger_kind": "detection",
+            "action_type": "reprovision",
+            "device_id": device_id,
+            "event": "on_needs_setup",
+            "action_params": {"username": username},
+            "description": (
+                f"Re-provision {device_id} when it returns factory-defaulted"
             ),
         }
+        env = gate_task_write(
+            "create_task", device_id, spec, describe_create(spec))
+        env["message"] = (
+            f"{env.get('message', '')} The re-provision is armed only when "
+            "the user approves the confirmation card; it then fires on the "
+            "next health check once the device reports factory-defaulted."
+        ).strip()
+        return env
 
     def _list_device_recovery(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         from admz.fleet.pending_actions import pending_actions

@@ -628,9 +628,60 @@ def _action_delete_device(
     }
 
 
+def _action_create_task(
+    action: Mapping[str, Any], registry: Any, git_repo: Any = None,
+) -> Dict[str, Any]:
+    """Approved create-task: write the task the session was holding.
+
+    The scheduler lives on the app context — approvals always execute in
+    the uvicorn process (web form or chat twin), where it exists."""
+    from admz.api.context import get_context
+    from admz.tasks.gated import TaskSpecError, apply_create_task
+
+    spec = {k: v for k, v in action.items()
+            if k not in ("action", "_confirmed_by")}
+    try:
+        task = apply_create_task(
+            spec,
+            scheduler=get_context().scheduler,
+            registry=registry,
+            approved_by=action.get("_confirmed_by") or "confirm-widget",
+        )
+    except TaskSpecError as exc:
+        return {"success": False, "action": "create_task", "error": str(exc)}
+    return {
+        "success": True, "action": "create_task", "task": task,
+        "message": f"Task '{task.get('id')}' created.",
+    }
+
+
+def _action_update_task(
+    action: Mapping[str, Any], registry: Any, git_repo: Any = None,
+) -> Dict[str, Any]:
+    """Approved update-task: apply the held field changes."""
+    from admz.api.context import get_context
+    from admz.tasks.gated import TaskSpecError, apply_update_task
+
+    task_id = action.get("task_id") or ""
+    fields = {k: v for k, v in action.items()
+              if k not in ("action", "task_id", "_confirmed_by")}
+    try:
+        task = apply_update_task(
+            task_id, fields, scheduler=get_context().scheduler,
+        )
+    except TaskSpecError as exc:
+        return {"success": False, "action": "update_task", "error": str(exc)}
+    return {
+        "success": True, "action": "update_task", "task": task,
+        "message": f"Task '{task_id}' updated.",
+    }
+
+
 _ACTION_EXECUTORS = {
     "accept_baseline": _action_accept_baseline,
     "delete_device": _action_delete_device,
+    "create_task": _action_create_task,
+    "update_task": _action_update_task,
 }
 
 
@@ -681,7 +732,9 @@ async def execute_approved_session(
     were marked approved but never executed. Returns a normalized outcome dict.
     """
     if session.is_action:
-        action = session.action
+        action = dict(session.action)
+        # Who clicked approve — task creations record it as approved_by.
+        action["_confirmed_by"] = session.confirmed_by
         executor = _ACTION_EXECUTORS.get(action.get("action", ""))
         if executor is None:
             return {
