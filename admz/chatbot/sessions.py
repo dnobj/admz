@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,7 +43,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
 CREATE TABLE IF NOT EXISTS chat_history (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     principal    TEXT NOT NULL,
-    role         TEXT NOT NULL,        -- 'user' | 'model'
+    role         TEXT NOT NULL,        -- 'user' | 'model' | 'event'
     text         TEXT NOT NULL,
     created_at   TEXT NOT NULL
 );
@@ -61,6 +62,15 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
 
 CREATE INDEX IF NOT EXISTS idx_chat_conv_principal_updated
     ON chat_conversations(principal, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS chat_action_links (
+    token            TEXT PRIMARY KEY,   -- confirm/capture session token
+    principal        TEXT NOT NULL,
+    conversation_id  TEXT NOT NULL,
+    kind             TEXT NOT NULL,      -- 'confirm' | 'capture'
+    label            TEXT NOT NULL DEFAULT '',
+    created_at       REAL NOT NULL
+);
 """
 
 
@@ -570,6 +580,103 @@ class ChatSessionStore:
             conn.commit()
         finally:
             conn.close()
+
+    # ------------------------------------------------------------------
+    # Console event notes — out-of-band action outcomes the model must
+    # see in subsequent turns (card approvals, credential-form completions).
+    # ------------------------------------------------------------------
+
+    # Links live this long at most; confirm/capture sessions themselves
+    # expire in minutes, so a day covers every legitimate resolution.
+    _ACTION_LINK_TTL_SECONDS = 24 * 3600.0
+
+    def link_action(
+        self,
+        token: str,
+        principal: str,
+        conversation_id: str,
+        kind: str,
+        label: str = "",
+    ) -> None:
+        """Remember which conversation spawned a confirm/capture session so
+        its out-of-band resolution can be noted back into that conversation.
+        ``label`` is caller-safe metadata only (op/action + device) — never
+        params or secrets."""
+        now = time.time()
+        conn = self._connect()
+        try:
+            conn.execute(
+                "DELETE FROM chat_action_links WHERE created_at < ?",
+                (now - self._ACTION_LINK_TTL_SECONDS,),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO chat_action_links "
+                "(token, principal, conversation_id, kind, label, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (token, principal, conversation_id, kind, label, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def pop_action_link(self, token: str) -> Optional[dict]:
+        """Fetch-and-delete the link for ``token`` (one note per session).
+        Returns ``{principal, conversation_id, kind, label}`` or None for
+        tokens that never came from a chat turn (REST/dev approvals)."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT principal, conversation_id, kind, label "
+                "FROM chat_action_links WHERE token=?",
+                (token,),
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute("DELETE FROM chat_action_links WHERE token=?", (token,))
+            conn.commit()
+        finally:
+            conn.close()
+        return {
+            "principal": row[0],
+            "conversation_id": row[1],
+            "kind": row[2],
+            "label": row[3],
+        }
+
+    def append_event(
+        self, principal: str, conversation_id: str, text: str
+    ) -> bool:
+        """Append one ``role='event'`` note to a specific conversation.
+
+        Unlike :meth:`append_turn` this takes an explicit conversation —
+        the resolution may land while the principal has a different (or no)
+        active conversation. No-ops (returns False) when the conversation
+        doesn't exist or belongs to someone else."""
+        if not text:
+            return False
+        conn = self._connect()
+        try:
+            owned = conn.execute(
+                "SELECT 1 FROM chat_conversations WHERE id=? AND principal=?",
+                (conversation_id, principal),
+            ).fetchone()
+            if owned is None:
+                return False
+            now = _utc_iso()
+            conn.execute(
+                "INSERT INTO chat_history "
+                "(principal, role, text, created_at, conversation_id) "
+                "VALUES (?, 'event', ?, ?, ?)",
+                (principal, text, now, conversation_id),
+            )
+            conn.execute(
+                "UPDATE chat_conversations SET updated_at=? WHERE id=?",
+                (now, conversation_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return True
 
     def get_history(
         self, principal: str, max_turns: int = DEFAULT_HISTORY_TURNS

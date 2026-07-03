@@ -903,7 +903,14 @@
   }
 
   function replayMessage(role, text) {
-    if (role === "user") {
+    if (role === "event") {
+      // Console event note (out-of-band approval/capture outcome) —
+      // a small centered chip, not a chat bubble.
+      var chip = document.createElement("div");
+      chip.className = "event-chip";
+      chip.textContent = (text || "").replace(/^\[console\]\s*/, "");
+      transcript.appendChild(chip);
+    } else if (role === "user") {
       renderUserBubble(text);
     } else {
       var at = renderAssistantBubble();

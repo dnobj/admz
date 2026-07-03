@@ -511,7 +511,10 @@ def _build_contents(history: Optional[list], user_message: str):
         text = entry.get("text", "")
         if not text:
             continue
-        # Normalize: only 'user' and 'model' roles are accepted.
+        # Normalize: Gemini accepts only 'user' and 'model'. 'event' rows
+        # (console notes about out-of-band approvals/captures — text already
+        # carries the "[console]" prefix) ride as user turns; the system
+        # prompt tells the model how to read them.
         normalized_role = "model" if role in ("model", "assistant") else "user"
         items.append({"role": normalized_role, "parts": [{"text": text}]})
     items.append({"role": "user", "parts": [{"text": user_message}]})

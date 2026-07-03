@@ -7,11 +7,15 @@ GET  /api/capture        → create a new capture session (JSON)
 GET  /api/capture/{token}/status → poll session status (JSON)
 """
 
+import logging
+
 from fastapi import APIRouter, Request, Depends, HTTPException, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from admz.api.capture import capture_store, CaptureStatus
 from admz.device_registry import DeviceRegistry
@@ -150,6 +154,28 @@ async def capture_form(
     )
 
 
+def _note_capture_to_chat(token: str, saved: List[str]) -> None:
+    """Tell the originating chat conversation (if any) that credentials
+    were stored — the model otherwise keeps asking the user to "let me
+    know once you've set the password". Device ids only; NEVER the
+    password or username. Best-effort: a note failure must not affect
+    the capture."""
+    try:
+        from admz.chatbot.sessions import chat_sessions
+
+        link = chat_sessions.pop_action_link(token)
+        if link is not None:
+            chat_sessions.append_event(
+                link["principal"], link["conversation_id"],
+                "[console] The user submitted credentials for device(s) "
+                f"{', '.join(saved)} via the secure capture form; they were "
+                "stored server-side. (The password is not available in this "
+                "conversation.)",
+            )
+    except Exception:  # noqa: BLE001 - never break a capture on a note
+        logger.debug("chat capture note failed for %s", token, exc_info=True)
+
+
 @router.post("/capture/{token}", response_class=HTMLResponse, tags=["capture"])
 async def capture_submit(
     request: Request,
@@ -217,6 +243,8 @@ async def capture_submit(
 
     # Mark session as completed (token is now single-use)
     capture_store.complete_session(token)
+
+    _note_capture_to_chat(token, saved)
 
     ctx = {
         "request": request,

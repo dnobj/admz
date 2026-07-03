@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
@@ -460,6 +461,29 @@ async def api_delete_conversation(
 # duplicates the policy.
 
 
+# Confirm/capture session URLs inside tool results (mirrors the regexes the
+# console widgets use in chat.js — the authoritative signal that a session
+# was created this turn).
+_CONFIRM_URL_RE = re.compile(r"/confirm/([A-Za-z0-9_-]{20,})")
+_CAPTURE_URL_RE = re.compile(r"/capture/(?!fleet/)([A-Za-z0-9_-]{20,})")
+
+
+def _scan_action_tokens(result: object, tool_name: str) -> list:
+    """``(kind, token, tool_name)`` for every confirm/capture session URL in
+    a tool result. Never raises — a scan failure must not break a turn."""
+    try:
+        blob = json.dumps(result, default=str)
+    except Exception:  # noqa: BLE001
+        return []
+    found = []
+    for kind, rx in (("confirm", _CONFIRM_URL_RE), ("capture", _CAPTURE_URL_RE)):
+        for m in rx.finditer(blob):
+            entry = (kind, m.group(1), tool_name)
+            if entry not in found:
+                found.append(entry)
+    return found
+
+
 @dataclass
 class _TurnSummary:
     """Aggregated result of one chat turn — what /api/chat returns."""
@@ -473,6 +497,10 @@ class _TurnSummary:
     output_tokens: int = 0
     cost_usd: Optional[float] = None
     tool_calls: list = field(default_factory=list)
+    # (kind, token, tool_name) for confirm/capture sessions this turn's
+    # tools created — linked to the conversation after the turn so their
+    # out-of-band resolution can be noted back into it.
+    action_tokens: list = field(default_factory=list)
     # Set when budget gate rejected the turn before the SDK ran.
     rejected_by_budget: bool = False
 
@@ -597,6 +625,17 @@ async def _run_chat_turn(
                     text_parts.append(chunk)
             elif chat_event.type == ChatEventType.TOOL_CALL:
                 summary.tool_calls.append(chat_event.payload.get("name", "?"))
+            elif chat_event.type == ChatEventType.TOOL_RESULT:
+                # Confirm/capture sessions announce themselves via their
+                # URLs in the tool result (token-named keys are masked by
+                # redaction; the URL strings survive — same signal the
+                # console widgets render from).
+                summary.action_tokens.extend(
+                    _scan_action_tokens(
+                        chat_event.payload.get("result"),
+                        chat_event.payload.get("name", "?"),
+                    )
+                )
             yield (chat_event, None)
     except ChatbotDependencyMissing as exc:
         summary.success = False
@@ -708,6 +747,21 @@ async def _run_chat_turn(
                     _sessions().set_title(principal.name, conv_id, title, "llm")
         except Exception as exc:  # pragma: no cover — defensive
             logger.debug("conversation title step skipped: %s", exc)
+
+    # Link any confirm/capture sessions this turn created to the
+    # conversation, so their out-of-band resolution (card approval,
+    # credential form) is noted back where the model sees it next turn.
+    # Best-effort: linkage failure must never break an answered turn.
+    if summary.action_tokens:
+        try:
+            conv_id = _sessions().get_active_conversation(principal.name)
+            if conv_id:
+                for kind, token, tool_name in summary.action_tokens:
+                    _sessions().link_action(
+                        token, principal.name, conv_id, kind, label=tool_name
+                    )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("Failed to link action tokens: %s", exc)
 
     # Record usage + audit (best-effort).
     try:

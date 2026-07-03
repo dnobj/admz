@@ -8,11 +8,15 @@ GET  /api/chat/confirm/{token}       → session details JSON (for chat client)
 POST /api/chat/confirm/{token}       → approve/deny in-chat, JSON response
 """
 
+import logging
+
 from fastapi import APIRouter, Request, Form, HTTPException, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from admz.api.context import AppContext, get_context
 from admz.api.confirm_store import (
@@ -175,7 +179,52 @@ async def _approve_session(
         },
     )
 
+    _note_resolution_to_chat(token, session, outcome, confirmed_by)
+
     return _Approval("completed", session=session, outcome=outcome)
+
+
+def _note_resolution_to_chat(
+    token: str, session, outcome: dict, confirmed_by: str
+) -> None:
+    """Write a ``[console]`` event note into the conversation that spawned
+    this session (if any), so the model knows in subsequent turns that the
+    approval happened and how execution went. Metadata only — op/action id,
+    device, surface, success/truncated error. NEVER params (they can carry
+    secrets) and never a password. Best-effort: a note failure must not
+    affect the approval result."""
+    try:
+        from admz.chatbot.sessions import chat_sessions
+
+        link = chat_sessions.pop_action_link(token)
+        if link is None:
+            return  # not chat-originated (REST/dev approval)
+
+        what = session.operation_id or "operation"
+        if what.startswith("action:"):
+            what = what.split(":", 1)[1]
+        if session.is_plan:
+            what = f"plan {session.plan_id or ''}".strip()
+        surface = (
+            "the confirmation card in this chat"
+            if confirmed_by == "chat" else "the confirmation web page"
+        )
+        if outcome.get("success"):
+            text = (
+                f"[console] The user approved \"{what}\" on device "
+                f"{session.device_id} via {surface}; it executed successfully."
+            )
+        else:
+            err = str(outcome.get("error") or "unknown error")[:200]
+            text = (
+                f"[console] The user approved \"{what}\" on device "
+                f"{session.device_id} via {surface}, but execution FAILED: {err}"
+            )
+        chat_sessions.append_event(
+            link["principal"], link["conversation_id"], text
+        )
+    except Exception:  # noqa: BLE001 - never break an approval on a note
+        logger.debug("chat resolution note failed for %s", token, exc_info=True)
 
 
 # ── JSON status endpoint (polled by MCP tool) ───────────────────────────
