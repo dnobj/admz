@@ -208,6 +208,123 @@ class TestConfirmResolutionNote:
 
 
 # ---------------------------------------------------------------------------
+# Denial — store transition, endpoint, and note
+# ---------------------------------------------------------------------------
+
+
+class TestDenial:
+    def _confirm_store(self, tmp_path):
+        from admz.api.confirm_store import ConfirmStore
+
+        return ConfirmStore(str(tmp_path / "confirm.db"))
+
+    def _pending(self, cstore):
+        return cstore.create_session(
+            device_id="dev-1", operation_id="action:delete_device",
+            family="vapix", params={}, risk_level="service-affecting",
+            confirmation_level="url_only",
+        )
+
+    def test_deny_is_terminal_and_single_transition(self, tmp_path):
+        from admz.api.confirm_store import ConfirmStatus
+
+        cstore = self._confirm_store(tmp_path)
+        s = self._pending(cstore)
+        assert cstore.deny_session(s.token, denied_by="chat") is True
+        after = cstore.get_session(s.token)
+        assert after.effective_status == ConfirmStatus.DENIED
+        assert after.confirmed_by == "chat"
+        # terminal: cannot deny again, cannot complete (consume) afterwards
+        assert cstore.deny_session(s.token) is False
+        assert cstore.complete_session(s.token) is False
+
+    def test_denied_survives_ttl_for_status_polls(self, tmp_path, monkeypatch):
+        from admz.api.confirm_store import ConfirmStatus
+
+        cstore = self._confirm_store(tmp_path)
+        s = self._pending(cstore)
+        cstore.deny_session(s.token)
+        monkeypatch.setattr(time, "time", lambda: s.created_at + s.ttl + 60)
+        after = cstore.get_session(s.token)
+        assert after is not None
+        assert after.effective_status == ConfirmStatus.DENIED
+
+    def test_cannot_deny_completed_session(self, tmp_path):
+        cstore = self._confirm_store(tmp_path)
+        s = self._pending(cstore)
+        cstore.complete_session(s.token)
+        assert cstore.deny_session(s.token) is False
+
+    def test_denial_note_written(self, store, monkeypatch, tmp_path):
+        import admz.chatbot.sessions as sessions_mod
+        from admz.api.routes.confirm import _note_denial_to_chat
+
+        conv = _conversation(store)
+        store.link_action("tok-d", "alice", conv, "confirm")
+        monkeypatch.setattr(sessions_mod, "chat_sessions", store)
+        _note_denial_to_chat("tok-d", _FakeSession())
+        text = store.get_messages("alice", conv)[-1]["text"]
+        assert text.startswith("[console]")
+        assert "DENIED" in text
+        assert "delete_device" in text
+        assert "NOT executed" in text
+
+    def test_denial_note_unlinked_is_silent(self, store, monkeypatch):
+        import admz.chatbot.sessions as sessions_mod
+        from admz.api.routes.confirm import _note_denial_to_chat
+
+        conv = _conversation(store)
+        monkeypatch.setattr(sessions_mod, "chat_sessions", store)
+        _note_denial_to_chat("never-linked", _FakeSession())
+        assert all(m["role"] != "event" for m in store.get_messages("alice", conv))
+
+
+@pytest.fixture
+def rest_client(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
+    monkeypatch.setenv("ADMZ_KEY_PATH", str(tmp_path / "admz.key"))
+    monkeypatch.setenv("ADMZ_CONFIG_REPO_PATH", str(tmp_path / "config-repo"))
+    monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    from fastapi.testclient import TestClient
+
+    from admz.api.main import app
+
+    with TestClient(app) as c:
+        yield c
+
+
+class TestDenyEndpoint:
+    def test_deny_endpoint_marks_session_and_is_terminal(self, rest_client):
+        # Create through the SAME singleton the route reads, whatever DB
+        # it is bound to in this process.
+        from admz.api.confirm_store import ConfirmStatus, confirm_store
+
+        s = confirm_store.create_session(
+            device_id="dev-1", operation_id="test:op", family="vapix",
+            params={}, risk_level="service-affecting",
+            confirmation_level="url_only",
+        )
+        r = rest_client.post(f"/api/chat/confirm/{s.token}/deny")
+        assert r.status_code == 200
+        assert r.json()["status"] == "denied"
+        assert (confirm_store.get_session(s.token).effective_status
+                == ConfirmStatus.DENIED)
+        # details poll reports denied (so replayed cards resolve grey)
+        d = rest_client.get(f"/api/chat/confirm/{s.token}")
+        assert d.json()["status"] == "denied"
+        # second deny and an approval attempt both refuse
+        assert rest_client.post(f"/api/chat/confirm/{s.token}/deny").status_code == 410
+        approved = rest_client.post(f"/api/chat/confirm/{s.token}")
+        assert approved.json()["status"] != "completed"
+
+    def test_deny_unknown_token_410(self, rest_client):
+        r = rest_client.post("/api/chat/confirm/no-such-token/deny")
+        assert r.status_code == 410
+
+
+# ---------------------------------------------------------------------------
 # Capture completion note (routes/capture.py)
 # ---------------------------------------------------------------------------
 

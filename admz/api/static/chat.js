@@ -530,6 +530,12 @@
           resolveApprovedToolCard(token);  // flip the in-chat tool card too
           return;
         }
+        if (resp.body.status === "denied") {
+          renderApprovalDone(card, "grey", "Denied — no change made.");
+          removePinnedAction("confirm", token);
+          resolveApprovedToolCard(token, "error", "Denied — no change made");
+          return;
+        }
         populateApprovalForm(card, token, resp.body);
       })
       .catch(function (err) {
@@ -580,6 +586,12 @@
       submitApproval(card, token, details.needs_password);
     });
     body.querySelector(".deny-btn").addEventListener("click", function () {
+      // Server-side denial: terminal (the token can never be consumed) and
+      // noted back into the conversation so the model knows the user said
+      // no. The card resolves the same way even if the POST fails — the
+      // session then simply expires like the old client-only behavior.
+      fetch("/api/chat/confirm/" + encodeURIComponent(token) + "/deny", { method: "POST" })
+        .catch(function () {});
       renderApprovalDone(card, "grey", details.operation_id + " denied — no change made");
       removePinnedAction("confirm", token);
       resolveApprovedToolCard(token, "error", "Denied — no change made");

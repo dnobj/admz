@@ -270,10 +270,16 @@ async def confirm_form(request: Request, token: str):
             },
         )
 
-    if session.effective_status == ConfirmStatus.EXPIRED:
+    if session.effective_status in (ConfirmStatus.EXPIRED, ConfirmStatus.DENIED):
+        # Denied is terminal: never re-render an armed form for it.
         return templates.TemplateResponse(
             "capture_expired.html",
-            {"request": request, "title": "Link Expired"},
+            {
+                "request": request,
+                "title": ("Request Denied"
+                          if session.effective_status == ConfirmStatus.DENIED
+                          else "Link Expired"),
+            },
             status_code=410,
         )
 
@@ -483,3 +489,79 @@ async def chat_confirm_submit(
         "operation_id": session.operation_id,
         "outcome": result.outcome,
     }
+
+
+@router.post("/api/chat/confirm/{token}/deny", tags=["confirm"])
+async def chat_confirm_deny(
+    request: Request,
+    token: str,
+    ctx: AppContext = Depends(get_context),
+):
+    """Explicitly decline a pending confirmation session.
+
+    Terminal like an approval: the token can never be consumed afterwards
+    (previously "deny" was purely client-side and the session silently
+    lingered until TTL). Audited, and — when the session came from a chat
+    turn — noted back into the conversation so the model knows the user
+    said no instead of treating the action as still pending.
+    """
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+
+    principal = await get_current_principal(request)
+
+    if not rate_limiter.check("confirm", client_key_from_request(request)):
+        return JSONResponse(
+            status_code=429,
+            content={"status": "rate_limited",
+                     "error": "Too many confirm attempts from this address."},
+        )
+
+    session = confirm_store.get_session(token)
+    if session is None or session.effective_status != ConfirmStatus.PENDING:
+        return JSONResponse(status_code=410, content={"status": "expired"})
+
+    if not confirm_store.deny_session(token, denied_by="chat"):
+        return JSONResponse(status_code=410, content={"status": "expired"})
+
+    record_event(
+        principal, "confirm.deny",
+        resource=_session_resource(session),
+        details={
+            "risk_level": session.risk_level,
+            "confirmation_level": session.confirmation_level,
+            "is_plan": session.is_plan,
+        },
+    )
+
+    _note_denial_to_chat(token, session)
+
+    return {
+        "status": "denied",
+        "device_id": session.device_id,
+        "operation_id": session.operation_id,
+    }
+
+
+def _note_denial_to_chat(token: str, session) -> None:
+    """`[console]` note: the user explicitly declined — the action was NOT
+    executed. Same linkage/secrecy rules as _note_resolution_to_chat."""
+    try:
+        from admz.chatbot.sessions import chat_sessions
+
+        link = chat_sessions.pop_action_link(token)
+        if link is None:
+            return
+        what = session.operation_id or "operation"
+        if what.startswith("action:"):
+            what = what.split(":", 1)[1]
+        if session.is_plan:
+            what = f"plan {session.plan_id or ''}".strip()
+        chat_sessions.append_event(
+            link["principal"], link["conversation_id"],
+            f"[console] The user DENIED \"{what}\" on device "
+            f"{session.device_id} via the confirmation card — the action "
+            "was NOT executed. Do not retry it unless the user asks again.",
+        )
+    except Exception:  # noqa: BLE001 - never break a denial on a note
+        logger.debug("chat denial note failed for %s", token, exc_info=True)

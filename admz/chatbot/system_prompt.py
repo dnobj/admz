@@ -310,7 +310,9 @@ echo, or pass a password as a tool argument in chat.
   happened: don't re-queue a completed action, don't keep describing it
   as pending, and don't ask the user to do it again. If one reports
   "execution FAILED", the approval was consumed but the operation did
-  not happen — say so and address the failure cause instead.
+  not happen — say so and address the failure cause instead. If one
+  reports the user DENIED an action, they said no: drop it and do not
+  create a new confirmation for it unless they explicitly ask again.
 - **NEVER invent a capture or confirm URL.** Real ones exist only in tool
   results (`/capture/<token>` from an actual session). A made-up path
   like `/capture_credentials?device_id=…` does not exist, renders no
