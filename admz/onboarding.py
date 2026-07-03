@@ -101,7 +101,7 @@ async def onboard_device_credentials(
         ok, _facts = await _confirm_credentials(
             catalog=catalog, executor=executor, device_info=probe_info,
             device_id=device_id, credentials=stored,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=timeout_seconds, strict=True,
         )
         if ok is True:
             return {"status": ALREADY_CREDENTIALED, "device_id": device_id}
@@ -132,11 +132,13 @@ async def onboard_device_credentials(
     fleet_password = fleet_settings.get("default_password")
     if fleet_password:
         fleet_username = fleet_settings.get("default_username") or "root"
+        # strict: only an authenticated 2xx proves the pair — saving on a
+        # lenient "not rejected" once stored a bad password (P3408, 2026-07-02).
         ok, facts = await _confirm_credentials(
             catalog=catalog, executor=executor, device_info=probe_info,
             device_id=device_id,
             credentials={"username": fleet_username, "password": fleet_password},
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=timeout_seconds, strict=True,
         )
         if ok is True:
             store_provisioned_creds(

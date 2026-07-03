@@ -174,6 +174,57 @@ class TestResolutionOrder:
 
 
 # ---------------------------------------------------------------------------
+# Strict credential verification — a connection-level error must never be
+# mistaken for proof that a password works (the P3408 false positive).
+# ---------------------------------------------------------------------------
+
+
+class TestStrictVerification:
+    def _confirm(self, result, strict):
+        from admz.fleet.health import _confirm_credentials
+
+        op = MagicMock()
+        op.to_executor_dict.return_value = {"id": "basicdeviceinfo"}
+        catalog = MagicMock()
+        catalog.get_operation.return_value = op
+        executor = MagicMock()
+
+        async def _exec(*a, **k):
+            return result
+
+        executor.execute = _exec
+        return asyncio.run(_confirm_credentials(
+            catalog=catalog, executor=executor, device_info={"host": "h"},
+            device_id="d", credentials={"username": "u", "password": "p"},
+            timeout_seconds=5.0, strict=strict,
+        ))
+
+    def test_connection_error_is_unknown_in_strict_mode(self):
+        # success=False, status None — the executor couldn't complete the
+        # request. Lenient mode says True ("not rejected"); strict says
+        # unknown, so onboarding won't save a password off it.
+        result = MagicMock(success=False, status_code=None, parsed_data=None)
+        assert self._confirm(result, strict=True) == (None, {})
+        ok, _ = self._confirm(result, strict=False)
+        assert ok is True  # health keeps the lenient behavior
+
+    def test_non_2xx_answer_is_unknown_in_strict_mode(self):
+        result = MagicMock(success=False, status_code=500, parsed_data=None)
+        assert self._confirm(result, strict=True) == (None, {})
+
+    def test_explicit_401_is_rejected_in_both_modes(self):
+        result = MagicMock(success=False, status_code=401, parsed_data=None)
+        assert self._confirm(result, strict=True)[0] is False
+        assert self._confirm(result, strict=False)[0] is False
+
+    def test_authenticated_2xx_is_true_in_strict_mode(self):
+        result = MagicMock(success=True, status_code=200,
+                           parsed_data={"data": {"propertyList": {}}})
+        ok, _ = self._confirm(result, strict=True)
+        assert ok is True
+
+
+# ---------------------------------------------------------------------------
 # REST wiring — create runs onboarding inline; /onboard covers existing rows
 # ---------------------------------------------------------------------------
 

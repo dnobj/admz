@@ -303,6 +303,12 @@ echo, or pass a password as a tool argument in chat.
   in this chat. When a tool result contains a capture URL, tell the user
   to use the card that just appeared — do NOT paste the raw URL into
   your reply (share it only if the user says they can't see the card).
+- **NEVER invent a capture or confirm URL.** Real ones exist only in tool
+  results (`/capture/<token>` from an actual session). A made-up path
+  like `/capture_credentials?device_id=…` does not exist, renders no
+  card, and dead-ends the user. If credentials are needed and you have no
+  fresh capture URL from a tool result, CALL `onboard_device` or
+  `capture_credentials` to create one.
 - **New or credential-less devices: automatic onboarding first.**
   `register_device` resolves credentials automatically after adding a
   device, and `onboard_device` does the same for an already-registered

@@ -383,16 +383,27 @@ async def _confirm_credentials(
     device_id: str,
     credentials: Dict[str, Any],
     timeout_seconds: float,
+    strict: bool = False,
 ) -> "tuple[Optional[bool], Dict[str, str]]":
     """Confirm the stored credentials actually authenticate.
 
     Calls an auth-required op (``basicdeviceinfo``). Returns a
     ``(creds_ok, facts)`` pair where ``creds_ok`` is:
       - ``False`` when the device explicitly rejects the credentials (401/403),
-      - ``True`` when they're accepted (2xx) or the device answers some other
-        way (a non-auth error doesn't implicate the password),
+      - ``True`` when they're accepted (2xx) or — in the default lenient
+        mode — the device answers some other way (a non-auth error doesn't
+        implicate the password; right for health, which must not flap a
+        device to auth_failed over a connection hiccup),
       - ``None`` when we can't tell (op missing, transient error) — caller
         should not flip status on ``None``.
+
+    ``strict=True`` inverts the benefit of the doubt: only a genuine
+    authenticated 2xx counts as ``True``; any non-auth failure is ``None``
+    (unknown). Onboarding uses this — it SAVES credentials on ``True``, and
+    a connection-level error must never be mistaken for proof that a
+    password works (a fresh device with no learned scheme/auth profile can
+    easily produce one on the first touch).
+
     ``facts`` carries model/serial/firmware lifted from the same response on
     the success path (empty otherwise), so the monitor can self-populate the
     device record without a second probe.
@@ -419,6 +430,11 @@ async def _confirm_credentials(
     sc = getattr(result, "status_code", None)
     if sc in (401, 403):
         return False, {}
+    if strict and not (
+        getattr(result, "success", False)
+        and sc is not None and 200 <= int(sc) < 300
+    ):
+        return None, {}  # didn't prove anything — not good enough to save
     # Accepted (or non-auth answer): mine the body for identity facts.
     facts: Dict[str, str] = {}
     try:
