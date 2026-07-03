@@ -163,6 +163,27 @@ def describe_update(task_id: str, fields: Mapping[str, Any]) -> str:
     return f"Modify scheduled task '{task_id}' ({changed})."
 
 
+def describe_delete(task: Any) -> str:
+    label = getattr(task, "description", "") or getattr(task, "id", "task")
+    return (
+        f"Delete the scheduled task '{getattr(task, 'id', '?')}' ({label}). "
+        "Whatever it was doing on its cadence stops permanently."
+    )
+
+
+def apply_delete_task(task_id: str, *, scheduler: Any) -> Dict[str, Any]:
+    """Delete a schedule task (or cancel a still-pending detection)."""
+    task = scheduler.store.get(task_id)
+    if task is None:
+        raise TaskSpecError(f"Task not found: {task_id}")
+    if task.trigger_kind == TRIGGER_SCHEDULE:
+        scheduler.remove_schedule(task_id)
+        return {"deleted": task_id}
+    if not scheduler.store.cancel(task_id):
+        raise TaskSpecError("detection task is no longer pending")
+    return {"cancelled": task_id}
+
+
 def gate_task_write(
     action: str, target: str, payload: Mapping[str, Any], reason: str
 ) -> Dict[str, Any]:

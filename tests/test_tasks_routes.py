@@ -186,3 +186,44 @@ class TestTaskWriteGate:
             "trigger_kind": "schedule", "action_type": "nope", "interval": "1h",
         })
         assert r.status_code == 400  # rejected before any card is created
+
+    def test_schedule_delete_blocks_then_approval_removes(self, client, monkeypatch):
+        import admz.tasks.gated as gated
+        real = gated.is_interactive
+        monkeypatch.setattr(gated, "is_interactive", lambda p: True)
+        tid = client.post("/api/tasks", json={
+            "trigger_kind": "schedule", "action_type": "snapshot",
+            "interval": "1h", "task_id": "sched-del",
+        }).json()["id"]
+        monkeypatch.setattr(gated, "is_interactive", real)
+
+        env = client.delete(f"/api/tasks/{tid}").json()
+        assert env["blocked"] is True
+        assert "stops permanently" in env["reason"]
+        # still there until approved
+        assert client.get(f"/api/tasks/{tid}").status_code == 200
+
+        token = env["confirm_url"].rsplit("/", 1)[1]
+        a = client.post(f"/api/chat/confirm/{token}")
+        assert a.json()["outcome"]["success"] is True, a.text
+        assert client.get(f"/api/tasks/{tid}").status_code == 404
+
+    def test_detection_cancel_stays_direct(self, client, monkeypatch):
+        # Disarming pre-authorized destructive work is safety-increasing —
+        # it must never wait on a card, even for non-interactive callers.
+        import admz.tasks.gated as gated
+        real = gated.is_interactive
+        monkeypatch.setattr(gated, "is_interactive", lambda p: True)
+        _register_device(client, "cam-01")
+        # seed a detection task directly through the store
+        from admz.api.context import get_context
+        tid = get_context().scheduler.store.create_detection(
+            device_id="cam-01", event="on_needs_setup",
+            action_type="reprovision", action_params={},
+            approved_by="tester", description="arm",
+        )
+        monkeypatch.setattr(gated, "is_interactive", real)
+
+        d = client.delete(f"/api/tasks/{tid}")
+        assert d.status_code == 200
+        assert d.json()["cancelled"] == tid

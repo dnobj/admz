@@ -3053,16 +3053,22 @@ class ADMZMCPServer:
     async def _delete_snapshot_schedule(
         self, schedule_id: str
     ) -> Dict[str, Any]:
-        removed = self.scheduler.remove_schedule(schedule_id)
-        if not removed:
-            return {
-                "success": False,
-                "error": f"Schedule not found: {schedule_id}",
-            }
-        return {
-            "success": True,
-            "message": f"Schedule '{schedule_id}' deleted",
-        }
+        from admz.tasks.gated import describe_delete, gate_task_write
+
+        # Deleting a schedule silently removes standing monitoring the user
+        # set up — it gates like creation did (parity; the user asked).
+        task = self.scheduler.store.get(schedule_id)
+        if task is None:
+            return {"success": False,
+                    "error": f"Schedule not found: {schedule_id}"}
+        env = gate_task_write(
+            "delete_task", schedule_id, {"task_id": schedule_id},
+            describe_delete(task))
+        env["message"] = (
+            f"{env.get('message', '')} The schedule is removed only when the "
+            "user approves the confirmation card."
+        ).strip()
+        return env
 
     async def _run_snapshot_schedule(
         self, schedule_id: str

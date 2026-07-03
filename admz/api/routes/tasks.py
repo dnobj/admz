@@ -199,10 +199,23 @@ async def delete_task(
     task = _store(ctx).get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+
     if task.trigger_kind == TRIGGER_SCHEDULE:
+        # Removing a schedule removes standing monitoring — non-interactive
+        # callers gate, same as creation. (Cancelling a detection task below
+        # stays direct: disarming pre-authorized destructive work is
+        # safety-increasing and must never wait on a card.)
+        from admz.tasks.gated import (
+            describe_delete, gate_task_write, is_interactive,
+        )
+        if not is_interactive(principal):
+            return gate_task_write(
+                "delete_task", task_id, {"task_id": task_id},
+                describe_delete(task))
         ctx.scheduler.remove_schedule(task_id)
         record_event(principal, "task.delete", resource=f"task:{task_id}")
         return {"success": True, "deleted": task_id}
+
     # detection → cancel (only if still pending)
     cancelled = _store(ctx).cancel(task_id)
     record_event(principal, "task.cancel", resource=f"task:{task_id}",

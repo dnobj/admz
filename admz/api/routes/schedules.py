@@ -187,6 +187,16 @@ async def delete_schedule(
 
     principal = await get_current_principal(request)
     resource = f"schedule:{schedule_id}"
+
+    from admz.tasks.gated import describe_delete, gate_task_write, is_interactive
+    if not is_interactive(principal):
+        task = ctx.scheduler.store.get(schedule_id)
+        if task is None:
+            raise HTTPException(status_code=404,
+                                detail=f"Schedule not found: {schedule_id}")
+        return gate_task_write("delete_task", schedule_id,
+                               {"task_id": schedule_id}, describe_delete(task))
+
     removed = ctx.scheduler.remove_schedule(schedule_id)
     if not removed:
         record_event(principal, "schedule.delete", resource=resource,

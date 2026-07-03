@@ -677,11 +677,30 @@ def _action_update_task(
     }
 
 
+def _action_delete_task(
+    action: Mapping[str, Any], registry: Any, git_repo: Any = None,
+) -> Dict[str, Any]:
+    """Approved delete-task: remove the schedule the session was holding."""
+    from admz.api.context import get_context
+    from admz.tasks.gated import TaskSpecError, apply_delete_task
+
+    task_id = action.get("task_id") or ""
+    try:
+        result = apply_delete_task(task_id, scheduler=get_context().scheduler)
+    except TaskSpecError as exc:
+        return {"success": False, "action": "delete_task", "error": str(exc)}
+    return {
+        "success": True, "action": "delete_task", **result,
+        "message": f"Task '{task_id}' removed.",
+    }
+
+
 _ACTION_EXECUTORS = {
     "accept_baseline": _action_accept_baseline,
     "delete_device": _action_delete_device,
     "create_task": _action_create_task,
     "update_task": _action_update_task,
+    "delete_task": _action_delete_task,
 }
 
 
