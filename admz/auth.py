@@ -434,6 +434,9 @@ _EXEMPT_PATH_PREFIXES = (
     # still clear its cookie; the route reads the cookie itself.
     "/login",
     "/logout",
+    # ACS Pro "Send HTTP Notification" webhook — ACS can't do Negotiate, so this
+    # endpoint authenticates itself via a shared secret token (see acs_pro.webhook).
+    "/api/acs/rule-fired",
 )
 
 

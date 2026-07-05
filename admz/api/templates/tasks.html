@@ -9,7 +9,10 @@
     <h1 class="page-title">Tasks</h1>
     <p class="page-sub">Automated work — <strong>scheduled</strong> (recurring: snapshot, drift audit) and <strong>triggered</strong> (one-shot, fires on a detection — e.g. re-provision when a device returns factory-defaulted).</p>
   </div>
-  <div class="page-actions"><button id="new-schedule-btn" class="btn primary" type="button"><i data-lucide="plus"></i> New schedule</button></div>
+  <div class="page-actions">
+    <button id="new-detection-btn" class="btn" type="button"><i data-lucide="zap"></i> New detection</button>
+    <button id="new-schedule-btn" class="btn primary" type="button"><i data-lucide="plus"></i> New schedule</button>
+  </div>
 </div>
 
 <div class="note-band" style="margin-bottom:16px">
@@ -37,6 +40,20 @@
     <thead><tr><th>Kind</th><th>Task</th><th>When</th><th>Target</th><th>Outcome</th></tr></thead>
     <tbody id="history-body"></tbody>
   </table>
+</div>
+
+<!-- Event detections — recurring rules that fire an action when a live device event matches -->
+<div id="detections-section" style="margin-top:28px">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:2px">
+    <h2 class="page-title" style="font-size:15px;margin:0">Event detections</h2>
+    <button class="btn sm ghost" type="button" id="det-new-link"><i data-lucide="plus"></i> New detection</button>
+  </div>
+  <p class="page-sub" style="margin:0 0 10px">Standing rules over the <a href="/activity">live event stream</a> — when a matching event arrives (motion, I/O, PTZ…), they fire an action automatically. Enabling one turns live ingest on.</p>
+  <table class="data-table" id="det-table">
+    <thead><tr><th>Detection</th><th>On event</th><th>Scope</th><th>Action</th><th>Fired</th><th>Status</th><th></th></tr></thead>
+    <tbody id="det-body"><tr><td colspan="7" class="page-sub" style="padding:12px">Loading…</td></tr></tbody>
+  </table>
+  <div class="empty-state hidden" id="det-empty"><i data-lucide="zap-off"></i><div style="margin-top:10px">No detections yet. <a href="#" id="det-empty-new">Create one</a>, or open the <a href="/activity">Activity feed</a> and build a rule from a live event.</div></div>
 </div>
 
 <!-- New-schedule modal -->
@@ -84,6 +101,133 @@
     </div>
   </div>
 </div>
+
+<!-- New-detection modal (event-pattern rule builder) -->
+<div class="modal-overlay hidden" id="det-modal">
+  <div class="modal-card" style="width:520px">
+    <div class="modal-head">
+      <h2 style="margin:0;font-size:17px">New event detection</h2>
+      <button class="modal-x" type="button" id="det-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="fld hidden" id="d-fromwatch-wrap">
+        <label for="d-fromwatch">Start from a watched event</label>
+        <select id="d-fromwatch"><option value="">— blank —</option></select>
+        <div class="hint">Pre-fills the trigger below from one of your <a href="/activity">watched events</a>.</div>
+      </div>
+      <div class="fld">
+        <label for="d-name">Name</label>
+        <input type="text" id="d-name" placeholder="e.g. Front-door motion → snapshot" autocomplete="off">
+      </div>
+      <div class="fld" id="d-source-wrap" hidden>
+        <label for="d-source">Event source</label>
+        <select id="d-source">
+          <option value="device">Device events (live, push)</option>
+          <option value="acs">ACS Pro action rules (polled)</option>
+        </select>
+        <div class="hint" id="d-source-hint"></div>
+      </div>
+
+      <div class="grp-label">When this event arrives</div>
+      <div class="fld">
+        <label>On devices</label>
+        <div class="radio-row">
+          <label class="rb"><input type="radio" name="d-scope" value="all" checked> Any device</label>
+          <label class="rb"><input type="radio" name="d-scope" value="tag"> Tag</label>
+          <input type="text" id="d-tag" placeholder="tag name" disabled style="flex:1">
+        </div>
+        <div class="radio-row" style="margin-top:2px">
+          <label class="rb"><input type="radio" name="d-scope" value="device"> One device</label>
+          <input type="text" id="d-device" placeholder="device id" disabled style="flex:1">
+        </div>
+      </div>
+      <div id="d-device-match">
+      <div class="fld">
+        <label for="d-category">Event category</label>
+        <select id="d-category">
+          <option value="">Any category</option>
+          <option value="motion">Motion / analytics</option>
+          <option value="object">Object detection</option>
+          <option value="io">I/O port</option>
+          <option value="ptz">PTZ</option>
+          <option value="storage">Storage</option>
+          <option value="audio">Audio</option>
+          <option value="tamper">Tampering</option>
+          <option value="network">Network</option>
+          <option value="light">Light</option>
+          <option value="call">Call / intercom</option>
+          <option value="system">System</option>
+        </select>
+      </div>
+      <div class="fld">
+        <label for="d-topic">Topic contains <span style="font-weight:400;text-transform:none">(optional)</span></label>
+        <input type="text" id="d-topic" placeholder="e.g. IO/Port, VMD, PTZController" autocomplete="off">
+        <div class="hint">Substring-matched against the ONVIF topic. Leave blank to match the whole category.</div>
+      </div>
+      <div class="fld">
+        <label>Data condition <span style="font-weight:400;text-transform:none">(optional)</span></label>
+        <div class="cond-row">
+          <input type="text" id="d-cond-key" placeholder="key (e.g. state)" style="flex:1">
+          <select id="d-cond-op" style="width:104px">
+            <option value="eq">equals</option>
+            <option value="ne">not equal</option>
+            <option value="exists">exists</option>
+          </select>
+          <input type="text" id="d-cond-val" placeholder="value" style="flex:1">
+        </div>
+        <div class="hint">Matches a field inside the event's <code>data</code> (e.g. <code>state = 1</code> for an active I/O port).</div>
+      </div>
+      </div><!-- /d-device-match -->
+      <div id="d-acs-match" hidden>
+        <div class="hint" style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);line-height:1.5">
+          Fires whenever <strong>any</strong> ACS Pro action rule fires. ACS firings are
+          <strong>anonymous</strong> (no rule name) and camera-scoped — ACS exposes no rule identity over its
+          API. Optionally narrow to one ACS camera by putting its camera Id in the
+          “One device” box above; otherwise it matches every camera.
+        </div>
+      </div>
+
+      <div class="grp-label">…do this</div>
+      <div class="fld">
+        <label for="d-action">Action</label>
+        <select id="d-action"></select>
+        <div class="hint" id="d-action-hint"></div>
+      </div>
+      <div class="fld hidden" id="d-notify-wrap">
+        <label for="d-notify-msg">Message</label>
+        <input type="text" id="d-notify-msg" placeholder="Flag text recorded in the audit log" autocomplete="off">
+      </div>
+      <div id="d-acs-wrap" class="hidden">
+        <div class="fld">
+          <label for="d-acs-op">ACS operation</label>
+          <select id="d-acs-op">
+            <option value="start_recording">Start recording</option>
+            <option value="stop_recording">Stop recording</option>
+            <option value="bookmark">Add bookmark</option>
+          </select>
+        </div>
+        <div class="fld">
+          <label for="d-acs-camera">ACS camera ID</label>
+          <input type="text" id="d-acs-camera" placeholder="camera Id (see the ACS page)" autocomplete="off">
+          <div class="hint">Find a camera's Id on the <a href="/acs">ACS Pro</a> page.</div>
+        </div>
+        <label class="check authz"><input type="checkbox" id="d-acs-authz"> <span>I authorize this recording action to run <strong>automatically</strong>, without an approval prompt, whenever the rule matches.</span></label>
+      </div>
+      <div class="fld">
+        <label for="d-cooldown">Cooldown</label>
+        <div class="cadence-row">
+          <input type="number" id="d-cooldown" value="60" min="0" step="1" style="width:90px">
+          <span class="page-sub">seconds between firings (debounces a chatty sensor)</span>
+        </div>
+      </div>
+      <div id="det-error" class="err hidden"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" type="button" id="det-cancel">Cancel</button>
+      <button class="btn primary" type="button" id="det-create"><i data-lucide="check"></i> Create detection</button>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -112,6 +256,12 @@
 .rb { display: inline-flex !important; align-items: center; gap: 5px; font-size: 13px !important; font-weight: 400 !important; text-transform: none !important; letter-spacing: 0 !important; color: var(--text) !important; cursor: pointer; }
 .check { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text); cursor: pointer; }
 .err { color: var(--fg-red,#f87171); font-size: 13px; }
+.grp-label { font-size: 11px; font-weight: 700; color: var(--text-faint); text-transform: uppercase; letter-spacing: .06em; padding-top: 4px; border-top: 1px solid var(--border); }
+.cond-row { display: flex; align-items: center; gap: 8px; }
+.cond-row input, .cond-row select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 13px; }
+.check.authz { align-items: flex-start; gap: 9px; padding: 10px 12px; border: 1px solid var(--fg-amber,#fbbf24); border-radius: 8px; background: color-mix(in srgb, var(--fg-amber,#fbbf24) 8%, transparent); line-height: 1.45; }
+.check.authz input { margin-top: 2px; }
+.det-summary { font-size: 12px; color: var(--text-faint); font-family: var(--mono); }
 </style>
 <script>
 const JOB_LABELS = {
@@ -365,5 +515,283 @@ document.getElementById('sched-create').addEventListener('click', async () => {
 });
 
 loadTasks();
+
+// ══════════════════════════════════════════════════════════════════════════
+// Event detections (ADR-0041 layer 3) — rules over the live event stream
+// ══════════════════════════════════════════════════════════════════════════
+const ACTION_LABELS = {
+  notify:      { label: 'Notify / flag', hint: 'Records a flagged audit row. Always safe.', icon: 'flag', service: false },
+  snapshot:    { label: 'Snapshot config', hint: 'Commits a versioned config snapshot of the matched device.', icon: 'camera', service: false },
+  drift_audit: { label: 'Check drift', hint: 'Re-reads live config and records drift vs. baseline. Read-only.', icon: 'radar', service: false },
+  acs_action:  { label: 'ACS record / bookmark', hint: 'Fires an ACS Pro recording action. Service-affecting — fires without an approval prompt.', icon: 'video', service: true },
+};
+const CATEGORY_LABELS = { motion:'Motion', object:'Object', io:'I/O', ptz:'PTZ', storage:'Storage', audio:'Audio', tamper:'Tamper', network:'Network', light:'Light', call:'Call', system:'System', action_rule:'Action rule' };
+let DET_META = { action_types: ['notify', 'snapshot', 'drift_audit'], service_affecting: ['acs_action'], acs_enabled: false };
+
+function detScopeText(d) {
+  if (d.device_id) return esc(d.device_id);
+  if (d.tag) return 'tag: ' + esc(d.tag);
+  return 'any device';
+}
+function detMatchText(d) {
+  const m = d.match || {};
+  const bits = [];
+  if (m.category) bits.push(CATEGORY_LABELS[m.category] || m.category);
+  if (m.topic) bits.push('“' + esc(m.topic) + '”');
+  if (m.condition && m.condition.key) {
+    const c = m.condition;
+    bits.push(c.op === 'exists' ? (esc(c.key) + ' exists') : (esc(c.key) + ' ' + (c.op === 'ne' ? '≠' : '=') + ' ' + esc(c.value)));
+  }
+  return bits.length ? bits.join(' · ') : 'any event';
+}
+function detActionText(d) {
+  const meta = ACTION_LABELS[d.action_type] || { label: d.action_type };
+  if (d.action_type === 'acs_action') {
+    const p = d.action_params || {};
+    return esc((p.acs_op || 'start_recording').replace('_', ' ')) + ' · cam ' + esc(p.camera_id || '?');
+  }
+  return esc(meta.label);
+}
+function detFiredText(d) {
+  if (!d.fire_count) return '<span class="page-sub">never</span>';
+  return '<strong>' + d.fire_count + '×</strong>' + (d.last_fired_ms ? ' <span class="page-sub">' + esc(fmtLocal(new Date(d.last_fired_ms).toISOString())) + '</span>' : '');
+}
+
+async function loadDetections() {
+  let dets = [];
+  try {
+    const r = await fetch('/api/detections');
+    if (r.ok) { const d = await r.json(); dets = d.detections || []; DET_META = { action_types: d.action_types, service_affecting: d.service_affecting, acs_enabled: !!d.acs_enabled }; }
+  } catch (e) {}
+  const tbl = document.getElementById('det-table');
+  const empty = document.getElementById('det-empty');
+  if (!dets.length) {
+    tbl.classList.add('hidden'); empty.classList.remove('hidden');
+  } else {
+    tbl.classList.remove('hidden'); empty.classList.add('hidden');
+    document.getElementById('det-body').innerHTML = dets.map(renderDetRow).join('');
+  }
+  if (window.lucide) lucide.createIcons();
+}
+
+function renderDetRow(d) {
+  const meta = ACTION_LABELS[d.action_type] || { icon: 'zap' };
+  const on = d.enabled;
+  const authzChip = (d.action_type === 'acs_action')
+    ? ' <span class="kind-chip" style="color:var(--fg-amber,#fbbf24);border-color:var(--fg-amber,#fbbf24)" title="Pre-authorized to run automatically">auto</span>' : '';
+  const errLine = d.last_error ? '<div class="sub mono" style="color:var(--fg-red,#f87171)" title="' + esc(d.last_error) + '">last error</div>' : '';
+  const toggle = '<button class="toggle ' + (on ? 'on' : '') + '" type="button" data-enabled="' + (on ? '1' : '0')
+    + '" title="' + (on ? 'Enabled — click to pause' : 'Paused — click to enable')
+    + '" onclick="toggleDetection(\'' + d.id + '\', this)"><span class="knob"></span></button>';
+  return '<tr><td><div class="device-name-cell"><span class="type-tile"><i data-lucide="' + meta.icon + '"></i></span>'
+    + '<div><div class="nm" style="font-family:var(--sans);font-weight:600">' + esc(d.name || d.id) + authzChip + '</div>'
+    + '<div class="det-summary">' + detMatchText(d) + '</div>' + errLine + '</div></div></td>'
+    + '<td class="det-summary">' + detMatchText(d) + '</td>'
+    + '<td>' + detScopeText(d) + '</td>'
+    + '<td>' + detActionText(d) + '</td>'
+    + '<td>' + detFiredText(d) + '</td>'
+    + '<td>' + toggle + '</td>'
+    + '<td style="text-align:right;white-space:nowrap">'
+    + '<button class="btn ghost sm" style="color:var(--fg-red,#f87171)" onclick="deleteDetection(\'' + d.id + '\')" title="Delete"><i data-lucide="trash-2"></i></button></td></tr>';
+}
+
+async function toggleDetection(id, el) {
+  const now = el.getAttribute('data-enabled') === '1';
+  el.disabled = true;
+  try {
+    const r = await fetch('/api/detections/' + encodeURIComponent(id), {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({enabled: !now}) });
+    if (r.ok) { el.setAttribute('data-enabled', now ? '0' : '1'); el.classList.toggle('on', !now); }
+  } catch (e) {}
+  el.disabled = false;
+}
+async function deleteDetection(id) {
+  if (!confirm('Delete this detection rule? It stops firing immediately.')) return;
+  try {
+    const r = await fetch('/api/detections/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (r.ok) loadDetections(); else { const d = await r.json().catch(() => ({})); alert('Failed: ' + (d.detail || r.status)); }
+  } catch (e) { alert('Request failed.'); }
+}
+
+// ── Detection builder modal ──
+const detModal = document.getElementById('det-modal');
+function populateDetActions() {
+  const sel = document.getElementById('d-action');
+  let types = (DET_META.action_types || []).slice();
+  if (!DET_META.acs_enabled) types = types.filter(t => t !== 'acs_action');  // ACS off → hide ACS action
+  const order = ['notify', 'snapshot', 'drift_audit', 'acs_action'];
+  types.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  sel.innerHTML = types.map(t => '<option value="' + t + '">' + ((ACTION_LABELS[t] || {}).label || t) + '</option>').join('');
+  updateDetActionUI();
+}
+function updateDetActionUI() {
+  const at = document.getElementById('d-action').value;
+  const meta = ACTION_LABELS[at] || {};
+  document.getElementById('d-action-hint').textContent = meta.hint || '';
+  document.getElementById('d-notify-wrap').classList.toggle('hidden', at !== 'notify');
+  document.getElementById('d-acs-wrap').classList.toggle('hidden', at !== 'acs_action');
+}
+function detSource() { return document.getElementById('d-source').value || 'device'; }
+function updateDetSourceUI() {
+  const acs = detSource() === 'acs';
+  document.getElementById('d-device-match').hidden = acs;
+  document.getElementById('d-acs-match').hidden = !acs;
+  document.getElementById('d-source-hint').textContent = acs
+    ? 'Polled from ACS Pro (no push API). Fires on any ACS action-rule firing.'
+    : 'Live device events streamed over WebSocket.';
+}
+
+// ── "Start from a watched event" picker ──
+let WATCHED = [];
+async function loadWatchedForPicker() {
+  try { const r = await fetch('/api/watched-events'); if (r.ok) WATCHED = (await r.json()).watched || []; }
+  catch (e) { WATCHED = []; }
+}
+function seedFromWatched(w) {
+  const m = w.match || {};
+  const seed = { name: w.name || '', source: w.source || 'device', device_id: w.device_id || '',
+                 category: m.category || '', topic: m.topic || '' };
+  if (m.condition && m.condition.key) { seed.cond_key = m.condition.key; seed.cond_op = m.condition.op || 'eq'; seed.cond_val = m.condition.value; }
+  return seed;
+}
+function populateWatchedPicker() {
+  const wrap = document.getElementById('d-fromwatch-wrap');
+  const sel = document.getElementById('d-fromwatch');
+  if (!WATCHED.length) { wrap.classList.add('hidden'); return; }
+  wrap.classList.remove('hidden');
+  sel.innerHTML = '<option value="">— blank —</option>' +
+    WATCHED.map(w => '<option value="' + esc(w.id) + '">' + esc(w.name || w.id) + '</option>').join('');
+  sel.value = '';
+}
+document.getElementById('d-fromwatch').addEventListener('change', function () {
+  const w = WATCHED.find(x => x.id === this.value);
+  if (w) openDetModal(seedFromWatched(w));   // openDetModal fully resets + re-seeds (re-entrant)
+});
+
+function openDetModal(prefill) {
+  document.getElementById('det-error').classList.add('hidden');
+  // reset
+  document.getElementById('d-name').value = (prefill && prefill.name) || '';
+  document.querySelector('input[name="d-scope"][value="all"]').checked = true;
+  document.getElementById('d-tag').value = ''; document.getElementById('d-tag').disabled = true;
+  document.getElementById('d-device').value = ''; document.getElementById('d-device').disabled = true;
+  document.getElementById('d-category').value = (prefill && prefill.category) || '';
+  document.getElementById('d-topic').value = (prefill && prefill.topic) || '';
+  document.getElementById('d-cond-key').value = (prefill && prefill.cond_key) || '';
+  document.getElementById('d-cond-op').value = (prefill && prefill.cond_op) || 'eq';
+  document.getElementById('d-cond-val').value = (prefill && prefill.cond_val) || '';
+  document.getElementById('d-notify-msg').value = '';
+  document.getElementById('d-acs-camera').value = '';
+  document.getElementById('d-acs-authz').checked = false;
+  document.getElementById('d-cooldown').value = '60';
+  // event source — only offer ACS when the module is connected
+  document.getElementById('d-source-wrap').hidden = !DET_META.acs_enabled;
+  document.getElementById('d-source').value = (prefill && prefill.source) || 'device';
+  updateDetSourceUI();
+  populateDetActions();
+  populateWatchedPicker();
+  if (prefill && prefill.device_id) {
+    document.querySelector('input[name="d-scope"][value="device"]').checked = true;
+    const dev = document.getElementById('d-device'); dev.disabled = false; dev.value = prefill.device_id;
+  }
+  detModal.classList.remove('hidden');
+  document.getElementById('d-name').focus();
+  if (window.lucide) lucide.createIcons();
+}
+function closeDetModal() { detModal.classList.add('hidden'); }
+document.getElementById('new-detection-btn')?.addEventListener('click', () => openDetModal());
+document.getElementById('det-new-link')?.addEventListener('click', () => openDetModal());
+document.getElementById('det-empty-new')?.addEventListener('click', (e) => { e.preventDefault(); openDetModal(); });
+document.getElementById('det-close').addEventListener('click', closeDetModal);
+document.getElementById('det-cancel').addEventListener('click', closeDetModal);
+detModal.addEventListener('click', (e) => { if (e.target === detModal) closeDetModal(); });
+document.getElementById('d-action').addEventListener('change', updateDetActionUI);
+document.getElementById('d-source').addEventListener('change', updateDetSourceUI);
+document.querySelectorAll('input[name="d-scope"]').forEach(r => {
+  r.addEventListener('change', () => {
+    const v = document.querySelector('input[name="d-scope"]:checked').value;
+    const tag = document.getElementById('d-tag'), dev = document.getElementById('d-device');
+    tag.disabled = v !== 'tag'; dev.disabled = v !== 'device';
+    if (v === 'tag') tag.focus(); else if (v === 'device') dev.focus();
+  });
+});
+
+document.getElementById('det-create').addEventListener('click', async () => {
+  const btn = document.getElementById('det-create');
+  const errEl = document.getElementById('det-error');
+  errEl.classList.add('hidden');
+  const name = document.getElementById('d-name').value.trim();
+  const scope = document.querySelector('input[name="d-scope"]:checked').value;
+  const tag = document.getElementById('d-tag').value.trim();
+  const device_id = document.getElementById('d-device').value.trim();
+  const category = document.getElementById('d-category').value;
+  const topic = document.getElementById('d-topic').value.trim();
+  const condKey = document.getElementById('d-cond-key').value.trim();
+  const condOp = document.getElementById('d-cond-op').value;
+  const condVal = document.getElementById('d-cond-val').value.trim();
+  const action_type = document.getElementById('d-action').value;
+  const cooldown = parseInt(document.getElementById('d-cooldown').value, 10) || 0;
+
+  const source = detSource();
+  function fail(msg) { errEl.textContent = msg; errEl.classList.remove('hidden'); }
+  if (scope === 'tag' && !tag) return fail('Enter a tag, or choose Any device.');
+  if (scope === 'device' && !device_id) return fail('Enter a device id, or choose Any device.');
+
+  const match = {};
+  if (source === 'acs') {
+    match.category = 'action_rule';   // ACS firings are anonymous; match the category
+  } else {
+    if (category) match.category = category;
+    if (topic) match.topic = topic;
+    if (condKey) match.condition = { key: condKey, op: condOp, value: condVal };
+  }
+
+  const action_params = {};
+  let pre_authorized = false;
+  if (action_type === 'notify') {
+    const msg = document.getElementById('d-notify-msg').value.trim();
+    if (msg) action_params.message = msg;
+  } else if (action_type === 'acs_action') {
+    const cam = document.getElementById('d-acs-camera').value.trim();
+    if (!cam) return fail('Enter the ACS camera Id for the recording action.');
+    action_params.acs_op = document.getElementById('d-acs-op').value;
+    action_params.camera_id = cam;
+    pre_authorized = document.getElementById('d-acs-authz').checked;
+    if (!pre_authorized) return fail('ACS recording fires automatically — tick the authorization box to allow it, or pick a safe action.');
+  }
+
+  const body = {
+    name: name || (ACTION_LABELS[action_type] || {}).label || action_type,
+    source: source,
+    device_id: scope === 'device' ? device_id : null,
+    tag: scope === 'tag' ? tag : null,
+    match, action_type, action_params, pre_authorized,
+    cooldown_seconds: cooldown,
+  };
+  btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i> Creating…'; if (window.lucide) lucide.createIcons();
+  try {
+    const resp = await fetch('/api/detections', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) { closeDetModal(); loadDetections(); }
+    else { fail(data.detail || 'Failed to create detection.'); }
+  } catch (e) { fail('Request failed.'); }
+  btn.disabled = false; btn.innerHTML = '<i data-lucide="check"></i> Create detection'; if (window.lucide) lucide.createIcons();
+});
+
+// Open the builder pre-filled when arriving from the Activity feed
+// ("Create detection from this event" stashes the seed in sessionStorage).
+(function () {
+  if (location.hash !== '#new-detection') return;
+  let seed = null;
+  try { seed = JSON.parse(sessionStorage.getItem('admz_det_seed') || 'null'); } catch (e) {}
+  sessionStorage.removeItem('admz_det_seed');
+  history.replaceState(null, '', '/tasks');
+  // loadDetections populates DET_META (acs_enabled, action list) + watched events
+  // before the modal opens, so the source list + picker are ready.
+  Promise.all([loadDetections(), loadWatchedForPicker()]).then(() => openDetModal(seed || {}));
+})();
+
+loadDetections();
+loadWatchedForPicker();
 </script>
 {% endblock %}

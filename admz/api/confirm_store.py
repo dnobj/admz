@@ -71,6 +71,7 @@ from admz.fleet_settings import (  # noqa: E402,F401
 class ConfirmStatus(str, Enum):
     PENDING = "pending"
     COMPLETED = "completed"
+    DENIED = "denied"
     EXPIRED = "expired"
 
 
@@ -103,8 +104,10 @@ class ConfirmSession:
 
     @property
     def effective_status(self) -> ConfirmStatus:
-        if self.status == ConfirmStatus.COMPLETED:
-            return ConfirmStatus.COMPLETED
+        # Completed and denied are terminal — they hold past the TTL so a
+        # late status poll still reports what actually happened.
+        if self.status in (ConfirmStatus.COMPLETED, ConfirmStatus.DENIED):
+            return self.status
         if self.is_expired:
             return ConfirmStatus.EXPIRED
         return ConfirmStatus.PENDING
@@ -168,9 +171,8 @@ CREATE TABLE IF NOT EXISTS confirm_sessions (
 
 
 def _default_db_path() -> Path:
-    return Path(
-        os.getenv("ADMZ_DB_PATH", str(Path.home() / ".admz" / "admz.db"))
-    )
+    from admz.paths import db_path
+    return db_path()
 
 
 class ConfirmStore:
@@ -310,7 +312,9 @@ class ConfirmStore:
             action_json=row[15] or "",
         )
 
-        if session.is_expired and session.status != ConfirmStatus.COMPLETED:
+        if session.is_expired and session.status not in (
+            ConfirmStatus.COMPLETED, ConfirmStatus.DENIED
+        ):
             return None
 
         return session
@@ -334,6 +338,31 @@ class ConfirmStore:
                 "SET status=?, confirmed_by=? "
                 "WHERE token=? AND status='pending'",
                 ("completed", confirmed_by, token),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def deny_session(self, token: str, denied_by: str = "web") -> bool:
+        """Mark a PENDING session as denied — the user explicitly declined.
+
+        Terminal like completed (a denied token can never be consumed).
+        Same concurrency guard as :meth:`complete_session`: only the first
+        state transition wins. Returns False when the session is missing,
+        expired, or already resolved.
+        """
+        session = self.get_session(token)
+        if session is None or session.effective_status != ConfirmStatus.PENDING:
+            return False
+
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE confirm_sessions "
+                "SET status=?, confirmed_by=? "
+                "WHERE token=? AND status='pending'",
+                ("denied", denied_by, token),
             )
             conn.commit()
             return cursor.rowcount > 0

@@ -152,6 +152,58 @@ async def list_device_accounts(
 # secrets like API keys) lives at GET /api/fleet/settings/{key}/reveal.
 
 
+async def _run_onboarding(device_id: str, registry: DeviceRegistry) -> dict:
+    """Shared credential-onboarding call for the create/onboard routes.
+
+    On ``credentials_needed`` a capture session is opened and its
+    same-origin URL returned so the web UI can link straight to the
+    secure form. Degrades to a status dict on any internal failure —
+    onboarding must never fail a device add."""
+    try:
+        from admz.api.context import get_context
+        from admz.onboarding import CREDENTIALS_NEEDED, onboard_device_credentials
+
+        ctx = get_context()
+        result = await onboard_device_credentials(
+            device_id=device_id,
+            registry=registry,
+            catalog=ctx.catalog,
+            executors=ctx.executors,
+        )
+        if result.get("status") == CREDENTIALS_NEEDED:
+            from admz.api.capture import capture_store
+
+            session = capture_store.create_session(
+                device_id=device_id,
+                purpose="Device onboarding — automatic resolution failed",
+            )
+            result["capture_url"] = f"/capture/{session.token}"
+        return result
+    except Exception as exc:  # noqa: BLE001 - never fail the add
+        return {"status": "error", "reason": str(exc)}
+
+
+@router.post("/devices/{device_id}/onboard")
+async def onboard_device(
+    request: Request,
+    device_id: str,
+    registry: DeviceRegistry = Depends(get_registry),
+):
+    """Run credential onboarding for an existing device (e.g. one added
+    before this flow existed, or whose stored credentials went stale).
+    Returns the outcome status — never credentials."""
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+
+    principal = await get_current_principal(request)
+    if not registry.device_exists(device_id):
+        raise HTTPException(status_code=404, detail=f"Device '{device_id}' not found")
+    result = await _run_onboarding(device_id, registry)
+    record_event(principal, "device.onboard", resource=f"device:{device_id}",
+                 details={"status": result.get("status")})
+    return result
+
+
 @router.post("/devices", response_model=DeviceResponse, status_code=201)
 async def create_device(
     request: Request,
@@ -176,8 +228,15 @@ async def create_device(
         # Create device
         registry.add_device(device.device_id, device_info)
 
-        # Return the created device
+        # Resolve credentials inline (stored-verify / auto-provision /
+        # fleet-pair try / capture needed) — status only, never a password.
+        onboarding = await _run_onboarding(device.device_id, registry)
+        record_event(principal, "device.onboard", resource=resource,
+                     details={"status": onboarding.get("status")})
+
+        # Return the created device + onboarding outcome
         result = registry.get_device_info(device.device_id)
+        result["onboarding"] = onboarding
         record_event(principal, "device.create", resource=resource)
         return result
 
@@ -797,6 +856,22 @@ async def queue_recovery(
             status_code=400,
             detail="Only 'reprovision' is queueable here; remove a device via DELETE.",
         )
+
+    # Non-interactive callers take the confirmation widget — same policy as
+    # /api/tasks (the console's Recovery card is exempt: a human clicked it).
+    from admz.tasks.gated import describe_create, gate_task_write, is_interactive
+    if not is_interactive(principal):
+        spec = {
+            "trigger_kind": "detection", "action_type": "reprovision",
+            "device_id": device_id, "event": "on_needs_setup",
+            "action_params": {"username": req.username},
+            "description": (
+                f"Re-provision {device_id} when it returns factory-defaulted"
+            ),
+        }
+        return gate_task_write("create_task", device_id, spec,
+                               describe_create(spec))
+
     pid = pending_actions.create(
         device_id=device_id,
         action={"action": "reprovision", "username": req.username},

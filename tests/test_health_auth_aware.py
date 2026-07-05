@@ -109,7 +109,7 @@ async def test_auth_check_op_missing_stays_online(_verify_on):
     execs = _Executor({SYSTEMREADY_OP: _systemready_ok()})
     rec = await _probe(_Catalog(have_auth_op=False), execs)
     assert rec.status == DeviceHealthStatus.ONLINE
-    assert execs.calls == [SYSTEMREADY_OP]  # never tried the auth op
+    assert AUTH_CHECK_OP not in execs.calls  # never tried the auth op
 
 
 @pytest.mark.asyncio
@@ -118,7 +118,7 @@ async def test_verification_disabled_skips_auth_check(monkeypatch):
     execs = _Executor({SYSTEMREADY_OP: _systemready_ok(), AUTH_CHECK_OP: _result(401)})
     rec = await _probe(_Catalog(), execs)
     assert rec.status == DeviceHealthStatus.ONLINE
-    assert execs.calls == [SYSTEMREADY_OP]  # auth check skipped
+    assert AUTH_CHECK_OP not in execs.calls  # auth check skipped
 
 
 def test_verify_enabled_reads_fleet_setting(monkeypatch):

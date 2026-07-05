@@ -37,7 +37,7 @@ from admz.firmware.downloader import (
     _ftp_bases_for_model,
     _FTP_MPQT,
     _FTP_PACS,
-    _DEFAULT_FIRMWARE_DIR,
+    _default_firmware_dir,
 )
 
 
@@ -201,8 +201,8 @@ function filterTable() {
 def main():
     parser = argparse.ArgumentParser(description="Build firmware manifest for all Axis models")
     parser.add_argument("--urls-only", action="store_true", help="Just print download URLs")
-    parser.add_argument("--output-dir", type=str, default=_DEFAULT_FIRMWARE_DIR,
-                        help=f"Output directory (default: {_DEFAULT_FIRMWARE_DIR})")
+    parser.add_argument("--output-dir", type=str, default=_default_firmware_dir(),
+                        help=f"Output directory (default: {_default_firmware_dir()})")
     parser.add_argument("--concurrency", type=int, default=20,
                         help="Max concurrent version checks (default: 20)")
     args = parser.parse_args()

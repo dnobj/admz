@@ -14,8 +14,9 @@ import pytest
 from admz.mcp.server import ADMZMCPServer
 
 
-# The canonical 52-tool order as shipped on master @ a39bf26 (clean base for
-# the platform/modules extraction). Captured directly from a live server.
+# The canonical core-tool order. Baseline was the 52 tools shipped on master @
+# a39bf26 (clean base for the platform/modules extraction); ``search_activity``
+# (ADR-0041 layer 3) was appended at the end of the migrated section.
 EXPECTED_TOOL_ORDER = [
     "list_devices",
     "get_device",
@@ -25,6 +26,7 @@ EXPECTED_TOOL_ORDER = [
     "search_devices",
     "list_accounts",
     "register_device",
+    "onboard_device",
     "add_account",
     "update_device",
     "update_device_tags",
@@ -69,6 +71,10 @@ EXPECTED_TOOL_ORDER = [
     "download_firmware",
     "import_firmware",
     "list_cached_firmware",
+    "search_activity",
+    "list_rule_capabilities",
+    "create_action_rule",
+    "delete_action_rule",
 ]
 
 
@@ -90,7 +96,7 @@ def _live_tool_order():
 
 
 def test_device_tool_order_is_frozen():
-    """The 52 device/platform tools are a frozen, ordered PREFIX.
+    """The core device/platform tools are a frozen, ordered PREFIX.
 
     Enabled platform modules (e.g. ACS Pro) append their tools after, so we
     assert the prefix — this keeps the test independent of which modules happen

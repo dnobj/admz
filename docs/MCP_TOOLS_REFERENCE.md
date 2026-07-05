@@ -1,6 +1,6 @@
 # ADMZ MCP Tools Reference
 
-Complete reference for the **52 tools** the ADMZ MCP server exposes.
+Complete reference for the **56 tools** the ADMZ MCP server exposes.
 
 > Note: a `get_credentials` MCP tool used to exist. It was **removed**
 > (CR-1) because returning plaintext passwords into LLM context violates
@@ -42,10 +42,23 @@ Search by tags, location, or model.
 - **Returns:** `{success, count, devices, filters}`
 
 ### `register_device`
-Add a new device.
+Add a new device, then resolve its credentials automatically (see
+`onboard_device` for the resolution order).
 - **Args:** `device_id`, `device_info` (object), `accounts` (object, optional)
-- **Returns:** `{success, device_id}`
+- **Returns:** `{success, device_id, onboarding: {status, …}}`
 - **Errors:** `BackendError` (duplicate)
+
+### `onboard_device`
+Resolve credentials for a registered device server-side — no password
+enters the conversation. Order: verify stored credentials
+(`already_credentialed`) → factory-defaulted device auto-provisioned from
+fleet settings (`provisioned`) → fleet `default_username`/`default_password`
+pair tried and saved if it authenticates (`fleet_credentials_saved`) →
+otherwise a capture session is opened (`credentials_needed` +
+`capture_url`; the chat console renders it as a secure form card).
+`register_device` runs this automatically for new devices.
+- **Args:** `device_id`
+- **Returns:** `{status, device_id, message, …}` (never a password)
 
 ### `update_device`
 Merge updates into a device's information.
@@ -226,9 +239,10 @@ Add a discovered device to the registry.
 - **Args:** `device_id`, `ip_address`, `mac_address` (optional),
   `model` (optional), `hostname` (optional), `device_type` (optional),
   `tags` (array, optional)
-- **Returns:** `{success, device_id}`
-- The device is created without credentials. Use `capture_credentials`
-  to set them via the OOB flow.
+- **Returns:** `{success, device_id, onboarding: {status, …}}`
+- Credential onboarding runs automatically after registration (same flow
+  as `onboard_device`); a capture session is opened only when the
+  automatic resolution fails.
 
 ### `reconcile_device_addresses`
 Run a discovery scan and update any registered device whose **MAC** now
@@ -537,6 +551,42 @@ List files currently in the firmware cache.
 - **Args:** none
 - **Returns:** `{success, count, files: [{model, version, file_name,
   file_path, file_size}, ...]}`
+
+---
+
+## 🔔 Device automation rules
+
+Create/list/delete device **event action rules** (run an action when an event
+fires). ADMZ never hand-assembles the SOAP — axis-api-atlas's rule builder
+composes the device-proven rule from the model's survey; ADMZ runs it behind the
+approval gate. See ADR-0043.
+
+### `list_rule_capabilities`
+Read-only: the event **conditions** (triggers) and **actions** a device's model
+supports for rules, plus the device's current rules. Call this first to pick a
+`condition_id` + `action_token`.
+- **Args:** `device_id`
+- **Returns:** `{available, model, conditions: [{id, label, topic, params, ...}],
+  actions: [{token, label, params: [{name, label, choices, secret}],
+  needs_capture}], current_rules: [{rule_id, name, enabled, primary_action}]}`
+  — or `{available: false, reason}` when the model isn't surveyed.
+
+### `create_action_rule`
+Compose and create a rule (GATED — returns a confirmation card; the rule is
+created only after approval). To edit a rule, delete + recreate.
+- **Args:** `device_id`, `condition_id`, `action_token`, `param_choices?`
+  (keyed by param label or SOAP name — never secrets), `rule_name?`
+- **Returns:** a blocked/`url_only` confirm envelope. For a notification/send-*
+  action that needs recipient credentials, instead returns
+  `{needs_recipient_credentials: true, capture_url: "/capture/rule/<token>"}` —
+  the user enters the login/password on that secure form (never in chat), then
+  approves. On approval: `{success, rule_id, config_id}`.
+
+### `delete_action_rule`
+Remove a rule (and its linked action configuration) by id (GATED).
+- **Args:** `device_id`, `rule_id`
+- **Returns:** a `url_only` confirm envelope; on approval `{success,
+  removed_rule, removed_config}`.
 
 ---
 

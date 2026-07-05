@@ -331,13 +331,35 @@ configuration is the same in both topologies.
 
 ## Where state lives
 
-| File | Default path | What |
+All state lives under **`ADMZ_HOME`** (ADR-0042). The default is the launching
+user's `~/.admz` (dev installs); **server deployments should set
+`ADMZ_HOME=C:\ProgramData\admz`** so the data is machine-level and the service
+can run as LocalSystem — no user profile, no service password. The specific
+overrides (`ADMZ_DB_PATH`, `ADMZ_KEY_PATH`, `ADMZ_CONFIG_REPO_PATH`,
+`ADMZ_REPO_PATH_ROOT`) still win over `ADMZ_HOME` when set.
+
+| File | Path (under `ADMZ_HOME`) | What |
 |---|---|---|
-| Encrypted device registry | `C:\Users\<svc-account>\.admz\admz.db` | Devices, accounts, capture sessions, confirm sessions, fleet settings, **API keys**, **audit log** — one SQLite file, WAL mode |
-| Fernet key | `C:\Users\<svc-account>\.admz\admz.key` | Encrypts `admz.db` account passwords |
-| Config repo | `C:\Users\<svc-account>\.admz\config-repo\` | Git working tree for snapshots |
-| Schedules | `C:\Users\<svc-account>\.admz\schedules.json` | Recurring snapshot definitions |
-| Firmware cache | `C:\Users\<svc-account>\.admz\firmware\` | Cached firmware binaries |
+| Encrypted device registry | `admz.db` | Devices, accounts, capture sessions, confirm sessions, fleet settings, **API keys**, **audit log** — one SQLite file, WAL mode |
+| Fernet key | `admz.key` | Encrypts `admz.db` account passwords |
+| Config repo | `config-repo\` | Git working tree for snapshots (default Org) |
+| Org repos | `repos\<org_id>\` | Git working trees for additional Orgs |
+| Legacy schedules | `schedules.json` | Pre-ADR-0037 recurring snapshots (migrated to the DB) |
+| Firmware cache | `firmware\` | Cached firmware binaries (also the upload allow-list root) |
+| Dev agent key | `dev-api-key.txt` | Dev/e2e Bearer key (plaintext lives ONLY here) |
+
+**Security:** on a shared server, ACL `ADMZ_HOME` to SYSTEM + Administrators
+only — it holds the Fernet key and API keys, and `C:\ProgramData` grants all
+Users read by default. `setup-admz-service.ps1` does this.
+
+**Service deployment (Shawl):** `setup-admz-service.ps1` migrates an existing
+`~/.admz` to `C:\ProgramData\admz`, fixes git ownership for SYSTEM
+(`safe.directory`), updates the Org `repo_path` in the DB, sets the machine-wide
+`ADMZ_HOME`, and registers the `admz` service via the Shawl wrapper
+(LocalSystem, delayed-auto start, auto-restart, rotating logs). ACS Pro note:
+the ACS connection authenticates as the service's Windows identity — if the ACS
+server doesn't authorize SYSTEM/Administrators, set the service Log On to a
+local account that ACS authorizes.
 
 **Backup:** `admz.db` and `admz.key` MUST be backed up together — the
 DB without the key is useless. See README §Backup.

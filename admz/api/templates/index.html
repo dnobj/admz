@@ -77,7 +77,7 @@
         data-device-id="{{ device.device_id }}" data-health="unknown"
         data-tags="{{ device.tags|default([])|join(',') }}"
         data-drift="{% if is_drifted %}drifted{% elif device.drift.state == 'in_sync' %}ok{% elif device.drift.state == 'unchecked' %}unchecked{% else %}none{% endif %}"
-        onclick="window.location='/device/{{ device.device_id }}'">
+        onclick="rowClick('{{ device.device_id }}', {{ 'true' if is_drifted else 'false' }})">
       {% if filter_drift %}
       <td class="select-cell" style="text-align:center" onclick="event.stopPropagation()">
         {% if is_drifted %}<input type="checkbox" class="row-select" data-device-id="{{ device.device_id }}">{% endif %}
@@ -118,7 +118,7 @@
       <td>
         {% for tag in device.tags|default([]) %}<a class="tag" href="/devices?tag={{ tag }}" onclick="event.stopPropagation()">{{ tag }}</a> {% endfor %}
       </td>
-      <td style="text-align:right;color:var(--text-faint)"><i data-lucide="chevron-right"></i></td>
+      <td style="text-align:right;color:var(--text-faint)">{% if not filter_drift %}<i data-lucide="chevron-right"></i>{% endif %}</td>
     </tr>
     {% if is_drifted %}
     <!-- Drift detail panel — lazy-loaded on first expand -->
@@ -286,6 +286,15 @@ const HEALTH = {
 })();
 
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// Drift-review mode (/devices?filter=drifted) is ABOUT dealing with drift, so a
+// row click there toggles the device's drift diff instead of navigating away;
+// everywhere else a row click opens the device page as before.
+const REVIEW_MODE = {{ 'true' if filter_drift else 'false' }};
+function rowClick(did, isDrifted) {
+  if (REVIEW_MODE && isDrifted) { toggleDrift(did); return; }
+  window.location = '/device/' + did;
+}
 
 // ── Drift expand / diff (drift is rendered server-side; the diff lazy-loads) ──
 function openDrift(did) {
@@ -902,6 +911,23 @@ document.querySelectorAll('#devices-table tbody tr.config-row').forEach(row => {
   }
 });
 refreshDriftUI();
+
+// Review mode is about dealing with drift, so open every device's diff up
+// front. Each diff load triggers a live drift recompute on the device, so the
+// fetches run SEQUENTIALLY (one device probed at a time), expanding each row
+// as its diff arrives.
+(async () => {
+  _allExpanded = true;
+  if (expandAllBtn) {
+    expandAllBtn.innerHTML = '<i data-lucide="chevrons-down-up"></i> Collapse all';
+    if (window.lucide) lucide.createIcons();
+  }
+  for (const r of driftedRows()) {
+    const did = r.getAttribute('data-device-id');
+    try { await loadDiff(did); } catch (_) {}
+    openDrift(did);   // diff already loaded (data-loaded=true) → no refetch
+  }
+})();
 {% endif %}
 </script>
 {% endblock %}

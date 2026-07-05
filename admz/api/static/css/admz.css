@@ -516,6 +516,11 @@ label { font-size: 12.5px; color: var(--text-muted); }
   border-top-color: var(--blue-solid); border-radius: 99px; animation: admz-spin .7s linear infinite;
 }
 
+/* ── Console event chip (out-of-band approval/capture outcome) ────────── */
+.event-chip { align-self: center; max-width: 80%; margin: 4px auto; padding: 5px 12px;
+  font-size: 12px; color: var(--muted); background: var(--panel2);
+  border: 1px solid var(--border-subtle); border-radius: 999px; text-align: center; }
+
 /* ── Approval card (two-gate) ─────────────────────────────────────────── */
 .approval-card { border: 1.5px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--panel); box-shadow: var(--shadow-sm); }
 .approval-card.dangerous { border-color: var(--red-bd); box-shadow: 0 0 0 3px var(--red-bg); }

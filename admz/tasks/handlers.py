@@ -167,6 +167,47 @@ async def _run_survey(task: Task, ctx: TaskContext) -> Dict[str, Any]:
     return d
 
 
+@register_task_handler("notify")
+async def _run_notify(task: Task, ctx: TaskContext) -> Dict[str, Any]:
+    """A safe 'flag this happened' action for event-pattern detections (ADR-0041
+    layer 3). The durable record is the audit row the evaluator writes on every
+    firing; this just carries the operator's message (and is the seam for a future
+    webhook/email)."""
+    msg = (task.action_params or {}).get("message") or task.description or "event detected"
+    return {"success": True, "summary": f"notify: {msg}"}
+
+
+@register_task_handler("acs_action")
+async def _run_acs_action(task: Task, ctx: TaskContext) -> Dict[str, Any]:
+    """Fire an ACS Pro recording action on a camera when a detection matches.
+    SERVICE-AFFECTING — runs without the interactive gate, so the evaluator only
+    invokes it for a rule whose ``pre_authorized`` flag is set. Bypasses the gate
+    intentionally (the authorization was captured at rule creation) but is audited."""
+    from admz.modules.acs_pro.client import run_acs_op
+
+    p = task.action_params or {}
+    op = (p.get("acs_op") or "start_recording").lower()
+    camera_id = p.get("camera_id")
+    if not camera_id:
+        return {"success": False, "error": "no camera_id", "summary": "error: acs_action missing camera_id"}
+    op_ids = {"start_recording": "RecordingControlFacade:StartRecording",
+              "stop_recording": "RecordingControlFacade:StopRecording",
+              "bookmark": "BookmarkFacade:AddBookmark"}
+    op_id = op_ids.get(op)
+    if op_id is None:
+        return {"success": False, "error": "bad acs_op", "summary": f"error: unknown acs_op {op!r}"}
+    params: Dict[str, Any] = {"cameraId": {"Id": camera_id}}
+    if op == "bookmark":
+        import datetime
+        params["time"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        params["name"] = p.get("name") or "ADMZ detection"
+        params["description"] = p.get("description") or task.description or ""
+    r = await run_acs_op(ctx.catalog, ctx.executors, op_id, params)
+    ok = bool(r.get("success"))
+    return {"success": ok, "status_code": r.get("status_code"),
+            "summary": f"acs {op}: {'ok' if ok else (r.get('message') or 'failed')}"}
+
+
 @register_task_handler("reprovision")
 async def _run_reprovision(task: Task, ctx: TaskContext) -> Dict[str, Any]:
     """Re-provision a factory-defaulted device — create the admin from the fleet

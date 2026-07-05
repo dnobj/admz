@@ -64,7 +64,7 @@ class TestNavSections:
         assert core["id"] == "core"
         assert core["title"] == ""  # no header / divider above Core
         assert [it["key"] for it in core["items"]] == [
-            "console", "fleet", "tasks", "auditlog", "settings",
+            "console", "fleet", "tasks", "activity", "auditlog", "settings",
         ]
 
     def test_console_is_accent(self, nav_registry):

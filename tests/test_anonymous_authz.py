@@ -233,7 +233,11 @@ class TestAnonymousLowRiskAllowedAndAudited:
         assert entries
         assert entries[0].requester == "anonymous"
 
-    def test_anonymous_create_schedule_succeeds_and_audits(self, client):
+    def test_anonymous_create_schedule_gates_behind_widget(self, client):
+        # Policy change (2026-07-03): creating a scheduled task is standing
+        # behavior — non-interactive principals (anonymous included) get the
+        # confirmation widget instead of a direct write. Only a console
+        # operator's form submission writes directly.
         r = client.post(
             "/api/schedules",
             json={
@@ -243,13 +247,11 @@ class TestAnonymousLowRiskAllowedAndAudited:
             },
         )
         assert r.status_code == 200
-
-        from admz import audit as audit_module
-        entries = audit_module.audit_log.list_recent(
-            action="schedule.create", limit=5
-        )
-        assert entries
-        assert entries[0].requester == "anonymous"
+        body = r.json()
+        assert body["blocked"] is True
+        assert body["confirm_url"].startswith("/confirm/")
+        # nothing written until the card is approved
+        assert client.get("/api/schedules").json()["count"] == 0
 
 
 # ---------------------------------------------------------------------------

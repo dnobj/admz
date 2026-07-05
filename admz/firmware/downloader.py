@@ -32,7 +32,10 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_FIRMWARE_DIR = os.path.join(str(Path.home()), ".admz", "firmware")
+def _default_firmware_dir() -> str:
+    # Call-time (ADR-0042): honors ADMZ_HOME set after import.
+    from admz.paths import firmware_dir
+    return str(firmware_dir())
 
 # FTP base URLs — tried in order per model
 _FTP_MPQT = "https://www.axis.com/ftp/pub_soft/MPQT"
@@ -139,7 +142,7 @@ async def download_firmware(
         FirmwareDownloadError: Network or I/O error during download.
     """
     normalized = normalize_model_for_ftp(model)
-    target_dir = Path(firmware_dir or _DEFAULT_FIRMWARE_DIR)
+    target_dir = Path(firmware_dir or _default_firmware_dir())
     target_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine local filename (include version for caching)
@@ -273,7 +276,7 @@ def list_cached_firmware(
     firmware_dir: Optional[str] = None,
 ) -> list:
     """List firmware files in the local cache directory."""
-    target_dir = Path(firmware_dir or _DEFAULT_FIRMWARE_DIR)
+    target_dir = Path(firmware_dir or _default_firmware_dir())
     if not target_dir.exists():
         return []
 
@@ -495,7 +498,7 @@ def scan_firmware_files(
     if not src_dir.is_dir():
         return []
 
-    fw_dir = firmware_dir or _DEFAULT_FIRMWARE_DIR
+    fw_dir = firmware_dir or _default_firmware_dir()
     manifest_models = _load_manifest_models(fw_dir)
     cached = _get_cached_versions(fw_dir)
     results: List[ScannedFirmware] = []
@@ -563,7 +566,7 @@ async def import_firmware_files(
 
     Skips files already in cache.
     """
-    fw_dir = firmware_dir or _DEFAULT_FIRMWARE_DIR
+    fw_dir = firmware_dir or _default_firmware_dir()
     target = Path(fw_dir)
     target.mkdir(parents=True, exist_ok=True)
 

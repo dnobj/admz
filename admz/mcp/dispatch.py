@@ -70,6 +70,10 @@ async def _list_accounts(ctx, a):
     return await ctx.server._list_accounts(a["device_id"])
 
 
+async def _onboard_device(ctx, a):
+    return await ctx.server._onboard_device(a["device_id"])
+
+
 async def _register_device(ctx, a):
     return await ctx.server._register_device(
         a["device_id"], a["device_info"], a.get("accounts")
@@ -268,6 +272,10 @@ async def _search_audit_log(ctx, a):
     return ctx.server._search_audit_log(a)
 
 
+async def _search_activity(ctx, a):
+    return ctx.server._search_activity(a)
+
+
 # --- Firmware ----------------------------------------------------------------
 async def _download_firmware(ctx, a):
     return await ctx.server._download_firmware(a)
@@ -279,6 +287,22 @@ async def _import_firmware(ctx, a):
 
 async def _list_cached_firmware(ctx, a):
     return await ctx.server._list_cached_firmware()
+
+
+# --- Device event action rules ----------------------------------------------
+async def _list_rule_capabilities(ctx, a):
+    return await ctx.server._list_rule_capabilities(a["device_id"])
+
+
+async def _create_action_rule(ctx, a):
+    return await ctx.server._create_action_rule(
+        a["device_id"], a["condition_id"], a["action_token"],
+        a.get("param_choices"), a.get("rule_name"),
+    )
+
+
+async def _delete_action_rule(ctx, a):
+    return await ctx.server._delete_action_rule(a["device_id"], a["rule_id"])
 
 
 # --- Temporary credentials ---------------------------------------------------
@@ -300,6 +324,7 @@ TOOL_HANDLERS: Dict[str, ToolHandler] = {
     "search_devices": _search_devices,
     "list_accounts": _list_accounts,
     "register_device": _register_device,
+    "onboard_device": _onboard_device,
     "add_account": _add_account,
     "update_device": _update_device,
     "update_device_tags": _update_device_tags,
@@ -339,9 +364,13 @@ TOOL_HANDLERS: Dict[str, ToolHandler] = {
     "cancel_device_recovery": _cancel_device_recovery,
     "list_tasks": _list_tasks,
     "search_audit_log": _search_audit_log,
+    "search_activity": _search_activity,
     "download_firmware": _download_firmware,
     "import_firmware": _import_firmware,
     "list_cached_firmware": _list_cached_firmware,
+    "list_rule_capabilities": _list_rule_capabilities,
+    "create_action_rule": _create_action_rule,
+    "delete_action_rule": _delete_action_rule,
     "create_temp_credentials": _create_temp_credentials,
     "cleanup_temp_credentials": _cleanup_temp_credentials,
 }

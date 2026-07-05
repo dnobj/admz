@@ -28,11 +28,13 @@ logger = logging.getLogger(__name__)
 # H-3 (review 2026-06-10): file uploads may only read from the firmware
 # cache. The upload path reaches the executor via caller-supplied operation
 # params (e.g. a chatbot tool call), so an unconstrained path would let a
-# caller read ANY host file (~/.admz/admz.key, the SQLite DB, ...) and
-# exfiltrate it to a device it controls. Mirrors
-# admz.firmware.downloader._DEFAULT_FIRMWARE_DIR (not imported — the
-# executor stays a leaf module).
-_UPLOAD_ROOT = Path.home() / ".admz" / "firmware"
+# caller read ANY host file (the Fernet key, the SQLite DB, ...) and
+# exfiltrate it to a device it controls. Resolved at CALL time via
+# admz.paths (ADR-0042) so ADMZ_HOME set after import is honored; admz.paths
+# imports only stdlib, so the executor stays a leaf module.
+def _upload_root() -> Path:
+    from admz.paths import firmware_dir
+    return firmware_dir()
 
 
 def _auth_method_from_challenge(header: Optional[str]) -> Optional[str]:
@@ -60,7 +62,7 @@ def _upload_path_allowed(file_path: str) -> bool:
     """
     try:
         resolved = Path(file_path).resolve()
-        root = _UPLOAD_ROOT.resolve()
+        root = _upload_root().resolve()
     except (OSError, ValueError):
         return False
     return resolved == root or root in resolved.parents
@@ -140,7 +142,7 @@ class VapixExecutor(BaseExecutor):
                     success=False,
                     error=(
                         "Upload file_path must be inside the firmware "
-                        f"cache ({_UPLOAD_ROOT}); got: {request.file_path}. "
+                        f"cache ({_upload_root()}); got: {request.file_path}. "
                         "Use download_firmware or import_firmware to "
                         "stage the file first."
                     ),
@@ -459,6 +461,11 @@ class VapixExecutor(BaseExecutor):
             return template  # literal string, no placeholders
 
         elif isinstance(template, dict):
+            if not template:
+                # An authored empty object is a literal (e.g. the /vapix/call
+                # command bodies {"axcall:GetSIPConfiguration": {}}) — dropping
+                # it would delete the command key itself.
+                return {}
             resolved = {}
             for k, v in template.items():
                 val = self._resolve_template(v, params)
@@ -601,10 +608,16 @@ class VapixExecutor(BaseExecutor):
         # Resolve the entire body template recursively
         body = self._resolve_template(body_template, params) or {}
 
-        # Backward compat: if template resolution didn't produce a "params"
-        # key but user provided params, put them there (e.g., operations
-        # with no typed placeholders yet)
-        if "params" not in body and params:
+        # Backward compat: JSON-RPC envelope bodies ({apiVersion, method, ...})
+        # get leftover params under a "params" key (operations with no typed
+        # placeholders yet). Command-keyed bodies (the /vapix/call service:
+        # {"axcall:GetSIPConfiguration": {}}) have no "method" envelope and
+        # reject stray keys — never inject there.
+        if (
+            "params" not in body
+            and params
+            and (not body_template or "method" in body)
+        ):
             body["params"] = params
 
         timeout_val = request_spec.get("timeout")
@@ -628,11 +641,15 @@ class VapixExecutor(BaseExecutor):
         sub_path = operation.get("path", "")
         full_path = base_path + sub_path
 
-        # Substitute path parameters
+        # Substitute path parameters. A param consumed by the path must NOT
+        # also ride in the JSON body (PATCH /schedules/{id1} with body
+        # {"id1": ..., "data": ...} confuses strict config-rest handlers).
+        body_params = dict(params)
         for k, v in params.items():
             placeholder = "{" + k + "}"
             if placeholder in full_path:
-                full_path = full_path.replace(placeholder, v)
+                full_path = full_path.replace(placeholder, str(v))
+                body_params.pop(k, None)
 
         request_spec = operation.get("request", {})
         timeout_val = request_spec.get("timeout")
@@ -641,7 +658,7 @@ class VapixExecutor(BaseExecutor):
         return ExecutionRequest(
             method=operation.get("method", "GET"),
             path=full_path,
-            json_body=params if params else None,
+            json_body=body_params if body_params else None,
             content_type="application/json"
             if operation.get("method", "GET") != "GET"
             else None,

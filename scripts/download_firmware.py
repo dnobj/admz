@@ -56,7 +56,7 @@ from admz.firmware.downloader import (
     get_latest_version,
     import_firmware_files as module_import_firmware,
     _ftp_bases_for_model,
-    _DEFAULT_FIRMWARE_DIR,
+    _default_firmware_dir,
 )
 
 
@@ -157,8 +157,8 @@ def main():
     parser.add_argument(
         "--firmware-dir",
         type=str,
-        default=_DEFAULT_FIRMWARE_DIR,
-        help=f"Firmware cache directory (default: {_DEFAULT_FIRMWARE_DIR})",
+        default=_default_firmware_dir(),
+        help=f"Firmware cache directory (default: {_default_firmware_dir()})",
     )
     parser.add_argument(
         "--all-versions",

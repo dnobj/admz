@@ -26,11 +26,15 @@ from admz.api.routes import (
     catalog,
     chat as chat_route,
     confirm,
+    detections as detections_route,
+    watched_events as watched_events_route,
     devices,
     discovery,
     drift as drift_route,
+    events as events_route,
     health as health_route,
     plans,
+    rule_capture as rule_capture_route,
     schedules,
     snapshot,
     tasks as tasks_route,
@@ -118,6 +122,31 @@ async def lifespan(app: FastAPI):
     # always safe to call here.
     await ctx.health_monitor.start()
 
+    # ADR-0041: live device-event ingest supervisor. Opt-in via the
+    # event_ingest_enabled fleet setting; .start() is a no-op when off.
+    try:
+        await ctx.event_supervisor.start()
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("event ingest start failed", exc_info=True)
+
+    # ADR-0041: ACS Pro action-rule poller. Opt-in via acs_event_ingest_enabled
+    # (and requires the ACS module connected); .start() is a no-op when off.
+    try:
+        await ctx.acs_event_poller.start()
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("acs event poller start failed", exc_info=True)
+
+    # ADR-0041: ACS Pro Firebird firing poller — named rule firings read from a
+    # read-only copy of ACS's embedded DB (no per-rule edit). Opt-in via
+    # acs_firebird_enabled + ACS connected + driver/files present; no-op when off.
+    try:
+        await ctx.acs_firebird_poller.start()
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("acs firebird poller start failed", exc_info=True)
+
     # Phase 7: spin up the per-principal MCP subprocess pool so the
     # first chat turn doesn't pay subprocess-spawn latency.
     from admz.chatbot.mcp_pool import mcp_pool
@@ -127,6 +156,18 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await mcp_pool.stop()
+        try:
+            await ctx.event_supervisor.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await ctx.acs_event_poller.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await ctx.acs_firebird_poller.stop()
+        except Exception:  # noqa: BLE001
+            pass
         await ctx.health_monitor.stop()
         await ctx.scheduler.stop()
         # Best-effort cleanup; close() is a no-op for backends that
@@ -211,12 +252,16 @@ app.include_router(tasks_route.router, prefix="/api", tags=["tasks"])
 app.include_router(api_keys_route.router, prefix="/api", tags=["api-keys"])
 app.include_router(audit_route.router, prefix="/api", tags=["audit"])
 app.include_router(drift_route.router, prefix="/api", tags=["drift"])
+app.include_router(events_route.router, tags=["events"])
+app.include_router(detections_route.router, tags=["detections"])
+app.include_router(watched_events_route.router, tags=["watched-events"])
 # Health routes already include /api in their paths.
 app.include_router(health_route.router, tags=["health"])
 
 # Capture, confirm, chatbot, and web UI — no /api prefix because they are user-facing
 app.include_router(auth_web_route.router, tags=["auth"])
 app.include_router(capture.router, tags=["capture"])
+app.include_router(rule_capture_route.router, tags=["capture"])
 app.include_router(confirm.router, tags=["confirm"])
 app.include_router(chat_route.router, tags=["chat"])
 app.include_router(voice_route.router, tags=["voice"])

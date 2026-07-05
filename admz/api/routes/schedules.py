@@ -87,6 +87,21 @@ async def create_schedule(
                      success=False, error_message=str(e))
         raise HTTPException(status_code=400, detail=str(e))
 
+    # Non-interactive callers (api-key/anonymous) take the confirmation
+    # widget — same policy as the unified /api/tasks route (the console
+    # form is exempt: a human filling it is the approval).
+    from admz.tasks.gated import describe_create, gate_task_write, is_interactive
+    if not is_interactive(principal):
+        spec = {
+            "trigger_kind": "schedule", "action_type": req.job_type,
+            "task_id": req.schedule_id, "description": req.description,
+            "interval": req.interval, "tag_filter": req.tag_filter,
+            "device_ids": req.device_ids, "action_params": req.params or {},
+        }
+        target = (f"tag:{req.tag_filter}" if req.tag_filter
+                  else (req.device_ids[0] if req.device_ids else "fleet"))
+        return gate_task_write("create_task", target, spec, describe_create(spec))
+
     schedule = SnapshotSchedule(
         id=req.schedule_id,
         description=req.description,
@@ -129,6 +144,15 @@ async def update_schedule(
 
     principal = await get_current_principal(request)
     resource = f"schedule:{schedule_id}"
+
+    from admz.tasks.gated import describe_update, gate_task_write, is_interactive
+    if not is_interactive(principal):
+        fields = {"interval": req.interval, "enabled": req.enabled,
+                  "tag_filter": req.tag_filter, "description": req.description}
+        return gate_task_write(
+            "update_task", schedule_id, {"task_id": schedule_id, **fields},
+            describe_update(schedule_id, fields))
+
     kwargs = {}
     if req.interval is not None:
         try:
@@ -163,6 +187,16 @@ async def delete_schedule(
 
     principal = await get_current_principal(request)
     resource = f"schedule:{schedule_id}"
+
+    from admz.tasks.gated import describe_delete, gate_task_write, is_interactive
+    if not is_interactive(principal):
+        task = ctx.scheduler.store.get(schedule_id)
+        if task is None:
+            raise HTTPException(status_code=404,
+                                detail=f"Schedule not found: {schedule_id}")
+        return gate_task_write("delete_task", schedule_id,
+                               {"task_id": schedule_id}, describe_delete(task))
+
     removed = ctx.scheduler.remove_schedule(schedule_id)
     if not removed:
         record_event(principal, "schedule.delete", resource=resource,

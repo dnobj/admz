@@ -86,7 +86,20 @@ document.getElementById('add-device-form').addEventListener('submit', async (e) 
         });
 
         if (response.ok) {
-            window.location.href = `/device/${data.device_id}`;
+            const created = await response.json();
+            const ob = created.onboarding || {};
+            if (ob.status === 'credentials_needed' && ob.capture_url) {
+                // Automatic resolution failed — hand off to the secure
+                // capture form (password never passes through this page).
+                showMessage(
+                    'Device added. Automatic credential setup did not succeed ('
+                    + (ob.reason || 'unknown') + '). Opening the secure credential form…',
+                    'info');
+                setTimeout(() => { window.location.href = ob.capture_url; }, 1200);
+            } else {
+                window.location.href = `/device/${data.device_id}?onboarding=`
+                    + encodeURIComponent(ob.status || '');
+            }
         } else {
             const error = await response.json();
             showMessage('Error: ' + error.detail, 'error');

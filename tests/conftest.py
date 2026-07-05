@@ -13,7 +13,16 @@ the confirm/rate-limit tests order-independent. Tests that configure their own
 bucket policy still work — they configure after this reset.
 """
 
+import os
+
 import pytest
+
+# Credential onboarding runs network probes after a device add (TCP
+# preflight + systemready + basicdeviceinfo). Unit tests register devices
+# with fabricated LAN addresses — without this guard every create would
+# probe whatever network the test box sits on. test_onboarding.py deletes
+# the var and mocks the probes to exercise the flow itself.
+os.environ.setdefault("ADMZ_DISABLE_ONBOARDING_PROBES", "1")
 
 
 @pytest.fixture(autouse=True)

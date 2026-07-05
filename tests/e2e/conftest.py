@@ -31,11 +31,12 @@ def _auth_headers() -> Dict[str, str]:
     """Bearer header for deployments that require auth (ADR-0033 windows-local
     makes /api/chat reject anonymous). Key resolution, in order:
     ``ADMZ_E2E_API_KEY`` env, ``ADMZ_DEV_API_KEY`` env, then
-    ``~/.admz/dev-api-key.txt``. Empty (anonymous) when none is found — so this
-    still works against an ``ADMZ_AUTH_BACKEND=none`` server."""
+    ``ADMZ_HOME/dev-api-key.txt``. Empty (anonymous) when none is found — so
+    this still works against an ``ADMZ_AUTH_BACKEND=none`` server."""
     key = os.getenv("ADMZ_E2E_API_KEY") or os.getenv("ADMZ_DEV_API_KEY")
     if not key:
-        f = Path.home() / ".admz" / "dev-api-key.txt"
+        from admz.paths import dev_api_key_path
+        f = dev_api_key_path()
         if f.exists():
             try:
                 key = f.read_text(encoding="utf-8").strip()

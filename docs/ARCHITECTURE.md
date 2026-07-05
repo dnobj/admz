@@ -84,7 +84,10 @@ admz/
 │       ├── users.py, events.py
 │
 ├── fleet/                 — fleet-wide background services
-│   └── health.py          — background health monitor (get_fleet_health)
+│   └── health.py          — background health monitor (get_fleet_health);
+│                            also self-populates device facts (model/serial/
+│                            firmware) + SD-card presence (disks-list status)
+│                            on the health cadence
 │
 ├── chatbot/               — Gemini web chatbot (ADR-0024/0025)
 │   ├── client.py          — manual tool-calling loop over the MCP surface
@@ -102,7 +105,7 @@ admz/
 │   ├── bundle.py, diff.py, github.py — bundle schema, diffing, fork-and-PR
 │
 ├── mcp/                   — MCP server (the primary entry point)
-│   ├── server.py          — 52 tools wiring everything together
+│   ├── server.py          — 56 tools wiring everything together
 │   ├── tools/             — extracted tool-schema modules (firmware, fleet,
 │   │                         knowledge, provision, schedules)
 │   └── temp_credentials.py — short-lived device user accounts manager

@@ -40,20 +40,24 @@ def server(tmp_path, monkeypatch):
 
 
 class TestQueueDeviceRecovery:
-    def test_queue_creates_pending(self, server):
+    def test_queue_gates_behind_the_widget(self, server):
+        # Arming a detection task is standing behavior — the tool now
+        # returns the confirmation card instead of writing directly.
         res = server._queue_device_recovery({"device_id": "cam-1"})
-        assert res["success"] is True
-        assert res["queued"] is True
-        assert res["pending_id"]
-        assert res["trigger"] == "on_needs_setup"
+        assert res["success"] is False
+        assert res["blocked"] is True
+        assert res["confirm_url"].startswith("/confirm/")
+        assert "on_needs_setup" in res["reason"]
 
-        # It is visible to the (shared) store the health loop reads.
-        listing = server._list_device_recovery({"device_id": "cam-1"})
-        assert listing["count"] == 1
-        item = listing["pending"][0]
-        assert item["action"] == "reprovision"
-        assert item["approved_by"] == "tester"
-        assert item["pending_id"] == res["pending_id"]
+        # Nothing armed until the card is approved.
+        assert server._list_device_recovery({"device_id": "cam-1"})["count"] == 0
+
+        # The held session is a create_task action with the reprovision spec.
+        from admz.api.confirm_store import confirm_store
+        session = confirm_store.get_session(res["confirm_token"])
+        assert session.operation_id == "action:create_task"
+        assert session.action["action_type"] == "reprovision"
+        assert session.action["event"] == "on_needs_setup"
 
     def test_queue_anonymous_refused(self, server):
         server.principal = SimpleNamespace(
@@ -84,17 +88,29 @@ class TestQueueDeviceRecovery:
 
 
 class TestListAndCancel:
+    def _arm(self, device_id):
+        # Seed a pending action directly (the tool itself now gates; list
+        # and cancel behavior is what's under test here).
+        from admz.fleet.pending_actions import TRIGGER_NEEDS_SETUP, pending_actions
+        return pending_actions.create(
+            device_id=device_id,
+            action={"action": "reprovision", "username": "root"},
+            trigger=TRIGGER_NEEDS_SETUP,
+            approved_by="tester",
+            description=f"Re-provision {device_id}",
+        )
+
     def test_list_all_vs_scoped(self, server, monkeypatch):
         monkeypatch.setattr(
             server.registry, "device_exists", lambda d: d in ("cam-1", "cam-2")
         )
-        server._queue_device_recovery({"device_id": "cam-1"})
-        server._queue_device_recovery({"device_id": "cam-2"})
+        self._arm("cam-1")
+        self._arm("cam-2")
         assert server._list_device_recovery({})["count"] == 2
         assert server._list_device_recovery({"device_id": "cam-1"})["count"] == 1
 
     def test_cancel_removes_it(self, server):
-        pid = server._queue_device_recovery({"device_id": "cam-1"})["pending_id"]
+        pid = self._arm("cam-1")
         res = server._cancel_device_recovery({"pending_id": pid})
         assert res["success"] is True
         assert res["cancelled"] == pid

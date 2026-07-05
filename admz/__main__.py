@@ -443,10 +443,8 @@ def run_maintenance(args):
         run_gc,
     )
 
-    repo_path = os.getenv(
-        "ADMZ_CONFIG_REPO_PATH",
-        str(os.path.join(os.path.expanduser("~"), ".admz", "configs")),
-    )
+    from admz.paths import config_repo_dir
+    repo_path = str(config_repo_dir())
 
     if args.maint_command == "stats" or args.maint_command is None:
         try:
@@ -504,13 +502,8 @@ def run_maintenance(args):
         # Ensure the default Org/Site/Group rows exist before
         # backfilling devices into them.
         from admz.components import _bootstrap_default_hierarchy
-        _bootstrap_default_hierarchy(
-            registry,
-            os.getenv(
-                "ADMZ_CONFIG_REPO_PATH",
-                str(os.path.join(os.path.expanduser("~"), ".admz", "config-repo")),
-            ),
-        )
+        from admz.paths import config_repo_dir
+        _bootstrap_default_hierarchy(registry, str(config_repo_dir()))
 
         result = migrate_hierarchy_backfill(
             registry, dry_run=args.dry_run,

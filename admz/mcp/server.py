@@ -60,7 +60,7 @@ from admz.firmware.downloader import (
     scan_firmware_files,
     import_firmware_files,
     default_download_dirs,
-    _DEFAULT_FIRMWARE_DIR,
+    _default_firmware_dir,
     FirmwareNotAvailableError,
     FirmwareDownloadError,
     FirmwareLoginRequiredError,
@@ -615,6 +615,32 @@ class ADMZMCPServer:
                             },
                         },
                         "required": ["device_id", "device_info"],
+                    },
+                ),
+                Tool(
+                    name="onboard_device",
+                    description=(
+                        "Resolve credentials for a registered device that has none "
+                        "(or whose stored credentials stopped working) — all "
+                        "server-side, no password enters this conversation. "
+                        "Order: verify stored credentials; if the device is "
+                        "factory-defaulted, auto-provision an admin account from "
+                        "fleet settings; else try the fleet default credential "
+                        "pair and save it if it authenticates. Only when none of "
+                        "those work does it open a credential-capture session "
+                        "(shown to the user as a secure form card in the ADMZ "
+                        "console). register_device already runs this "
+                        "automatically for new devices."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "device_id": {
+                                "type": "string",
+                                "description": "Device ID to onboard",
+                            },
+                        },
+                        "required": ["device_id"],
                     },
                 ),
                 Tool(
@@ -1911,13 +1937,72 @@ class ADMZMCPServer:
         device_info: Dict[str, Any],
         accounts: Optional[Dict[str, Dict[str, Any]]],
     ) -> Dict[str, Any]:
-        """Register a new device."""
+        """Register a new device, then resolve its credentials automatically."""
         self.registry.add_device(device_id, device_info, accounts)
+        onboarding = await self._onboard_device(device_id)
         return {
             "success": True,
-            "message": f"Device '{device_id}' registered successfully",
+            "message": (
+                f"Device '{device_id}' registered. "
+                + str(onboarding.get("message", ""))
+            ).strip(),
             "device_id": device_id,
+            "onboarding": onboarding,
         }
+
+    async def _onboard_device(self, device_id: str) -> Dict[str, Any]:
+        """Resolve a device's credentials without any password entering
+        context: verify stored creds / auto-provision a factory-default
+        device from fleet settings / try-and-save the fleet credential
+        pair — and only if none of those work, open a capture session
+        (the chat console renders it as a secure credential-form card).
+        """
+        from admz.onboarding import (
+            ALREADY_CREDENTIALED,
+            CREDENTIALS_NEEDED,
+            FLEET_CREDENTIALS_SAVED,
+            PROVISIONED,
+            onboard_device_credentials,
+        )
+
+        result = await onboard_device_credentials(
+            device_id=device_id,
+            registry=self.registry,
+            catalog=self.catalog,
+            executors=self.executors,
+        )
+        status = result.get("status")
+        if status == ALREADY_CREDENTIALED:
+            result["message"] = "Stored credentials verified — device is ready."
+        elif status == PROVISIONED:
+            result["message"] = (
+                "Device was factory-defaulted; an admin account was "
+                "provisioned automatically from fleet settings "
+                f"(password source: {result.get('password_source')}). "
+                "The password was stored server-side and is not available here."
+            )
+        elif status == FLEET_CREDENTIALS_SAVED:
+            result["message"] = (
+                "The fleet default credentials authenticated and were saved "
+                "as this device's account — no user action needed."
+            )
+        elif status == CREDENTIALS_NEEDED:
+            session = capture_store.create_session(
+                device_id=device_id,
+                purpose="Device onboarding — automatic resolution failed",
+            )
+            base_url = os.getenv("ADMZ_BASE_URL", "http://localhost:4242").rstrip("/")
+            result["capture_url"] = f"{base_url}/capture/{session.token}"
+            result["capture_token"] = session.token
+            result["message"] = (
+                "Automatic credential resolution failed "
+                f"({result.get('reason', 'unknown')}). A credential capture "
+                "session was opened — the ADMZ console displays it as a "
+                "secure form card in this chat. Tell the user to click the "
+                "card and enter the device's credentials there; do NOT "
+                "repeat the raw URL in your reply."
+            )
+        return result
 
     async def _add_account(
         self,
@@ -2006,6 +2091,126 @@ class ADMZMCPServer:
         env["success"] = False
         return env
 
+    async def _list_rule_capabilities(self, device_id: str) -> Dict[str, Any]:
+        """Read-only: the event conditions + actions a device's model exposes for
+        automation rules, plus its current rules. Grounds create_action_rule."""
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+        from admz import operations
+        from admz.rules import capabilities, runner
+        info = self.registry.get_device_info(device_id)
+        model = info.get("model") or ""
+        caps = capabilities.list_capabilities(model)
+        out: Dict[str, Any] = {"success": True, "device_id": device_id,
+                               "model": model, **caps}
+        if caps.get("available"):
+            try:
+                device, creds = operations._resolve_device_and_creds(
+                    self.registry, device_id)
+                executor = self.executors.get("vapix")
+                out["current_rules"] = await runner.list_rules(
+                    catalog=self.catalog, executor=executor,
+                    device=device, creds=creds)
+            except Exception as exc:  # noqa: BLE001 — a read shouldn't fail the tool
+                out["current_rules_error"] = str(exc)
+        return out
+
+    async def _create_action_rule(
+        self, device_id: str, condition_id: str, action_token: str,
+        param_choices: Optional[Dict[str, Any]] = None,
+        rule_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Gate creating a device event rule (ADR-0034 widget-gated action).
+
+        Validates the spec via the atlas (fail fast in chat on an unbuildable
+        rule), then returns the approval card. The rule is only created after
+        the user approves — the executor re-renders and runs the SOAP sequence,
+        so no rendered body (or secret) is ever stored in the confirm session."""
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+        from admz import operations
+        from admz.rules import capabilities
+        info = self.registry.get_device_info(device_id)
+        model = info.get("model") or ""
+        rule_name = rule_name or "AtlasRule"
+        param_choices = dict(param_choices or {})
+
+        result = capabilities.build(
+            model, condition_id, action_token,
+            param_choices=param_choices, rule_name=rule_name)
+        if not getattr(result, "available", False):
+            return {"success": False,
+                    "error": getattr(result, "error", None)
+                    or "This rule cannot be built for this device."}
+
+        action = capabilities.action_for(model, action_token)
+        condition = capabilities.condition_for(model, condition_id)
+        label = info.get("nickname") or model or device_id
+        reason = capabilities.describe_rule(
+            result, device_label=label, device_id=device_id,
+            rule_name=rule_name, condition=condition, action=action)
+
+        # Recipient-credential actions (HTTP/SMTP/send-*): the login/password
+        # must be captured out-of-band via a secure form, never taken from chat.
+        # Arm the confirm session now, but route the user through the capture
+        # form first; the secret is merged in at execution time.
+        secret_fields = (
+            capabilities.primary_recipient_secret_fields(action) if action else [])
+        if secret_fields:
+            for f in secret_fields:                     # never accept secrets from chat
+                param_choices.pop(f["name"], None)
+            session = operations.create_action_session(
+                action="create_action_rule", device_id=device_id,
+                payload={"device_id": device_id, "model": model,
+                         "condition_id": condition_id, "action_token": action_token,
+                         "param_choices": param_choices, "rule_name": rule_name,
+                         "requires_secret_capture": True,
+                         "secret_fields": secret_fields},
+                reason=reason)
+            return {
+                "success": False,
+                "needs_recipient_credentials": True,
+                "capture_url": f"/capture/rule/{session.token}",
+                "message": (
+                    f"The action '{action_token}' delivers to a recipient that "
+                    "needs a login and password. To keep the secret out of this "
+                    "conversation, the user enters it on a secure form. Give the "
+                    f"user this link EXACTLY: /capture/rule/{session.token} — after "
+                    "they submit the credentials they'll be shown an approval "
+                    "button. Do NOT ask for the password here, and do not invent "
+                    "or alter the link."
+                ),
+            }
+
+        session = operations.create_action_session(
+            action="create_action_rule", device_id=device_id,
+            payload={"device_id": device_id, "model": model,
+                     "condition_id": condition_id, "action_token": action_token,
+                     "param_choices": param_choices, "rule_name": rule_name},
+            reason=reason)
+        env = operations.blocked_envelope(session)
+        env["success"] = False
+        return env
+
+    async def _delete_action_rule(self, device_id: str, rule_id: str) -> Dict[str, Any]:
+        """Gate removing a device event rule (widget-gated action)."""
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+        from admz import operations
+        info = self.registry.get_device_info(device_id)
+        label = info.get("nickname") or info.get("model") or device_id
+        reason = (
+            f"Remove event rule {rule_id} from {label} ({device_id}). The rule "
+            "stops firing immediately, and its linked action configuration is "
+            "removed too.")
+        session = operations.create_action_session(
+            action="delete_action_rule", device_id=device_id,
+            payload={"device_id": device_id, "rule_id": str(rule_id)},
+            reason=reason)
+        env = operations.blocked_envelope(session)
+        env["success"] = False
+        return env
+
     async def _delete_account(
         self,
         device_id: str,
@@ -2069,9 +2274,12 @@ class ADMZMCPServer:
         result: Dict[str, Any] = {
             "success": True,
             "message": (
-                "Credential capture URL generated. "
-                "Present this link to the user — credentials entered via "
-                "this URL will NOT appear in the chat context."
+                "Credential capture session created. The ADMZ console "
+                "displays it as a secure form card in this chat — tell the "
+                "user to click the card and enter credentials there (they "
+                "never enter the chat context). Do NOT repeat the raw URL "
+                "in your reply; only share the URL if the user is not in "
+                "the ADMZ console."
             ),
             "url": url,
             "token": session.token,
@@ -2084,9 +2292,11 @@ class ADMZMCPServer:
             result["device_ids"] = all_ids
             result["device_count"] = len(all_ids)
             result["message"] = (
-                f"Batch credential capture URL generated for {len(all_ids)} devices. "
-                "Present this link to the user — one form submission saves "
-                "credentials to all listed devices."
+                f"Batch credential capture session created for {len(all_ids)} "
+                "devices — one form submission saves credentials to all of "
+                "them. The ADMZ console displays it as a secure form card in "
+                "this chat; tell the user to click the card. Do NOT repeat "
+                "the raw URL in your reply."
             )
 
         return result
@@ -2312,8 +2522,9 @@ class ADMZMCPServer:
                 family=family,
                 params=params or {},
                 catalog=self.catalog,
-                # registry/executors are only used on the execute path; a gated
-                # op returns the blocked envelope before touching them.
+                # executors are only used on the execute path; the gate also
+                # reads the registry to warn when the device has no stored
+                # credentials (the approval would just fail with 401).
                 registry=getattr(self, "registry", None),
                 executors=getattr(self, "executors", None),
             )
@@ -2832,13 +3043,15 @@ class ADMZMCPServer:
             "tags": arguments.get("tags", []),
         }
         self.registry.add_device(device_id, device_info)
+        onboarding = await self._onboard_device(device_id)
         return {
             "success": True,
             "message": (
-                f"Device '{device_id}' registered. Use capture_credentials "
-                "to set credentials via the out-of-band URL flow."
-            ),
+                f"Device '{device_id}' registered. "
+                + str(onboarding.get("message", ""))
+            ).strip(),
             "device_id": device_id,
+            "onboarding": onboarding,
         }
 
     async def _reconcile_device_addresses(
@@ -2885,39 +3098,40 @@ class ADMZMCPServer:
         any registered job (snapshot, drift_audit, …) through the
         same tool. Defaults to 'snapshot' for back-compat with the
         original tool contract."""
-        from admz.snapshot.scheduler import list_job_types
+        from admz.tasks.gated import (
+            TaskSpecError,
+            describe_create,
+            gate_task_write,
+            validate_create_spec,
+        )
 
-        if job_type not in list_job_types():
-            return {
-                "success": False,
-                "error": (
-                    f"Unknown job_type {job_type!r}. "
-                    f"Registered: {list_job_types()}."
-                ),
-            }
+        spec = {
+            "trigger_kind": "schedule",
+            "action_type": job_type,
+            "task_id": schedule_id,
+            "description": description,
+            "interval": interval,
+            "tag_filter": tag_filter,
+            "device_ids": device_ids,
+        }
+        # Fail fast on a bad spec so the user isn't asked to approve a
+        # creation that would only error after their click.
         try:
-            interval_seconds = parse_interval(interval)
-        except ValueError as e:
+            validate_create_spec(spec, self.registry)
+        except TaskSpecError as e:
             return {"success": False, "error": str(e)}
 
-        schedule = SnapshotSchedule(
-            id=schedule_id,
-            description=description,
-            interval_seconds=interval_seconds,
-            tag_filter=tag_filter,
-            device_ids=device_ids,
-            job_type=job_type,
-        )
-        self.scheduler.add_schedule(schedule)
-
-        return {
-            "success": True,
-            "message": (
-                f"Schedule '{schedule_id}' created — {job_type} every "
-                f"{schedule.interval_human}"
-            ),
-            "schedule": schedule.to_dict(),
-        }
+        # Creating standing behavior gates like any other write — the task
+        # is written only when the user approves the card.
+        target = f"tag:{tag_filter}" if tag_filter else (
+            device_ids[0] if device_ids else "fleet")
+        env = gate_task_write(
+            "create_task", target, spec, describe_create(spec))
+        env["message"] = (
+            f"{env.get('message', '')} The schedule '{schedule_id}' will be "
+            "created only when the user approves the confirmation card."
+        ).strip()
+        return env
 
     async def _list_snapshot_schedules(self) -> Dict[str, Any]:
         schedules = self.scheduler.list_schedules()
@@ -2930,45 +3144,51 @@ class ADMZMCPServer:
     async def _update_snapshot_schedule(
         self, schedule_id: str, updates: Dict[str, Any]
     ) -> Dict[str, Any]:
-        kwargs = {}
+        from admz.tasks.gated import describe_update, gate_task_write
+
+        # Fail fast: unknown schedule / bad interval shouldn't reach a card.
+        task = self.scheduler.store.get(schedule_id)
+        if task is None:
+            return {"success": False,
+                    "error": f"Schedule not found: {schedule_id}"}
         if "interval" in updates:
             try:
-                kwargs["interval_seconds"] = parse_interval(updates["interval"])
+                parse_interval(updates["interval"])
             except ValueError as e:
                 return {"success": False, "error": str(e)}
-        if "enabled" in updates:
-            kwargs["enabled"] = updates["enabled"]
-        if "tag_filter" in updates:
-            kwargs["tag_filter"] = updates["tag_filter"]
-        if "description" in updates:
-            kwargs["description"] = updates["description"]
 
-        schedule = self.scheduler.update_schedule(schedule_id, **kwargs)
-        if not schedule:
-            return {
-                "success": False,
-                "error": f"Schedule not found: {schedule_id}",
-            }
-
-        return {
-            "success": True,
-            "message": f"Schedule '{schedule_id}' updated",
-            "schedule": schedule.to_dict(),
-        }
+        fields = {k: updates[k] for k in
+                  ("interval", "enabled", "tag_filter", "description")
+                  if k in updates}
+        payload = {"task_id": schedule_id, **fields}
+        env = gate_task_write(
+            "update_task", schedule_id, payload,
+            describe_update(schedule_id, fields))
+        env["message"] = (
+            f"{env.get('message', '')} The changes apply only when the user "
+            "approves the confirmation card."
+        ).strip()
+        return env
 
     async def _delete_snapshot_schedule(
         self, schedule_id: str
     ) -> Dict[str, Any]:
-        removed = self.scheduler.remove_schedule(schedule_id)
-        if not removed:
-            return {
-                "success": False,
-                "error": f"Schedule not found: {schedule_id}",
-            }
-        return {
-            "success": True,
-            "message": f"Schedule '{schedule_id}' deleted",
-        }
+        from admz.tasks.gated import describe_delete, gate_task_write
+
+        # Deleting a schedule silently removes standing monitoring the user
+        # set up — it gates like creation did (parity; the user asked).
+        task = self.scheduler.store.get(schedule_id)
+        if task is None:
+            return {"success": False,
+                    "error": f"Schedule not found: {schedule_id}"}
+        env = gate_task_write(
+            "delete_task", schedule_id, {"task_id": schedule_id},
+            describe_delete(task))
+        env["message"] = (
+            f"{env.get('message', '')} The schedule is removed only when the "
+            "user approves the confirmation card."
+        ).strip()
+        return env
 
     async def _run_snapshot_schedule(
         self, schedule_id: str
@@ -3119,22 +3339,29 @@ class ADMZMCPServer:
         if intent != "reprovision":
             return {"success": False,
                     "error": f"Unsupported intent '{intent}' (only 'reprovision')"}
-        pid = pending_actions.create(
-            device_id=device_id,
-            action={"action": "reprovision", "username": username},
-            trigger=TRIGGER_NEEDS_SETUP,
-            approved_by=self.principal.name,
-            description=f"Re-provision {device_id} when it returns factory-defaulted",
-        )
-        return {
-            "success": True, "queued": True, "pending_id": pid,
-            "device_id": device_id, "trigger": TRIGGER_NEEDS_SETUP,
-            "message": (
-                "Re-provision queued. It fires on the next health check once the "
-                "device reports factory-defaulted (now, or after a future reset). "
-                "Requires the health monitor to be enabled."
+        # A detection task is standing behavior — it now takes the same
+        # confirmation card as any other write (the widget click IS the
+        # pre-authorization; approved_by records who clicked).
+        from admz.tasks.gated import describe_create, gate_task_write
+
+        spec = {
+            "trigger_kind": "detection",
+            "action_type": "reprovision",
+            "device_id": device_id,
+            "event": "on_needs_setup",
+            "action_params": {"username": username},
+            "description": (
+                f"Re-provision {device_id} when it returns factory-defaulted"
             ),
         }
+        env = gate_task_write(
+            "create_task", device_id, spec, describe_create(spec))
+        env["message"] = (
+            f"{env.get('message', '')} The re-provision is armed only when "
+            "the user approves the confirmation card; it then fires on the "
+            "next health check once the device reports factory-defaulted."
+        ).strip()
+        return env
 
     def _list_device_recovery(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         from admz.fleet.pending_actions import pending_actions
@@ -3286,6 +3513,38 @@ class ADMZMCPServer:
                 d["when"] = f"when {t.event}"
             out.append(d)
         return {"success": True, "count": len(out), "tasks": out}
+
+    def _search_activity(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Search the live device-event store (ADR-0041). Read-only."""
+        import time as _time
+
+        from admz.events.store import EventStore
+
+        win = self._parse_audit_window(arguments.get("within"))
+        since_ms = int((_time.time() - win) * 1000) if win else None
+        limit = max(1, min(int(arguments.get("limit") or 50), 500))
+        events = EventStore().query(
+            source="device",
+            type_filter=arguments.get("type"),
+            device_id=arguments.get("device_id"),
+            device_filter=arguments.get("device"),
+            since_ms=since_ms,
+            limit=limit,
+        )
+        # Trim each event to the fields an agent reasons over (drop the raw
+        # nested data envelope; the summary + category carry the signal).
+        out = []
+        for e in events:
+            data = e.get("data") or {}
+            out.append({
+                "ts": e.get("ts"),
+                "device_id": e.get("device_id"),
+                "device_name": e.get("device_name"),
+                "type": e.get("type"),
+                "category": data.get("category"),
+                "summary": e.get("summary"),
+            })
+        return {"success": True, "count": len(out), "events": out}
 
     async def _provision_device(
         self, arguments: Dict[str, Any]
@@ -3756,7 +4015,7 @@ class ADMZMCPServer:
         cached = list_cached_firmware()
         return {
             "success": True,
-            "firmware_dir": _DEFAULT_FIRMWARE_DIR,
+            "firmware_dir": _default_firmware_dir(),
             "total_files": len(cached),
             "files": cached,
         }

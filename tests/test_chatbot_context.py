@@ -41,10 +41,21 @@ _DEVS = [
 ]
 
 
+def _rec(status="online", sd_status=None, sd_total_kb=None):
+    """A stand-in for the DeviceHealthRecord _health_by_id now returns."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        status=SimpleNamespace(value=status),
+        sd_status=sd_status,
+        sd_total_kb=sd_total_kb,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _no_health_or_drift(monkeypatch):
     # Deterministic health/drift so roster lines are stable in tests.
-    monkeypatch.setattr(ctx, "_health_by_id", lambda: {"E827250959C6": "online"})
+    monkeypatch.setattr(ctx, "_health_by_id", lambda: {"E827250959C6": _rec()})
     monkeypatch.setattr(ctx, "_drift_label", lambda d: "in-sync")
     # Clear the per-model-set common-ops cache between tests.
     ctx._common_ops_cache.clear()

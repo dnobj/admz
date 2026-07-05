@@ -136,6 +136,15 @@ class DeviceResponse(BaseModel):
             "None for rows that predate the column (creation time unknown)."
         ),
     )
+    onboarding: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Credential-onboarding outcome when the device was just created "
+            "(status: already_credentialed / provisioned / "
+            "fleet_credentials_saved / credentials_needed — never a "
+            "password). Absent on plain reads."
+        ),
+    )
     baseline_sha: Optional[str] = Field(
         None,
         description=(

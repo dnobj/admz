@@ -37,6 +37,13 @@ from admz.snapshot.git_repo import GitRepo
 from admz.snapshot.restore import RestoreBuilder
 from admz.snapshot.scheduler import SnapshotScheduler
 from admz.fleet.health import HealthMonitor
+from admz.events.store import EventStore
+from admz.events.ingest import EventIngestSupervisor
+from admz.events.acs_ingest import AcsActionRulePoller
+from admz.events.acs_firebird_ingest import AcsFirebirdPoller
+from admz.events.detections import DetectionStore
+from admz.events.evaluator import DetectionEvaluator
+from admz.events.watched import WatchedEventStore
 
 
 @dataclass
@@ -57,6 +64,17 @@ class Components:
     # ADR-0039: the discovered module set. MCP (tools), the web layer (nav),
     # and the chatbot host (prompt sections) all read this rather than a global.
     module_registry: ModuleRegistry
+    # ADR-0041: the live device-event store + the per-device WS ingest supervisor
+    # (off by default; gated on the event_ingest_enabled fleet flag).
+    event_store: EventStore
+    event_supervisor: EventIngestSupervisor
+    acs_event_poller: AcsActionRulePoller
+    acs_firebird_poller: AcsFirebirdPoller
+    watched_event_store: WatchedEventStore
+    # ADR-0041 layer 3: event-pattern detection rules + the evaluator that fires
+    # them (the supervisor's on_event callback).
+    detection_store: DetectionStore
+    detection_evaluator: DetectionEvaluator
 
 
 def _default_catalog_path() -> str:
@@ -68,29 +86,24 @@ def _default_catalog_path() -> str:
 
 
 def _default_config_repo_path() -> str:
-    return os.getenv(
-        "ADMZ_CONFIG_REPO_PATH",
-        os.path.join(os.path.expanduser("~"), ".admz", "config-repo"),
-    )
+    from admz.paths import config_repo_dir
+    return str(config_repo_dir())
 
 
 def _default_schedule_path() -> str:
-    return os.path.join(
-        os.path.expanduser("~"), ".admz", "schedules.json"
-    )
+    from admz.paths import schedules_path
+    return str(schedules_path())
 
 
 def _default_repo_path_root() -> str:
     """Parent dir under which new Org repos auto-create.
 
     Each Org's actual repo lives at ``{root}/{org_id}/``. Operators
-    override via ``ADMZ_REPO_PATH_ROOT``. The default keeps everything
-    under the existing ~/.admz/ family.
+    override via ``ADMZ_REPO_PATH_ROOT``; the default keeps everything
+    under the ADMZ_HOME family (ADR-0042).
     """
-    return os.getenv(
-        "ADMZ_REPO_PATH_ROOT",
-        os.path.join(os.path.expanduser("~"), ".admz", "repos"),
-    )
+    from admz.paths import repos_root
+    return str(repos_root())
 
 
 def _detect_existing_origin(repo_path: str) -> str:
@@ -353,6 +366,34 @@ def build_components(
         executors=executors,
     )
 
+    # ADR-0041: live device-event subsystem. The store is bound to the resolved
+    # DB path; the supervisor maintains one WS stream per device but only when
+    # the event_ingest_enabled fleet flag is on (.start() is a no-op otherwise).
+    from admz.events.store import _default_db_path as _events_db_path
+    event_store = EventStore(str(_events_db_path()))
+    # ADR-0041 layer 3: event-pattern detections. The evaluator is the
+    # supervisor's on_event callback, so it's built first.
+    detection_store = DetectionStore(str(_events_db_path()))
+    detection_evaluator = DetectionEvaluator(registry=registry, store=detection_store)
+    event_supervisor = EventIngestSupervisor(
+        registry=registry, store=event_store, on_event=detection_evaluator.evaluate,
+    )
+    # ACS Pro has no push API, so action-rule firings are POLLED into the same
+    # store + evaluator as device events (source="acs"). Off until both the ACS
+    # module and acs_event_ingest_enabled are on.
+    acs_event_poller = AcsActionRulePoller(
+        catalog=catalog, executors=executors, store=event_store,
+        on_event=detection_evaluator.evaluate,
+    )
+    # Reads ACS's embedded Firebird LOG (copy → read) for NAMED rule firings — no
+    # rule edit needed. Off unless acs_firebird_enabled + ACS connected + driver present.
+    acs_firebird_poller = AcsFirebirdPoller(
+        store=event_store, on_event=detection_evaluator.evaluate,
+    )
+    # Watched events: a passive library of bookmarked event patterns (no worker,
+    # no evaluator, no ingest dependency — it just feeds the detection builder).
+    watched_event_store = WatchedEventStore(str(_events_db_path()))
+
     return Components(
         registry=registry,
         catalog=catalog,
@@ -366,4 +407,11 @@ def build_components(
         scheduler=scheduler,
         health_monitor=health_monitor,
         module_registry=module_registry,
+        event_store=event_store,
+        event_supervisor=event_supervisor,
+        acs_event_poller=acs_event_poller,
+        acs_firebird_poller=acs_firebird_poller,
+        watched_event_store=watched_event_store,
+        detection_store=detection_store,
+        detection_evaluator=detection_evaluator,
     )

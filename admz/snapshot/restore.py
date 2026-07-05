@@ -176,17 +176,25 @@ class RestoreBuilder:
         facets_by_name = {
             f.name: f for f in get_facets_for_device(device_info)
         }
+        baseline_sha = device_info.get("baseline_sha")
 
         params: Dict[str, str] = {}
+        op_fields: Dict[str, List[Any]] = {}   # facet name -> its op-revertable fields
         not_revertable: List[str] = []
         for field in drifted_fields:
             label = f"{field.facet}.{field.path}"
+            facet = facets_by_name.get(field.facet)
+            # API-backed facets revert whole-object via their own setter op —
+            # this also covers fields that APPEARED live (writing the baseline
+            # object removes additions), which param.cgi never could.
+            if facet is not None and facet.op_revertable(field.path):
+                op_fields.setdefault(field.facet, []).append(field)
+                continue
             # A field present live but NOT in the baseline ("appeared") can't
             # be reverted by writing a value — there's nothing to restore to.
             if str(field.expected) == "<missing>":
                 not_revertable.append(f"{label} (added, not in baseline)")
                 continue
-            facet = facets_by_name.get(field.facet)
             if facet is None:
                 not_revertable.append(label)
                 continue
@@ -198,6 +206,48 @@ class RestoreBuilder:
             params[full_key] = value
 
         warnings: List[str] = []
+
+        # Op-level reverts: one whole-object write-back per facet, built from
+        # the facet's baseline doc (the desired state), not from field deltas.
+        op_steps: List[Dict[str, Any]] = []
+        op_field_count = 0
+        for facet_name, fields in sorted(op_fields.items()):
+            facet = facets_by_name[facet_name]
+            labels = ", ".join(sorted(f"{facet_name}.{f.path}" for f in fields))
+            baseline_doc = (
+                self.git.read_facet(device_id, facet_name, baseline_sha)
+                if baseline_sha else None
+            )
+            if not baseline_doc:
+                warnings.append(
+                    f"No baseline doc for facet '{facet_name}' — cannot "
+                    f"op-revert: {labels}"
+                )
+                continue
+            try:
+                steps_for_facet = facet.build_revert_ops(
+                    [(f.path, f.expected, getattr(f, "actual", None))
+                     for f in fields],
+                    baseline_doc,
+                )
+            except Exception:  # noqa: BLE001 — one bad facet must not kill the plan
+                logger.warning(
+                    "build_revert_ops failed for facet %s on %s",
+                    facet_name, device_id, exc_info=True,
+                )
+                steps_for_facet = None
+            if not steps_for_facet:
+                warnings.append(f"Facet '{facet_name}' produced no revert op for: {labels}")
+                continue
+            for s in steps_for_facet:
+                op_steps.append({
+                    **s,
+                    "device_id": device_id,
+                    # ADR-0034: writing live config — must gate at the widget.
+                    "risk_level": "service-affecting",
+                })
+            op_field_count += len(fields)
+
         if not_revertable:
             warnings.append(
                 "Not auto-revertable (read-only / uncategorized / masked / "
@@ -225,7 +275,9 @@ class RestoreBuilder:
                     "risk_level": "service-affecting",
                 })
 
-        n = len(params)
+        steps.extend(op_steps)
+
+        n = len(params) + op_field_count
         return {
             "description": (
                 f"Revert {n} drifted setting" + ("s" if n != 1 else "")

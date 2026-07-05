@@ -122,6 +122,16 @@ class TestDevices:
         assert device["model"] == "AXIS P3245-V"
 
 
+@pytest.fixture
+def as_console_operator(monkeypatch):
+    """Task/schedule writes gate for non-interactive principals; these
+    legacy tests exercise the direct (console-operator) path. The gate is
+    covered in tests/test_tasks_routes.py::TestTaskWriteGate."""
+    import admz.tasks.gated as gated
+    monkeypatch.setattr(gated, "is_interactive", lambda p: True)
+
+
+@pytest.mark.usefixtures("as_console_operator")
 class TestSchedules:
 
     def test_list_schedules_empty(self, client):

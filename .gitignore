@@ -49,5 +49,6 @@ cameras.yaml
 .DS_Store
 Thumbs.db
 server.log
+.server-*.log
 logs/
 tools/discoverability_results.json
