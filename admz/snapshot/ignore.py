@@ -32,8 +32,11 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Shipped, always-on GLOBAL patterns (treated as global rules). Intentionally
-# tiny — operators add the rest. New fleet-wide defaults go here over time.
+# Always-on, non-removable GLOBAL patterns (treated as global rules, never shown
+# in Settings). Intentionally EMPTY — shipped defaults are *seeded* as normal
+# editable rules instead (see ``_SEED_DEFAULT_RULES`` / ``seed_default_rules``),
+# so operators can delete or re-scope them. Reserve this only for a pattern that
+# must never be turned off.
 _GLOBAL_IGNORE_PATTERNS: tuple = ()
 
 #: Legacy flat list (newline/comma separated), still editable in Settings; read
@@ -41,6 +44,48 @@ _GLOBAL_IGNORE_PATTERNS: tuple = ()
 USER_SETTING_KEY = "config_ignore_patterns"
 #: Scoped rules, JSON list of {"key","scope"}.
 RULES_SETTING_KEY = "config_ignore_rules"
+#: High-water marker (int, as string) — how many of ``_SEED_DEFAULT_RULES`` have
+#: been seeded into this fleet's editable store. Lets us seed each default once
+#: ever, so deleting a seeded rule is permanent (it never comes back).
+SEED_VERSION_KEY = "config_ignore_seed_version"
+
+#: Shipped default ignore rules, seeded ONCE each into the operator-editable
+#: scoped store on startup. All observed/runtime network+time state the *device
+#: or DHCP* controls (not the operator), so it "drifts" with the environment and
+#: is non-actionable. Operators can delete/edit any of these in Settings.
+#:
+#: APPEND-ONLY — never reorder or remove entries: ``seed_default_rules`` uses the
+#: list length as a high-water mark to decide which are new, so renumbering would
+#: re-seed already-deleted rules. To retire a default, leave the entry and stop
+#: documenting it (or ship a follow-up that removes the rule).
+_SEED_DEFAULT_RULES: tuple = (
+    # Observed live IPv6 addresses — rotating SLAAC/DHCPv6/temporary globals. The
+    # settable static config lives under root.Network.IPv6.* (singular) and stays
+    # tracked; observed IPv4 (eth0.IPAddress) is intentionally left tracked too.
+    {"key": "root.Network.eth0.IPv6.IPAddresses", "scope": "global"},
+    # Learned default gateway (v4 + v6) — a route the network hands out.
+    {"key": "root.Network.Routing.*", "scope": "global"},
+    # DHCP/pool-provided NTP server — distinct from the configured NTP.Server,
+    # which stays tracked.
+    {"key": "root.Time.NTP.VolatileServer", "scope": "global"},
+    # Model+firmware identity string (e.g. "AXIS,…,P3748-PLVE,12.1.65") — moves on
+    # a firmware update, not an operator edit.
+    {"key": "root.Network.DHCP.VendorClass", "scope": "global"},
+    # Auto link-local fallback address/mask (169.254.x) — only present when DHCP
+    # is unavailable.
+    {"key": "root.Network.ZeroConf.IPAddress", "scope": "global"},
+    {"key": "root.Network.ZeroConf.SubnetMask", "scope": "global"},
+    # DHCP-assigned hostname (e.g. "axis-<mac>").
+    {"key": "root.Network.VolatileHostName.HostName", "scope": "global"},
+    # Derived UPnP name ("AXIS <model> - <mac>").
+    {"key": "root.Network.UPnP.FriendlyName", "scope": "global"},
+    # Read-only param MIRROR of the NTP client config. The ntp facet (PR #97)
+    # now tracks NTP authoritatively via ntp.cgi — and is revertable — so the
+    # mirror only double-reports. It also doesn't round-trip deterministically
+    # (observed live: DHCP-mode mirror flips 0.0.0.0 <-> '' across config
+    # writes). The DHCP-provided list (NTP.VolatileServer) is seeded above.
+    {"key": "root.Time.NTP.Server", "scope": "global"},
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -69,6 +114,11 @@ def _fleet_get(setting_key: str) -> Optional[str]:
         return _fs.fleet_settings.get(setting_key)
     except Exception:
         return None
+
+
+def _fleet_set(setting_key: str, value: str) -> None:
+    import admz.fleet_settings as _fs
+    _fs.fleet_settings.set(setting_key, value)
 
 
 def _legacy_global_patterns() -> List[str]:
@@ -179,6 +229,40 @@ def remove_rules(to_remove: List[Dict[str, str]]) -> List[Dict[str, str]]:
 def _save_scoped(rules: List[Dict[str, str]]) -> None:
     import admz.fleet_settings as _fs
     _fs.fleet_settings.set(RULES_SETTING_KEY, json.dumps(rules))
+
+
+# --------------------------------------------------------------------------- #
+# One-time default seeding (startup)
+# --------------------------------------------------------------------------- #
+def seed_default_rules() -> List[Dict[str, str]]:
+    """Seed shipped default ignore rules into the operator-editable store, once
+    each. Idempotent + deletion-safe via a high-water marker (``SEED_VERSION_KEY``
+    = how many of ``_SEED_DEFAULT_RULES`` have ever been seeded): only entries
+    beyond the marker are added, then the marker advances. So a seeded rule the
+    operator later deletes never comes back, and appending a NEW default seeds
+    only that one on the next startup.
+
+    Called once at startup (see the FastAPI lifespan). Returns the rules newly
+    seeded this call (empty when already up to date). Fails open — never raises,
+    so a settings hiccup can't block startup."""
+    try:
+        try:
+            applied = int(_fleet_get(SEED_VERSION_KEY) or 0)
+        except (TypeError, ValueError):
+            applied = 0
+        target = len(_SEED_DEFAULT_RULES)
+        if applied >= target:
+            return []
+        new = [dict(r) for r in _SEED_DEFAULT_RULES[applied:target]]
+        add_rules(new)              # dedupes on (key, scope) — safe if pre-added
+        _fleet_set(SEED_VERSION_KEY, str(target))
+        if new:
+            logger.info("Seeded %d default ignore rule(s): %s",
+                        len(new), ", ".join(r["key"] for r in new))
+        return new
+    except Exception:  # noqa: BLE001 — seeding must never break startup
+        logger.warning("default ignore-rule seeding failed", exc_info=True)
+        return []
 
 
 # --------------------------------------------------------------------------- #

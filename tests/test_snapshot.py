@@ -1066,7 +1066,9 @@ class TestIgnoreList:
                 return "root.A.Pass\n  root.B.*  \n\nroot.C, root.D" if k == ig.USER_SETTING_KEY else None
         monkeypatch.setattr(fs, "fleet_settings", _Stub())
         pats = ig.get_ignore_patterns()
-        assert pats == ["root.A.Pass", "root.B.*", "root.C", "root.D"]
+        # Built-in globals come first, then the operator's textarea patterns.
+        assert pats == list(ig._GLOBAL_IGNORE_PATTERNS) + [
+            "root.A.Pass", "root.B.*", "root.C", "root.D"]
 
     def test_user_patterns_empty_and_error_safe(self, monkeypatch):
         import admz.snapshot.ignore as ig
@@ -1107,9 +1109,10 @@ class TestScopedIgnoreRules:
             {"key": "applications:vmd.status", "scope": "tag:lab"},
             {"key": "root.G", "scope": "global"},
         ]))
+        G = set(ig._GLOBAL_IGNORE_PATTERNS)  # always-on built-in globals
         assert {r["key"] for r in ig.applicable_rules("CAM1", ["lab"])} == {
-            "root.A", "applications:vmd.status", "root.G"}
-        assert {r["key"] for r in ig.applicable_rules("CAM2", [])} == {"root.G"}
+            "root.A", "applications:vmd.status", "root.G"} | G
+        assert {r["key"] for r in ig.applicable_rules("CAM2", [])} == {"root.G"} | G
         assert ig.is_ignored("root.A.x", "CAM1", [])          # group match, device scope
         assert not ig.is_ignored("root.A.x", "CAM2", [])      # other device unaffected
         assert ig.is_ignored("applications:vmd.status", "CAMx", ["lab"])
@@ -1127,6 +1130,55 @@ class TestScopedIgnoreRules:
         assert ("root.Legacy", "global") in keys              # legacy -> global rule
         assert not ig.is_ignored("root.Weird", "CAM1", ["lab"])  # unknown scope never matches
         assert ig.is_ignored("root.Legacy", "CAM1", [])
+
+    def test_seed_default_rules_are_editable_and_take_effect(self, monkeypatch):
+        """Shipped defaults are SEEDED as normal scoped rules (not hardcoded), so
+        they land in the operator-editable store AND actually ignore the observed
+        keys — while real config / meaningful signals stay tracked."""
+        import admz.snapshot.ignore as ig
+        self._stub(monkeypatch)                       # empty store — nothing seeded yet
+        seeded = ig.seed_default_rules()
+        assert len(seeded) == len(ig._SEED_DEFAULT_RULES)
+        scoped_keys = {r["key"] for r in ig._scoped_rules()}   # visible in Settings list
+        assert "root.Network.eth0.IPv6.IPAddresses" in scoped_keys
+        assert "root.Network.Routing.*" in scoped_keys
+        # observed/DHCP/derived churn → ignored fleet-wide
+        assert ig.is_ignored("root.Network.eth0.IPv6.IPAddresses", "CAMx", [])
+        assert ig.is_ignored("root.Network.Routing.DefaultRouter", "CAMx", [])       # glob
+        assert ig.is_ignored("root.Network.Routing.IPv6.DefaultRouter", "CAMx", [])  # glob
+        assert ig.is_ignored("root.Time.NTP.VolatileServer", "CAMx", [])
+        assert ig.is_ignored("root.Network.DHCP.VendorClass", "CAMx", [])
+        assert ig.is_ignored("root.Network.UPnP.FriendlyName", "CAMx", [])
+        # read-only NTP mirror — the ntp facet (PR #97) tracks NTP
+        # authoritatively (and revertably), so the mirror only double-reports
+        assert ig.is_ignored("root.Time.NTP.Server", "CAMx", [])
+        # kept: real config / meaningful signals (per the review)
+        assert not ig.is_ignored("root.Network.IPv6.IPAddress", "CAMx", [])       # static IPv6 config
+        assert not ig.is_ignored("root.Network.IPv6.DefaultRouter", "CAMx", [])   # static gw config
+        assert not ig.is_ignored("root.Network.eth0.IPAddress", "CAMx", [])       # observed IPv4 kept
+        assert not ig.is_ignored("root.Network.Resolver.NameServer1", "CAMx", []) # DNS kept
+
+    def test_seed_is_idempotent_and_deletion_safe(self, monkeypatch):
+        """Each default seeds once; a seeded rule the operator deletes must NOT
+        come back on the next startup (high-water marker)."""
+        import admz.snapshot.ignore as ig
+        self._stub(monkeypatch)
+        assert ig.seed_default_rules()                 # seeds on first run
+        assert ig.seed_default_rules() == []           # idempotent — nothing new
+        ig.remove_rules([{"key": "root.Network.UPnP.FriendlyName", "scope": "global"}])
+        assert ig.seed_default_rules() == []           # a later startup: no resurrection
+        assert not any(r["key"] == "root.Network.UPnP.FriendlyName"
+                       for r in ig._scoped_rules())
+
+    def test_seed_only_adds_newly_appended_defaults(self, monkeypatch):
+        """If the marker says N were already seeded and a new default is appended,
+        only the new one is seeded (older/deleted ones aren't re-added)."""
+        import admz.snapshot.ignore as ig
+        store = self._stub(monkeypatch)
+        store[ig.SEED_VERSION_KEY] = str(len(ig._SEED_DEFAULT_RULES) - 1)
+        new = ig.seed_default_rules()
+        assert len(new) == 1
+        assert new[0]["key"] == ig._SEED_DEFAULT_RULES[-1]["key"]
 
     def test_add_remove_dedupe(self, monkeypatch):
         import admz.snapshot.ignore as ig
