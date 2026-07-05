@@ -19,6 +19,7 @@ import cycle. ``get_confirmation_level`` already lazy-imports ``fleet_settings``
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
@@ -695,12 +696,138 @@ def _action_delete_task(
     }
 
 
+def _resolve_device_and_creds(registry: Any, device_id: str) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    """Device info dict (with ``device_id`` set) + credentials, mirroring
+    ``run_execution_tail`` — empty creds if the device has no stored account."""
+    device = registry.get_device_info(device_id)
+    device["device_id"] = device_id
+    try:
+        creds = registry.get_credentials(device_id)
+    except AccountNotFoundError:
+        creds = {"username": "", "password": ""}
+    return device, creds
+
+
+async def _action_create_action_rule(
+    action: Mapping[str, Any], registry: Any, git_repo: Any = None,
+) -> Dict[str, Any]:
+    """Approved create-action-rule: re-render the rule via the atlas (merging any
+    captured recipient secrets) and run the SOAP create sequence on the device.
+
+    Building at execute time keeps rendered bodies — and any inlined secret — out
+    of the confirm session; the session held only the spec."""
+    from admz.api.context import get_context
+    from admz.rules import capabilities, runner
+    from admz.rules.runner import RuleRunnerError
+
+    device_id = action.get("device_id") or ""
+    model = action.get("model") or ""
+    condition_id = action.get("condition_id") or ""
+    action_token = action.get("action_token") or ""
+    rule_name = action.get("rule_name") or "AtlasRule"
+    param_choices = dict(action.get("param_choices") or {})
+
+    # Recipient secrets captured out-of-context via the secure form are merged
+    # here at execute time — never stored in the confirm session. The stash is
+    # keyed by the confirm token, injected as ``_token`` by
+    # execute_approved_session.
+    if action.get("requires_secret_capture"):
+        from admz.rules.capture import consume_captured_rule_secrets
+        secrets = consume_captured_rule_secrets(action.get("_token") or "")
+        if not secrets:
+            return {
+                "success": False, "action": "create_action_rule",
+                "error": ("Recipient credentials were not captured (or the secure "
+                          "form expired). Ask the user to re-enter them via the "
+                          "secure link, then approve again."),
+            }
+        param_choices.update(secrets)
+
+    if not registry.device_exists(device_id):
+        return {"success": False, "action": "create_action_rule",
+                "error": f"Device not found: {device_id}"}
+    if not model:
+        try:
+            model = (registry.get_device_info(device_id) or {}).get("model") or ""
+        except Exception:  # noqa: BLE001
+            model = ""
+
+    result = capabilities.build(
+        model, condition_id, action_token,
+        param_choices=param_choices, rule_name=rule_name,
+    )
+    if not getattr(result, "available", False):
+        return {"success": False, "action": "create_action_rule",
+                "error": getattr(result, "error", None)
+                or "The rule cannot be built for this device."}
+
+    ctx = get_context()
+    executor = ctx.executors.get("vapix")
+    if executor is None:
+        return {"success": False, "action": "create_action_rule",
+                "error": "No VAPIX executor available."}
+    device, creds = _resolve_device_and_creds(registry, device_id)
+    try:
+        out = await runner.create_rule(
+            catalog=ctx.catalog, executor=executor, device=device, creds=creds,
+            config_body=result.config_body, rule_body=result.rule_body,
+        )
+    except RuleRunnerError as exc:
+        return {"success": False, "action": "create_action_rule",
+                "error": str(exc), "steps": exc.steps}
+    return {
+        "success": True, "action": "create_action_rule", "device_id": device_id,
+        "rule_id": out.get("rule_id"), "config_id": out.get("config_id"),
+        "rule_name": rule_name,
+        "message": (f"Rule '{rule_name}' created on {device_id} "
+                    f"(rule id {out.get('rule_id')})."),
+    }
+
+
+async def _action_delete_action_rule(
+    action: Mapping[str, Any], registry: Any, git_repo: Any = None,
+) -> Dict[str, Any]:
+    """Approved delete-action-rule: remove the rule (and its linked config)."""
+    from admz.api.context import get_context
+    from admz.rules import runner
+    from admz.rules.runner import RuleRunnerError
+
+    device_id = action.get("device_id") or ""
+    rule_id = str(action.get("rule_id") or "")
+    if not registry.device_exists(device_id):
+        return {"success": False, "action": "delete_action_rule",
+                "error": f"Device not found: {device_id}"}
+    ctx = get_context()
+    executor = ctx.executors.get("vapix")
+    if executor is None:
+        return {"success": False, "action": "delete_action_rule",
+                "error": "No VAPIX executor available."}
+    device, creds = _resolve_device_and_creds(registry, device_id)
+    try:
+        out = await runner.delete_rule(
+            catalog=ctx.catalog, executor=executor, device=device, creds=creds,
+            rule_id=rule_id,
+        )
+    except RuleRunnerError as exc:
+        return {"success": False, "action": "delete_action_rule",
+                "error": str(exc), "steps": exc.steps}
+    return {
+        "success": True, "action": "delete_action_rule", "device_id": device_id,
+        **out,
+        "message": (f"Rule {rule_id} removed from {device_id}"
+                    + (f" (config {out.get('removed_config')} also removed)."
+                       if out.get("removed_config") else ".")),
+    }
+
+
 _ACTION_EXECUTORS = {
     "accept_baseline": _action_accept_baseline,
     "delete_device": _action_delete_device,
     "create_task": _action_create_task,
     "update_task": _action_update_task,
     "delete_task": _action_delete_task,
+    "create_action_rule": _action_create_action_rule,
+    "delete_action_rule": _action_delete_action_rule,
 }
 
 
@@ -754,6 +881,9 @@ async def execute_approved_session(
         action = dict(session.action)
         # Who clicked approve — task creations record it as approved_by.
         action["_confirmed_by"] = session.confirmed_by
+        # The confirm token, so a rule action can find its out-of-band captured
+        # recipient secret (held in web-process memory keyed by this token).
+        action["_token"] = session.token
         executor = _ACTION_EXECUTORS.get(action.get("action", ""))
         if executor is None:
             return {
@@ -761,7 +891,10 @@ async def execute_approved_session(
                 "error": f"Unknown action in session: {action.get('action')!r}",
             }
         try:
-            return executor(action, registry, git_repo=git_repo)
+            outcome = executor(action, registry, git_repo=git_repo)
+            if inspect.isawaitable(outcome):
+                outcome = await outcome  # device-touching actions (rules) are async
+            return outcome
         except Exception as exc:  # noqa: BLE001 — surface, don't crash the route
             return {
                 "success": False,

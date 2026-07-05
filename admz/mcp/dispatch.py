@@ -289,6 +289,22 @@ async def _list_cached_firmware(ctx, a):
     return await ctx.server._list_cached_firmware()
 
 
+# --- Device event action rules ----------------------------------------------
+async def _list_rule_capabilities(ctx, a):
+    return await ctx.server._list_rule_capabilities(a["device_id"])
+
+
+async def _create_action_rule(ctx, a):
+    return await ctx.server._create_action_rule(
+        a["device_id"], a["condition_id"], a["action_token"],
+        a.get("param_choices"), a.get("rule_name"),
+    )
+
+
+async def _delete_action_rule(ctx, a):
+    return await ctx.server._delete_action_rule(a["device_id"], a["rule_id"])
+
+
 # --- Temporary credentials ---------------------------------------------------
 async def _create_temp_credentials(ctx, a):
     return await ctx.server._create_temp_credentials(a)
@@ -352,6 +368,9 @@ TOOL_HANDLERS: Dict[str, ToolHandler] = {
     "download_firmware": _download_firmware,
     "import_firmware": _import_firmware,
     "list_cached_firmware": _list_cached_firmware,
+    "list_rule_capabilities": _list_rule_capabilities,
+    "create_action_rule": _create_action_rule,
+    "delete_action_rule": _delete_action_rule,
     "create_temp_credentials": _create_temp_credentials,
     "cleanup_temp_credentials": _cleanup_temp_credentials,
 }

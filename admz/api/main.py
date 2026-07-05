@@ -34,6 +34,7 @@ from admz.api.routes import (
     events as events_route,
     health as health_route,
     plans,
+    rule_capture as rule_capture_route,
     schedules,
     snapshot,
     tasks as tasks_route,
@@ -260,6 +261,7 @@ app.include_router(health_route.router, tags=["health"])
 # Capture, confirm, chatbot, and web UI — no /api prefix because they are user-facing
 app.include_router(auth_web_route.router, tags=["auth"])
 app.include_router(capture.router, tags=["capture"])
+app.include_router(rule_capture_route.router, tags=["capture"])
 app.include_router(confirm.router, tags=["confirm"])
 app.include_router(chat_route.router, tags=["chat"])
 app.include_router(voice_route.router, tags=["voice"])

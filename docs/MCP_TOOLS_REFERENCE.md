@@ -1,6 +1,6 @@
 # ADMZ MCP Tools Reference
 
-Complete reference for the **53 tools** the ADMZ MCP server exposes.
+Complete reference for the **56 tools** the ADMZ MCP server exposes.
 
 > Note: a `get_credentials` MCP tool used to exist. It was **removed**
 > (CR-1) because returning plaintext passwords into LLM context violates
@@ -551,6 +551,42 @@ List files currently in the firmware cache.
 - **Args:** none
 - **Returns:** `{success, count, files: [{model, version, file_name,
   file_path, file_size}, ...]}`
+
+---
+
+## 🔔 Device automation rules
+
+Create/list/delete device **event action rules** (run an action when an event
+fires). ADMZ never hand-assembles the SOAP — axis-api-atlas's rule builder
+composes the device-proven rule from the model's survey; ADMZ runs it behind the
+approval gate. See ADR-0043.
+
+### `list_rule_capabilities`
+Read-only: the event **conditions** (triggers) and **actions** a device's model
+supports for rules, plus the device's current rules. Call this first to pick a
+`condition_id` + `action_token`.
+- **Args:** `device_id`
+- **Returns:** `{available, model, conditions: [{id, label, topic, params, ...}],
+  actions: [{token, label, params: [{name, label, choices, secret}],
+  needs_capture}], current_rules: [{rule_id, name, enabled, primary_action}]}`
+  — or `{available: false, reason}` when the model isn't surveyed.
+
+### `create_action_rule`
+Compose and create a rule (GATED — returns a confirmation card; the rule is
+created only after approval). To edit a rule, delete + recreate.
+- **Args:** `device_id`, `condition_id`, `action_token`, `param_choices?`
+  (keyed by param label or SOAP name — never secrets), `rule_name?`
+- **Returns:** a blocked/`url_only` confirm envelope. For a notification/send-*
+  action that needs recipient credentials, instead returns
+  `{needs_recipient_credentials: true, capture_url: "/capture/rule/<token>"}` —
+  the user enters the login/password on that secure form (never in chat), then
+  approves. On approval: `{success, rule_id, config_id}`.
+
+### `delete_action_rule`
+Remove a rule (and its linked action configuration) by id (GATED).
+- **Args:** `device_id`, `rule_id`
+- **Returns:** a `url_only` confirm envelope; on approval `{success,
+  removed_rule, removed_config}`.
 
 ---
 

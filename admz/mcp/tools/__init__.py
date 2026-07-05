@@ -40,6 +40,7 @@ from admz.mcp.tools import (
     knowledge,
     provision,
     recovery,
+    rules,
     schedules,
     tasks,
 )
@@ -57,6 +58,7 @@ MIGRATED_TOOLS: List[Tool] = (
     + audit.TOOLS
     + firmware.TOOLS
     + activity.TOOLS
+    + rules.TOOLS
 )
 
 __all__ = ["MIGRATED_TOOLS"]

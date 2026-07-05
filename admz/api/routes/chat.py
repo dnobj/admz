@@ -466,6 +466,10 @@ async def api_delete_conversation(
 # was created this turn).
 _CONFIRM_URL_RE = re.compile(r"/confirm/([A-Za-z0-9_-]{20,})")
 _CAPTURE_URL_RE = re.compile(r"/capture/(?!fleet/)([A-Za-z0-9_-]{20,})")
+# A rule recipient-secret capture URL — /capture/rule/{token} where {token} is
+# the rule's CONFIRM token. Recorded as "confirm" so the eventual approval note
+# (keyed by the same token) fires. Sits before _CAPTURE_URL_RE would ever look.
+_RULE_CAPTURE_URL_RE = re.compile(r"/capture/rule/([A-Za-z0-9_-]{20,})")
 
 
 def _scan_action_tokens(result: object, tool_name: str) -> list:
@@ -476,7 +480,11 @@ def _scan_action_tokens(result: object, tool_name: str) -> list:
     except Exception:  # noqa: BLE001
         return []
     found = []
-    for kind, rx in (("confirm", _CONFIRM_URL_RE), ("capture", _CAPTURE_URL_RE)):
+    for kind, rx in (
+        ("confirm", _CONFIRM_URL_RE),
+        ("confirm", _RULE_CAPTURE_URL_RE),
+        ("capture", _CAPTURE_URL_RE),
+    ):
         for m in rx.finditer(blob):
             entry = (kind, m.group(1), tool_name)
             if entry not in found:

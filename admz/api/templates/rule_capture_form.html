@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}Recipient credentials — {{ rule_name }}{% endblock %}
+
+{% block content %}
+<div style="max-width:480px;margin:24px auto;">
+  <h1 class="page-title" style="margin-bottom:16px;">Recipient credentials</h1>
+
+  <div class="card" style="margin-bottom:20px;"><div class="card-body">
+    <div class="keyval" style="margin-bottom:10px;"><span class="k">Rule</span><span class="v">{{ rule_name }}</span></div>
+    <div class="keyval"><span class="k">Device</span><span class="v mono">{{ device_id }}</span></div>
+    {% if summary %}
+    <div style="border-top:1px solid var(--border-subtle);padding-top:12px;margin-top:10px;font-size:13px;color:var(--text-muted);">{{ summary }}</div>
+    {% endif %}
+  </div></div>
+
+  <div class="note-band" style="margin-bottom:20px;">
+    <i data-lucide="shield"></i>
+    <span>These are the notification <strong>recipient's</strong> credentials. They are held only until you approve the rule, embedded in the device's rule, and are <strong>never</strong> sent to the AI assistant.</span>
+  </div>
+
+  <form method="POST" action="/capture/rule/{{ token }}" autocomplete="off">
+    {% for f in secret_fields %}
+    <div style="margin-bottom:16px;">
+      <label for="f_{{ loop.index }}" style="display:block;margin-bottom:5px;font-weight:600;color:var(--text);">{{ f.label }}</label>
+      <input type="{{ 'password' if f.kind == 'password' else 'text' }}"
+             id="f_{{ loop.index }}" name="{{ f.name }}"
+             autocomplete="{{ 'new-password' if f.kind == 'password' else 'off' }}"
+             spellcheck="false"
+             style="width:100%;font-size:15px;{% if f.kind == 'password' %}font-family:var(--mono);{% endif %}">
+    </div>
+    {% endfor %}
+
+    <button type="submit" class="btn primary lg full">Save &amp; continue to approval</button>
+  </form>
+</div>
+{% endblock %}

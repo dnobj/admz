@@ -72,6 +72,9 @@ EXPECTED_TOOL_ORDER = [
     "import_firmware",
     "list_cached_firmware",
     "search_activity",
+    "list_rule_capabilities",
+    "create_action_rule",
+    "delete_action_rule",
 ]
 
 

@@ -2091,6 +2091,126 @@ class ADMZMCPServer:
         env["success"] = False
         return env
 
+    async def _list_rule_capabilities(self, device_id: str) -> Dict[str, Any]:
+        """Read-only: the event conditions + actions a device's model exposes for
+        automation rules, plus its current rules. Grounds create_action_rule."""
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+        from admz import operations
+        from admz.rules import capabilities, runner
+        info = self.registry.get_device_info(device_id)
+        model = info.get("model") or ""
+        caps = capabilities.list_capabilities(model)
+        out: Dict[str, Any] = {"success": True, "device_id": device_id,
+                               "model": model, **caps}
+        if caps.get("available"):
+            try:
+                device, creds = operations._resolve_device_and_creds(
+                    self.registry, device_id)
+                executor = self.executors.get("vapix")
+                out["current_rules"] = await runner.list_rules(
+                    catalog=self.catalog, executor=executor,
+                    device=device, creds=creds)
+            except Exception as exc:  # noqa: BLE001 — a read shouldn't fail the tool
+                out["current_rules_error"] = str(exc)
+        return out
+
+    async def _create_action_rule(
+        self, device_id: str, condition_id: str, action_token: str,
+        param_choices: Optional[Dict[str, Any]] = None,
+        rule_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Gate creating a device event rule (ADR-0034 widget-gated action).
+
+        Validates the spec via the atlas (fail fast in chat on an unbuildable
+        rule), then returns the approval card. The rule is only created after
+        the user approves — the executor re-renders and runs the SOAP sequence,
+        so no rendered body (or secret) is ever stored in the confirm session."""
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+        from admz import operations
+        from admz.rules import capabilities
+        info = self.registry.get_device_info(device_id)
+        model = info.get("model") or ""
+        rule_name = rule_name or "AtlasRule"
+        param_choices = dict(param_choices or {})
+
+        result = capabilities.build(
+            model, condition_id, action_token,
+            param_choices=param_choices, rule_name=rule_name)
+        if not getattr(result, "available", False):
+            return {"success": False,
+                    "error": getattr(result, "error", None)
+                    or "This rule cannot be built for this device."}
+
+        action = capabilities.action_for(model, action_token)
+        condition = capabilities.condition_for(model, condition_id)
+        label = info.get("nickname") or model or device_id
+        reason = capabilities.describe_rule(
+            result, device_label=label, device_id=device_id,
+            rule_name=rule_name, condition=condition, action=action)
+
+        # Recipient-credential actions (HTTP/SMTP/send-*): the login/password
+        # must be captured out-of-band via a secure form, never taken from chat.
+        # Arm the confirm session now, but route the user through the capture
+        # form first; the secret is merged in at execution time.
+        secret_fields = (
+            capabilities.primary_recipient_secret_fields(action) if action else [])
+        if secret_fields:
+            for f in secret_fields:                     # never accept secrets from chat
+                param_choices.pop(f["name"], None)
+            session = operations.create_action_session(
+                action="create_action_rule", device_id=device_id,
+                payload={"device_id": device_id, "model": model,
+                         "condition_id": condition_id, "action_token": action_token,
+                         "param_choices": param_choices, "rule_name": rule_name,
+                         "requires_secret_capture": True,
+                         "secret_fields": secret_fields},
+                reason=reason)
+            return {
+                "success": False,
+                "needs_recipient_credentials": True,
+                "capture_url": f"/capture/rule/{session.token}",
+                "message": (
+                    f"The action '{action_token}' delivers to a recipient that "
+                    "needs a login and password. To keep the secret out of this "
+                    "conversation, the user enters it on a secure form. Give the "
+                    f"user this link EXACTLY: /capture/rule/{session.token} — after "
+                    "they submit the credentials they'll be shown an approval "
+                    "button. Do NOT ask for the password here, and do not invent "
+                    "or alter the link."
+                ),
+            }
+
+        session = operations.create_action_session(
+            action="create_action_rule", device_id=device_id,
+            payload={"device_id": device_id, "model": model,
+                     "condition_id": condition_id, "action_token": action_token,
+                     "param_choices": param_choices, "rule_name": rule_name},
+            reason=reason)
+        env = operations.blocked_envelope(session)
+        env["success"] = False
+        return env
+
+    async def _delete_action_rule(self, device_id: str, rule_id: str) -> Dict[str, Any]:
+        """Gate removing a device event rule (widget-gated action)."""
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+        from admz import operations
+        info = self.registry.get_device_info(device_id)
+        label = info.get("nickname") or info.get("model") or device_id
+        reason = (
+            f"Remove event rule {rule_id} from {label} ({device_id}). The rule "
+            "stops firing immediately, and its linked action configuration is "
+            "removed too.")
+        session = operations.create_action_session(
+            action="delete_action_rule", device_id=device_id,
+            payload={"device_id": device_id, "rule_id": str(rule_id)},
+            reason=reason)
+        env = operations.blocked_envelope(session)
+        env["success"] = False
+        return env
+
     async def _delete_account(
         self,
         device_id: str,
