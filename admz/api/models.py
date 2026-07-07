@@ -152,6 +152,14 @@ class DeviceResponse(BaseModel):
             "baseline (drift is measured against it). None until snapshotted."
         ),
     )
+    active_scenario: Optional[str] = Field(
+        None,
+        description=(
+            "Name of the config scenario currently pushed to this device "
+            "(ADR-0044). The blessed baseline is unchanged while a scenario "
+            "is active; None means the device is on its baseline."
+        ),
+    )
     latest_observed_sha: Optional[str] = Field(
         None,
         description=(
