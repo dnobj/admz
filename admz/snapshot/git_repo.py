@@ -2,12 +2,29 @@ import logging
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
 
 logger = logging.getLogger(__name__)
+
+
+def _looks_like_lock_contention(stderr: Optional[str]) -> bool:
+    """True when a git write failed because another process held the
+    repo lock (``.git/index.lock`` or a ref lock), not because of a
+    genuine error. Git does not block on these — it fails fast with a
+    fatal ``Unable to create '.../index.lock': File exists`` (exit 128)
+    — so the remedy is a short backoff + retry, not surfacing the error.
+    """
+    s = (stderr or "").lower()
+    return (
+        "index.lock" in s
+        or (".lock" in s and "file exists" in s)
+        or "cannot lock ref" in s
+    )
 
 
 # Default timeouts in seconds for git subprocess invocations. Local
@@ -68,6 +85,16 @@ class GitRepo:
     def __init__(self, repo_path: str, remote_url: Optional[str] = None):
         self.repo_path = Path(repo_path)
         self.remote_url = remote_url
+        # Serializes the stage+commit critical section so two threads in
+        # this process (e.g. a request handler and the health/audit
+        # sweep) can't interleave ``git add -A`` / ``git commit`` on the
+        # shared config-repo — which strands staged changes and can mix a
+        # device's writes under another's commit message. GitRepo is a
+        # process-wide singleton (see components.py), so an instance lock
+        # covers every intra-process caller. Cross-process contention
+        # (the chatbot MCP subprocess pool holds its own GitRepo) is
+        # handled separately by the lock-retry in _run_git_write.
+        self._commit_lock = threading.RLock()
         self._ensure_repo()
 
     def _ensure_repo(self):
@@ -76,6 +103,37 @@ class GitRepo:
             self._run_git("init")
             if self.remote_url:
                 self._run_git("remote", "add", "origin", self.remote_url)
+        self._ensure_identity()
+
+    def _ensure_identity(self) -> None:
+        """Guarantee a resolvable git author identity so commits succeed.
+
+        ADMZ runs as a LocalSystem Windows service (ADR-0042 / Shawl), whose
+        profile has no ``~/.gitconfig`` — so the interactive user's *global*
+        git identity is invisible to it, and every commit dies with
+        ``fatal: ... Author identity unknown`` (exit 128). Observed live: a
+        full day of failed hourly audit commits + 34 stranded working-tree
+        files on the deployed config-repo, all silently swallowed as
+        best-effort audit-write warnings.
+
+        Fix: if no identity is resolvable in *any* scope, write a repo-LOCAL
+        one (``.git/config``, so it can't depend on ambient global config or
+        which user starts the service). Set-if-missing — an operator or dev
+        who configured their own identity (global or local) is respected.
+        Overridable via ADMZ_GIT_AUTHOR_NAME / ADMZ_GIT_AUTHOR_EMAIL.
+        """
+        resolved = self._run_git("config", "--get", "user.email", check=False)
+        if resolved.returncode == 0 and resolved.stdout.strip():
+            return  # a name/email is already resolvable — leave it alone
+        name = (os.getenv("ADMZ_GIT_AUTHOR_NAME") or "").strip() or "ADMZ"
+        email = (os.getenv("ADMZ_GIT_AUTHOR_EMAIL") or "").strip() or "admz@localhost"
+        self._run_git("config", "--local", "user.name", name)
+        self._run_git("config", "--local", "user.email", email)
+        logger.info(
+            "configured repo-local git identity %s <%s> for %s "
+            "(no ambient identity — likely running as a service)",
+            name, email, self.repo_path,
+        )
 
     def _run_git(
         self,
@@ -134,6 +192,48 @@ class GitRepo:
             )
         return result
 
+    def _run_git_write(
+        self,
+        *args: str,
+        timeout: Optional[float] = None,
+        attempts: int = 5,
+    ) -> subprocess.CompletedProcess:
+        """Run a mutating git command (``add``/``commit``) that can lose a
+        race on ``.git/index.lock`` when another ADMZ *process* (the chatbot
+        MCP subprocess pool holds its own GitRepo on the same config-repo)
+        commits concurrently. Git fails such a race fast with a fatal
+        ``Unable to create '.../index.lock': File exists`` (exit 128) rather
+        than blocking, so we retry with a short exponential backoff. Genuine
+        failures (a rejecting hook, a real error) don't match the lock
+        signature and raise immediately, preserving the ``check=True``
+        contract. Intra-process contention is already serialized by
+        ``self._commit_lock``; this only backstops the cross-process case.
+        """
+        delay = 0.15
+        last: Optional[subprocess.CompletedProcess] = None
+        for attempt in range(1, attempts + 1):
+            last = self._run_git(*args, check=False, timeout=timeout)
+            if last.returncode == 0:
+                return last
+            if attempt < attempts and _looks_like_lock_contention(last.stderr):
+                logger.warning(
+                    "git %s lost a repo-lock race (attempt %d/%d): %s — "
+                    "retrying in %.2fs",
+                    args[0] if args else "", attempt, attempts,
+                    (last.stderr or "").strip(), delay,
+                )
+                time.sleep(delay)
+                delay = min(delay * 2, 1.5)
+                continue
+            break
+        logger.error(
+            "git %s failed: %s", " ".join(args),
+            (last.stderr if last else ""),
+        )
+        raise subprocess.CalledProcessError(
+            last.returncode, last.args, last.stdout, last.stderr
+        )
+
     def device_path(self, device_id: str) -> Path:
         # CR-5 defense-in-depth: even when the REST and MCP entry
         # points validate device_id, internal callers might forget.
@@ -159,13 +259,16 @@ class GitRepo:
         audit *observation* commits (ADR-0031) so frequent audits don't
         churn the remote; baselines/snapshots keep the default push.
         """
-        if not self.has_changes():
-            return None
-        self._run_git("add", "-A")
-        msg = message or f"Snapshot {device_id}"
-        self._run_git("commit", "-m", msg)
-        result = self._run_git("rev-parse", "HEAD")
-        sha = result.stdout.strip()
+        with self._commit_lock:
+            if not self.has_changes():
+                return None
+            self._run_git_write("add", "-A")
+            msg = message or f"Snapshot {device_id}"
+            self._run_git_write("commit", "-m", msg)
+            sha = self._run_git("rev-parse", "HEAD").stdout.strip()
+        # Push outside the commit lock — it's a best-effort network op and
+        # holding the lock across a slow/hung remote would stall every other
+        # committer for no benefit (the local commit is already the SoT).
         if auto_push:
             self._maybe_push()
         return sha
@@ -175,13 +278,13 @@ class GitRepo:
         device_ids: List[str],
         message: Optional[str] = None,
     ) -> Optional[str]:
-        if not self.has_changes():
-            return None
-        self._run_git("add", "-A")
-        msg = message or f"Fleet snapshot: {', '.join(device_ids)}"
-        self._run_git("commit", "-m", msg)
-        result = self._run_git("rev-parse", "HEAD")
-        sha = result.stdout.strip()
+        with self._commit_lock:
+            if not self.has_changes():
+                return None
+            self._run_git_write("add", "-A")
+            msg = message or f"Fleet snapshot: {', '.join(device_ids)}"
+            self._run_git_write("commit", "-m", msg)
+            sha = self._run_git("rev-parse", "HEAD").stdout.strip()
         self._maybe_push()
         return sha
 
