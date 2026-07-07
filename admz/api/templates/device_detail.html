@@ -154,7 +154,16 @@
     <div class="card">
       <div class="card-header"><i data-lucide="layers"></i><span class="title">Configuration drift</span></div>
       <div class="card-body">
-        {% if drift.state == 'in_sync' %}
+        {% if drift.state == 'in_scenario' %}
+        <span class="drift-cell fg-blue" id="dd-drift-badge"><span class="dot sem-blue"></span>In scenario: {{ drift.scenario_name }}</span>
+        <p class="page-sub" style="margin:8px 0 4px">An alternate config is intentionally active on this device. The blessed baseline is unchanged.</p>
+        <div style="margin-top:10px">
+          <button class="btn primary sm" id="dd-return-btn" onclick="ddReturnToBaseline()">
+            <i data-lucide="rotate-ccw"></i> Return to baseline
+          </button>
+        </div>
+        <div id="dd-return-result" class="page-sub" style="display:none;margin-top:8px"></div>
+        {% elif drift.state == 'in_sync' %}
         <span class="drift-cell fg-green"><span class="dot sem-green"></span>In sync{% if drift_age %} <span class="drift-age">· {{ drift_age }}</span>{% endif %}</span>
         <p class="page-sub" style="margin:8px 0 0">Live config matched the baseline at the last check. <a href="/devices?filter=drifted">Audit</a> to recheck.</p>
         {% elif drift.state == 'drifted' %}
@@ -242,14 +251,8 @@
             <button class="btn ghost sm" id="ac-save-btn" onclick="acSave()"><i data-lucide="save"></i> Save</button>
           </div>
         </div>
-        <div class="setting-row" id="ac-apply-row" style="border-top:1px solid var(--border);display:none">
-          <div style="display:flex;gap:8px;width:100%;flex-wrap:wrap;align-items:center">
-            <span class="page-sub" style="margin:0">Apply</span>
-            <select id="ac-apply-name" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px"></select>
-            <span class="page-sub" style="margin:0">across</span>
-            <select id="ac-apply-scope" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px"></select>
-            <button class="btn ghost sm" id="ac-apply-btn" onclick="acApplyTag()"><i data-lucide="git-branch"></i> Apply</button>
-          </div>
+        <div class="setting-row" style="border-top:1px solid var(--border)">
+          <p class="page-sub" style="margin:0">Activating a scenario pushes that saved config to the device (gated); the baseline is unchanged, so “Return to baseline” snaps it back. To switch a whole group at once, open a tag from the <a href="/devices">Devices</a> list.</p>
         </div>
         <div id="ac-msg" class="page-sub" style="display:none;padding:0 16px 10px"></div>
       </div>
@@ -374,6 +377,7 @@ const HEALTH = {
 
 const DEVICE_ID = {{ device.device_id|tojson }};
 const DEVICE_TAGS = {{ (device.tags or [])|tojson }};
+const ACTIVE_SCENARIO = {{ (device.active_scenario or '')|tojson }};
 
 // ── Replace hardware: rebind this slot to a new unit (ADR-0036) ──
 const rhBtn = document.getElementById('replace-hw-btn');
@@ -629,15 +633,15 @@ async function loadAltConfigs() {
     if (!resp.ok) { box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">Unavailable.</p>'; return; }
     const data = await resp.json();
     const items = data.baselines || [];
-    acPopulateApply(items);
     if (!items.length) {
-      box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">No saved configs yet. Save the current config under a name to switch between alternates later.</p>';
+      box.innerHTML = '<p class="page-sub" style="margin:0;padding:10px 16px">No saved scenarios yet. Save the current config under a name to switch this device into it later (for a demo, test, etc.).</p>';
       return;
     }
     box.innerHTML = items.map(function(b) {
-      const active = b.is_active ? '<span class="badge green"><span class="dot"></span>active</span>' : '';
-      const acts = b.is_active ? '' :
-        '<button class="btn ghost sm" onclick="acActivate(\'' + b.commit_sha + '\', this)" title="Make this the baseline drift compares against"><i data-lucide="flag"></i> Make active</button>';
+      const isActive = b.name === ACTIVE_SCENARIO;
+      const active = isActive ? '<span class="badge blue"><span class="dot"></span>active</span>' : '';
+      const acts = isActive ? '' :
+        '<button class="btn ghost sm" onclick="acActivate(\'' + encodeURIComponent(b.name) + '\', this)" title="Push this saved config to the device (gated). The baseline is unchanged."><i data-lucide="play"></i> Activate</button>';
       return '<div class="ac-row">'
         + '<div class="ac-main"><span class="ac-name">' + ddEsc(b.name) + '</span>' + active
         +   (b.note ? '<span class="ac-note">' + ddEsc(b.note) + '</span>' : '')
@@ -672,19 +676,42 @@ async function acSave() {
   } catch (e) { acMsg('Request failed.', false); }
   if (btn) btn.disabled = false;
 }
-async function acActivate(sha, btn) {
+async function acActivate(encName, btn) {
+  const name = decodeURIComponent(encName);
   if (btn) btn.disabled = true;
   try {
-    const resp = await fetch('/api/snapshot/accept-baseline', {
+    const resp = await fetch('/api/snapshot/scenario/activate', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({device_id: DEVICE_ID, commit_sha: sha, note: 'Activate alternate config'}),
+      body: JSON.stringify({name: name, device_id: DEVICE_ID}),
     });
     const data = await resp.json();
+    if (resp.ok && data.confirm_url) { window.location = data.confirm_url; return; }
     if (resp.ok && data.success) {
-      acMsg('Now the active baseline. To push it to the device, use “Revert to baseline”.', true);
-      loadAltConfigs(); loadConfigHistory();
-    } else { if (btn) btn.disabled = false; acMsg('Error: ' + (data.detail || 'failed'), false); }
+      acMsg(data.message || ('Activated "' + name + '".'), true);
+      loadAltConfigs();
+    } else { if (btn) btn.disabled = false; acMsg('Error: ' + (data.detail || data.message || 'failed'), false); }
   } catch (e) { if (btn) btn.disabled = false; acMsg('Request failed.', false); }
+}
+// Return THIS device from its active scenario to the blessed baseline (gated).
+async function ddReturnToBaseline() {
+  const btn = document.getElementById('dd-return-btn');
+  if (btn) btn.disabled = true;
+  const out = document.getElementById('dd-return-result');
+  try {
+    const resp = await fetch('/api/snapshot/scenario/return-to-baseline', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({device_id: DEVICE_ID}),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.confirm_url) { window.location = data.confirm_url; return; }
+    if (out) {
+      out.style.display = '';
+      out.textContent = (resp.ok && data.success)
+        ? (data.message || 'Returned to baseline.')
+        : ('Error: ' + (data.detail || data.message || 'failed'));
+    }
+  } catch (e) { if (out) { out.style.display = ''; out.textContent = 'Request failed.'; } }
+  if (btn) btn.disabled = false;
 }
 async function acDelete(encName, btn) {
   if (!confirm('Delete this saved config? (Its git history is kept.)')) return;
@@ -694,45 +721,6 @@ async function acDelete(encName, btn) {
     if (resp.ok) { loadAltConfigs(); }
     else { const data = await resp.json().catch(function(){return {};}); if (btn) btn.disabled = false; acMsg('Error: ' + (data.detail || resp.status), false); }
   } catch (e) { if (btn) btn.disabled = false; acMsg('Request failed.', false); }
-}
-function acPopulateApply(items) {
-  const row = document.getElementById('ac-apply-row');
-  const nameSel = document.getElementById('ac-apply-name');
-  const scopeSel = document.getElementById('ac-apply-scope');
-  if (!row || !nameSel || !scopeSel) return;
-  if (!items.length) { row.style.display = 'none'; return; }
-  row.style.display = '';
-  const names = Array.from(new Set(items.map(function(b){ return b.name; })));
-  nameSel.innerHTML = names.map(function(n){ return '<option value="' + ddEsc(n) + '">' + ddEsc(n) + '</option>'; }).join('');
-  if (!scopeSel.dataset.filled) {
-    let opts = (DEVICE_TAGS || []).map(function(t){ return '<option value="' + ddEsc(t) + '">tag: ' + ddEsc(t) + '</option>'; }).join('');
-    opts += '<option value="*">All devices</option>';
-    scopeSel.innerHTML = opts;
-    scopeSel.dataset.filled = '1';
-  }
-}
-async function acApplyTag() {
-  const name = (document.getElementById('ac-apply-name') || {}).value;
-  const scope = (document.getElementById('ac-apply-scope') || {}).value;
-  if (!name) return;
-  const tag_filter = (scope && scope !== '*') ? scope : null;
-  const btn = document.getElementById('ac-apply-btn');
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i> Applying…'; if (window.lucide) lucide.createIcons(); }
-  try {
-    const resp = await fetch('/api/snapshot/apply-tag-baseline', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({name: name, tag_filter: tag_filter}),
-    });
-    const data = await resp.json();
-    if (resp.ok && data.confirm_url) { window.location = data.confirm_url; return; }
-    const applied = (data.applied || []).length, skipped = (data.skipped || []).length;
-    if (resp.ok && (data.success || data.applied)) {
-      acMsg((data.message || ('Applied to ' + applied + ' device(s).'))
-            + (skipped ? ' Skipped ' + skipped + ' without that config.' : ''), true);
-      loadAltConfigs(); loadConfigHistory();
-    } else { acMsg('Error: ' + (data.detail || data.message || 'failed'), false); }
-  } catch (e) { acMsg('Request failed.', false); }
-  if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="git-branch"></i> Apply'; if (window.lucide) lucide.createIcons(); }
 }
 loadAltConfigs();
 

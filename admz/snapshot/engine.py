@@ -173,7 +173,14 @@ class SnapshotEngine:
         device_id: str,
         message: Optional[str] = None,
         family: str = "vapix",
+        bless: bool = True,
     ) -> DeviceSnapshot:
+        """Capture the device's live config into a git commit.
+
+        By default the new commit is blessed as the device's baseline. Pass
+        ``bless=False`` to capture the commit WITHOUT moving ``baseline_sha`` —
+        used to save an alternate config ("scenario") from the current live
+        state while leaving the blessed baseline untouched (ADR-0044)."""
         device_info = self.registry.get_device_info(device_id)
         device_info["device_id"] = device_id
         snapshot = DeviceSnapshot(device_id=device_id, device_info=device_info)
@@ -202,8 +209,10 @@ class SnapshotEngine:
 
         # An explicit snapshot blesses the current config as the baseline.
         # Pin to the committed sha, or HEAD when nothing changed (the device
-        # is already at its baseline). Only when we actually captured config.
-        if snapshot.succeeded_facets:
+        # is already at its baseline). Only when we actually captured config —
+        # and only when the caller wants it blessed (scenario saves pass
+        # bless=False to keep the baseline pointer where it is).
+        if bless and snapshot.succeeded_facets:
             self._set_baseline_pointers(device_id, sha or self.git.head_sha())
 
         if snapshot.failed_facets and snapshot.succeeded_facets:
