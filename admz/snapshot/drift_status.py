@@ -9,10 +9,13 @@ last-known `drift_signatures` row — never a live device probe (a genuine
 on demand via ``GET /api/snapshot/drift``, which warms this same cache).
 
 States (mirrors the four the Configuration page has always shown):
-  * ``none``      — no blessed baseline yet; nothing to compare against.
-  * ``unchecked`` — baseline set, but no drift check has run since.
-  * ``in_sync``   — last check found zero drifted fields.
-  * ``drifted``   — last check found ``count`` drifted fields.
+  * ``none``        — no blessed baseline yet; nothing to compare against.
+  * ``unchecked``   — baseline set, but no drift check has run since.
+  * ``in_sync``     — last check found zero drifted fields.
+  * ``drifted``     — last check found ``count`` drifted fields.
+  * ``in_scenario`` — an alternate config ("scenario") is intentionally pushed
+    (``active_scenario`` set); the device genuinely differs from baseline on
+    purpose, so this supersedes drifted/in_sync (ADR-0044).
 
 ``checked_at`` is the signature's ``updated_at`` (unix epoch) or None —
 the freshness stamp the UI surfaces so a week-old "In sync" can't be
@@ -28,8 +31,9 @@ NONE = "none"
 UNCHECKED = "unchecked"
 IN_SYNC = "in_sync"
 DRIFTED = "drifted"
+IN_SCENARIO = "in_scenario"
 
-STATES = (NONE, UNCHECKED, IN_SYNC, DRIFTED)
+STATES = (NONE, UNCHECKED, IN_SYNC, DRIFTED, IN_SCENARIO)
 
 
 def drift_status_for(
@@ -44,11 +48,22 @@ def drift_status_for(
         signature: the ``drift_alerts.get_last_signature(device_id)`` row
             (``{"signature", "field_count", "updated_at"}``) or None.
 
-    Returns ``{"state", "count", "checked_at"}``:
-        state      — one of :data:`STATES`.
-        count      — drifted field count (0 unless ``drifted``).
-        checked_at — unix epoch of the last drift check, or None.
+    Returns ``{"state", "count", "checked_at"[, "scenario_name"]}``:
+        state         — one of :data:`STATES`.
+        count         — drifted field count (0 unless ``drifted``).
+        checked_at    — unix epoch of the last drift check, or None.
+        scenario_name — the active scenario's name (only when ``in_scenario``).
     """
+    # An intentionally-pushed alternate config supersedes plain drift: the
+    # device differs from baseline on purpose, so don't cry "drifted".
+    scenario = device_info.get("active_scenario")
+    if scenario:
+        return {
+            "state": IN_SCENARIO, "count": 0,
+            "checked_at": (signature or {}).get("updated_at"),
+            "scenario_name": scenario,
+        }
+
     if not device_info.get("baseline_sha"):
         return {"state": NONE, "count": 0, "checked_at": None}
 

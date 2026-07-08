@@ -387,6 +387,18 @@ class DeviceRegistry(ABC):
             "This registry does not support named config baselines"
         )
 
+    def set_active_scenario(
+        self, device_id: str, scenario_name: Optional[str] = None
+    ) -> None:
+        """Mark which named alternate config ("scenario") is currently pushed to
+        the device, or ``None`` to clear it (back on baseline). Does NOT move
+        ``baseline_sha`` — a scenario is a temporary push (ADR-0044). Surfaced
+        in device_info as ``active_scenario``. Optional — see
+        :meth:`save_named_baseline`."""
+        raise NotImplementedError(
+            "This registry does not support scenario markers"
+        )
+
     def update_account(
         self,
         device_id: str,

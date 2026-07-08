@@ -126,6 +126,7 @@ class TestFleetDriftEndpoint:
         assert body["total"] == 4
         assert body["counts"] == {
             "none": 1, "unchecked": 1, "in_sync": 1, "drifted": 1,
+            "in_scenario": 0,  # ADR-0044: new state, present in the summary
         }
         by_id = {d["device_id"]: d for d in body["devices"]}
         assert by_id["cam-none"]["state"] == "none"

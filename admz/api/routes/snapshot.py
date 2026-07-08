@@ -748,31 +748,149 @@ async def delete_baseline(
     return {"success": True, "device_id": device_id, "name": name}
 
 
-class ApplyTagBaselineRequest(BaseModel):
+# --------------------------------------------------------------------------
+# Scenarios (ADR-0044) — a named alternate config activated as a TEMPORARY push
+# across a device or a tag-group, with the blessed baseline left UNCHANGED so
+# "return to baseline" is a clean snap-back. Storage reuses named baselines; the
+# per-device `active_scenario` marker records which one is live. This supersedes
+# the old apply-tag-baseline (which moved the baseline — the very thing we don't
+# want for temporary demo/test modes).
+# --------------------------------------------------------------------------
+
+class ScenarioSaveRequest(BaseModel):
     name: str
-    # Exact tag membership; empty/None -> all devices (the "all" scope).
-    tag_filter: Optional[str] = None
+    # Exactly one of device_id / tag identifies the target(s).
+    device_id: Optional[str] = None
+    tag: Optional[str] = None
 
     @field_validator("name")
     @classmethod
     def _check_name(cls, v: str) -> str:
+        import re
         v = (v or "").strip()
-        if not v:
-            raise ValueError("name is required")
+        if not v or len(v) > 64 or not re.fullmatch(r"[A-Za-z0-9 ._-]+", v):
+            raise ValueError("name must be 1-64 chars: letters, digits, space, . _ -")
         return v
 
 
-@router.post("/snapshot/apply-tag-baseline")
-async def apply_tag_baseline(
+class ScenarioActivateRequest(ScenarioSaveRequest):
+    """Same shape as save (name + device_id|tag)."""
+
+
+class ScenarioReturnRequest(BaseModel):
+    device_id: Optional[str] = None
+    tag: Optional[str] = None
+
+
+def _scenario_targets(
+    ctx: "AppContext", device_id: Optional[str], tag: Optional[str]
+):
+    """Resolve target device-info dicts for a scenario op. Exactly one of
+    ``device_id`` / ``tag`` must be given (per-device vs the tag-group). Returns
+    ``(devices, error_or_None)``."""
+    if bool(device_id) == bool(tag):
+        return [], "Specify exactly one of device_id or tag."
+    if device_id:
+        if not ctx.registry.device_exists(device_id):
+            return [], f"Device not found: {device_id}"
+        info = ctx.registry.get_device_info(device_id)
+        info["device_id"] = device_id
+        return [info], None
+    devices = [d for d in ctx.registry.list_devices() if tag in (d.get("tags") or [])]
+    return devices, None
+
+
+@router.get("/snapshot/scenarios")
+async def list_scenarios(tag: str = Query(...), ctx: AppContext = Depends(get_context)):
+    """Scenario names available across a tag's devices, each with how many of the
+    tag's devices have it saved (so the UI can say '3 of 6 devices have demo'),
+    plus how many devices are currently IN each scenario."""
+    devices = [d for d in ctx.registry.list_devices() if tag in (d.get("tags") or [])]
+    counts: Dict[str, int] = {}
+    active: Dict[str, int] = {}
+    for d in devices:
+        did = d.get("device_id")
+        try:
+            names = {b.get("name") for b in ctx.registry.list_named_baselines(did)}
+        except NotImplementedError:
+            names = set()
+        for n in names:
+            if n:
+                counts[n] = counts.get(n, 0) + 1
+        cur = d.get("active_scenario")
+        if cur:
+            active[cur] = active.get(cur, 0) + 1
+    return {
+        "tag": tag,
+        "devices": len(devices),
+        "scenarios": [{"name": n, "count": counts[n]} for n in sorted(counts)],
+        "active": active,
+    }
+
+
+@router.post("/snapshot/scenario/save")
+async def save_scenario(
     request: Request,
-    req: ApplyTagBaselineRequest,
+    req: ScenarioSaveRequest,
     ctx: AppContext = Depends(get_context),
 ):
-    """Apply a named alternate config across a tag (or the whole fleet when
-    ``tag_filter`` is empty): re-point each matching device's baseline to its
-    variant of that name (metadata), then push them all in ONE gated plan.
-    Devices without a variant by that name are skipped + reported. The push is
-    the standard blocked envelope — approve at ``confirm_url`` to run it."""
+    """Capture the CURRENT live config of the target device(s) as a named
+    scenario, WITHOUT moving the baseline (snapshot bless=False → named
+    baseline). Not gated (a read + git commit; no device write)."""
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+    targets, err = _scenario_targets(ctx, req.device_id, req.tag)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+
+    saved: List[str] = []
+    failed: List[dict] = []
+    for d in targets:
+        did = d.get("device_id")
+        if not did:
+            continue
+        try:
+            snap = await ctx.snapshot_engine.snapshot_device(
+                did, message=f"scenario:{req.name}", bless=False,
+            )
+            # The commit holding this device's just-captured config: the new
+            # commit if one was made, else the current HEAD tree (which already
+            # holds it). Same resolution the engine's blessing uses.
+            commit = snap.git_sha or ctx.git_repo.head_sha()
+            if not commit or not ctx.git_repo.list_facets_at(did, commit):
+                failed.append({"device_id": did, "error": "no config captured"})
+                continue
+            ctx.registry.save_named_baseline(
+                did, req.name, commit, created_by=str(principal),
+            )
+            saved.append(did)
+        except Exception as exc:  # noqa: BLE001 — per-device, keep going
+            failed.append({"device_id": did, "error": f"{type(exc).__name__}: {exc}"})
+
+    record_event(principal, "snapshot.scenario_save",
+                 resource=f"scenario:{req.name}",
+                 details={"name": req.name, "saved": saved, "failed": failed})
+    return {
+        "success": bool(saved), "name": req.name, "saved": saved, "failed": failed,
+        "message": (f"Saved scenario '{req.name}' on {len(saved)} device(s)"
+                    + (f"; {len(failed)} failed." if failed else ".")),
+    }
+
+
+@router.post("/snapshot/scenario/activate")
+async def activate_scenario(
+    request: Request,
+    req: ScenarioActivateRequest,
+    ctx: AppContext = Depends(get_context),
+):
+    """Activate a named scenario on the target device(s): push each device's own
+    saved config of that name in ONE gated plan, and mark it ``active_scenario``.
+    The blessed baseline is NOT moved — this is a temporary mode. Devices without
+    a scenario by that name are skipped + reported."""
     from admz import operations
     from admz.audit import record_event
     from admz.auth import get_current_principal
@@ -780,15 +898,14 @@ async def apply_tag_baseline(
 
     principal = await get_current_principal(request)
     require_authenticated_principal(principal)
-
-    devices = ctx.registry.list_devices()
-    if req.tag_filter:
-        devices = [d for d in devices if req.tag_filter in (d.get("tags") or [])]
+    targets, err = _scenario_targets(ctx, req.device_id, req.tag)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
 
     applied: List[dict] = []
     skipped: List[str] = []
     all_steps: List[dict] = []
-    for d in devices:
+    for d in targets:
         did = d.get("device_id")
         if not did:
             continue
@@ -801,51 +918,45 @@ async def apply_tag_baseline(
             skipped.append(did)
             continue
         sha = match["commit_sha"]
-        # Re-point the active baseline (metadata, like make-active)...
-        ctx.registry.set_config_pointers(did, baseline_sha=sha)
-        operations.refresh_drift_after_accept(did, sha, d.get("latest_observed_sha"))
-        # ...and collect the steps to push that variant to the device.
+        # Temporary push — collect the steps and mark the scenario active, but
+        # DO NOT move baseline_sha (that's the whole point vs the old behavior).
         spec = ctx.restore_builder.build_restore_plan(did, ref=sha)
         all_steps.extend(spec.get("steps", []))
+        ctx.registry.set_active_scenario(did, req.name)
         applied.append({"device_id": did, "commit_sha": sha})
 
-    resource = f"tag:{req.tag_filter or '*'}"
+    resource = f"scenario:{req.name}"
     if not applied:
-        record_event(principal, "snapshot.apply_tag_baseline", resource=resource,
+        record_event(principal, "snapshot.scenario_activate", resource=resource,
                      details={"name": req.name, "outcome": "none-matched"})
         return {
-            "message": f"No devices in scope have a saved config named '{req.name}'.",
+            "message": f"No devices in scope have a scenario named '{req.name}'.",
             "applied": [], "skipped": skipped, "name": req.name,
         }
-
     if not all_steps:
-        record_event(principal, "snapshot.apply_tag_baseline", resource=resource,
+        record_event(principal, "snapshot.scenario_activate", resource=resource,
                      details={"name": req.name,
                               "applied": [a["device_id"] for a in applied],
-                              "outcome": "rebaselined-no-push"})
+                              "outcome": "marked-no-push"})
         return {
             "success": True,
-            "message": (
-                f"Re-pointed {len(applied)} baseline(s) to '{req.name}'; the "
-                "device(s) already match — nothing to push."
-            ),
+            "message": (f"Marked {len(applied)} device(s) as scenario '{req.name}'; "
+                        "they already match — nothing to push."),
             "applied": applied, "skipped": skipped, "name": req.name,
         }
 
-    description = (
-        f"Apply config '{req.name}' to {len(applied)} device"
-        + ("s" if len(applied) != 1 else "")
-    )
+    description = (f"Activate scenario '{req.name}' on {len(applied)} device"
+                   + ("s" if len(applied) != 1 else ""))
     try:
         plan = ctx.plan_engine.create_plan(
             description=description, steps=all_steps, on_failure="stop",
         )
     except ValueError as e:
-        record_event(principal, "snapshot.apply_tag_baseline", resource=resource,
+        record_event(principal, "snapshot.scenario_activate", resource=resource,
                      success=False, error_message=str(e))
         raise HTTPException(status_code=400, detail=str(e))
 
-    record_event(principal, "snapshot.apply_tag_baseline", resource=resource,
+    record_event(principal, "snapshot.scenario_activate", resource=resource,
                  details={"name": req.name, "plan_id": plan.plan_id,
                           "applied": [a["device_id"] for a in applied],
                           "skipped": skipped, "step_count": len(all_steps)})
@@ -853,6 +964,79 @@ async def apply_tag_baseline(
     result["applied"] = applied
     result["skipped"] = skipped
     result["name"] = req.name
+    return result
+
+
+@router.post("/snapshot/scenario/return-to-baseline")
+async def return_to_baseline(
+    request: Request,
+    req: ScenarioReturnRequest,
+    ctx: AppContext = Depends(get_context),
+):
+    """Return the target device(s) to their blessed baseline in ONE gated plan
+    and clear the ``active_scenario`` marker. Devices with no baseline are
+    skipped."""
+    from admz import operations
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+    targets, err = _scenario_targets(ctx, req.device_id, req.tag)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+
+    applied: List[dict] = []
+    skipped: List[str] = []
+    all_steps: List[dict] = []
+    for d in targets:
+        did = d.get("device_id")
+        if not did:
+            continue
+        if not d.get("baseline_sha"):
+            skipped.append(did)
+            continue
+        spec = ctx.restore_builder.build_restore_plan(did, ref=None)  # → baseline_sha
+        all_steps.extend(spec.get("steps", []))
+        ctx.registry.set_active_scenario(did, None)  # back on baseline
+        applied.append({"device_id": did})
+
+    resource = "scenario:return-to-baseline"
+    if not applied:
+        record_event(principal, "snapshot.scenario_return", resource=resource,
+                     details={"outcome": "none-with-baseline"})
+        return {"message": "No devices in scope have a baseline to return to.",
+                "applied": [], "skipped": skipped}
+    if not all_steps:
+        record_event(principal, "snapshot.scenario_return", resource=resource,
+                     details={"applied": [a["device_id"] for a in applied],
+                              "outcome": "cleared-no-push"})
+        return {
+            "success": True,
+            "message": (f"Cleared the scenario on {len(applied)} device(s); "
+                        "already at baseline — nothing to push."),
+            "applied": applied, "skipped": skipped,
+        }
+
+    description = (f"Return {len(applied)} device"
+                   + ("s" if len(applied) != 1 else "") + " to baseline")
+    try:
+        plan = ctx.plan_engine.create_plan(
+            description=description, steps=all_steps, on_failure="stop",
+        )
+    except ValueError as e:
+        record_event(principal, "snapshot.scenario_return", resource=resource,
+                     success=False, error_message=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+
+    record_event(principal, "snapshot.scenario_return", resource=resource,
+                 details={"plan_id": plan.plan_id,
+                          "applied": [a["device_id"] for a in applied],
+                          "skipped": skipped, "step_count": len(all_steps)})
+    result = await operations.execute_gated_plan(ctx.plan_engine, plan.plan_id)
+    result["applied"] = applied
+    result["skipped"] = skipped
     return result
 
 

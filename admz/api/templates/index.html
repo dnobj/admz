@@ -27,6 +27,25 @@
   <a class="stat stat-action" href="/devices?filter=drifted" title="Review &amp; act on drifted devices"><div class="sl"><span class="status-dot sem-red"><span class="core"></span></span> Drifted <i data-lucide="arrow-up-right" class="stat-go"></i></div><div class="sv" id="stat-drifted">0</div></a>
 </div>
 
+{% if tag_filter and not filter_drift %}
+<!-- Scenarios: activate a saved alternate config across this tag-group, or
+     return the group to baseline. Both go through the gated confirm flow. -->
+<div class="drift-toolbar" id="scenario-toolbar">
+  <div class="dt-left">
+    <i data-lucide="git-branch"></i>
+    <span class="dt-count">Scenarios · tag “{{ tag_filter }}”</span>
+  </div>
+  <div class="dt-right">
+    <select id="scenario-select" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px">
+      <option value="">Loading scenarios…</option>
+    </select>
+    <button class="btn primary sm" id="scenario-activate-btn" type="button" disabled><i data-lucide="play"></i> Activate across “{{ tag_filter }}”</button>
+    <button class="btn ghost sm" id="scenario-return-btn" type="button"><i data-lucide="rotate-ccw"></i> Return to baseline</button>
+  </div>
+</div>
+<div class="bulk-result hidden" id="scenario-result"></div>
+{% endif %}
+
 {% if filter_drift %}
 <!-- Drift-review: multi-device action toolbar (sticky) -->
 <div class="drift-toolbar" id="drift-toolbar" style="display:none">
@@ -101,7 +120,11 @@
       <td class="mono">{{ device.host or '—' }}</td>
       <td class="mono">{{ device.firmware_version or device.firmware or '—' }}</td>
       <td>
-        {% if is_drifted %}
+        {% if device.drift.state == 'in_scenario' %}
+        <span class="drift-cell fg-blue" title="An alternate config is intentionally active; baseline unchanged. Return to baseline from the device page or the group Scenarios bar.">
+          <span class="dot sem-blue"></span>In scenario: {{ device.drift.scenario_name }}
+        </span>
+        {% elif is_drifted %}
         <span class="drift-cell fg-amber drift-trigger" title="Show what changed"
               onclick="event.stopPropagation();toggleDrift('{{ device.device_id }}')">
           <i data-lucide="chevron-right" class="drift-chev" id="chev-{{ device.device_id }}"></i>
@@ -927,6 +950,70 @@ refreshDriftUI();
     try { await loadDiff(did); } catch (_) {}
     openDrift(did);   // diff already loaded (data-loaded=true) → no refetch
   }
+})();
+{% endif %}
+
+// ── Group scenarios toolbar (tag-scoped): activate a saved config across the
+//    group or return the group to baseline; both go through the gated confirm. ──
+{% if tag_filter and not filter_drift %}
+(function () {
+  const TAG = {{ tag_filter|tojson }};
+  const sel = document.getElementById('scenario-select');
+  const actBtn = document.getElementById('scenario-activate-btn');
+  const retBtn = document.getElementById('scenario-return-btn');
+  const out = document.getElementById('scenario-result');
+  if (!sel) return;
+  function msg(t, ok) {
+    if (!out) return;
+    out.classList.remove('hidden');
+    out.style.color = ok ? 'var(--fg-green,#4ade80)' : 'var(--fg-red,#f87171)';
+    out.textContent = t;
+  }
+  async function load() {
+    try {
+      const r = await fetch('/api/snapshot/scenarios?tag=' + encodeURIComponent(TAG));
+      const d = await r.json();
+      const items = d.scenarios || [];
+      if (!items.length) { sel.innerHTML = '<option value="">No saved scenarios for this tag</option>'; return; }
+      sel.innerHTML = '<option value="">Select a saved scenario…</option>' + items.map(function (s) {
+        const nm = String(s.name).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+        return '<option value="' + nm + '">' + nm + ' (' + s.count + '/' + d.devices + ')</option>';
+      }).join('');
+    } catch (e) { sel.innerHTML = '<option value="">Unavailable</option>'; }
+  }
+  sel.addEventListener('change', function () { if (actBtn) actBtn.disabled = !sel.value; });
+  if (actBtn) actBtn.addEventListener('click', async function () {
+    const name = sel.value; if (!name) return;
+    actBtn.disabled = true;
+    try {
+      const r = await fetch('/api/snapshot/scenario/activate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name, tag: TAG }),
+      });
+      const d = await r.json();
+      if (r.ok && d.confirm_url) { window.location = d.confirm_url; return; }
+      const skipped = (d.skipped || []).length;
+      if (r.ok && (d.success || d.applied)) msg((d.message || 'Activated.') + (skipped ? (' Skipped ' + skipped + ' without it.') : ''), true);
+      else msg('Error: ' + (d.detail || d.message || 'failed'), false);
+    } catch (e) { msg('Request failed.', false); }
+    actBtn.disabled = false;
+  });
+  if (retBtn) retBtn.addEventListener('click', async function () {
+    if (!confirm('Return all “' + TAG + '” devices to their baseline?')) return;
+    retBtn.disabled = true;
+    try {
+      const r = await fetch('/api/snapshot/scenario/return-to-baseline', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag: TAG }),
+      });
+      const d = await r.json();
+      if (r.ok && d.confirm_url) { window.location = d.confirm_url; return; }
+      if (r.ok && (d.success || d.applied)) msg(d.message || 'Returned to baseline.', true);
+      else msg('Error: ' + (d.detail || d.message || 'failed'), false);
+    } catch (e) { msg('Request failed.', false); }
+    retBtn.disabled = false;
+  });
+  load();
 })();
 {% endif %}
 </script>

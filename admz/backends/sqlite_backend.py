@@ -162,6 +162,11 @@ _DEVICE_EXTRA_COLUMNS = (
     ("baseline_sha",        "TEXT"),
     ("latest_observed_sha", "TEXT"),
     ("last_observed_at",    "REAL"),
+    # ADR-0044: the named alternate config ("scenario") currently pushed to the
+    # device, or NULL when the device is on its baseline. Set on scenario
+    # activation, cleared on return-to-baseline. The baseline pointer does NOT
+    # move when a scenario is active.
+    ("active_scenario",     "TEXT"),
 )
 
 # Subset of the extra columns surfaced into the device-info dict on read
@@ -172,6 +177,7 @@ _DEVICE_INFO_EXTRA_COLUMNS = (
     "baseline_sha",
     "latest_observed_sha",
     "last_observed_at",
+    "active_scenario",
 )
 _DEVICE_INFO_EXTRA_SELECT = ", ".join(_DEVICE_INFO_EXTRA_COLUMNS)
 
@@ -500,6 +506,24 @@ class SQLiteDeviceRegistry(DeviceRegistry):
                 f"UPDATE devices SET {', '.join(assignments)} "
                 "WHERE device_id = ?",
                 values,
+            )
+            conn.commit()
+
+    def set_active_scenario(
+        self, device_id: str, scenario_name: Optional[str] = None
+    ) -> None:
+        """Mark which named alternate config ("scenario") is currently pushed to
+        the device, or ``None`` to clear it (device is back on its baseline).
+
+        This does NOT move ``baseline_sha`` — a scenario is a temporary push;
+        the blessed baseline stays put so returning to it is a clean snap-back
+        (ADR-0044)."""
+        if not self.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device '{device_id}' not found")
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE devices SET active_scenario = ? WHERE device_id = ?",
+                (scenario_name, device_id),
             )
             conn.commit()
 
