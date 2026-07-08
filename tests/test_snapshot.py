@@ -425,6 +425,118 @@ class TestGitRepo:
         tmp_repo.commit_snapshot("cam-01")
         assert pushes == [1]
 
+    def test_looks_like_lock_contention_predicate(self):
+        """Only lock-race stderr triggers a retry; genuine errors don't."""
+        from admz.snapshot.git_repo import _looks_like_lock_contention
+        assert _looks_like_lock_contention(
+            "fatal: Unable to create '/x/.git/index.lock': File exists."
+        )
+        assert _looks_like_lock_contention("fatal: cannot lock ref 'HEAD'")
+        assert not _looks_like_lock_contention(
+            "nothing to commit, working tree clean"
+        )
+        assert not _looks_like_lock_contention("")
+        assert not _looks_like_lock_contention(None)
+
+    def test_commit_retries_on_index_lock_race(self, tmp_repo, monkeypatch):
+        """A concurrent process holding .git/index.lock makes git commit
+        fail fast with exit 128; the write must back off and retry rather
+        than strand the staged changes (the live 34-stranded-files bug)."""
+        import subprocess as _sp
+        from admz.snapshot import git_repo as gr
+        real = tmp_repo._run_git
+        calls = {"commit": 0}
+
+        def fake_run(*args, check=False, timeout=None):
+            if args and args[0] == "commit":
+                calls["commit"] += 1
+                if calls["commit"] < 3:  # lose the race twice, then win
+                    return _sp.CompletedProcess(
+                        ["git", *args], 128, "",
+                        "fatal: Unable to create "
+                        "'x/.git/index.lock': File exists.",
+                    )
+            return real(*args, check=check, timeout=timeout)
+
+        monkeypatch.setattr(tmp_repo, "_run_git", fake_run)
+        monkeypatch.setattr(gr.time, "sleep", lambda _s: None)  # no real delay
+        tmp_repo.write_device_yaml("cam-01", {"device_id": "cam-01"})
+        sha = tmp_repo.commit_snapshot("cam-01", auto_push=False)
+        assert sha is not None and len(sha) == 40
+        assert calls["commit"] == 3  # two failures + one success
+
+    def test_commit_raises_immediately_on_non_lock_failure(
+        self, tmp_repo, monkeypatch
+    ):
+        """A genuine failure (e.g. a rejecting hook) is not a lock race,
+        so it must surface at once without burning retries."""
+        import subprocess as _sp
+        from admz.snapshot import git_repo as gr
+        real = tmp_repo._run_git
+        calls = {"commit": 0}
+
+        def fake_run(*args, check=False, timeout=None):
+            if args and args[0] == "commit":
+                calls["commit"] += 1
+                return _sp.CompletedProcess(
+                    ["git", *args], 1, "", "error: pre-commit hook rejected"
+                )
+            return real(*args, check=check, timeout=timeout)
+
+        monkeypatch.setattr(tmp_repo, "_run_git", fake_run)
+        monkeypatch.setattr(gr.time, "sleep", lambda _s: None)
+        tmp_repo.write_device_yaml("cam-01", {"device_id": "cam-01"})
+        with pytest.raises(_sp.CalledProcessError):
+            tmp_repo.commit_snapshot("cam-01", auto_push=False)
+        assert calls["commit"] == 1  # no retry on a non-lock failure
+
+    def test_ensure_identity_sets_local_when_none_resolvable(
+        self, tmp_path, monkeypatch
+    ):
+        """The live bug: under the LocalSystem service there is no global
+        gitconfig, so commits die with 'Author identity unknown'. GitRepo
+        must write a repo-local identity so commits succeed regardless of
+        the ambient user."""
+        # Isolate git from the dev's real global/system config so no identity
+        # leaks in and the "service account" condition is reproduced.
+        empty = tmp_path / "empty-gitconfig"
+        empty.write_text("")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        monkeypatch.delenv("ADMZ_GIT_AUTHOR_NAME", raising=False)
+        monkeypatch.delenv("ADMZ_GIT_AUTHOR_EMAIL", raising=False)
+
+        repo = GitRepo(str(tmp_path / "svc-repo"))
+        got = subprocess.run(
+            ["git", "config", "--local", "--get", "user.email"],
+            cwd=repo.repo_path, capture_output=True, text=True,
+        )
+        assert got.stdout.strip() == "admz@localhost"
+        # And a commit now actually succeeds (would have raised exit 128 before).
+        repo.write_device_yaml("cam-1", {"device_id": "cam-1"})
+        sha = repo.commit_snapshot("cam-1", auto_push=False)
+        assert sha is not None and len(sha) == 40
+
+    def test_ensure_identity_respects_existing(self, tmp_path, monkeypatch):
+        """If an identity is already resolvable (operator/dev configured it),
+        GitRepo must not clobber it with the ADMZ default."""
+        gc = tmp_path / "global-gitconfig"
+        gc.write_text("[user]\n\tname = Dev Person\n\temail = dev@example.com\n")
+        empty = tmp_path / "empty-gitconfig"
+        empty.write_text("")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gc))
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+        repo = GitRepo(str(tmp_path / "dev-repo"))
+        local = subprocess.run(
+            ["git", "config", "--local", "--get", "user.email"],
+            cwd=repo.repo_path, capture_output=True, text=True,
+        )
+        # Nothing written to the local scope — the resolvable global is used.
+        assert local.stdout.strip() == ""
+
     def test_read_facet_after_commit(self, tmp_repo):
         normalized = {"I0.Resolution": "1920x1080", "I0.Compression": "30"}
         tmp_repo.write_facet("cam-01", "image", normalized)
