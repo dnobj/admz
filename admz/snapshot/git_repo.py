@@ -1,5 +1,6 @@
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -79,6 +80,43 @@ def _auto_push_enabled() -> bool:
     return raw not in ("false", "0", "no", "off")
 
 
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """Force-kill a git subprocess AND its descendants.
+
+    A ``subprocess`` timeout kills only the *direct* ``git`` child. But a
+    network op (``push``/``fetch``) spawns ``git-remote-https`` / ``ssh`` as a
+    grandchild that inherits the stdout pipe — so ``communicate()`` keeps
+    blocking on that pipe even after the direct child dies, and the timeout
+    never actually rescues the call. That is the hang that wedged the server
+    (a hung push under a credential-less LocalSystem service). Kill the whole
+    tree so the pipe closes and the call can be reaped.
+    """
+    if proc.poll() is not None:
+        return
+    try:
+        if sys.platform == "win32":
+            # /T = terminate the tree (git-remote-https, ssh, cred helpers).
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                creationflags=_CREATE_NO_WINDOW,
+            )
+        else:
+            # git is launched with start_new_session=True, so it leads its own
+            # process group — signal the whole group.
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:  # nosec - best-effort teardown; backstopped below
+        pass
+    finally:
+        try:
+            proc.kill()  # backstop the direct child regardless of the above
+        except Exception:
+            pass
+
+
 class GitRepo:
     """Thin wrapper around a local git repository for config storage."""
 
@@ -95,6 +133,14 @@ class GitRepo:
         # (the chatbot MCP subprocess pool holds its own GitRepo) is
         # handled separately by the lock-retry in _run_git_write.
         self._commit_lock = threading.RLock()
+        # Auto-push runs on a single background daemon thread so a slow/hung
+        # push never blocks the caller (commits run on the asyncio event loop).
+        # At most one push runs + one is queued: concurrent commits coalesce
+        # into one eventual push, so pushes can't pile up. See _maybe_push.
+        self._push_lock = threading.Lock()
+        self._push_running = False
+        self._push_pending = False
+        self._push_thread: Optional[threading.Thread] = None
         self._ensure_repo()
 
     def _ensure_repo(self):
@@ -161,30 +207,47 @@ class GitRepo:
           ``ADMZ_GIT_LOCAL_TIMEOUT_SECONDS`` /
           ``ADMZ_GIT_NETWORK_TIMEOUT_SECONDS``.
 
-        On timeout we raise ``TimeoutExpired``; callers that want
-        best-effort behavior (auto-push) catch + log + continue.
+        On timeout we kill the whole git process *tree* (see
+        :func:`_kill_process_tree` — a plain ``subprocess.run`` timeout only
+        kills the direct child and can hang forever on a pipe a grandchild
+        holds) and re-raise ``TimeoutExpired``; callers that want best-effort
+        behavior (auto-push) catch + log + continue.
         """
         if timeout is None:
             timeout = _resolve_local_timeout()
+        popen_kwargs = dict(
+            cwd=self.repo_path,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+        if sys.platform != "win32":
+            # Lead our own process group so a timeout can killpg the whole
+            # tree (git + git-remote-https/ssh grandchildren) at once.
+            popen_kwargs["start_new_session"] = True
+        proc = subprocess.Popen(["git"] + list(args), **popen_kwargs)
         try:
-            result = subprocess.run(
-                ["git"] + list(args),
-                cwd=self.repo_path,
-                capture_output=True,
-                text=True,
-                check=False,
-                stdin=subprocess.DEVNULL,
-                timeout=timeout,
-                creationflags=_CREATE_NO_WINDOW,
-            )
+            stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
+            _kill_process_tree(proc)
+            try:
+                # Now that the tree (incl. any pipe-holding grandchild) is
+                # dead, this drains + reaps without blocking.
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
             logger.error(
-                "git %s timed out after %.0fs (cwd=%s) — possible "
-                "filesystem lock, FSMonitor misbehavior, or hung "
-                "credential helper",
+                "git %s timed out after %.0fs (cwd=%s) — killed the git "
+                "process tree (a network op can orphan git-remote-https/ssh "
+                "grandchildren that keep the pipe open)",
                 " ".join(args), timeout, self.repo_path,
             )
             raise
+        result = subprocess.CompletedProcess(
+            proc.args, proc.returncode, stdout, stderr,
+        )
         if check and result.returncode != 0:
             logger.error("git %s failed: %s", " ".join(args), result.stderr)
             raise subprocess.CalledProcessError(
@@ -289,21 +352,66 @@ class GitRepo:
         return sha
 
     def _maybe_push(self) -> None:
-        """Best-effort push to ``origin`` after a successful commit.
+        """Schedule a best-effort background push (returns immediately).
 
-        Enabled by default whenever an ``origin`` remote is configured
-        (operator set it via ``git remote add origin <url>`` manually,
-        or — once Slice 1 of the hierarchy lands — via the Org's
-        ``repo_remote_url``). Set ``ADMZ_AUTO_PUSH=false`` to disable
-        for air-gapped deployments or to defer pushes.
-
-        Failures are logged at WARNING and swallowed — the local commit
-        is the source of truth, the remote is a mirror that catches up
-        on the next successful push. A transient network blip, expired
-        token, or non-fast-forward must not break the snapshot path.
+        The push runs git over the network, which — under a service account
+        with no credentials — can hang up to the network timeout. Commits run
+        on the asyncio event loop, so pushing inline would block the whole
+        server (exactly what wedged it once). Hand the push to a single
+        background daemon thread and return; the local commit is already the
+        source of truth. Concurrent commits coalesce into one eventual push
+        (at most one running + one queued), so pushes never pile up. Disable
+        entirely with ``ADMZ_AUTO_PUSH=false``.
         """
         if not _auto_push_enabled():
             return
+        with self._push_lock:
+            if self._push_running:
+                # A push is in flight — fold this commit into one follow-up.
+                self._push_pending = True
+                return
+            self._push_running = True
+            self._push_thread = threading.Thread(
+                target=self._push_worker, name="admz-git-push", daemon=True,
+            )
+            self._push_thread.start()
+
+    def _push_worker(self) -> None:
+        """Drain the coalesced push queue on the single background thread."""
+        while True:
+            try:
+                self._do_push()
+            except Exception as exc:  # _do_push swallows; belt-and-suspenders
+                logger.warning(
+                    "auto-push worker error (local commit preserved): %s", exc
+                )
+            with self._push_lock:
+                if self._push_pending:
+                    self._push_pending = False
+                    continue  # a commit landed mid-push — push once more
+                self._push_running = False
+                return
+
+    def _wait_for_pushes(self, timeout: float = 30.0) -> None:
+        """Block until the background push worker is idle.
+
+        For tests and graceful shutdown; production callers never wait on a
+        push. No-op when no push has been scheduled.
+        """
+        thread = self._push_thread
+        if thread is not None:
+            thread.join(timeout=timeout)
+
+    def _do_push(self) -> None:
+        """The actual ``git push origin <branch>``, run on the background
+        worker thread.
+
+        Enabled whenever an ``origin`` remote is configured. Failures/timeouts
+        are logged at WARNING and swallowed — the local commit is the source of
+        truth, the remote is a mirror that catches up on the next successful
+        push. A transient network blip, expired token, or non-fast-forward must
+        not break the snapshot path.
+        """
         try:
             # Origin configured?
             remote_check = self._run_git(
@@ -324,9 +432,9 @@ class GitRepo:
                 return
             branch = branch_check.stdout.strip()
             # Push gets a longer timeout — slow remotes, slow auth
-            # handshakes (especially when credential helper has to
-            # talk to Windows Credential Manager) can legitimately
-            # take many seconds.
+            # handshakes can legitimately take many seconds — and the
+            # _run_git tree-kill guarantees a hung push is torn down at
+            # the timeout rather than lingering.
             push_result = self._run_git(
                 "push", "origin", branch,
                 check=False, timeout=_resolve_network_timeout(),
@@ -335,8 +443,8 @@ class GitRepo:
             logger.warning(
                 "auto-push timed out (local commit preserved). The "
                 "remote may catch up on the next snapshot; if pushes "
-                "keep timing out, check your credential helper or "
-                "consider setting ADMZ_AUTO_PUSH=false."
+                "keep timing out, check the service's push credentials or "
+                "set ADMZ_AUTO_PUSH=false."
             )
             return
         if push_result.returncode != 0:
