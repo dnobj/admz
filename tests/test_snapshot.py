@@ -645,6 +645,43 @@ def _set_origin(repo: GitRepo, url: str) -> None:
     )
 
 
+def _hanging_push_popen():
+    """A ``subprocess.Popen`` replacement: real for local git ops, but a fake
+    that hangs (raises ``TimeoutExpired``) for ``git push`` — simulates a push
+    that never returns under a credential-less service account."""
+    real_popen = subprocess.Popen
+
+    class _P:
+        def __new__(cls, args, *a, **kw):
+            is_push = (
+                isinstance(args, (list, tuple))
+                and len(args) > 1 and args[1] == "push"
+            )
+            if not is_push:
+                return real_popen(args, *a, **kw)  # real Popen; __init__ skipped
+            return object.__new__(cls)
+
+        def __init__(self, args, *a, **kw):
+            self.args = args
+            self.pid = 424242
+            self.returncode = None
+            self._killed = False
+
+        def communicate(self, timeout=None):
+            if not self._killed:
+                raise subprocess.TimeoutExpired(self.args, timeout or 0)
+            return ("", "")
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            self._killed = True
+            self.returncode = -9
+
+    return _P
+
+
 class TestAutoPush:
     def test_no_origin_skips_push_silently(
         self, tmp_repo, camera_device_info, monkeypatch
@@ -664,6 +701,7 @@ class TestAutoPush:
         tmp_repo.write_device_yaml("cam-01", camera_device_info)
         sha = tmp_repo.commit_snapshot("cam-01")
         assert sha is not None
+        tmp_repo._wait_for_pushes()  # push runs on a background thread now
 
         # The bare origin should now have HEAD pointing at our SHA.
         # `git rev-parse HEAD` is cheaper than `ls-remote`.
@@ -700,6 +738,7 @@ class TestAutoPush:
         tmp_repo.write_device_yaml("cam-01", camera_device_info)
         with caplog.at_level(logging.WARNING):
             sha = tmp_repo.commit_snapshot("cam-01")
+            tmp_repo._wait_for_pushes()  # let the background push fail + log
         assert sha is not None  # local commit preserved
         # And a WARNING was logged
         assert any(
@@ -716,6 +755,7 @@ class TestAutoPush:
         tmp_repo.write_facet("cam-02", "image", {"b": "2"})
         sha = tmp_repo.commit_fleet_snapshot(["cam-01", "cam-02"])
         assert sha is not None
+        tmp_repo._wait_for_pushes()  # push runs on a background thread now
         # Verify it landed on origin
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -767,18 +807,22 @@ class TestGitSubprocessHardening:
         tmp_repo.write_facet("cam-01", "image", {"a": "1"})
         assert tmp_repo.has_changes() is True
 
-    def test_timeout_kwarg_propagates(self, tmp_repo, monkeypatch):
-        # _run_git's timeout kwarg should be passed through to
-        # subprocess.run. Inject a probe that captures the call.
+    def test_timeout_and_stdin_reach_subprocess(self, tmp_repo, monkeypatch):
+        # _run_git now uses Popen + communicate(timeout=); the timeout must
+        # reach communicate() and stdin=DEVNULL must reach Popen.
         captured = {}
-        real_run = subprocess.run
+        real_popen = subprocess.Popen
 
-        def fake_run(*args, **kwargs):
-            captured["timeout"] = kwargs.get("timeout")
-            captured["stdin"] = kwargs.get("stdin")
-            return real_run(*args, **kwargs)
+        class _Probe(real_popen):
+            def __init__(self, *a, **kw):
+                captured["stdin"] = kw.get("stdin")
+                super().__init__(*a, **kw)
 
-        monkeypatch.setattr(subprocess, "run", fake_run)
+            def communicate(self, timeout=None):
+                captured["timeout"] = timeout
+                return super().communicate(timeout=timeout)
+
+        monkeypatch.setattr(subprocess, "Popen", _Probe)
         tmp_repo._run_git("status", "--porcelain", check=False, timeout=5.0)
         assert captured["timeout"] == 5.0
         assert captured["stdin"] == subprocess.DEVNULL
@@ -786,25 +830,32 @@ class TestGitSubprocessHardening:
     def test_push_uses_network_timeout(
         self, tmp_repo, bare_origin, camera_device_info, monkeypatch
     ):
-        # auto-push should pass the network timeout (default 60s,
-        # or whatever ADMZ_GIT_NETWORK_TIMEOUT_SECONDS overrides to).
+        # auto-push should pass the network timeout (default 60s, or whatever
+        # ADMZ_GIT_NETWORK_TIMEOUT_SECONDS overrides to) to communicate().
         monkeypatch.delenv("ADMZ_AUTO_PUSH", raising=False)
         monkeypatch.setenv("ADMZ_GIT_NETWORK_TIMEOUT_SECONDS", "45")
         _set_origin(tmp_repo, str(bare_origin))
 
         timeouts_seen: list = []
-        real_run = subprocess.run
+        real_popen = subprocess.Popen
 
-        def fake_run(*args, **kwargs):
-            if args and isinstance(args[0], list) and len(args[0]) > 1 and args[0][1] == "push":
-                timeouts_seen.append(kwargs.get("timeout"))
-            return real_run(*args, **kwargs)
+        class _Probe(real_popen):
+            def __init__(self, args, *a, **kw):
+                self._is_push = (
+                    isinstance(args, (list, tuple))
+                    and len(args) > 1 and args[1] == "push"
+                )
+                super().__init__(args, *a, **kw)
 
-        monkeypatch.setattr(subprocess, "run", fake_run)
+            def communicate(self, timeout=None):
+                if getattr(self, "_is_push", False):
+                    timeouts_seen.append(timeout)
+                return super().communicate(timeout=timeout)
+
+        monkeypatch.setattr(subprocess, "Popen", _Probe)
         tmp_repo.write_device_yaml("cam-01", camera_device_info)
         tmp_repo.commit_snapshot("cam-01")
-        # At least one push happened; it should have used the 45s
-        # network timeout, not the 30s local default.
+        tmp_repo._wait_for_pushes()  # push runs on a background thread now
         assert any(t == 45.0 for t in timeouts_seen), (
             f"expected push with timeout=45.0, got {timeouts_seen}"
         )
@@ -812,27 +863,83 @@ class TestGitSubprocessHardening:
     def test_push_timeout_is_non_fatal(
         self, tmp_repo, bare_origin, camera_device_info, monkeypatch, caplog
     ):
-        # If push times out, the local commit must still succeed +
-        # return its SHA. The WARNING is logged.
+        # A push that hangs past its timeout must not break the snapshot: the
+        # local commit still returns its SHA and a WARNING is logged (on the
+        # background push thread).
         _set_origin(tmp_repo, str(bare_origin))
-
-        real_run = subprocess.run
-
-        def fake_run(*args, **kwargs):
-            if args and isinstance(args[0], list) and len(args[0]) > 1 and args[0][1] == "push":
-                # Simulate a push that hangs past the timeout.
-                raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout", 0))
-            return real_run(*args, **kwargs)
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
         monkeypatch.delenv("ADMZ_AUTO_PUSH", raising=False)
+        monkeypatch.setattr(subprocess, "Popen", _hanging_push_popen())
+
         tmp_repo.write_device_yaml("cam-01", camera_device_info)
         with caplog.at_level(logging.WARNING):
             sha = tmp_repo.commit_snapshot("cam-01")
+            tmp_repo._wait_for_pushes()
         assert sha is not None   # local commit preserved
-        assert any(
-            "auto-push timed out" in r.message for r in caplog.records
-        )
+        assert any("auto-push timed out" in r.message for r in caplog.records)
+
+    def test_run_git_tree_kills_hung_git(self, tmp_repo, monkeypatch):
+        # The core fix: when a git subprocess hangs past its timeout, _run_git
+        # must kill the whole process TREE (not just the direct child) and
+        # re-raise — a grandchild holding the pipe would otherwise wedge it.
+        from admz.snapshot import git_repo as gr
+        killed = []
+
+        class _HangPopen:
+            def __init__(self, args, *a, **kw):
+                self.args = args
+                self.pid = 515151
+                self.returncode = None
+                self._killed = False
+
+            def communicate(self, timeout=None):
+                if not self._killed:
+                    raise subprocess.TimeoutExpired(self.args, timeout or 0)
+                return ("", "")
+
+            def poll(self):
+                return self.returncode
+
+            def kill(self):
+                self._killed = True
+                self.returncode = -9
+
+        monkeypatch.setattr(subprocess, "Popen", _HangPopen)
+
+        def spy(proc):
+            killed.append(proc.pid)
+            proc.kill()  # let the reap communicate() return
+
+        monkeypatch.setattr(gr, "_kill_process_tree", spy)
+        with pytest.raises(subprocess.TimeoutExpired):
+            tmp_repo._run_git("status", "--porcelain", timeout=0.2)
+        assert killed == [515151]  # the tree-kill fired exactly once
+
+    def test_maybe_push_runs_off_the_caller_thread(
+        self, tmp_repo, bare_origin, camera_device_info, monkeypatch
+    ):
+        # The event-loop-safety guarantee: commit_snapshot must return WITHOUT
+        # waiting for the push, even when the push blocks for a long time.
+        import threading
+        import time as _time
+        monkeypatch.delenv("ADMZ_AUTO_PUSH", raising=False)
+        _set_origin(tmp_repo, str(bare_origin))
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_push():
+            started.set()
+            release.wait(timeout=10)  # hold the push open
+
+        monkeypatch.setattr(tmp_repo, "_do_push", blocking_push)
+        tmp_repo.write_device_yaml("cam-01", camera_device_info)
+        t0 = _time.monotonic()
+        sha = tmp_repo.commit_snapshot("cam-01")
+        elapsed = _time.monotonic() - t0
+        assert sha is not None
+        assert started.wait(timeout=5)   # the push did start on a bg thread
+        assert elapsed < 2.0             # ...but commit returned immediately
+        release.set()
+        tmp_repo._wait_for_pushes()
 
 
 # ---------------------------------------------------------------------------
