@@ -124,6 +124,33 @@ def _resolve_and_set_remote(ctx: AppContext) -> Optional[str]:
     return full
 
 
+def _complete_connection(ctx: AppContext) -> Optional[str]:
+    """Finish wiring after the operator installed the App on GitHub: discover the
+    installation via the App JWT (so we don't depend on the post-install redirect
+    firing), store its id, resolve the config repo, and set the origin. Returns
+    the repo full_name, or None if the App isn't installed yet."""
+    app_id, pem = gh_secrets.get_app_id(), gh_secrets.get_private_key()
+    if not (app_id and pem):
+        return None
+    try:
+        installs = gh_client.list_app_installations(app_id, pem)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not list app installations: %s", exc)
+        return None
+    if not installs:
+        return None
+    # Prefer the installation whose account owns the desired config repo.
+    want = gh_secrets.get_config_repo()
+    want_owner = want.split("/")[0] if want and "/" in want else None
+    chosen = None
+    if want_owner:
+        chosen = next((i for i in installs if i.get("account") == want_owner), None)
+    if chosen is None:
+        chosen = installs[0]
+    gh_secrets.set_installation_id(chosen["id"])
+    return _resolve_and_set_remote(ctx)
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -139,6 +166,10 @@ async def github_connect(request: Request, ctx: AppContext = Depends(get_context
         "name": f"ADMZ config backup ({request.url.hostname})",
         "url": base,
         "redirect_url": f"{base}/api/github/setup/callback",
+        # Post-installation redirect — GitHub sends the operator back here after
+        # they install the App, so ADMZ learns the installation automatically.
+        "setup_url": f"{base}/api/github/install/callback",
+        "setup_on_update": False,
         "public": False,
         "default_permissions": {"contents": "write", "metadata": "read"},
         "default_events": [],
@@ -196,21 +227,49 @@ async def github_install_callback(
     setup_action: Optional[str] = Query(None),
     state: Optional[str] = Query(None),
 ):
-    """GitHub redirects here after the App is installed on the config repo.
-    Record the installation and point the config-repo origin at the repo."""
-    if not state or not verify_state(state, phase="install"):
-        raise HTTPException(status_code=400, detail="invalid or expired state")
-    if not installation_id:
-        return RedirectResponse("/settings?github_error=cancelled#github-backup",
+    """GitHub's post-install redirect (the App's Setup URL). It does NOT carry
+    our signed ``state``, so we authenticate by *discovering* the installation
+    with the App JWT (only our App's private key can list its installations)
+    rather than trusting the query params."""
+    if not gh_secrets.get_app_id():
+        return RedirectResponse("/settings?github_error=register#github-backup",
                                 status_code=303)
     from admz.auth import get_current_principal
     principal = await get_current_principal(request)
-    gh_secrets.set_installation_id(installation_id)
-    repo = _resolve_and_set_remote(ctx)
+    if setup_action == "cancel":
+        return RedirectResponse("/settings?github_error=cancelled#github-backup",
+                                status_code=303)
+    repo = _complete_connection(ctx)
+    if not repo:
+        _audit(principal, "github_app.install", success=False,
+               error="no installation found")
+        return RedirectResponse("/settings?github_error=install#github-backup",
+                                status_code=303)
     _audit(principal, "github_app.install",
-           details={"installation_id": str(installation_id), "repo": repo})
+           details={"installation_id": gh_secrets.get_installation_id(), "repo": repo})
     return RedirectResponse("/settings?github_connected=1#github-backup",
                             status_code=303)
+
+
+@router.post("/api/github/refresh")
+async def github_refresh(request: Request, ctx: AppContext = Depends(get_context)):
+    """Finish / repair a connection by discovering the installation via the App
+    JWT. Used by the "Finish connecting" button when the post-install redirect
+    didn't fire, or to re-resolve after changing which repos are installed."""
+    principal = await _require_principal(request)
+    if not gh_secrets.get_app_id():
+        return JSONResponse(
+            {"ok": False, "error": "no app registered — click Connect GitHub first"})
+    repo = _complete_connection(ctx)
+    from admz.audit import record_event
+    record_event(principal, "github_app.refresh", resource="github-app",
+                 success=bool(repo), details={"repo": repo})
+    if not repo:
+        return JSONResponse(
+            {"ok": False,
+             "error": "app not installed yet — install it on GitHub, then retry"})
+    return JSONResponse({"ok": True, "connected": gh_secrets.is_connected(),
+                         "repo": repo})
 
 
 @router.post("/api/github/test")

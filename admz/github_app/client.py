@@ -136,6 +136,23 @@ def get_installation_token(app_id, private_key_pem: str, installation_id, *,
     return token
 
 
+def list_app_installations(app_id, private_key_pem: str, *,
+                           session=None) -> List[Dict[str, Any]]:
+    """Installations of this App (authenticated with the App JWT). Lets ADMZ
+    *discover* the installation the operator created on GitHub without relying
+    on the post-install redirect callback firing. Returns [{id, account}]."""
+    jwt = app_jwt(app_id, private_key_pem)
+    data = _request("GET", f"{GITHUB_API}/app/installations",
+                    session=session, bearer=jwt)
+    out = []
+    for inst in (data or []):
+        out.append({
+            "id": inst.get("id"),
+            "account": (inst.get("account") or {}).get("login"),
+        })
+    return out
+
+
 def list_installation_repositories(installation_token: str, *,
                                    session=None) -> List[Dict[str, Any]]:
     """Repos the installation can access — used to confirm/resolve the config

@@ -99,25 +99,29 @@ class TestCallbacks:
         assert gh_secrets.get_app_id() == "55"
         assert gh_secrets.get_private_key() == "PEMDATA"
 
-    def test_install_bad_state_400(self, client):
-        r = client.get("/api/github/install/callback?installation_id=7&state=bad")
-        assert r.status_code == 400
+    def test_install_without_app_redirects_error(self, client):
+        # No app registered yet → nothing to install into.
+        r = client.get("/api/github/install/callback?installation_id=7")
+        assert r.status_code == 303
+        assert "github_error=register" in r.headers["location"]
 
-    def test_install_stores_installation_and_repo(self, client, monkeypatch):
+    def test_install_completes_via_jwt_discovery(self, client, monkeypatch):
+        # GitHub's post-install redirect carries no signed state — ADMZ
+        # authenticates by discovering the installation with the App JWT.
         gh_secrets.save_app(1, "s", "PEM")
-        # avoid touching the real config-repo remote; assert the wiring instead
+        gh_secrets.set_config_repo("o/r")
+        monkeypatch.setattr(gh_client, "list_app_installations",
+                            lambda app_id, pem, session=None: [{"id": 145, "account": "o"}])
+        monkeypatch.setattr(gh_client, "get_installation_token", lambda *a, **k: "tok")
         monkeypatch.setattr(
-            gh_routes, "_resolve_and_set_remote",
-            lambda ctx: (gh_secrets.set_config_repo("o/r") or "o/r"),
-        )
-        state = gh_routes.sign_state("install")
-        r = client.get(
-            f"/api/github/install/callback?installation_id=999&state={state}"
-        )
+            gh_client, "list_installation_repositories",
+            lambda tok, session=None: [{"full_name": "o/r", "owner": "o", "name": "r"}])
+        monkeypatch.setattr("admz.snapshot.git_repo.GitRepo.set_remote_url",
+                            lambda self, url: None)
+        r = client.get("/api/github/install/callback?installation_id=145")
         assert r.status_code == 303
         assert "github_connected=1" in r.headers["location"]
-        assert gh_secrets.get_installation_id() == "999"
-        assert gh_secrets.get_config_repo() == "o/r"
+        assert gh_secrets.get_installation_id() == "145"
         assert gh_secrets.is_connected()
 
 
@@ -160,9 +164,37 @@ class TestTestAndDisconnect:
         assert gh_secrets.get_app_id() is None
 
 
+class TestRefresh:
+    def test_refresh_without_app(self, client):
+        r = client.post("/api/github/refresh")
+        assert r.status_code == 200 and r.json()["ok"] is False
+
+    def test_refresh_discovers_and_connects(self, client, monkeypatch):
+        gh_secrets.save_app(1, "s", "PEM")
+        gh_secrets.set_config_repo("o/r")
+        monkeypatch.setattr(gh_client, "list_app_installations",
+                            lambda app_id, pem, session=None: [{"id": 7, "account": "o"}])
+        monkeypatch.setattr(gh_client, "get_installation_token", lambda *a, **k: "tok")
+        monkeypatch.setattr(
+            gh_client, "list_installation_repositories",
+            lambda tok, session=None: [{"full_name": "o/r", "owner": "o", "name": "r"}])
+        monkeypatch.setattr("admz.snapshot.git_repo.GitRepo.set_remote_url",
+                            lambda self, url: None)
+        r = client.post("/api/github/refresh")
+        j = r.json()
+        assert j["ok"] is True and j["repo"] == "o/r" and j["connected"] is True
+        assert gh_secrets.get_installation_id() == "7"
+
+
 class TestSettingsCard:
     def test_settings_renders_github_card(self, client):
         r = client.get("/settings")
         assert r.status_code == 200
         assert "GitHub config backup" in r.text
         assert "Connect GitHub" in r.text  # not connected → shows Connect
+
+    def test_settings_shows_finish_when_app_registered(self, client):
+        gh_secrets.save_app(1, "admz-cfg", "PEM")  # registered, not installed
+        r = client.get("/settings")
+        assert "Finish connecting" in r.text
+        assert "Finish install" in r.text  # the badge text

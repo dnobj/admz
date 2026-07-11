@@ -162,6 +162,18 @@ class TestListRepos:
         assert repos == [{"full_name": "o/r", "owner": "o", "name": "r"}]
 
 
+class TestListInstallations:
+    def test_list_app_installations(self, rsa_pem):
+        pem, _ = rsa_pem
+        payload = [{"id": 145, "account": {"login": "pettheory"}}]
+        sess = _FakeSession(lambda m, u, h, b: _Resp(200, payload))
+        out = gh_client.list_app_installations(1, pem, session=sess)
+        assert out == [{"id": 145, "account": "pettheory"}]
+        assert "/app/installations" in sess.calls[0][1]
+        # authenticated with the App JWT (Bearer), not an installation token
+        assert sess.calls[0][2]["Authorization"].startswith("Bearer ")
+
+
 # ---------------------------------------------------------------------------
 # Secret store
 # ---------------------------------------------------------------------------

@@ -228,7 +228,7 @@
       <div class="sr">
         <div class="sr-text">
           <div class="sr-label">Config-repo mirror
-            <span id="gh-status" class="badge {{ 'green' if github.connected else 'grey' }}" style="margin-left:6px"><span class="dot"></span>{{ 'Connected' if github.connected else 'Not connected' }}</span>
+            <span id="gh-status" class="badge {{ 'green' if github.connected else 'grey' }}" style="margin-left:6px"><span class="dot"></span>{{ 'Connected' if github.connected else ('Finish install' if github.app_registered else 'Not connected') }}</span>
           </div>
           <div class="sr-desc">
             Back up this server's device-config history to a private GitHub repo. Click <strong>Connect GitHub</strong> to create &amp; install a GitHub App — ADMZ then pushes with short-lived, auto-rotated tokens (<strong>no password or key to paste</strong>). Revoke anytime by uninstalling the app on GitHub.
@@ -238,10 +238,14 @@
       </div>
       {% if github_connected_flash %}<div class="page-sub" style="color:var(--good,#3a7);margin-top:6px">✓ Connected to GitHub.</div>{% endif %}
       {% if github_error_flash %}<div class="page-sub" style="color:var(--bad,#c44);margin-top:6px">✗ Connect failed ({{ github_error_flash }}). Please try again.</div>{% endif %}
-      <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px">
         {% if github.connected %}
           <button class="btn" id="gh-test" type="button"><i data-lucide="plug"></i> Test push access</button>
           <button class="btn" id="gh-disconnect" type="button">Disconnect</button>
+        {% elif github.app_registered %}
+          <button class="btn primary" id="gh-finish" type="button"><i data-lucide="check"></i> Finish connecting</button>
+          <button class="btn" id="gh-disconnect" type="button">Cancel</button>
+          <span class="page-sub">App <code>{{ github.slug }}</code> created — install it on GitHub (if you haven't), then click Finish.</span>
         {% else %}
           <a class="btn primary" href="/api/github/connect"><i data-lucide="github"></i> Connect GitHub</a>
         {% endif %}
@@ -313,6 +317,15 @@ document.getElementById('acs-save')?.addEventListener('click', async () => {
 
 // GitHub config backup card
 function ghMsg(t) { const m = document.getElementById('gh-msg'); if (m) m.textContent = t; }
+document.getElementById('gh-finish')?.addEventListener('click', async () => {
+  ghMsg('Finishing…');
+  try {
+    const r = await fetch('/api/github/refresh', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) { ghMsg('✓ Connected → ' + (d.repo || '')); setTimeout(() => location.reload(), 700); }
+    else ghMsg('✗ ' + (d.error || 'not installed yet'));
+  } catch (e) { ghMsg('✗ ' + e); }
+});
 document.getElementById('gh-test')?.addEventListener('click', async () => {
   ghMsg('Testing…');
   try {
