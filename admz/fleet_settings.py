@@ -79,6 +79,15 @@ PROTECTED_SETTING_KEYS = {
     "survey_validation_tier",
     "survey_schedule_seconds",
     "survey_contributor",
+    # GitHub App config-repo backup (ADR-0045). The private key + client
+    # secret are Fernet-encrypted; the whole set is written only by the
+    # authenticated Settings "Connect GitHub" flow, never by MCP/anonymous.
+    "github_app_id",
+    "github_app_slug",
+    "github_app_private_key",
+    "github_app_client_secret",
+    "github_app_installation_id",
+    "github_config_repo",
 }
 
 

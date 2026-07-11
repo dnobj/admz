@@ -437,6 +437,11 @@ _EXEMPT_PATH_PREFIXES = (
     # ACS Pro "Send HTTP Notification" webhook — ACS can't do Negotiate, so this
     # endpoint authenticates itself via a shared secret token (see acs_pro.webhook).
     "/api/acs/rule-fired",
+    # GitHub App OAuth callbacks — top-level cross-site GET redirects from GitHub
+    # arrive without an ADMZ session; they self-authenticate via an HMAC-signed,
+    # short-lived `state` param (see routes/github_app.py).
+    "/api/github/setup/callback",
+    "/api/github/install/callback",
 )
 
 

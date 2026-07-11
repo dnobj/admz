@@ -537,6 +537,41 @@ class TestGitRepo:
         # Nothing written to the local scope — the resolvable global is used.
         assert local.stdout.strip() == ""
 
+    def test_set_remote_url_add_update_remove(self, tmp_repo):
+        tmp_repo.set_remote_url("https://x-access-token@github.com/o/r.git")
+        assert tmp_repo._run_git("remote", "get-url", "origin").stdout.strip() \
+            == "https://x-access-token@github.com/o/r.git"
+        tmp_repo.set_remote_url("https://x-access-token@github.com/o/r2.git")
+        assert tmp_repo._run_git("remote", "get-url", "origin").stdout.strip() \
+            .endswith("r2.git")
+        tmp_repo.set_remote_url(None)
+        assert tmp_repo._run_git(
+            "remote", "get-url", "origin", check=False
+        ).returncode != 0
+
+    def test_push_auth_env_no_app_is_plain(self, tmp_repo, monkeypatch):
+        import admz.github_app.push as ghpush
+        monkeypatch.setattr(ghpush, "installation_token_for_push", lambda: None)
+        env, extra = tmp_repo._push_auth_env()
+        assert env is None and extra == []
+
+    def test_push_auth_env_token_via_env_not_args(
+        self, tmp_repo, tmp_path, monkeypatch
+    ):
+        # A connected App: the token is injected through GIT_ASKPASS + an env
+        # var, NEVER on the git command line, and ambient helpers are disabled.
+        import admz.github_app.push as ghpush
+        monkeypatch.setenv("ADMZ_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            ghpush, "installation_token_for_push", lambda: "ghs_secret123"
+        )
+        env, extra = tmp_repo._push_auth_env()
+        assert env["ADMZ_GH_TOKEN"] == "ghs_secret123"
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
+        assert os.path.exists(env["GIT_ASKPASS"])
+        assert extra == ["-c", "credential.helper="]
+        assert "ghs_secret123" not in " ".join(extra)
+
     def test_read_facet_after_commit(self, tmp_repo):
         normalized = {"I0.Resolution": "1920x1080", "I0.Compression": "30"}
         tmp_repo.write_facet("cam-01", "image", normalized)

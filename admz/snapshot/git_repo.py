@@ -117,6 +117,30 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
             pass
 
 
+def _askpass_helper_path() -> str:
+    """Path to a tiny generated ``GIT_ASKPASS`` helper that echoes the token
+    from the ``ADMZ_GH_TOKEN`` env var — so a GitHub App installation token can
+    authenticate a push without ever landing in the command line or the
+    persisted remote URL. Generated once under ADMZ_HOME."""
+    from admz.paths import admz_home
+    home = Path(admz_home())
+    home.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "win32":
+        path = home / "git-askpass.cmd"
+        content = "@echo %ADMZ_GH_TOKEN%\r\n"
+    else:
+        path = home / "git-askpass.sh"
+        content = '#!/bin/sh\nprintf "%s" "$ADMZ_GH_TOKEN"\n'
+    try:
+        if not path.exists() or path.read_text() != content:
+            path.write_text(content)
+            if sys.platform != "win32":
+                os.chmod(path, 0o700)
+    except Exception:  # noqa: BLE001 - best-effort; a plain push still works
+        pass
+    return str(path)
+
+
 class GitRepo:
     """Thin wrapper around a local git repository for config storage."""
 
@@ -186,9 +210,14 @@ class GitRepo:
         *args: str,
         check: bool = True,
         timeout: Optional[float] = None,
+        env: Optional[dict] = None,
     ) -> subprocess.CompletedProcess:
         """Invoke ``git`` as a subprocess with hardening for the
         chat-tool / FastAPI background-process context.
+
+        ``env`` overrides the subprocess environment (default: inherit) — used
+        by the authenticated push to hand git a GITHUB App token via
+        ``GIT_ASKPASS`` without ever putting it in the command line.
 
         * ``stdin=DEVNULL`` — git inherits no stdin, so it can't
           accidentally block trying to read from one. This was the
@@ -223,6 +252,8 @@ class GitRepo:
             text=True,
             creationflags=_CREATE_NO_WINDOW,
         )
+        if env is not None:
+            popen_kwargs["env"] = env
         if sys.platform != "win32":
             # Lead our own process group so a timeout can killpg the whole
             # tree (git + git-remote-https/ssh grandchildren) at once.
@@ -431,13 +462,16 @@ class GitRepo:
                 )
                 return
             branch = branch_check.stdout.strip()
-            # Push gets a longer timeout — slow remotes, slow auth
-            # handshakes can legitimately take many seconds — and the
-            # _run_git tree-kill guarantees a hung push is torn down at
-            # the timeout rather than lingering.
+            # If a GitHub App is connected, mint a fresh installation token and
+            # hand it to git via GIT_ASKPASS (never on the command line);
+            # `-c credential.helper=` disables any ambient helper (e.g. Windows
+            # Credential Manager) so only our token is used. No App → plain push
+            # (unchanged). Push gets the network timeout; the _run_git tree-kill
+            # tears down a hung push at the timeout rather than lingering.
+            env, extra = self._push_auth_env()
             push_result = self._run_git(
-                "push", "origin", branch,
-                check=False, timeout=_resolve_network_timeout(),
+                *extra, "push", "origin", branch,
+                check=False, timeout=_resolve_network_timeout(), env=env,
             )
         except subprocess.TimeoutExpired:
             logger.warning(
@@ -454,6 +488,42 @@ class GitRepo:
             )
         else:
             logger.info("auto-pushed snapshot to origin/%s", branch)
+
+    def _push_auth_env(self):
+        """(env, extra_git_args) that authenticate the push with a fresh GitHub
+        App installation token when one is connected, else (None, []).
+
+        The token is passed via GIT_ASKPASS + the ADMZ_GH_TOKEN env var so it
+        never appears in the process command line or the persisted remote URL.
+        Lazy-imports the github_app bridge to keep this git layer independent of
+        it; any failure degrades to an unauthenticated push (best-effort).
+        """
+        try:
+            from admz.github_app.push import installation_token_for_push
+            token = installation_token_for_push()
+        except Exception:  # noqa: BLE001 - never let backup wiring break push
+            token = None
+        if not token:
+            return None, []
+        env = dict(os.environ)
+        env["ADMZ_GH_TOKEN"] = token
+        env["GIT_ASKPASS"] = _askpass_helper_path()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        return env, ["-c", "credential.helper="]
+
+    def set_remote_url(self, url: Optional[str]) -> None:
+        """Set (or, when ``url`` is None, remove) the config-repo ``origin``
+        remote. Used by the GitHub App connect / disconnect flow."""
+        existing = self._run_git("remote", "get-url", "origin", check=False)
+        has_origin = existing.returncode == 0
+        if url is None:
+            if has_origin:
+                self._run_git("remote", "remove", "origin")
+            return
+        if has_origin:
+            self._run_git("remote", "set-url", "origin", url)
+        else:
+            self._run_git("remote", "add", "origin", url)
 
     def write_device_yaml(self, device_id: str, device_info: Dict) -> Path:
         device_dir = self.device_path(device_id)
