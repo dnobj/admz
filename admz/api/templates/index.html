@@ -185,6 +185,16 @@
                 <button class="btn ghost sm" id="btn-exclude-{{ device.device_id }}" onclick="bulkExclude('{{ device.device_id }}', event)"><i data-lucide="eye-off"></i> Exclude selected</button>
               </div>
             </div>
+            <div class="drift-action-group" style="border-top:1px solid var(--border);padding-top:12px">
+              <div class="drift-action-label">
+                <i data-lucide="presentation" style="color:var(--fg-blue,#60a5fa)"></i>
+                <strong>Assign to a demo</strong>
+                <span class="page-sub" style="margin:0">These changes aren't drift — they're a demo's config. Move the ticked fields into that demo's owned fragment (recorded in git; nothing is pushed).</span>
+              </div>
+              <div class="drift-action-controls">
+                <button class="btn ghost sm" id="btn-assign-{{ device.device_id }}" onclick="assignToDemo('{{ device.device_id }}')"><i data-lucide="presentation"></i> Assign selected</button>
+              </div>
+            </div>
           </div>
           <div class="drift-result hidden" id="result-{{ device.device_id }}"></div>
         </div>
@@ -650,6 +660,73 @@ function bulkExclude(did, evt) {
     return;
   }
   openIgnoreMenu(document.getElementById('btn-exclude-' + did), did, keys);
+}
+
+// ── Assign to demo (ADR-0047 fragment capture) ──
+// The ticked fields become the demo's owned config: the server re-checks the
+// diff and records the LIVE values in the demo's fragment (git). No push.
+async function assignToDemo(did) {
+  const fields = selectedFields(did);
+  const resultEl = document.getElementById('result-' + did);
+  if (!fields.length) {
+    if (resultEl) { resultEl.innerHTML = '<span style="color:var(--text-faint)">Tick at least one field to assign.</span>'; resultEl.classList.remove('hidden'); }
+    return;
+  }
+  closeIgnoreMenu();
+  let demos = [];
+  try {
+    const r = await fetch('/api/demos');
+    demos = ((await r.json()).demos || []);
+  } catch (e) { /* fall through to empty message */ }
+  if (!demos.length) {
+    if (resultEl) { resultEl.innerHTML = '<span style="color:var(--text-faint)">No demos defined yet — <a href="/demos">create one</a> first.</span>'; resultEl.classList.remove('hidden'); }
+    return;
+  }
+  const anchorEl = document.getElementById('btn-assign-' + did);
+  const menu = document.createElement('div');
+  menu.className = 'ignore-menu';
+  menu.innerHTML = '<div class="ig-head">Assign ' + fields.length + ' field' + (fields.length !== 1 ? 's' : '') + ' to…</div>'
+    + demos.map(d => '<button type="button" class="ig-opt" data-demo="' + esc(d.id) + '">' + esc(d.name) + '</button>').join('');
+  document.body.appendChild(menu);
+  const r = anchorEl.getBoundingClientRect();
+  menu.style.top = (window.scrollY + r.bottom + 4) + 'px';
+  menu.style.left = (window.scrollX + Math.max(8, Math.min(r.left, window.innerWidth - 250))) + 'px';
+  menu.addEventListener('click', e => e.stopPropagation());
+  _ignoreMenuEl = menu;
+  menu.querySelectorAll('.ig-opt').forEach(b => b.addEventListener('click', async () => {
+    const demoId = b.getAttribute('data-demo');
+    const demoName = b.textContent;
+    closeIgnoreMenu();
+    try {
+      const resp = await fetch('/api/demos/' + demoId + '/fragment', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({fields: fields}),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || 'failed');
+      const n = (data.added || []).length, s = (data.skipped || []).length;
+      // Tag the assigned rows so the operator sees what moved (real
+      // attribution shows up on the next drift check).
+      const moved = new Set((data.added || []).map(a => a.facet + ' ' + a.path));
+      document.querySelectorAll('.drift-field-cb').forEach(cb => {
+        if (cb.getAttribute('data-did') !== did) return;
+        if (!moved.has((cb.getAttribute('data-facet') || '') + ' ' + cb.getAttribute('data-path'))) return;
+        cb.checked = false;
+        const tr = cb.closest('tr');
+        const pathTd = tr && tr.querySelector('.col-path');
+        if (pathTd && !tr.querySelector('.demo-tag')) pathTd.insertAdjacentHTML('beforeend', ' <span class="ro-tag demo-tag">' + esc(demoName) + '</span>');
+      });
+      updateRevertBtn(did);
+      if (resultEl) {
+        let msg = '<span style="color:var(--fg-green,#4ade80)"><i data-lucide="check-circle"></i> Assigned ' + n + ' field' + (n !== 1 ? 's' : '') + ' to <a href="/demos/' + esc(demoId) + '">' + esc(demoName) + '</a>' + (s ? ' — ' + s + ' skipped (read-only / not in baseline / ignored)' : '') + '.</span>';
+        (data.warnings || []).forEach(w => { msg += '<div style="color:var(--fg-amber,#fbbf24);font-size:12px;margin-top:4px">' + esc(w) + '</div>'; });
+        resultEl.innerHTML = msg; resultEl.classList.remove('hidden');
+        if (window.lucide) lucide.createIcons();
+      }
+    } catch (e) {
+      if (resultEl) { resultEl.innerHTML = '<span style="color:var(--fg-red,#f87171)">Couldn\'t assign: ' + esc(e.message || 'request failed') + '</span>'; resultEl.classList.remove('hidden'); }
+    }
+  }));
 }
 
 // Flip a row to in-sync after a successful accept (single or bulk).

@@ -112,6 +112,58 @@
     </div>
   </div>
 
+  <!-- Owned config (ADR-0047 fragments) — the keys THIS demo sets, layered
+       over each device's baseline. Captured from the Devices drift diff. -->
+  <div class="card" style="grid-column:1 / -1">
+    <div class="card-header"><i data-lucide="layers"></i><span class="title">Owned config</span></div>
+    <div class="card-body">
+      <p class="page-sub" style="margin:0 0 12px">
+        The config keys this demo owns, per role — its delta over the devices' baseline.
+        Capture more from a device's <a href="/devices?filter=drifted">drift diff</a> ("Assign to a demo").
+      </p>
+      {% if fragments %}
+      {% for role, frag in fragments.items() %}
+      <div style="margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <span class="tag">{{ role }}</span>
+          <span class="page-sub" style="margin:0;font-size:12px">{{ frag.counts.set }} owned{% if frag.counts.require %} · {{ frag.counts.require }} required{% endif %}</span>
+        </div>
+        <table class="data-table">
+          <thead><tr><th>Facet</th><th>Key</th><th>Value</th><th></th><th></th></tr></thead>
+          <tbody>
+            {% for facet, modes in frag.facets.items() %}
+              {% for path, value in (modes.get('set') or {}).items() %}
+              <tr>
+                <td class="mono">{{ facet }}</td>
+                <td class="mono text">{{ path }}</td>
+                <td class="mono">{{ value }}</td>
+                <td><span class="badge blue">owns</span></td>
+                <td style="text-align:right"><button class="btn sm ghost frag-del" data-role="{{ role }}" data-facet="{{ facet }}" data-path="{{ path }}" title="Remove from this demo"><i data-lucide="x"></i></button></td>
+              </tr>
+              {% endfor %}
+              {% for path, value in (modes.get('require') or {}).items() %}
+              <tr>
+                <td class="mono">{{ facet }}</td>
+                <td class="mono text">{{ path }}</td>
+                <td class="mono">{{ value }}</td>
+                <td><span class="badge grey">requires</span></td>
+                <td style="text-align:right"><button class="btn sm ghost frag-del" data-role="{{ role }}" data-facet="{{ facet }}" data-path="{{ path }}" title="Remove from this demo"><i data-lucide="x"></i></button></td>
+              </tr>
+              {% endfor %}
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endfor %}
+      {% else %}
+      <div class="page-sub" style="margin:0">
+        No owned config yet{% if not demo.scenario_name %} — this demo rides the baseline as-is{% endif %}.
+        To claim keys: set a device up for the demo, run a drift check, then assign the changed fields here from the diff.
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
   <!-- Signals — the evidence it's actually running. -->
   <div class="card" style="grid-column:1 / -1">
     <div class="card-header" style="justify-content:space-between">
@@ -263,6 +315,24 @@
     el.textContent = secs < 60 ? secs + 's ago'
       : secs < 3600 ? Math.round(secs / 60) + 'm ago'
       : Math.round(secs / 3600) + 'h ago';
+  });
+
+  // ── Owned config: remove an entry from the fragment ──
+  document.querySelectorAll('.frag-del').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Remove this key from the demo’s owned config? (The device is untouched.)')) return;
+      try {
+        const res = await fetch('/api/demos/' + DEMO_ID + '/fragment/remove', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            role: btn.dataset.role,
+            entries: [{ facet: btn.dataset.facet, path: btn.dataset.path }],
+          }),
+        });
+        if (!res.ok) throw new Error((await res.json()).detail || 'failed');
+        window.location.reload();
+      } catch (e) { alert(e.message || 'Request failed'); }
+    });
   });
 
   // ── Prepare / End (sidelined demos only) ──

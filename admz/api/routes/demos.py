@@ -8,6 +8,7 @@ approval widget rather than inventing a second gate.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -19,6 +20,8 @@ from pydantic import BaseModel, Field
 from admz.api.context import AppContext, get_context
 from admz.demos import service
 from admz.demos.store import Demo
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -37,6 +40,30 @@ class DemoRequest(BaseModel):
     config_source: str = "baseline"
     signals: List[Dict[str, Any]] = Field(default_factory=list)
     enabled: bool = True
+
+
+class FragmentField(BaseModel):
+    device_id: str
+    facet: str
+    path: str
+
+
+class FragmentAssignRequest(BaseModel):
+    """Assign drifted fields to a demo's fragment (ADR-0047 capture)."""
+
+    fields: List[FragmentField]
+    role: Optional[str] = None   # default: the device's role in the demo
+    mode: str = "set"
+
+
+class FragmentEntry(BaseModel):
+    facet: str
+    path: str
+
+
+class FragmentRemoveRequest(BaseModel):
+    role: str
+    entries: List[FragmentEntry]
 
 
 async def _principal(request: Request):
@@ -68,11 +95,10 @@ async def list_demos(ctx: AppContext = Depends(get_context)):
 
 @router.get("/api/demos/{demo_id}")
 async def get_demo(demo_id: str, ctx: AppContext = Depends(get_context)):
-    return {
-        "success": True,
-        "demo": service.demo_view(
-            _get(ctx, demo_id), ctx.registry, ctx.event_store),
-    }
+    demo = _get(ctx, demo_id)
+    view = service.demo_view(demo, ctx.registry, ctx.event_store)
+    view["fragments"] = _fragments_view(ctx, demo)
+    return {"success": True, "demo": view}
 
 
 @router.post("/api/demos")
@@ -125,9 +151,133 @@ async def delete_demo(demo_id: str, request: Request,
     principal = await _principal(request)
     demo = _get(ctx, demo_id)
     ctx.demo_store.delete(demo_id)
+    try:
+        from admz.demos import fragments as fr
+
+        fr.delete_demo_fragments(ctx.git_repo, demo_id, demo.name)
+    except Exception:  # noqa: BLE001 — orphan fragments are harmless; history keeps them
+        logger.warning("demo %s: fragment cleanup failed", demo_id, exc_info=True)
     record_event(principal, "demo.delete", resource=f"demo:{demo_id}",
                  details={"name": demo.name})
     return {"success": True}
+
+
+# ── Fragments (ADR-0047 capture) ─────────────────────────────────────────────
+
+
+def _fragments_view(ctx: AppContext, demo: Demo) -> Dict[str, Any]:
+    """``{role: {facets, counts}}`` for the demo's owned config, or {}."""
+    from admz.demos import fragments as fr
+
+    out: Dict[str, Any] = {}
+    for role, facets in fr.load_all_fragments(ctx.git_repo, demo.id).items():
+        out[role] = {"facets": facets, "counts": fr.fragment_entry_count(facets)}
+    return out
+
+
+@router.post("/api/demos/{demo_id}/fragment")
+async def assign_fragment(demo_id: str, req: FragmentAssignRequest, request: Request,
+                          ctx: AppContext = Depends(get_context)):
+    """Assign selected drift-diff rows to the demo's fragment (capture).
+
+    The server re-checks drift per device (same pattern as ``/snapshot/revert``)
+    so values come from the REAL diff, not the client: the captured value is the
+    device's **actual live value** — the operator configured the device the way
+    the demo needs it, so the live side IS the demo's config. Writes only; no
+    device is touched.
+    """
+    from admz.audit import record_event
+    from admz.demos import fragments as fr
+    from admz.snapshot.facets import get_facets_for_device
+
+    principal = await _principal(request)
+    demo = _get(ctx, demo_id)
+    if not req.fields:
+        raise HTTPException(400, "no fields selected")
+    if req.mode not in fr.MODES:
+        raise HTTPException(400, f"mode must be one of {fr.MODES}")
+
+    selected: Dict[str, set] = {}
+    for f in req.fields:
+        selected.setdefault(f.device_id, set()).add((f.facet, f.path))
+
+    added: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, str]] = []
+    warnings: List[str] = []
+    entries_by_role: Dict[str, List[Dict[str, str]]] = {}
+    roles_learned: Dict[str, str] = {}
+
+    for did, chosen in selected.items():
+        if not ctx.registry.device_exists(did):
+            skipped.append({"device_id": did, "facet": "", "path": "",
+                            "reason": "device not found"})
+            continue
+        device_info = ctx.registry.get_device_info(did)
+        device_info["device_id"] = did
+        facets_by_name = {f.name: f for f in get_facets_for_device(device_info)}
+        role = fr.normalize_role(req.role or (demo.roles or {}).get(did))
+
+        report = await ctx.drift_detector.check_drift(did)
+        by_key = {(f.facet, f.path): f for f in report.fields}
+        for facet_name, path in sorted(chosen):
+            field = by_key.get((facet_name, path))
+            if field is None:
+                skipped.append({"device_id": did, "facet": facet_name,
+                                "path": path, "reason": "not-drifted"})
+                continue
+            ok, reason, warns = fr.validate_assignment(
+                field, facets_by_name.get(facet_name), req.mode, device_info)
+            warnings.extend(warns)
+            if not ok:
+                skipped.append({"device_id": did, "facet": facet_name,
+                                "path": path, "reason": reason})
+                continue
+            entries_by_role.setdefault(role, []).append(
+                {"facet": facet_name, "path": path, "value": field.actual})
+            added.append({"device_id": did, "role": role, "facet": facet_name,
+                          "path": path, "value": field.actual,
+                          "canonical_key": field.canonical_key})
+            roles_learned[did] = role
+
+    commit_sha = None
+    for role, entries in entries_by_role.items():
+        sha = fr.add_entries(ctx.git_repo, demo, role, entries, mode=req.mode)
+        commit_sha = sha or commit_sha
+
+    # Capturing from a device implicitly binds it: record the role, and put the
+    # device in scope when the demo isn't tag-scoped.
+    if roles_learned:
+        demo.roles = {**(demo.roles or {}), **roles_learned}
+        if not demo.tag:
+            missing = [d for d in roles_learned if d not in (demo.device_ids or [])]
+            demo.device_ids = list(demo.device_ids or []) + missing
+        ctx.demo_store.update(demo)
+
+    record_event(principal, "demo.fragment_assign", resource=f"demo:{demo_id}",
+                 details={"added": len(added), "skipped": len(skipped),
+                          "mode": req.mode, "commit": commit_sha})
+    return {"success": True, "added": added, "skipped": skipped,
+            "warnings": warnings, "commit_sha": commit_sha,
+            "fragments": _fragments_view(ctx, demo)}
+
+
+@router.post("/api/demos/{demo_id}/fragment/remove")
+async def remove_fragment_entries(demo_id: str, req: FragmentRemoveRequest,
+                                  request: Request,
+                                  ctx: AppContext = Depends(get_context)):
+    from admz.audit import record_event
+    from admz.demos import fragments as fr
+
+    principal = await _principal(request)
+    demo = _get(ctx, demo_id)
+    sha = fr.remove_entries(
+        ctx.git_repo, demo, req.role,
+        [{"facet": e.facet, "path": e.path} for e in req.entries])
+    record_event(principal, "demo.fragment_remove", resource=f"demo:{demo_id}",
+                 details={"role": req.role, "entries": len(req.entries),
+                          "commit": sha})
+    return {"success": True, "commit_sha": sha,
+            "fragments": _fragments_view(ctx, demo)}
 
 
 # ── Prepare / End ────────────────────────────────────────────────────────────
@@ -256,5 +406,6 @@ async def demo_detail_page(demo_id: str, request: Request,
     return templates.TemplateResponse(
         "demo_detail.html",
         {"request": request, "title": view["name"] or "Demo", "demo": view,
-         "holders": holders, "all_devices": devices, "tags": tags},
+         "holders": holders, "all_devices": devices, "tags": tags,
+         "fragments": _fragments_view(ctx, demo)},
     )

@@ -226,3 +226,113 @@ class TestPages:
 
     def test_detail_404(self, client):
         assert client.get("/demos/nope").status_code == 404
+
+
+class TestFragmentCapture:
+    """ADR-0047 slice 1 — 'Assign to demo' from the drift diff."""
+
+    @pytest.fixture
+    def fake_drift(self, monkeypatch):
+        """check_drift returns a synthetic report: one assignable param field,
+        one not-in-baseline field, and one snapshot-only-facet field."""
+        from admz.snapshot.models import DriftField, DriftReport
+
+        async def _fake(self, device_id, baseline_sha=None, family="vapix"):
+            return DriftReport(device_id=device_id, has_drift=True, fields=[
+                DriftField(facet="other", path="Motion.M0.Enabled",
+                           expected="no", actual="yes",
+                           canonical_key="root.Motion.M0.Enabled"),
+                DriftField(facet="other", path="Brand.New.Key",
+                           expected="<missing>", actual="x",
+                           canonical_key="root.Brand.New.Key"),
+                DriftField(facet="action_rules", path="rules.0.name",
+                           expected="a", actual="b",
+                           canonical_key="action_rules:rules.0.name"),
+            ])
+
+        from admz.snapshot.drift import DriftDetector
+        monkeypatch.setattr(DriftDetector, "check_drift", _fake)
+
+    def test_assign_captures_live_values_and_skips_unwritable(
+            self, client, registry, fake_drift):
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = _mk(client, name="Frag demo", tag="speakers")
+        res = client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [
+                {"device_id": "cam-1", "facet": "other", "path": "Motion.M0.Enabled"},
+                {"device_id": "cam-1", "facet": "other", "path": "Brand.New.Key"},
+                {"device_id": "cam-1", "facet": "action_rules", "path": "rules.0.name"},
+                {"device_id": "cam-1", "facet": "other", "path": "Never.Drifted"},
+            ],
+        })
+        assert res.status_code == 200, res.text
+        data = res.json()
+        # The one writable, in-baseline, actually-drifted field made it in —
+        # with the LIVE value (the operator configured the device for the demo).
+        assert [a["path"] for a in data["added"]] == ["Motion.M0.Enabled"]
+        assert data["added"][0]["value"] == "yes"
+        reasons = {s["path"]: s["reason"] for s in data["skipped"]}
+        assert reasons["Brand.New.Key"] == "not-in-baseline"
+        assert reasons["rules.0.name"] == "read-only"
+        assert reasons["Never.Drifted"] == "not-drifted"
+        assert data["commit_sha"]
+        # Fragment is now visible on the demo.
+        frag = data["fragments"]["default"]["facets"]["other"]["set"]
+        assert frag["Motion.M0.Enabled"] == "yes"
+
+    def test_assign_binds_device_and_learns_role(self, client, registry, fake_drift):
+        _add_device(registry, "cam-1")
+        demo = _mk(client, name="Bind demo", device_ids=[])
+        res = client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [{"device_id": "cam-1", "facet": "other",
+                        "path": "Motion.M0.Enabled"}],
+            "role": "Detector Cam",
+        })
+        assert res.status_code == 200, res.text
+        got = client.get(f"/api/demos/{demo['id']}").json()["demo"]
+        assert got["roles"]["cam-1"] == "detector-cam"   # normalized
+        assert "cam-1" in got["device_ids"]              # pulled into scope
+        assert "detector-cam" in got["fragments"]
+
+    def test_assign_requires_fields(self, client):
+        demo = _mk(client, name="Empty")
+        assert client.post(f"/api/demos/{demo['id']}/fragment",
+                           json={"fields": []}).status_code == 400
+
+    def test_remove_entry_and_empty_state(self, client, registry, fake_drift):
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = _mk(client, name="Rm demo", tag="speakers")
+        client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [{"device_id": "cam-1", "facet": "other",
+                        "path": "Motion.M0.Enabled"}]})
+        res = client.post(f"/api/demos/{demo['id']}/fragment/remove", json={
+            "role": "default",
+            "entries": [{"facet": "other", "path": "Motion.M0.Enabled"}]})
+        assert res.status_code == 200
+        assert res.json()["fragments"] == {}
+
+    def test_delete_demo_cleans_up_fragments(self, client, registry, fake_drift):
+        import admz.api.main as main_mod
+        from admz.demos import fragments as fr
+
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = _mk(client, name="Del demo", tag="speakers")
+        client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [{"device_id": "cam-1", "facet": "other",
+                        "path": "Motion.M0.Enabled"}]})
+        from admz.api.context import get_context
+        git = get_context().git_repo
+        assert fr.load_all_fragments(git, demo["id"]) != {}
+        assert client.delete(f"/api/demos/{demo['id']}").status_code == 200
+        assert fr.load_all_fragments(git, demo["id"]) == {}
+
+    def test_detail_page_shows_owned_config(self, client, registry, fake_drift):
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = _mk(client, name="Page demo", tag="speakers")
+        client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [{"device_id": "cam-1", "facet": "other",
+                        "path": "Motion.M0.Enabled"}]})
+        res = client.get(f"/demos/{demo['id']}")
+        assert res.status_code == 200
+        assert "Owned config" in res.text
+        assert "Motion.M0.Enabled" in res.text
