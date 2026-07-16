@@ -51,6 +51,28 @@ DRIFT_SEM = {
     "no-baseline": ("grey", "No baseline"),
 }
 
+# Demo readiness → semantic key + label (ADR-0046). "Not loaded" is amber, not
+# red: it's the expected resting state of a sidelined demo, and the fix is one
+# button (Prepare), not an investigation.
+DEMO_SEM = {
+    "ready": ("green", "Ready"),
+    "not_loaded": ("amber", "Not loaded"),
+    "blocked": ("red", "Blocked"),
+    "not_ready": ("red", "Not ready"),
+    "empty": ("grey", "No devices"),
+}
+
+# Per-device config verdict → semantic key + label.
+DEMO_CONFIG_SEM = {
+    "ready": ("green", "Config OK"),
+    "not_loaded": ("amber", "Not loaded"),
+    "drifted": ("red", "Drifted"),
+    "on_loan": ("red", "On loan"),
+    "conflict": ("red", "Conflict"),
+    "no_baseline": ("grey", "No baseline"),
+    "unchecked": ("grey", "Not checked"),
+}
+
 
 def _registry():
     try:
@@ -79,6 +101,21 @@ def _module_registry():
             return ModuleRegistry().discover()
         except Exception:
             return None
+
+
+def _demo_count() -> Optional[int]:
+    """How many demos are defined — the Demos nav badge (ADR-0046).
+
+    Cheap (one indexed read) and defensive: the nav must render on a backend that
+    has never seen a demo. None hides the badge rather than showing a bare 0.
+    """
+    try:
+        from admz.demos.store import get_store
+
+        n = len(get_store().list())
+        return n or None
+    except Exception:
+        return None
 
 
 def _initials(name: str) -> str:
@@ -267,6 +304,10 @@ def _assemble_nav_sections(nav: Dict[str, Any]) -> List[Dict[str, Any]]:
         "items": [
             {"key": "console", "label": "Console", "href": "/chat",
              "icon": "sparkles", "accent": True, "badge": "⌘K"},
+            # ADR-0046: the job view sits above the inventory view — in an
+            # experience center the unit of work is the demo, not the device.
+            {"key": "demos", "label": "Demos", "href": "/demos",
+             "icon": "presentation", "badge": _demo_count()},
             {"key": "fleet", "label": "Devices", "href": "/devices",
              "icon": "layout-grid", "badge": site_count, "children": device_children},
             {"key": "tasks", "label": "Tasks", "href": "/tasks", "icon": "list-checks", "badge": None},
@@ -333,6 +374,22 @@ def drift_label(drift: Optional[str]) -> str:
     return DRIFT_SEM.get((drift or "").lower(), ("grey", "No baseline"))[1]
 
 
+def demo_sem(state: Optional[str]) -> str:
+    return DEMO_SEM.get((state or "").lower(), ("grey", "Unknown"))[0]
+
+
+def demo_label(state: Optional[str]) -> str:
+    return DEMO_SEM.get((state or "").lower(), ("grey", "Unknown"))[1]
+
+
+def demo_config_sem(state: Optional[str]) -> str:
+    return DEMO_CONFIG_SEM.get((state or "").lower(), ("grey", "Unknown"))[0]
+
+
+def demo_config_label(state: Optional[str]) -> str:
+    return DEMO_CONFIG_SEM.get((state or "").lower(), ("grey", "Unknown"))[1]
+
+
 def initials(name: str) -> str:
     return _initials(name)
 
@@ -347,4 +404,8 @@ def configure(templates) -> None:
     env.filters["risk_short"] = risk_short
     env.filters["drift_sem"] = drift_sem
     env.filters["drift_label"] = drift_label
+    env.filters["demo_sem"] = demo_sem
+    env.filters["demo_label"] = demo_label
+    env.filters["demo_config_sem"] = demo_config_sem
+    env.filters["demo_config_label"] = demo_config_label
     env.filters["initials"] = initials

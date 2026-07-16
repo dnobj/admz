@@ -63,8 +63,10 @@ class TestNavSections:
         core = _core(nav)
         assert core["id"] == "core"
         assert core["title"] == ""  # no header / divider above Core
+        # Demos sits above Devices on purpose (ADR-0046): the job view leads,
+        # the inventory view supports it.
         assert [it["key"] for it in core["items"]] == [
-            "console", "fleet", "tasks", "activity", "auditlog", "settings",
+            "console", "demos", "fleet", "tasks", "activity", "auditlog", "settings",
         ]
 
     def test_console_is_accent(self, nav_registry):

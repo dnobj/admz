@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block nav_active %}demos{% endblock %}
+{% block title %}Demos{% endblock %}
+{% block crumb_tail %}Demos{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="pt">
+    <h1 class="page-title">Demos</h1>
+    <p class="page-sub">What you show a customer: the devices, the config that makes it work, the signals that prove it's running, and what you say. Each card answers one question — <strong>is it ready?</strong></p>
+  </div>
+  <div class="page-actions">
+    <button id="new-demo-btn" class="btn primary" type="button"><i data-lucide="plus"></i> New demo</button>
+  </div>
+</div>
+
+<div class="note-band" style="margin-bottom:16px">
+  <i data-lucide="shield"></i>
+  <span>Readiness is read from the last known config + health — it never touches a device. Run <a href="/devices">Check drift</a> for a live answer.</span>
+</div>
+
+{% if demos %}
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px">
+  {% for d in demos %}
+  {% set r = d.readiness %}
+  <a class="card demo-card" href="/demos/{{ d.id }}" style="display:block;text-decoration:none;color:inherit">
+    <div class="card-header" style="justify-content:space-between">
+      <span class="title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ d.name }}</span>
+      <span class="badge {{ r.state | demo_sem }}">
+        <span class="dot sem-{{ r.state | demo_sem }}"></span>{{ r.state | demo_label }}
+      </span>
+    </div>
+    <div class="card-body">
+      <p class="page-sub" style="margin:0 0 12px;min-height:34px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">
+        {{ d.narrative or "No narrative yet." }}
+      </p>
+
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        {% if d.scenario_name %}
+          <span class="badge blue"><i data-lucide="git-branch" style="width:11px;height:11px"></i>{{ d.scenario_name }}</span>
+        {% else %}
+          <span class="badge grey"><i data-lucide="check-circle" style="width:11px;height:11px"></i>baseline</span>
+        {% endif %}
+        {% if d.tag %}<span class="tag">#{{ d.tag }}</span>{% endif %}
+        <span class="page-sub" style="margin:0;font-size:12px">{{ r.devices | length }} device{{ '' if r.devices | length == 1 else 's' }}</span>
+      </div>
+
+      {% if r.blockers %}
+      <div style="display:flex;flex-direction:column;gap:4px">
+        {% for b in r.blockers[:2] %}
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted)">
+          <span class="dot sem-{{ r.state | demo_sem }}" style="width:5px;height:5px;border-radius:9px;flex:0 0 auto"></span>{{ b }}
+        </div>
+        {% endfor %}
+        {% if r.blockers | length > 2 %}
+        <div class="page-sub" style="margin:0;font-size:12px">+{{ r.blockers | length - 2 }} more</div>
+        {% endif %}
+      </div>
+      {% else %}
+      <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--green-fg)">
+        <i data-lucide="check" style="width:13px;height:13px"></i> Everything checks out
+      </div>
+      {% endif %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty-state" id="demos-empty">
+  <i data-lucide="presentation"></i>
+  <div style="margin-top:10px">No demos yet. <a href="#" id="empty-new-link">Define one</a> — pick the devices, say what it shows, and this page tells you whether it's ready.</div>
+</div>
+{% endif %}
+
+<!-- New-demo modal -->
+<div class="modal-overlay hidden" id="demo-modal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 style="margin:0;font-size:17px">New demo</h2>
+      <button class="modal-x" type="button" id="demo-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="fld">
+        <label for="f-name">Name</label>
+        <input type="text" id="f-name" placeholder="e.g. Loitering detection" autocomplete="off">
+      </div>
+      <div class="fld">
+        <label for="f-narrative">Narrative</label>
+        <textarea id="f-narrative" rows="3" placeholder="What you say while showing it — the story the customer hears."></textarea>
+        <div class="hint">Front and centre on the demo page. Roles and signals are added there too.</div>
+      </div>
+      <div class="fld">
+        <label>Devices</label>
+        <div class="radio-row">
+          <label class="rb"><input type="radio" name="scope" value="tag" checked> Tag</label>
+          <select id="f-tag" style="flex:1">
+            {% for t in tags %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="radio-row" style="margin-top:6px">
+          <label class="rb"><input type="radio" name="scope" value="list"> Pick devices</label>
+          <span class="hint" style="flex:1">Choose them on the demo page after creating.</span>
+        </div>
+        <div class="hint">A tag-scoped demo picks up newly-tagged devices automatically.</div>
+      </div>
+      <div class="fld">
+        <label>Config</label>
+        <div class="radio-row">
+          <label class="rb"><input type="radio" name="cfg" value="baseline" checked> Baseline</label>
+          <span class="hint" style="flex:1">The device's normal config already runs this demo.</span>
+        </div>
+        <div class="radio-row" style="margin-top:6px">
+          <label class="rb"><input type="radio" name="cfg" value="scenario"> Scenario</label>
+          <input type="text" id="f-scenario" placeholder="scenario name" disabled style="flex:1">
+        </div>
+        <div class="hint">A scenario is for a <em>sidelined</em> demo — one you load when needed and snap back from. It takes exclusive control of its devices while loaded.</div>
+      </div>
+      <div id="demo-error" class="err hidden"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" type="button" id="demo-cancel">Cancel</button>
+      <button class="btn primary" type="button" id="demo-create"><i data-lucide="check"></i> Create demo</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const modal = document.getElementById('demo-modal');
+  const err = document.getElementById('demo-error');
+  const scenarioInput = document.getElementById('f-scenario');
+  const tagSelect = document.getElementById('f-tag');
+
+  const open = (e) => { if (e) e.preventDefault(); modal.classList.remove('hidden'); document.getElementById('f-name').focus(); };
+  const close = () => { modal.classList.add('hidden'); err.classList.add('hidden'); };
+
+  document.getElementById('new-demo-btn')?.addEventListener('click', open);
+  document.getElementById('empty-new-link')?.addEventListener('click', open);
+  document.getElementById('demo-close').addEventListener('click', close);
+  document.getElementById('demo-cancel').addEventListener('click', close);
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+
+  // Only the selected radio's input is live — keeps the payload unambiguous.
+  document.querySelectorAll('input[name="cfg"]').forEach(r => r.addEventListener('change', () => {
+    scenarioInput.disabled = document.querySelector('input[name="cfg"]:checked').value !== 'scenario';
+    if (!scenarioInput.disabled) scenarioInput.focus();
+  }));
+  document.querySelectorAll('input[name="scope"]').forEach(r => r.addEventListener('change', () => {
+    tagSelect.disabled = document.querySelector('input[name="scope"]:checked').value !== 'tag';
+  }));
+
+  document.getElementById('demo-create').addEventListener('click', async () => {
+    const name = document.getElementById('f-name').value.trim();
+    if (!name) { err.textContent = 'Name is required.'; err.classList.remove('hidden'); return; }
+    const scope = document.querySelector('input[name="scope"]:checked').value;
+    const cfg = document.querySelector('input[name="cfg"]:checked').value;
+    const scenario = scenarioInput.value.trim();
+    if (cfg === 'scenario' && !scenario) { err.textContent = 'Scenario name is required.'; err.classList.remove('hidden'); return; }
+
+    const body = {
+      name,
+      narrative: document.getElementById('f-narrative').value.trim(),
+      tag: scope === 'tag' ? tagSelect.value : null,
+      device_ids: [],
+      config_source: cfg === 'scenario' ? 'scenario:' + scenario : 'baseline',
+    };
+    try {
+      const res = await fetch('/api/demos', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Create failed');
+      window.location.href = '/demos/' + data.demo.id;
+    } catch (e) {
+      err.textContent = e.message; err.classList.remove('hidden');
+    }
+  });
+})();
+</script>
+{% endblock %}

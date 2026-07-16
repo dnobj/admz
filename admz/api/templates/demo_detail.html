@@ -1,0 +1,298 @@
+{% extends "base.html" %}
+{% block nav_active %}demos{% endblock %}
+{% block title %}{{ demo.name }}{% endblock %}
+{% block crumb_tail %}<a href="/demos">Demos</a>{% endblock %}
+
+{% block content %}
+{% set r = demo.readiness %}
+<div class="page-header">
+  <div class="pt">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <h1 class="page-title">{{ demo.name }}</h1>
+      <span class="badge {{ r.state | demo_sem }}">
+        <span class="dot sem-{{ r.state | demo_sem }}"></span>{{ r.state | demo_label }}
+      </span>
+    </div>
+    <p class="page-sub">
+      {% if demo.scenario_name %}
+        Sidelined demo — loads scenario <strong>{{ demo.scenario_name }}</strong>, then snaps back to baseline.
+      {% else %}
+        Baseline demo — the devices' normal config already runs it. Nothing to load.
+      {% endif %}
+      {% if demo.tag %} Scoped to <span class="tag">#{{ demo.tag }}</span>.{% endif %}
+    </p>
+  </div>
+  <div class="page-actions">
+    {% if demo.scenario_name %}
+    <button class="btn" type="button" id="end-btn"><i data-lucide="rotate-ccw"></i> End demo</button>
+    <button class="btn primary" type="button" id="prepare-btn"><i data-lucide="play"></i> Prepare</button>
+    {% else %}
+    <a class="btn" href="/devices?filter=drifted"><i data-lucide="git-compare"></i> Review drift</a>
+    {% endif %}
+    <button class="btn ghost" type="button" id="delete-btn" title="Delete demo"><i data-lucide="trash-2"></i></button>
+  </div>
+</div>
+
+{% if r.blockers %}
+<div class="note-band" style="margin-bottom:16px;border-color:var(--{{ r.state | demo_sem }}-bd);background:var(--{{ r.state | demo_sem }}-bg)">
+  <i data-lucide="alert-triangle"></i>
+  <span>
+    {% for b in r.blockers %}{{ b }}{{ "; " if not loop.last }}{% endfor %}.
+    {% for did, hs in holders.items() %}{% if hs %}
+      <br>{{ did }} is held by
+      {% for h in hs %}<a href="/demos/{{ h.id }}">{{ h.name }}</a>{{ ", " if not loop.last }}{% endfor %}
+      — end that demo to reclaim it.
+    {% endif %}{% endfor %}
+  </span>
+</div>
+{% endif %}
+
+<div style="display:grid;grid-template-columns:1.15fr 1fr;gap:16px;align-items:start">
+
+  <!-- Narrative — it's what you SAY, so it leads. -->
+  <div class="card">
+    <div class="card-header" style="justify-content:space-between">
+      <span style="display:flex;align-items:center;gap:10px"><i data-lucide="book-open"></i><span class="title">Narrative</span></span>
+      <button class="btn sm ghost" type="button" id="edit-narrative"><i data-lucide="pencil"></i> Edit</button>
+    </div>
+    <div class="card-body">
+      <div id="narrative-view" style="font-size:13.5px;line-height:1.75;color:var(--text);white-space:pre-wrap">{{ demo.narrative or "No narrative yet — say what this demo shows and what you'll walk the customer through." }}</div>
+      <div id="narrative-edit" class="hidden">
+        <textarea id="narrative-text" rows="8" style="width:100%">{{ demo.narrative }}</textarea>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+          <button class="btn sm ghost" type="button" id="narrative-cancel">Cancel</button>
+          <button class="btn sm primary" type="button" id="narrative-save"><i data-lucide="check"></i> Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Readiness checklist — one row per device, each deep-linking to its fix. -->
+  <div class="card">
+    <div class="card-header"><i data-lucide="list-checks"></i><span class="title">Readiness</span></div>
+    <div class="card-body flush">
+      {% if r.devices %}
+      <table class="data-table" style="border:0;border-radius:0">
+        <thead><tr><th>Device</th><th>Role</th><th>Health</th><th>Config</th></tr></thead>
+        <tbody>
+          {% for row in r.devices %}
+          <tr>
+            <td><a href="/device/{{ row.device_id }}">{{ row.name }}</a>
+              {% if row.model %}<div class="page-sub" style="margin:0;font-size:11.5px">{{ row.model }}</div>{% endif %}
+            </td>
+            <td>
+              <span class="tag role-chip" data-device="{{ row.device_id }}" role="button" tabindex="0"
+                    title="Click to set this device's role">{{ row.role or "—" }}</span>
+            </td>
+            <td>
+              <span class="health-cell">
+                <span class="status-dot sem-{{ row.health | health_sem }}"><span class="halo"></span><span class="core"></span></span>
+                {{ row.health | health_label }}
+              </span>
+            </td>
+            <td>
+              <span class="badge {{ row.config.state | demo_config_sem }}">
+                <span class="dot sem-{{ row.config.state | demo_config_sem }}"></span>{{ row.config.state | demo_config_label }}
+              </span>
+              {% if row.config.count %}<div class="page-sub" style="margin:0;font-size:11.5px">{{ row.config.count }} field(s)</div>{% endif %}
+              {% if row.config.scenario_name %}<div class="page-sub" style="margin:0;font-size:11.5px">{{ row.config.scenario_name }}</div>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty-state" style="border:0">
+        <i data-lucide="server-off"></i>
+        <div style="margin-top:10px">No devices resolved.
+          {% if demo.tag %}Nothing carries <span class="tag">#{{ demo.tag }}</span> yet.{% else %}<a href="#" id="pick-devices">Pick some devices</a>.{% endif %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Signals — the evidence it's actually running. -->
+  <div class="card" style="grid-column:1 / -1">
+    <div class="card-header" style="justify-content:space-between">
+      <span style="display:flex;align-items:center;gap:10px"><i data-lucide="radio"></i><span class="title">Signals</span></span>
+      <button class="btn sm ghost" type="button" id="add-signal"><i data-lucide="plus"></i> Add signal</button>
+    </div>
+    <div class="card-body">
+      <p class="page-sub" style="margin:0 0 12px">
+        The events that prove this demo is happening, from the <a href="/activity">live feed</a> (last hour).
+        Each is matched on its own — proving the full <em>sequence</em> ran is not yet built.
+      </p>
+      {% if demo.signal_status %}
+      <table class="data-table">
+        <thead><tr><th>Signal</th><th>From</th><th>Seen</th><th>Last</th><th></th></tr></thead>
+        <tbody>
+          {% for s in demo.signal_status %}
+          <tr>
+            <td>{{ s.label }}</td>
+            <td>{% if s.role %}<span class="tag">{{ s.role }}</span>{% elif s.device_id %}{{ s.device_id }}{% else %}any device{% endif %}</td>
+            <td>
+              {% if s.seen %}
+                <span class="badge green"><span class="dot sem-green"></span>{{ s.count }}×</span>
+              {% else %}
+                <span class="badge grey"><span class="dot sem-grey"></span>not seen</span>
+              {% endif %}
+            </td>
+            <td class="mono" data-ts="{{ s.last_ms or '' }}">—</td>
+            <td style="text-align:right"><button class="btn sm ghost del-signal" data-i="{{ loop.index0 }}" title="Remove"><i data-lucide="x"></i></button></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="page-sub" style="margin:0">No signals defined. Add one to turn "it looks configured" into "I can see it firing".</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- Signal modal -->
+<div class="modal-overlay hidden" id="signal-modal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 style="margin:0;font-size:17px">Add signal</h2>
+      <button class="modal-x" type="button" id="sig-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="fld">
+        <label for="s-label">Label</label>
+        <input type="text" id="s-label" placeholder="e.g. Speaker announces" autocomplete="off">
+      </div>
+      <div class="fld">
+        <label for="s-filter">Event type contains</label>
+        <input type="text" id="s-filter" placeholder="e.g. MotionAlarm, IO/Port, PTZ" autocomplete="off">
+        <div class="hint">Matched against the event topic — see the <a href="/activity">Activity feed</a> for real ones.</div>
+      </div>
+      <div class="fld">
+        <label for="s-role">From role (optional)</label>
+        <input type="text" id="s-role" placeholder="e.g. detector" autocomplete="off">
+        <div class="hint">Blank = any device in the demo.</div>
+      </div>
+      <div id="sig-error" class="err hidden"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" type="button" id="sig-cancel">Cancel</button>
+      <button class="btn primary" type="button" id="sig-save"><i data-lucide="check"></i> Add signal</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const DEMO_ID = {{ demo.id | tojson }};
+  const SIGNALS = {{ demo.signals | tojson }};
+  const ROLES = {{ demo.roles | tojson }};
+
+  const patch = async (body) => {
+    const res = await fetch('/api/demos/' + DEMO_ID, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Save failed');
+    return data;
+  };
+
+  // ── Narrative ──
+  const nView = document.getElementById('narrative-view');
+  const nEdit = document.getElementById('narrative-edit');
+  document.getElementById('edit-narrative').addEventListener('click', () => {
+    nView.classList.add('hidden'); nEdit.classList.remove('hidden');
+    document.getElementById('narrative-text').focus();
+  });
+  document.getElementById('narrative-cancel').addEventListener('click', () => {
+    nEdit.classList.add('hidden'); nView.classList.remove('hidden');
+  });
+  document.getElementById('narrative-save').addEventListener('click', async () => {
+    try {
+      await patch({ narrative: document.getElementById('narrative-text').value });
+      window.location.reload();
+    } catch (e) { alert(e.message); }
+  });
+
+  // ── Roles (click a chip, name the part this device plays) ──
+  document.querySelectorAll('.role-chip').forEach(chip => {
+    chip.addEventListener('click', async () => {
+      const did = chip.dataset.device;
+      const next = prompt('Role for this device (e.g. detector, responder):', ROLES[did] || '');
+      if (next === null) return;
+      const roles = Object.assign({}, ROLES);
+      if (next.trim()) roles[did] = next.trim(); else delete roles[did];
+      try { await patch({ roles }); window.location.reload(); } catch (e) { alert(e.message); }
+    });
+  });
+
+  // ── Signals ──
+  const sigModal = document.getElementById('signal-modal');
+  const sigErr = document.getElementById('sig-error');
+  const closeSig = () => { sigModal.classList.add('hidden'); sigErr.classList.add('hidden'); };
+  document.getElementById('add-signal').addEventListener('click', () => sigModal.classList.remove('hidden'));
+  document.getElementById('sig-close').addEventListener('click', closeSig);
+  document.getElementById('sig-cancel').addEventListener('click', closeSig);
+  sigModal.addEventListener('click', (e) => { if (e.target === sigModal) closeSig(); });
+
+  document.getElementById('sig-save').addEventListener('click', async () => {
+    const filter = document.getElementById('s-filter').value.trim();
+    if (!filter) { sigErr.textContent = 'Event type is required.'; sigErr.classList.remove('hidden'); return; }
+    const next = SIGNALS.concat([{
+      label: document.getElementById('s-label').value.trim() || filter,
+      category: filter,
+      role: document.getElementById('s-role').value.trim() || undefined,
+    }]);
+    try { await patch({ signals: next }); window.location.reload(); }
+    catch (e) { sigErr.textContent = e.message; sigErr.classList.remove('hidden'); }
+  });
+
+  document.querySelectorAll('.del-signal').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const next = SIGNALS.filter((_, i) => i !== parseInt(btn.dataset.i, 10));
+      try { await patch({ signals: next }); window.location.reload(); } catch (e) { alert(e.message); }
+    });
+  });
+
+  // ── Relative "last seen" ──
+  document.querySelectorAll('[data-ts]').forEach(el => {
+    const ms = parseInt(el.dataset.ts, 10);
+    if (!ms) { el.textContent = '—'; return; }
+    const secs = Math.max(0, Math.round((Date.now() - ms) / 1000));
+    el.textContent = secs < 60 ? secs + 's ago'
+      : secs < 3600 ? Math.round(secs / 60) + 'm ago'
+      : Math.round(secs / 3600) + 'h ago';
+  });
+
+  // ── Prepare / End (sidelined demos only) ──
+  // Both hit the shared gated scenario core, so a confirm_url means the approval
+  // widget is waiting — same flow as every other config push.
+  const run = async (btn, path, confirmText) => {
+    if (confirmText && !confirm(confirmText)) return;
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/demos/' + DEMO_ID + path, { method: 'POST' });
+      const d = await res.json();
+      if (res.ok && d.confirm_url) { window.location = d.confirm_url; return; }
+      if (res.ok && (d.success || d.applied)) { window.location.reload(); return; }
+      alert(d.detail || d.message || 'Failed');
+    } catch (e) { alert('Request failed.'); }
+    btn.disabled = false;
+  };
+
+  const prepBtn = document.getElementById('prepare-btn');
+  if (prepBtn) prepBtn.addEventListener('click', () => run(prepBtn, '/prepare', null));
+  const endBtn = document.getElementById('end-btn');
+  if (endBtn) endBtn.addEventListener('click', () =>
+    run(endBtn, '/end', 'Return this demo’s devices to their baseline config?'));
+
+  // ── Delete ──
+  document.getElementById('delete-btn').addEventListener('click', async () => {
+    if (!confirm('Delete this demo? The devices and their config are untouched.')) return;
+    const res = await fetch('/api/demos/' + DEMO_ID, { method: 'DELETE' });
+    if (res.ok) window.location.href = '/demos'; else alert('Delete failed');
+  });
+})();
+</script>
+{% endblock %}

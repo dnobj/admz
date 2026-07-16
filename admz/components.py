@@ -44,6 +44,7 @@ from admz.events.acs_firebird_ingest import AcsFirebirdPoller
 from admz.events.detections import DetectionStore
 from admz.events.evaluator import DetectionEvaluator
 from admz.events.watched import WatchedEventStore
+from admz.demos.store import DemoStore
 
 
 @dataclass
@@ -75,6 +76,9 @@ class Components:
     # them (the supervisor's on_event callback).
     detection_store: DetectionStore
     detection_evaluator: DetectionEvaluator
+    # ADR-0046: demos — the experience-center unit of work. A pure store; its
+    # readiness is computed on read from the drift/health caches.
+    demo_store: DemoStore
 
 
 def _default_catalog_path() -> str:
@@ -393,6 +397,9 @@ def build_components(
     # Watched events: a passive library of bookmarked event patterns (no worker,
     # no evaluator, no ingest dependency — it just feeds the detection builder).
     watched_event_store = WatchedEventStore(str(_events_db_path()))
+    # Demos live in the control-plane DB (like tasks) — they reference devices
+    # and scenarios, not the event log.
+    demo_store = DemoStore()
 
     return Components(
         registry=registry,
@@ -414,4 +421,5 @@ def build_components(
         watched_event_store=watched_event_store,
         detection_store=detection_store,
         detection_evaluator=detection_evaluator,
+        demo_store=demo_store,
     )

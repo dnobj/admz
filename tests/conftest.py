@@ -24,6 +24,13 @@ import pytest
 # the var and mocks the probes to exercise the flow itself.
 os.environ.setdefault("ADMZ_DISABLE_ONBOARDING_PROBES", "1")
 
+# Same class of leak on the push path: the GitHub App connection lives in the
+# machine's secret store (ADR-0045), so on a developer's *connected* box the
+# git-push tests would mint a real installation token over the network and push
+# with auth args a clean box never sees. Pin them to the unauthenticated path.
+# tests/test_github_app*.py exercise the token machinery directly instead.
+os.environ.setdefault("ADMZ_DISABLE_GITHUB_APP_PUSH", "1")
+
 
 @pytest.fixture(autouse=True)
 def _reset_shared_inmemory_state():

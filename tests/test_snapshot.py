@@ -876,10 +876,9 @@ class TestGitSubprocessHardening:
 
         class _Probe(real_popen):
             def __init__(self, args, *a, **kw):
-                self._is_push = (
-                    isinstance(args, (list, tuple))
-                    and len(args) > 1 and args[1] == "push"
-                )
+                # Match anywhere in argv: an authenticated push prepends
+                # `-c credential.helper=`, so `push` isn't always args[1].
+                self._is_push = isinstance(args, (list, tuple)) and "push" in args
                 super().__init__(args, *a, **kw)
 
             def communicate(self, timeout=None):

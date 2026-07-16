@@ -102,6 +102,10 @@ class AppContext:
     def detection_evaluator(self):
         return self._components.detection_evaluator
 
+    @property
+    def demo_store(self):
+        return self._components.demo_store
+
 
 _ctx: Optional[AppContext] = None
 
