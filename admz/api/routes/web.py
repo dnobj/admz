@@ -598,6 +598,11 @@ async def settings_overview(request: Request):
         USER_SETTING_KEY, _GLOBAL_IGNORE_PATTERNS, _scoped_rules,
     )
     from admz.modules.acs_pro.config import acs_config
+    try:
+        from admz.github_app import secrets as _gh_secrets
+        github_status = _gh_secrets.status()
+    except Exception:  # noqa: BLE001 - the card just shows "not connected"
+        github_status = {"connected": False}
     return templates.TemplateResponse(
         "settings.html",
         {
@@ -607,6 +612,9 @@ async def settings_overview(request: Request):
             "has_password": has_password,
             "get_creds_enabled": get_creds_enabled,
             "acs": acs_config(),
+            "github": github_status,
+            "github_connected_flash": request.query_params.get("github_connected") == "1",
+            "github_error_flash": request.query_params.get("github_error"),
             "all_settings": fleet_settings.list_all(),
             "ignore_patterns_text": fleet_settings.get(USER_SETTING_KEY) or "",
             "ignore_globals": list(_GLOBAL_IGNORE_PATTERNS),

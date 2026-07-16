@@ -30,6 +30,7 @@ from admz.api.routes import (
     watched_events as watched_events_route,
     devices,
     discovery,
+    github_app as github_app_route,
     drift as drift_route,
     events as events_route,
     health as health_route,
@@ -275,6 +276,8 @@ app.include_router(confirm.router, tags=["confirm"])
 app.include_router(chat_route.router, tags=["chat"])
 app.include_router(voice_route.router, tags=["voice"])
 app.include_router(survey_route.router, tags=["survey"])
+# GitHub App "Connect GitHub" flow — paths already include /api/github.
+app.include_router(github_app_route.router, tags=["github"])
 app.include_router(web.router, tags=["web"])
 
 # ADR-0039/0040: platform-module routers (e.g. ACS Pro's /api/acs/* + /acs).
