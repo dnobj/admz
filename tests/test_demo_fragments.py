@@ -246,3 +246,216 @@ class TestValidateAssignment:
 
     def test_clean_value_no_hits(self):
         assert fr.device_local_hits("1920x1080", _DEV) == []
+
+
+# ---------------------------------------------------------------------------
+# Attribution (slice 2): overlay + buckets in the REAL drift detector
+# ---------------------------------------------------------------------------
+
+from admz.demos.store import Demo
+from admz.snapshot.drift import DriftDetector
+from admz.snapshot.drift_alerts import DriftAlertStore, _attributed_counts
+
+
+class _FakeDemoStore:
+    def __init__(self, demos):
+        self._demos = demos
+
+    def list(self):
+        return list(self._demos)
+
+
+class _FakeRegistry:
+    def __init__(self, devices):
+        self.devices = devices
+
+    def get_device_info(self, device_id):
+        return dict(self.devices.get(device_id, {}))
+
+    def device_exists(self, device_id):
+        return device_id in self.devices
+
+    def list_devices(self):
+        return [{**info, "device_id": did} for did, info in self.devices.items()]
+
+    def get_credentials(self, device_id, account_id="default", requester=None):
+        return {"username": "x", "password": "y"}
+
+    def set_config_pointers(self, device_id, **kwargs):
+        pass
+
+
+def _engine(registry, live_params):
+    # git_repo=None on purpose: with a repo, check_drift commits an Audit
+    # observation FIRST, which moves HEAD — and these tests pin the baseline
+    # at "HEAD", so the compare would see live == baseline. Same convention
+    # as tests/test_drift.py.
+    from admz.snapshot.engine import SnapshotEngine
+
+    class _E(SnapshotEngine):
+        def __init__(self):
+            super().__init__(catalog=None, registry=registry, executors={},
+                             git_repo=None)
+
+        async def _read_all_params(self, device_id, device_info, family):
+            return dict(live_params)
+
+        async def _read_extra_ops(self, device_id, device_info, facets, family):
+            return {}
+
+    return _E()
+
+
+def _demo_with_fragment(repo, *, name="Loitering", device_ids=("cam-01",),
+                        active=True, value="3840x2160"):
+    demo = Demo(id="d" + name.lower()[:10], name=name,
+                device_ids=list(device_ids), active=active)
+    fr.add_entries(repo, demo, "default",
+                   [{"facet": "image", "path": "I0.Resolution", "value": value}])
+    return demo
+
+
+BASE = {"I0.Resolution": "1920x1080", "I0.Compression": "30"}
+LIVE_KEY = "root.Image.I0.Resolution"
+
+
+def _setup(repo, live_res, demos, *, scenario=None):
+    repo.write_facet("cam-01", "image", dict(BASE))
+    repo.commit_snapshot("cam-01")
+    info = {"host": "192.0.2.9", "api_family": "vapix", "baseline_sha": "HEAD"}
+    if scenario:
+        info["active_scenario"] = scenario
+    registry = _FakeRegistry({"cam-01": info})
+    live = {LIVE_KEY: live_res, "root.Image.I0.Compression": "30"}
+    detector = DriftDetector(
+        _engine(registry, live), repo, demo_store=_FakeDemoStore(demos))
+    return detector
+
+
+class TestDriftAttribution:
+    @pytest.mark.asyncio
+    async def test_demo_set_is_deliberate_not_drift(self, repo):
+        demo = _demo_with_fragment(repo, active=True)
+        detector = _setup(repo, "3840x2160", [demo])
+        report = await detector.check_drift("cam-01")
+        assert report.has_drift is False        # fully explained
+        assert report.real_fields == []
+        [f] = report.fields
+        assert f.bucket == "demo_set"
+        assert f.owner == demo.id and f.owner_name == "Loitering"
+        assert f.expected == "1920x1080"        # base value, for display
+        assert f.actual == "3840x2160"
+
+    @pytest.mark.asyncio
+    async def test_demo_broken_when_live_differs_from_demo(self, repo):
+        demo = _demo_with_fragment(repo, active=True)
+        detector = _setup(repo, "1280x720", [demo])   # neither base nor demo
+        report = await detector.check_drift("cam-01")
+        assert report.has_drift is True
+        [f] = report.fields
+        assert f.bucket == "demo_broken"
+        assert f.expected == "3840x2160"        # the DEMO value: revert repairs
+        assert f.actual == "1280x720"
+
+    @pytest.mark.asyncio
+    async def test_demo_broken_when_fragment_not_loaded(self, repo):
+        # Live still equals base: a plain compare sees nothing, but the active
+        # demo needs its key loaded -> drift AGAINST the demo.
+        demo = _demo_with_fragment(repo, active=True)
+        detector = _setup(repo, "1920x1080", [demo])
+        report = await detector.check_drift("cam-01")
+        [f] = report.fields
+        assert f.bucket == "demo_broken"
+        assert f.expected == "3840x2160" and f.actual == "1920x1080"
+
+    @pytest.mark.asyncio
+    async def test_candidate_when_inactive_demo_matches(self, repo):
+        demo = _demo_with_fragment(repo, active=False)
+        detector = _setup(repo, "3840x2160", [demo])
+        report = await detector.check_drift("cam-01")
+        assert report.has_drift is True          # still real drift
+        [f] = report.fields
+        assert f.bucket == "candidate"
+        assert f.candidates == [{"id": demo.id, "name": "Loitering"}]
+
+    @pytest.mark.asyncio
+    async def test_unclaimed_when_nothing_matches(self, repo):
+        demo = _demo_with_fragment(repo, active=False)  # demo wants 4K
+        detector = _setup(repo, "1280x720", [demo])     # live is neither
+        report = await detector.check_drift("cam-01")
+        [f] = report.fields
+        assert f.bucket == "unclaimed" and f.candidates == []
+
+    @pytest.mark.asyncio
+    async def test_legacy_scenario_partition_skips_overlay(self, repo):
+        # A device held by an ADR-0044 scenario keeps its semantics: no
+        # attribution at all until the scenario ends.
+        demo = _demo_with_fragment(repo, active=True)
+        detector = _setup(repo, "3840x2160", [demo], scenario="night-mode")
+        report = await detector.check_drift("cam-01")
+        [f] = report.fields
+        assert f.bucket == "unclaimed" and f.owner is None
+
+    @pytest.mark.asyncio
+    async def test_out_of_scope_demo_is_invisible(self, repo):
+        demo = _demo_with_fragment(repo, active=True, device_ids=("other-cam",))
+        detector = _setup(repo, "3840x2160", [demo])
+        report = await detector.check_drift("cam-01")
+        [f] = report.fields
+        assert f.bucket == "unclaimed"
+
+    @pytest.mark.asyncio
+    async def test_no_demo_store_means_no_attribution(self, repo):
+        repo.write_facet("cam-01", "image", dict(BASE))
+        repo.commit_snapshot("cam-01")
+        registry = _FakeRegistry({"cam-01": {
+            "host": "192.0.2.9", "api_family": "vapix", "baseline_sha": "HEAD"}})
+        detector = DriftDetector(
+            _engine(registry, {LIVE_KEY: "3840x2160",
+                               "root.Image.I0.Compression": "30"}), repo)
+        report = await detector.check_drift("cam-01")
+        [f] = report.fields
+        assert f.bucket == "unclaimed"
+
+
+class TestAttributedSignature:
+    def _report(self, repo, live, demos):
+        import asyncio
+
+        detector = _setup(repo, live, demos)
+        return asyncio.new_event_loop().run_until_complete(
+            detector.check_drift("cam-01"))
+
+    def test_field_count_is_unclaimed_only(self, repo, tmp_path):
+        demo = _demo_with_fragment(repo, active=True)
+        report = self._report(repo, "3840x2160", [demo])   # fully demo-explained
+        store = DriftAlertStore(str(tmp_path / "alerts.db"))
+        store.process_report(report)
+        sig = store.get_last_signature("cam-01")
+        assert sig["field_count"] == 0                     # roster reads in-sync
+        assert sig["attributed"]["demo_set"] == 1
+        assert sig["attributed"]["by_demo"] == {}
+
+    def test_by_demo_counts_broken_keys(self, repo, tmp_path):
+        demo = _demo_with_fragment(repo, active=True)
+        report = self._report(repo, "1280x720", [demo])
+        counts = _attributed_counts(report)
+        assert counts["by_demo"] == {demo.id: 1}
+        assert counts["demo_names"][demo.id] == "Loitering"
+        store = DriftAlertStore(str(tmp_path / "alerts.db"))
+        store.process_report(report)
+        assert store.get_last_signature("cam-01")["field_count"] == 1
+
+    def test_adopt_transition_changes_signature_once(self, repo, tmp_path):
+        # Same live state, demo inactive -> active: the signature must change
+        # (deliberate transition), then stay stable on the next check.
+        demo = _demo_with_fragment(repo, active=False)
+        store = DriftAlertStore(str(tmp_path / "alerts.db"))
+        store.process_report(self._report(repo, "3840x2160", [demo]))
+        s1 = store.get_last_signature("cam-01")["signature"]
+        demo.active = True
+        store.process_report(self._report(repo, "3840x2160", [demo]))
+        s2 = store.get_last_signature("cam-01")["signature"]
+        assert s1 != s2
+        store.process_report(self._report(repo, "3840x2160", [demo]))
+        assert store.get_last_signature("cam-01")["signature"] == s2

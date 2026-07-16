@@ -12,6 +12,11 @@
       <span class="badge {{ r.state | demo_sem }}">
         <span class="dot sem-{{ r.state | demo_sem }}"></span>{{ r.state | demo_label }}
       </span>
+      {% if demo.active %}
+      <span class="badge blue solid" title="This demo's owned config counts toward its devices' expected state — drift attributes those keys to it.">
+        <span class="dot"></span>Active
+      </span>
+      {% endif %}
     </div>
     <p class="page-sub">
       {% if demo.scenario_name %}
@@ -23,6 +28,13 @@
     </p>
   </div>
   <div class="page-actions">
+    {% if fragments %}
+      {% if demo.active %}
+      <button class="btn" type="button" id="deactivate-btn" title="Stop claiming this demo's keys — nothing is pushed; they read as plain drift again."><i data-lucide="power-off"></i> Deactivate</button>
+      {% else %}
+      <button class="btn primary" type="button" id="adopt-btn" title="Mark active without pushing — its owned keys join the devices' expected state on the next drift check."><i data-lucide="power"></i> Mark active</button>
+      {% endif %}
+    {% endif %}
     {% if demo.scenario_name %}
     <button class="btn" type="button" id="end-btn"><i data-lucide="rotate-ccw"></i> End demo</button>
     <button class="btn primary" type="button" id="prepare-btn"><i data-lucide="play"></i> Prepare</button>
@@ -356,6 +368,14 @@
   const endBtn = document.getElementById('end-btn');
   if (endBtn) endBtn.addEventListener('click', () =>
     run(endBtn, '/end', 'Return this demo’s devices to their baseline config?'));
+
+  // ── Adopt / deactivate (ADR-0047 — activation state only, no pushes) ──
+  const adoptBtn = document.getElementById('adopt-btn');
+  if (adoptBtn) adoptBtn.addEventListener('click', () => run(adoptBtn, '/adopt', null));
+  const deactBtn = document.getElementById('deactivate-btn');
+  if (deactBtn) deactBtn.addEventListener('click', () =>
+    run(deactBtn, '/deactivate',
+        'Deactivate? Its keys stay on the devices and read as plain drift on the next check.'));
 
   // ── Delete ──
   document.getElementById('delete-btn').addEventListener('click', async () => {

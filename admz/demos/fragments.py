@@ -189,6 +189,113 @@ def validate_assignment(
     return True, "", warnings
 
 
+# ── Attribution (drift-time overlay, ADR-0047 slice 2) ──────────────────────
+
+
+def demo_covers_device(demo, device_info: Dict[str, Any]) -> bool:
+    """Same scope semantics as ``service.resolve_devices``: tag wins."""
+    if demo.tag:
+        return demo.tag in (device_info.get("tags") or [])
+    return (device_info.get("device_id") or "") in (demo.device_ids or [])
+
+
+def _set_map_for(git, demo, device_id: str) -> Dict[Tuple[str, str], str]:
+    """The demo's owned ``{(facet, path): value}`` for this device's role."""
+    role = normalize_role((demo.roles or {}).get(device_id))
+    facets = load_fragment(git, demo.id, role)
+    out: Dict[Tuple[str, str], str] = {}
+    for facet_name, modes in (facets or {}).items():
+        for path, value in (modes.get(MODE_SET) or {}).items():
+            out[(facet_name, path)] = str(value)
+    return out
+
+
+def attribution_maps(
+    git,
+    demos: List[Any],
+    device_id: str,
+    device_info: Dict[str, Any],
+) -> Tuple[Dict[Tuple[str, str], Tuple[str, str, str]],
+           Dict[Tuple[str, str], List[Dict[str, str]]]]:
+    """The two lookups drift attribution needs for one device.
+
+    Returns ``(owned, candidates)``:
+      owned      — {(facet, path): (value, demo_id, demo_name)} from ACTIVE
+                   demos covering this device. Two active demos claiming the
+                   same key is prevented at adopt time; if it happens anyway,
+                   the winner is deterministic (name order) and logged.
+      candidates — {(facet, path): [{"id", "name", "value"}]} from INACTIVE
+                   demos — "this change looks like demo Y".
+    """
+    owned: Dict[Tuple[str, str], Tuple[str, str, str]] = {}
+    candidates: Dict[Tuple[str, str], List[Dict[str, str]]] = {}
+    for demo in sorted(demos, key=lambda d: (d.name or "", d.id)):
+        if not demo_covers_device(demo, device_info):
+            continue
+        try:
+            set_map = _set_map_for(git, demo, device_id)
+        except Exception:  # noqa: BLE001 — a bad fragment must not break drift
+            logger.warning("demo %s: fragment unreadable during attribution",
+                           demo.id, exc_info=True)
+            continue
+        for key, value in set_map.items():
+            if getattr(demo, "active", False):
+                if key in owned and owned[key][1] != demo.id:
+                    logger.warning(
+                        "demos %s and %s both claim %s on %s — keeping %s",
+                        owned[key][2], demo.name, key, device_id, owned[key][2])
+                    continue
+                owned[key] = (value, demo.id, demo.name)
+            else:
+                candidates.setdefault(key, []).append(
+                    {"id": demo.id, "name": demo.name, "value": value})
+    return owned, candidates
+
+
+def owning_demos(
+    git, demos: List[Any], device_id: str, device_info: Dict[str, Any],
+) -> List[Tuple[Any, int]]:
+    """ACTIVE demos that own ≥1 set-key on this device — the accept-baseline
+    guard (H1): blessing an observation while these are loaded would bake
+    their config into base forever."""
+    out = []
+    for demo in demos:
+        if not getattr(demo, "active", False):
+            continue
+        if not demo_covers_device(demo, device_info):
+            continue
+        n = len(_set_map_for(git, demo, device_id))
+        if n:
+            out.append((demo, n))
+    return out
+
+
+def overlap_conflicts(
+    git, demo, other_active: List[Any], registry,
+) -> List[Dict[str, str]]:
+    """Keys where ``demo`` and another ACTIVE demo both claim the same
+    (device, facet, path) — v1 forbids ALL same-key overlap, even equal
+    values, so deactivation is trivially 'push base'."""
+    from admz.demos.service import resolve_devices
+
+    conflicts: List[Dict[str, str]] = []
+    for d in resolve_devices(demo, registry):
+        did = d.get("device_id") or ""
+        mine = _set_map_for(git, demo, did)
+        if not mine:
+            continue
+        for other in other_active:
+            if other.id == demo.id or not demo_covers_device(other, d):
+                continue
+            theirs = _set_map_for(git, other, did)
+            for key in set(mine) & set(theirs):
+                conflicts.append({
+                    "device_id": did, "facet": key[0], "path": key[1],
+                    "other_demo": other.name,
+                })
+    return conflicts
+
+
 # ── Mutation ─────────────────────────────────────────────────────────────────
 
 

@@ -1,5 +1,6 @@
 """REST routes for config snapshot, restore, diff, and drift."""
 
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -8,6 +9,8 @@ from pydantic import BaseModel, field_validator
 from admz.api.context import AppContext, get_context
 from admz.exceptions import DeviceNotFoundError
 from admz.validators import validate_git_ref, validate_identifier
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -122,6 +125,35 @@ class AcceptBaselineRequest(BaseModel):
         return validate_git_ref(v)
 
 
+def _reject_accept_with_active_demos(ctx, device_id: str, device_info: dict) -> None:
+    """The ADR-0047 accept-baseline guard (H1 — non-negotiable).
+
+    An observation commit holds the device's LIVE state, which includes every
+    value an active demo set. Blessing it would silently bake the demo's config
+    into the base — after which deactivating the demo pushes nothing and the
+    demo config survives forever, labelled "baseline". Refuse with names.
+    """
+    try:
+        from admz.demos.fragments import owning_demos
+
+        owners = owning_demos(
+            ctx.git_repo, ctx.demo_store.list(), device_id, device_info)
+    except Exception:  # noqa: BLE001 — guard failure must not block accepts
+        logger.warning("accept-baseline demo guard unavailable for %s",
+                       device_id, exc_info=True)
+        return
+    if owners:
+        names = ", ".join(
+            f"'{d.name}' ({n} key{'s' if n != 1 else ''})" for d, n in owners)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{device_id} has active demo config loaded — accepting now "
+                f"would bake it into the baseline. Deactivate {names} first, "
+                "or revert their keys."),
+        )
+
+
 @router.post("/snapshot/accept-baseline")
 async def accept_baseline(
     request: Request,
@@ -148,6 +180,8 @@ async def accept_baseline(
         )
 
     device_info = ctx.registry.get_device_info(req.device_id)
+    device_info["device_id"] = req.device_id
+    _reject_accept_with_active_demos(ctx, req.device_id, device_info)
     target = req.commit_sha or device_info.get("latest_observed_sha")
     if not target:
         record_event(principal, "snapshot.accept_baseline", resource=resource,
@@ -369,7 +403,12 @@ async def revert_devices(
             missing.append(did)
             continue
         report = await ctx.drift_detector.check_drift(did)
-        fields = report.fields
+        # Never revert "demo_set" rows (ADR-0047): those values are an active
+        # demo's config, deliberately different from base — a whole-device
+        # revert would silently kick the demo off the device. Deactivating the
+        # demo is the way to undo them. Note demo_broken rows keep the DEMO's
+        # value in ``expected``, so reverting them REPAIRS the demo.
+        fields = report.real_fields
         if selected_by_device is not None:
             chosen = selected_by_device.get(did, set())
             fields = [f for f in fields if (f.facet, f.path) in chosen]
@@ -466,6 +505,14 @@ async def accept_baseline_bulk(
             skipped.append({"device_id": did, "reason": "not-found"})
             continue
         info = ctx.registry.get_device_info(did)
+        info["device_id"] = did
+        try:
+            _reject_accept_with_active_demos(ctx, did, info)
+        except HTTPException as e:
+            # Bulk semantics: skip-and-report rather than fail the whole set.
+            skipped.append({"device_id": did, "reason": "active-demo-config",
+                            "detail": e.detail})
+            continue
         target = info.get("latest_observed_sha")
         if not target:
             skipped.append({"device_id": did, "reason": "no-observation"})
@@ -971,6 +1018,12 @@ async def check_drift(
                 fld.get("path"), fld.get("expected")
             ) is not None:
                 revertable = True
+            # "demo_set" rows aren't drift (ADR-0047) — the value belongs to an
+            # active demo. Reverting one would kick the demo off the key, so
+            # the row is display-only; deactivate the demo to undo it.
+            if fld.get("bucket") == "demo_set":
+                revertable = False
+                reason = "demo-owned"
             fld["revertable"] = revertable
             if not revertable:
                 fld["revert_skip_reason"] = reason

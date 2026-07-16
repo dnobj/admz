@@ -326,6 +326,76 @@ class TestFragmentCapture:
         assert client.delete(f"/api/demos/{demo['id']}").status_code == 200
         assert fr.load_all_fragments(git, demo["id"]) == {}
 
+    def test_adopt_and_deactivate(self, client, registry, fake_drift):
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = _mk(client, name="Adopt demo", tag="speakers")
+        client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [{"device_id": "cam-1", "facet": "other",
+                        "path": "Motion.M0.Enabled"}]})
+        res = client.post(f"/api/demos/{demo['id']}/adopt")
+        assert res.status_code == 200, res.text
+        assert res.json()["demo"]["active"] is True
+        # Idempotent.
+        assert client.post(f"/api/demos/{demo['id']}/adopt").status_code == 200
+        res = client.post(f"/api/demos/{demo['id']}/deactivate")
+        assert res.status_code == 200
+        assert res.json()["demo"]["active"] is False
+
+    def test_adopt_conflicts_on_shared_key(self, client, registry, fake_drift):
+        # v1 forbids ALL same-key overlap between active demos — even equal
+        # values — so deactivation is trivially "push base".
+        _add_device(registry, "cam-1", tags=["speakers"])
+        a = _mk(client, name="Demo A", tag="speakers")
+        b = _mk(client, name="Demo B", tag="speakers")
+        for d in (a, b):
+            client.post(f"/api/demos/{d['id']}/fragment", json={
+                "fields": [{"device_id": "cam-1", "facet": "other",
+                            "path": "Motion.M0.Enabled"}]})
+        assert client.post(f"/api/demos/{a['id']}/adopt").status_code == 200
+        res = client.post(f"/api/demos/{b['id']}/adopt")
+        assert res.status_code == 409
+        assert "Demo A" in res.json()["detail"]
+
+    def test_adopt_blocked_by_legacy_scenario(self, client, registry, fake_drift):
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = _mk(client, name="Legacy blocked", tag="speakers")
+        client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [{"device_id": "cam-1", "facet": "other",
+                        "path": "Motion.M0.Enabled"}]})
+        registry.set_active_scenario("cam-1", "night-mode")
+        res = client.post(f"/api/demos/{demo['id']}/adopt")
+        assert res.status_code == 409
+        assert "night-mode" in res.json()["detail"]
+
+    def test_accept_baseline_guard(self, client, registry, fake_drift):
+        # THE trap (ADR-0047 H1): accepting an observation while an active demo
+        # owns keys would bake the demo's config into base forever.
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = _mk(client, name="Guard demo", tag="speakers")
+        client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [{"device_id": "cam-1", "facet": "other",
+                        "path": "Motion.M0.Enabled"}]})
+        client.post(f"/api/demos/{demo['id']}/adopt")
+
+        res = client.post("/api/snapshot/accept-baseline",
+                          json={"device_id": "cam-1"})
+        assert res.status_code == 409
+        assert "Guard demo" in res.json()["detail"]
+
+        # Bulk: skip-and-report, not a hard failure.
+        res = client.post("/api/snapshot/accept-baseline-bulk",
+                          json={"device_ids": ["cam-1"]})
+        assert res.status_code == 200
+        [skip] = res.json()["skipped"]
+        assert skip["reason"] == "active-demo-config"
+
+        # Deactivated -> accept proceeds past the guard (fails later only on
+        # no-observation, which is fine — the guard is what we're testing).
+        client.post(f"/api/demos/{demo['id']}/deactivate")
+        res = client.post("/api/snapshot/accept-baseline",
+                          json={"device_id": "cam-1"})
+        assert res.status_code != 409
+
     def test_detail_page_shows_owned_config(self, client, registry, fake_drift):
         _add_device(registry, "cam-1", tags=["speakers"])
         demo = _mk(client, name="Page demo", tag="speakers")

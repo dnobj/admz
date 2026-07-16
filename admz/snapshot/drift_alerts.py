@@ -103,7 +103,8 @@ CREATE TABLE IF NOT EXISTS drift_signatures (
     device_id      TEXT PRIMARY KEY,
     signature      TEXT NOT NULL,
     field_count    INTEGER NOT NULL,
-    updated_at     REAL NOT NULL
+    updated_at     REAL NOT NULL,
+    attributed     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS drift_alerts (
@@ -131,13 +132,40 @@ def _signature_for(report: DriftReport) -> str:
 
     Sorted on (facet, path) so the same set in different field
     order produces the same hash. Includes expected/actual values
-    so a value-only change still counts as 'changed'.
+    so a value-only change still counts as 'changed', and the
+    attribution bucket/owner (ADR-0047) so adopting or deactivating
+    a demo registers as one deliberate transition — not silence.
     """
     rows = sorted(
-        (f.facet, f.path, f.expected, f.actual) for f in report.fields
+        (f.facet, f.path, f.expected, f.actual, f.bucket, f.owner or "")
+        for f in report.fields
     )
     blob = json.dumps(rows, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _attributed_counts(report: DriftReport) -> Dict[str, Any]:
+    """Per-bucket rollup of a report's fields (ADR-0047).
+
+    ``by_demo`` counts demo_broken keys per owning demo — "is demo X's
+    fragment intact on this device" — with names for display.
+    """
+    counts: Dict[str, Any] = {
+        "unclaimed": 0, "candidate": 0, "demo_set": 0,
+        "by_demo": {}, "demo_names": {},
+    }
+    for f in report.fields:
+        if f.bucket == "demo_set":
+            counts["demo_set"] += 1
+        elif f.bucket == "candidate":
+            counts["candidate"] += 1
+        elif f.bucket == "demo_broken" and f.owner:
+            counts["by_demo"][f.owner] = counts["by_demo"].get(f.owner, 0) + 1
+        else:
+            counts["unclaimed"] += 1
+        if f.owner:
+            counts["demo_names"][f.owner] = f.owner_name or f.owner
+    return counts
 
 
 def _build_summary(transition: str, prev: int, curr: int) -> str:
@@ -165,6 +193,13 @@ class DriftAlertStore:
         try:
             with self._connect() as conn:
                 conn.executescript(_SCHEMA)
+                # ADR-0047: attributed-counts column, added after first ship.
+                try:
+                    conn.execute(
+                        "ALTER TABLE drift_signatures ADD COLUMN attributed TEXT"
+                    )
+                except sqlite3.OperationalError:
+                    pass  # column already exists
                 conn.commit()
         except sqlite3.Error as exc:  # pragma: no cover — defensive
             logger.warning("DriftAlertStore table creation failed: %s", exc)
@@ -185,7 +220,7 @@ class DriftAlertStore:
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT signature, field_count, updated_at "
+                "SELECT signature, field_count, updated_at, attributed "
                 "FROM drift_signatures WHERE device_id=?",
                 (device_id,),
             ).fetchone()
@@ -193,27 +228,37 @@ class DriftAlertStore:
             conn.close()
         if not row:
             return None
+        attributed = None
+        if row[3]:
+            try:
+                attributed = json.loads(row[3])
+            except (TypeError, ValueError):
+                attributed = None
         return {
             "signature": row[0],
             "field_count": row[1],
             "updated_at": row[2],
+            "attributed": attributed,
         }
 
     def _record_signature(
-        self, device_id: str, signature: str, field_count: int
+        self, device_id: str, signature: str, field_count: int,
+        attributed: Optional[Dict[str, Any]] = None,
     ) -> None:
         now = time.time()
         conn = self._connect()
         try:
             conn.execute(
                 "INSERT INTO drift_signatures "
-                "(device_id, signature, field_count, updated_at) "
-                "VALUES (?, ?, ?, ?) "
+                "(device_id, signature, field_count, updated_at, attributed) "
+                "VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(device_id) DO UPDATE SET "
                 "    signature   = excluded.signature, "
                 "    field_count = excluded.field_count, "
-                "    updated_at  = excluded.updated_at",
-                (device_id, signature, field_count, now),
+                "    updated_at  = excluded.updated_at, "
+                "    attributed  = excluded.attributed",
+                (device_id, signature, field_count, now,
+                 json.dumps(attributed) if attributed is not None else None),
             )
             conn.commit()
         finally:
@@ -274,8 +319,12 @@ class DriftAlertStore:
         ``None`` when nothing changed compared to last time.
         """
         device_id = report.device_id
-        current_count = len(report.fields)
+        # field_count counts REAL drift only (ADR-0047): keys an active demo
+        # deliberately set don't make the roster cry "drifted". The full
+        # per-bucket breakdown rides in ``attributed``.
+        current_count = len(report.real_fields)
         signature = _signature_for(report)
+        attributed = _attributed_counts(report)
 
         previous = self.get_last_signature(device_id)
         prev_signature = previous["signature"] if previous else None
@@ -283,13 +332,13 @@ class DriftAlertStore:
 
         if previous is None:
             # First-ever observation: set baseline, no alert.
-            self._record_signature(device_id, signature, current_count)
+            self._record_signature(device_id, signature, current_count, attributed)
             return None
 
         if signature == prev_signature:
             # No change. Refresh the timestamp so age queries reflect
             # "we've seen this state recently" not "we haven't looked".
-            self._record_signature(device_id, signature, current_count)
+            self._record_signature(device_id, signature, current_count, attributed)
             return None
 
         # Transition: decide which kind.
@@ -309,7 +358,7 @@ class DriftAlertStore:
             signature=signature,
             summary=summary,
         )
-        self._record_signature(device_id, signature, current_count)
+        self._record_signature(device_id, signature, current_count, attributed)
         logger.info(
             "Drift alert recorded: %s/%s (%s)",
             device_id,

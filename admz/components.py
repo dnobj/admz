@@ -340,9 +340,14 @@ def build_components(
         registry=registry,
         git_repo=git_repo,
     )
+    # Demos live in the control-plane DB (like tasks) — they reference devices
+    # and scenarios, not the event log. Built before the drift detector so
+    # drift can attribute differences to active demos' fragments (ADR-0047).
+    demo_store = DemoStore()
     drift_detector = DriftDetector(
         snapshot_engine=snapshot_engine,
         git_repo=git_repo,
+        demo_store=demo_store,
     )
 
     # ADR-0037: schedule tasks live in the unified SQLite tasks store. Bind it
@@ -397,9 +402,6 @@ def build_components(
     # Watched events: a passive library of bookmarked event patterns (no worker,
     # no evaluator, no ingest dependency — it just feeds the detection builder).
     watched_event_store = WatchedEventStore(str(_events_db_path()))
-    # Demos live in the control-plane DB (like tasks) — they reference devices
-    # and scenarios, not the event log.
-    demo_store = DemoStore()
 
     return Components(
         registry=registry,

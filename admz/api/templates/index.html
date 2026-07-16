@@ -444,6 +444,21 @@ function renderDiff(did, data) {
             + ' data-canonical="' + esc(ck) + '">'
           : '<span class="field-noselect" title="Not auto-revertable (' + esc(reason) + ')">—</span>';
         const roTag = rv ? '' : '<span class="ro-tag">' + esc(reason) + '</span>';
+        // ADR-0047 attribution chips — who explains this difference.
+        let demoChip = '';
+        if (f.bucket === 'demo_set') {
+          demoChip = '<span class="ro-tag" style="background:var(--blue-bg);color:var(--blue-fg);border-color:var(--blue-bd)"'
+            + ' title="Deliberate — this value belongs to the active demo. Deactivate the demo to undo it.">set by '
+            + esc(f.owner_name || 'demo') + '</span>';
+        } else if (f.bucket === 'demo_broken') {
+          demoChip = '<span class="ro-tag" style="background:var(--amber-bg);color:var(--amber-fg);border-color:var(--amber-bd)"'
+            + ' title="The active demo owns this key but the live value differs — reverting pushes the demo’s value back (repair).">'
+            + esc(f.owner_name || 'demo') + ' expects this</span>';
+        } else if (f.bucket === 'candidate' && (f.candidates || []).length) {
+          demoChip = '<span class="ro-tag"'
+            + ' title="Matches an inactive demo’s owned config — adopt that demo on its page, or revert.">looks like '
+            + esc(f.candidates.map(c => c.name).join(', ')) + '</span>';
+        }
         // ⊘ exclude-from-tracking — available on EVERY row (incl. read-only
         // facet fields like ACAP run-state), since ignore covers any field.
         const ign = '<button type="button" class="row-ignore-btn" title="Exclude this field from tracking"'
@@ -455,7 +470,7 @@ function renderDiff(did, data) {
         const style = hidden ? ' style="display:none"' : '';
         return '<tr class="' + cls + '"' + dg + style + '>'
           + '<td class="col-sel">' + sel + '</td>'
-          + '<td class="col-path">' + chip + esc(f.path) + roTag + '</td>'
+          + '<td class="col-path">' + chip + esc(f.path) + roTag + demoChip + '</td>'
           + '<td class="col-base">' + esc(f.expected) + '</td>'
           + '<td class="col-live">' + esc(f.actual) + '</td>'
           + '<td class="col-ign">' + ign + '</td></tr>';
@@ -482,13 +497,18 @@ function renderDiff(did, data) {
           + '<span class="grp-count">' + items.length + '</span></td></tr>';
         rows += items.map(f => mkRow(f, collapsed, c)).join('');
       });
-      // Read-only observed fields: one collapsed block at the bottom.
+      // Read-only observed fields (plus demo-owned "set by X" rows, which are
+      // deliberate rather than drift): one collapsed block at the bottom.
       if (roFields.length) {
+        const nDemo = roFields.filter(f => f.bucket === 'demo_set').length;
+        const label = nDemo
+          ? (nDemo + ' demo-owned (deliberate)' + (roFields.length > nDemo
+              ? ' + ' + (roFields.length - nDemo) + ' read-only' : ''))
+          : roFields.length + ' read-only observed change' + (roFields.length !== 1 ? 's' : '') + ' (not revertable)';
         rows += '<tr class="ro-group-head"><td colspan="5" onclick="toggleReadOnly(this)"'
           + ' style="cursor:pointer;color:var(--text-muted);font-size:12px;padding:8px 6px;user-select:none">'
           + '<i data-lucide="chevron-right" class="ro-chev" style="width:13px;height:13px;vertical-align:-2px;transition:transform .15s"></i> '
-          + roFields.length + ' read-only observed change' + (roFields.length !== 1 ? 's' : '')
-          + ' (not revertable)</td></tr>';
+          + label + '</td></tr>';
         rows += roFields.map(f => mkRow(f, true, '')).join('');
       }
       const anyRevertable = rvFields.length > 0;

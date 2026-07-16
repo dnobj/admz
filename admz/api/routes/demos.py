@@ -280,6 +280,79 @@ async def remove_fragment_entries(demo_id: str, req: FragmentRemoveRequest,
             "fragments": _fragments_view(ctx, demo)}
 
 
+# ── Adopt / deactivate (ADR-0047 activation state, no pushes) ────────────────
+
+
+@router.post("/api/demos/{demo_id}/adopt")
+async def adopt_demo(demo_id: str, request: Request,
+                     ctx: AppContext = Depends(get_context)):
+    """Mark a demo ACTIVE without pushing anything.
+
+    Activation state is *intent*: the demo's owned keys join each device's
+    expected state on the next drift check. Keys already in place flip from
+    "drifted" to "set by <demo>"; keys not yet in place surface as drift
+    AGAINST the demo. Guards: no key may be claimed by two active demos
+    (v1 forbids all same-key overlap), and devices held by a legacy scenario
+    keep ADR-0044 semantics until it ends.
+    """
+    from admz.audit import record_event
+    from admz.demos import fragments as fr
+
+    principal = await _principal(request)
+    demo = _get(ctx, demo_id)
+    if demo.active:
+        return {"success": True, "demo": demo.to_dict(),
+                "message": "Already active."}
+
+    devices = service.resolve_devices(demo, ctx.registry)
+    held = sorted({
+        f"{d.get('device_id')} (scenario '{d.get('active_scenario')}')"
+        for d in devices if d.get("active_scenario")
+    })
+    if held:
+        raise HTTPException(
+            409, "Held by a legacy scenario — end it before adopting: "
+                 + ", ".join(held))
+
+    others = [d for d in ctx.demo_store.list() if d.active and d.id != demo.id]
+    conflicts = fr.overlap_conflicts(ctx.git_repo, demo, others, ctx.registry)
+    if conflicts:
+        lines = sorted({
+            f"{c['facet']}/{c['path']} on {c['device_id']} "
+            f"(claimed by '{c['other_demo']}')" for c in conflicts})
+        raise HTTPException(
+            409, "Key conflict with another active demo: " + "; ".join(lines))
+
+    demo.active = True
+    ctx.demo_store.update(demo)
+    record_event(principal, "demo.adopt", resource=f"demo:{demo_id}",
+                 details={"name": demo.name,
+                          "devices": [d.get("device_id") for d in devices]})
+    return {"success": True, "demo": demo.to_dict(),
+            "message": ("Marked active. The next drift check attributes its "
+                        "keys — nothing was pushed.")}
+
+
+@router.post("/api/demos/{demo_id}/deactivate")
+async def deactivate_demo(demo_id: str, request: Request,
+                          ctx: AppContext = Depends(get_context)):
+    """Stop claiming the demo's keys (no push — the config stays on the
+    devices; its keys read as plain drift again on the next check)."""
+    from admz.audit import record_event
+
+    principal = await _principal(request)
+    demo = _get(ctx, demo_id)
+    if demo.active:
+        demo.active = False
+        ctx.demo_store.update(demo)
+    record_event(principal, "demo.deactivate", resource=f"demo:{demo_id}",
+                 details={"name": demo.name})
+    return {"success": True, "demo": demo.to_dict(),
+            "message": ("Deactivated. Its keys return to unclaimed drift on "
+                        "the next check; revert them to restore the base "
+                        "values.")}
+
+
 # ── Prepare / End ────────────────────────────────────────────────────────────
 #
 # Both delegate to the shared scenario core (ADR-0044), so a demo's config moves

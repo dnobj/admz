@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS demos (
     signals_json    TEXT NOT NULL DEFAULT '[]',
     enabled         INTEGER NOT NULL DEFAULT 1,
     created_by      TEXT NOT NULL DEFAULT '',
-    created_at      REAL NOT NULL DEFAULT 0
+    created_at      REAL NOT NULL DEFAULT 0,
+    active          INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -58,6 +59,10 @@ class Demo:
     # phase 1; Layer 4 adds order + window.
     signals: List[Dict[str, Any]] = field(default_factory=list)
     enabled: bool = True
+    # ADR-0047: an ACTIVE demo's owned fragment counts toward each device's
+    # expected state (drift attribution). Activation state is *intent* —
+    # adopting marks active without pushing anything.
+    active: bool = False
     created_by: str = ""
     created_at: float = 0.0
 
@@ -66,7 +71,8 @@ class Demo:
             "id": self.id, "name": self.name, "narrative": self.narrative,
             "tag": self.tag, "device_ids": self.device_ids, "roles": self.roles,
             "config_source": self.config_source, "signals": self.signals,
-            "enabled": self.enabled, "created_by": self.created_by,
+            "enabled": self.enabled, "active": self.active,
+            "created_by": self.created_by,
             "created_at": self.created_at,
         }
 
@@ -82,12 +88,14 @@ def _row_to_demo(r) -> Demo:
         device_ids=_j(r[4], []), roles=_j(r[5], {}),
         config_source=r[6] or "baseline", signals=_j(r[7], []),
         enabled=bool(r[8]), created_by=r[9], created_at=r[10],
+        active=bool(r[11]),
     )
 
 
 _SELECT = (
     "SELECT id, name, narrative, tag, device_ids_json, roles_json, "
-    "config_source, signals_json, enabled, created_by, created_at FROM demos"
+    "config_source, signals_json, enabled, created_by, created_at, active "
+    "FROM demos"
 )
 
 
@@ -107,6 +115,13 @@ class DemoStore:
         conn = self._connect()
         try:
             conn.executescript(_SCHEMA)
+            # ADR-0047: activation flag, added after the table first shipped.
+            try:
+                conn.execute(
+                    "ALTER TABLE demos ADD COLUMN active INTEGER NOT NULL DEFAULT 0"
+                )
+            except sqlite3.OperationalError:
+                pass  # column already exists
             conn.commit()
         finally:
             conn.close()
@@ -135,11 +150,12 @@ class DemoStore:
             conn.execute(
                 "INSERT INTO demos (id, name, narrative, tag, device_ids_json, "
                 "roles_json, config_source, signals_json, enabled, created_by, "
-                "created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "created_at, active) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (demo.id, demo.name, demo.narrative, demo.tag,
                  json.dumps(demo.device_ids), json.dumps(demo.roles),
                  demo.config_source, json.dumps(demo.signals),
-                 1 if demo.enabled else 0, demo.created_by, demo.created_at),
+                 1 if demo.enabled else 0, demo.created_by, demo.created_at,
+                 1 if demo.active else 0),
             )
             conn.commit()
         finally:
@@ -151,11 +167,12 @@ class DemoStore:
         try:
             conn.execute(
                 "UPDATE demos SET name=?, narrative=?, tag=?, device_ids_json=?, "
-                "roles_json=?, config_source=?, signals_json=?, enabled=? "
-                "WHERE id=?",
+                "roles_json=?, config_source=?, signals_json=?, enabled=?, "
+                "active=? WHERE id=?",
                 (demo.name, demo.narrative, demo.tag, json.dumps(demo.device_ids),
                  json.dumps(demo.roles), demo.config_source,
-                 json.dumps(demo.signals), 1 if demo.enabled else 0, demo.id),
+                 json.dumps(demo.signals), 1 if demo.enabled else 0,
+                 1 if demo.active else 0, demo.id),
             )
             conn.commit()
         finally:

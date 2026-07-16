@@ -132,6 +132,19 @@ When the chatbot ships (per [ADR-0024](../decisions/0024-bundled-web-chatbot.md)
 
 **Related decisions:** [0046 — demos](../decisions/0046-demos.md), [0044 — config scenarios](../decisions/0044-config-scenarios.md), [0034 — uniform widget gating](../decisions/0034-uniform-widget-gating.md).
 
+## US-DW-011 — Is this drifted, or is it another demo's config?
+
+**As an** operator reviewing a drifted device, **I want** every changed field to say *who changed it and why* **so that** I don't revert a colleague's demo setup or accept demo config into the baseline.
+
+**Acceptance criteria:**
+1. Each drift row is attributed: **set by demo X** (deliberate — an active demo owns this value), **demo X expects this** (the demo's config is broken; reverting repairs it), **looks like demo Y** (matches an inactive demo — adopt or revert), or plain drift.
+2. A device fully explained by its active demos reads **in sync** on the roster — deliberate differences don't cry wolf.
+3. Ticked drift rows can be **assigned to a demo** (fourth disposition beside Accept/Revert/Exclude): the live values become that demo's owned fragment, recorded in git. Read-only, not-in-baseline, and ignored keys are refused with reasons; values embedding the device's own IP/MAC warn.
+4. **Adopting** a demo (marking it active) pushes nothing — its keys join expected state on the next check. Two active demos may not claim the same key (409 naming the holder).
+5. **Accept-baseline refuses (409)** while an active demo owns keys on the device — accepting would bake the demo's config into the baseline permanently. Whole-device revert never touches demo-owned rows.
+
+**Related decisions:** [0047 — demo config fragments](../decisions/0047-demo-config-fragments.md), [0046 — demos](../decisions/0046-demos.md).
+
 ## Known limitations
 
 - 📋 **A demo's readiness is "will it work", not "is it working".** Signals are matched one event at a time, so the Demos page shows a per-signal "last seen" — it can't yet prove the *sequence* ran (person walks in → speaker announces → ACS records). That's ADR-0041 Layer 4 proper; ADR-0046 ships the green light first.
