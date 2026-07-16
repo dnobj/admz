@@ -194,7 +194,7 @@
           {% for s in demo.signal_status %}
           <tr>
             <td>{{ s.label }}</td>
-            <td>{% if s.role %}<span class="tag">{{ s.role }}</span>{% elif s.device_id %}{{ s.device_id }}{% else %}any device{% endif %}</td>
+            <td>{% if s.device_id %}{{ device_names.get(s.device_id, s.device_id) }}{% elif s.role %}<span class="tag">{{ s.role }}</span>{% else %}any device{% endif %}</td>
             <td>
               {% if s.seen %}
                 <span class="badge green"><span class="dot sem-green"></span>{{ s.count }}×</span>
@@ -226,21 +226,17 @@
       <div class="fld">
         <label for="s-watch">Watched event</label>
         <select id="s-watch"><option value="">Loading…</option></select>
+        <div class="hint" id="s-watch-scope" style="display:none"></div>
         <div class="hint" id="s-watch-hint">Pick a pattern you bookmarked from the <a href="/activity">Activity feed</a> — the same library detections start from.</div>
       </div>
       <div class="fld hidden" id="s-custom-wrap">
         <label for="s-filter">Event type contains</label>
         <input type="text" id="s-filter" placeholder="e.g. MotionAlarm, IO/Port, PTZ" autocomplete="off">
-        <div class="hint">Matched against the event topic — see the <a href="/activity">Activity feed</a> for real ones.</div>
+        <div class="hint">Matched against the event topic on any device in the demo — see the <a href="/activity">Activity feed</a> for real ones.</div>
       </div>
       <div class="fld">
         <label for="s-label">Label</label>
         <input type="text" id="s-label" placeholder="What this signal proves — e.g. Speaker announces" autocomplete="off">
-      </div>
-      <div class="fld" id="s-from-wrap">
-        <label for="s-role">From</label>
-        <select id="s-role"><option value="">Any device in the demo</option></select>
-        <div class="hint" id="s-from-hint"></div>
       </div>
       <div id="sig-error" class="err hidden"></div>
     </div>
@@ -256,6 +252,7 @@
   const DEMO_ID = {{ demo.id | tojson }};
   const SIGNALS = {{ demo.signals | tojson }};
   const ROLES = {{ demo.roles | tojson }};
+  const DEVICE_NAMES = {{ device_names | tojson }};
 
   const patch = async (body) => {
     const res = await fetch('/api/demos/' + DEMO_ID, {
@@ -297,23 +294,18 @@
   });
 
   // ── Signals — pick a WATCHED EVENT (the same bookmarked-pattern library
-  // detections start from); a free-text filter stays as the fallback. ──
+  // detections start from); a free-text filter stays as the fallback. The
+  // watch carries its own device, shown by name — no extra scoping to ask.
   const sigModal = document.getElementById('signal-modal');
   const sigErr = document.getElementById('sig-error');
   const watchSel = document.getElementById('s-watch');
   const watchHint = document.getElementById('s-watch-hint');
+  const watchScope = document.getElementById('s-watch-scope');
   const customWrap = document.getElementById('s-custom-wrap');
-  const roleSel = document.getElementById('s-role');
-  const fromHint = document.getElementById('s-from-hint');
   let WATCHES = [];
   let labelTouched = false;
 
-  // Roles already named on this demo — the "From" choices.
-  Array.from(new Set(Object.values(ROLES))).sort().forEach(r => {
-    const o = document.createElement('option');
-    o.value = r; o.textContent = 'Role: ' + r;
-    roleSel.appendChild(o);
-  });
+  const devName = (id) => DEVICE_NAMES[id] || id;
 
   const closeSig = () => { sigModal.classList.add('hidden'); sigErr.classList.add('hidden'); };
 
@@ -324,17 +316,14 @@
     const w = selectedWatch();
     customWrap.classList.toggle('hidden', watchSel.value !== '__custom');
     if (w && !labelTouched) document.getElementById('s-label').value = w.name;
-    // A device- or tag-scoped watch brings its own scope; the role picker
-    // only matters when the watch (or custom filter) is fleet-wide.
     if (w && w.device_id) {
-      roleSel.value = ''; roleSel.disabled = true;
-      fromHint.textContent = 'Scoped to ' + w.device_id + ' by the watched event.';
+      watchScope.textContent = 'Watches ' + devName(w.device_id) + '.';
+      watchScope.style.display = '';
     } else if (w && w.tag) {
-      roleSel.value = ''; roleSel.disabled = true;
-      fromHint.textContent = 'Scoped to tag “' + w.tag + '” by the watched event.';
+      watchScope.textContent = 'Watches every device tagged “' + w.tag + '”.';
+      watchScope.style.display = '';
     } else {
-      roleSel.disabled = false;
-      fromHint.textContent = '';
+      watchScope.style.display = 'none';
     }
   };
 
@@ -349,7 +338,7 @@
     WATCHES.forEach(w => {
       const o = document.createElement('option');
       o.value = w.id;
-      const scope = w.device_id ? w.device_id : (w.tag ? '#' + w.tag : 'any device');
+      const scope = w.device_id ? devName(w.device_id) : (w.tag ? '#' + w.tag : 'any device');
       o.textContent = w.name + ' — ' + scope;
       watchSel.appendChild(o);
     });
@@ -372,7 +361,6 @@
 
   document.getElementById('sig-save').addEventListener('click', async () => {
     const label = document.getElementById('s-label').value.trim();
-    const role = roleSel.disabled ? '' : roleSel.value;
     let sig;
     if (watchSel.value === '__custom') {
       const filter = document.getElementById('s-filter').value.trim();
@@ -382,13 +370,14 @@
       const w = selectedWatch();
       if (!w) { sigErr.textContent = 'Pick a watched event.'; sigErr.classList.remove('hidden'); return; }
       // Copy semantics, same as the detection builder: the watch seeds the
-      // signal; it is never referenced live, so it can be edited/deleted freely.
+      // signal (match + its own device scope); it is never referenced live,
+      // so the watched event stays freely editable.
       sig = { watch_id: w.id, label: label || w.name };
       if (w.match && w.match.topic) sig.topic = w.match.topic;
       if (w.match && w.match.category) sig.category = w.match.category;
       if (w.device_id) sig.device_id = w.device_id;
+      if (w.tag) sig.tag = w.tag;
     }
-    if (role) sig.role = role;
     try { await patch({ signals: SIGNALS.concat([sig]) }); window.location.reload(); }
     catch (e) { sigErr.textContent = e.message; sigErr.classList.remove('hidden'); }
   });

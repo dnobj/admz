@@ -484,9 +484,18 @@ async def demo_detail_page(demo_id: str, request: Request,
     except Exception:  # noqa: BLE001
         devices, tags = [], []
 
+    # device_id → friendly name, for the signal picker + signals table (a
+    # watched event carries its device; show it by name, not MAC).
+    device_names = {
+        d.get("device_id"): (d.get("nickname") or d.get("model")
+                             or d.get("device_id"))
+        for d in devices if d.get("device_id")
+    }
+
     return templates.TemplateResponse(
         "demo_detail.html",
         {"request": request, "title": view["name"] or "Demo", "demo": view,
          "holders": holders, "all_devices": devices, "tags": tags,
+         "device_names": device_names,
          "fragments": _fragments_view(ctx, demo)},
     )

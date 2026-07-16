@@ -109,13 +109,18 @@ class EventStore:
         type_filter: Optional[str] = None,
         device_id: Optional[str] = None,
         device_filter: Optional[str] = None,
+        q: Optional[str] = None,
         since_ms: Optional[int] = None,
         limit: int = 500,
     ) -> List[Dict[str, Any]]:
         """Return events newest-first with optional filters.
 
         ``type_filter`` / ``device_filter`` are case-insensitive substring
-        matches; ``device_id`` is an exact match; ``since_ms`` bounds by epoch ms.
+        matches; ``device_id`` is an exact match; ``since_ms`` bounds by epoch
+        ms. ``q`` is a general text search — every whitespace-separated term
+        must appear somewhere in the event (summary, type, device name, or the
+        raw data payload), so "port 1 active" narrows the way an operator
+        expects.
         """
         where: List[str] = []
         args: List[Any] = []
@@ -131,6 +136,12 @@ class EventStore:
         if device_filter:
             where.append("LOWER(COALESCE(device_name, '')) LIKE ?")
             args.append(f"%{device_filter.lower()}%")
+        for term in (q or "").split():
+            where.append(
+                "LOWER(COALESCE(summary,'') || ' ' || COALESCE(type,'') || ' ' "
+                "|| COALESCE(device_name,'') || ' ' || COALESCE(data,'')) LIKE ?"
+            )
+            args.append(f"%{term.lower()}%")
         if since_ms is not None:
             where.append("ts_ms >= ?")
             args.append(int(since_ms))

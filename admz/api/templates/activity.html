@@ -45,17 +45,30 @@
 </div>
 
 <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
-  <span class="page-sub" style="margin-right:2px">Source</span>
-  <select id="ev-source" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text)">
-    <option value="">All</option>
-    <option value="device">Device</option>
-    <option value="acs">ACS rules</option>
+  <span class="page-sub" style="margin-right:2px">From</span>
+  <select id="ev-from" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text);max-width:240px">
+    <option value="">All sources</option>
+    <optgroup label="Devices">
+      {% for d in device_sources %}
+      <option value="dev:{{ d.device_id }}">{{ d.name }}</option>
+      {% endfor %}
+    </optgroup>
+    <optgroup label="Software">
+      <option value="src:acs">ACS Pro (rule firings)</option>
+    </optgroup>
   </select>
   <span class="page-sub" style="margin:0 2px 0 8px">Type</span>
   {% for chip in [['All',''],['Motion','Motion'],['Object','Object'],['I/O','IO'],['PTZ','PTZController'],['Storage','Storage'],['Tamper','Casing'],['System','Status'],['ACS rule','ActionRule']] %}
   <button class="btn sm ghost ev-chip{{ ' active' if chip[1] == '' }}" data-type="{{ chip[1] }}" type="button">{{ chip[0] }}</button>
   {% endfor %}
-  <input id="ev-device" placeholder="device name" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text);min-width:150px">
+  <input id="ev-search" type="search" placeholder="Search events…" title="Every word must appear somewhere in the event (summary, type, device, or payload)" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text);min-width:200px;flex:1;max-width:340px">
+  <select id="ev-window" title="How far back to look — narrower windows search faster" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text)">
+    <option value="3600">Last hour</option>
+    <option value="86400" selected>Last 24 h</option>
+    <option value="604800">Last 7 days</option>
+    <option value="2592000">Last 30 days</option>
+    <option value="">All time</option>
+  </select>
   <button class="btn sm" id="ev-refresh" type="button"><i data-lucide="refresh-cw"></i> Refresh</button>
   <span id="ev-status" class="page-sub" aria-live="polite"></span>
 </div>
@@ -130,13 +143,16 @@
   }
 
   async function loadEvents() {
-    var device = document.getElementById('ev-device').value.trim();
-    var source = document.getElementById('ev-source').value;
+    var from = document.getElementById('ev-from').value;
+    var search = document.getElementById('ev-search').value.trim();
     var status = document.getElementById('ev-status');
     var qs = new URLSearchParams({ limit: '300' });
-    if (source) qs.set('source', source);
+    if (from.indexOf('dev:') === 0) qs.set('device_id', from.slice(4));
+    else if (from.indexOf('src:') === 0) qs.set('source', from.slice(4));
     if (typeFilter) qs.set('type', typeFilter);
-    if (device) qs.set('device', device);
+    if (search) qs.set('q', search);
+    var winSecs = document.getElementById('ev-window').value;
+    if (winSecs) qs.set('since_ms', String(Date.now() - winSecs * 1000));
     try {
       var d = await (await fetch('/api/events?' + qs.toString())).json();
       if (!d.success) { status.textContent = '✗ ' + (d.message || 'error'); return; }
@@ -207,8 +223,18 @@
   }
 
   document.getElementById('ev-refresh').addEventListener('click', loadEvents);
-  document.getElementById('ev-device').addEventListener('keydown', function (e) { if (e.key === 'Enter') loadEvents(); });
-  document.getElementById('ev-source').addEventListener('change', loadEvents);
+  document.getElementById('ev-from').addEventListener('change', loadEvents);
+  document.getElementById('ev-window').addEventListener('change', loadEvents);
+  // Search as you type (debounced) — Enter forces an immediate reload.
+  var searchTimer = null;
+  var searchEl = document.getElementById('ev-search');
+  searchEl.addEventListener('input', function () {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(loadEvents, 350);
+  });
+  searchEl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { clearTimeout(searchTimer); loadEvents(); }
+  });
   document.querySelectorAll('.ev-chip').forEach(function (chip) {
     chip.addEventListener('click', function () {
       document.querySelectorAll('.ev-chip').forEach(function (c) { c.classList.remove('active'); });

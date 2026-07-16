@@ -19,7 +19,8 @@ async def list_events(request: Request):
     """The unified activity timeline, newest-first.
 
     Query params: ``source`` (device|acs), ``type`` (topic substring),
-    ``device_id`` (exact), ``device`` (name substring), ``since_ms``, ``limit``.
+    ``device_id`` (exact), ``device`` (name substring), ``q`` (general text
+    search across summary/type/device/data), ``since_ms``, ``limit``.
     """
     q = request.query_params
     ctx = get_context()
@@ -30,11 +31,19 @@ async def list_events(request: Request):
         except (TypeError, ValueError):
             return default
 
-    events = ctx.event_store.query(
+    # Off the event loop: substring filters (device/q/type) can't use an index,
+    # and at millions of rows a single scan takes seconds — run inline it
+    # blocks EVERY request while the Activity page auto-polls (live-observed:
+    # a 5s scan per poll wedged the whole server at 1.7M rows).
+    import asyncio
+
+    events = await asyncio.to_thread(
+        ctx.event_store.query,
         source=q.get("source") or None,
         type_filter=q.get("type") or None,
         device_id=q.get("device_id") or None,
         device_filter=q.get("device") or None,
+        q=q.get("q") or None,
         since_ms=_int("since_ms", None),
         limit=_int("limit", 500),
     )
