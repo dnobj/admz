@@ -133,6 +133,7 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 ### Activity tracking & monitoring
 
 - [0028 — Demo / activity tracking as a bounded module on ADMZ's shared substrate](decisions/0028-demo-activity-tracking-shared-substrate.md) 📋 — AEC demo-session detection and reporting; reuses ACS layer, inventory, and UI chrome; runs as a separate, independently-deployable module
+- [0046 — Demos (the experience-center unit of work)](decisions/0046-demos.md) ✅ — the demo as a first-class object composing Scenario (config) + detections (signal); readiness as a pure rollup over the drift/health caches; Prepare/End delegate to a shared gated scenario core. ADR-0041 Layer 4, phase 1 (liveness deferred)
 
 ### Discovery
 

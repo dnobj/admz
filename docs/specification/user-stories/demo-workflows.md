@@ -90,8 +90,53 @@ When the chatbot ships (per [ADR-0024](../decisions/0024-bundled-web-chatbot.md)
 2. The proposed plan renders as an inline approval card with the affected devices and step counts.
 3. One [Approve] click runs the plan; per-device progress streams back into the chat.
 
+## US-DW-008 — Is this demo ready?
+
+**As an** operator ten minutes before the customer walks in, **I want** one page that says whether the loitering demo will work **so that** I'm not mentally joining the device roster, the config state, and the event feed under time pressure.
+
+**Acceptance criteria:**
+1. `/demos` lists every defined demo with a single verdict: **Ready / Not loaded / Blocked / Not ready**, plus the reasons.
+2. A demo's verdict is the **worst** of its devices' rows — one drifted camera makes the whole demo not ready.
+3. The verdict is assembled from the **last-known** drift signature + health record; the page never probes a device, so it renders instantly and can't disagree with the Devices page.
+4. Each demo's detail page shows the narrative, the per-device checklist (role, health, config verdict), and the signals with a "last seen".
+5. Every blocker deep-links to its fix (the device page, the drift review, Prepare).
+
+**Related requirements:** [drift-detection](../requirements/drift-detection.md), [web-ui](../requirements/web-ui.md).
+
+**Related decisions:** [0046 — demos](../decisions/0046-demos.md), [0044 — config scenarios](../decisions/0044-config-scenarios.md).
+
+## US-DW-009 — Someone else's demo has my camera
+
+**As an** operator whose demo shows "Blocked", **I want to** know *which demo* took my device and get it back **so that** I don't go hunting through per-device config pages.
+
+**Acceptance criteria:**
+1. A device held by another demo's scenario reads **on loan** — not "drifted". It differs from baseline *on purpose*; the alarming state would be a lie.
+2. The banner names the **demo** holding it ("the Night mode demo has it"), not just the scenario string, and links to it.
+3. Ending that demo returns its devices to baseline and this demo goes Ready with no further action.
+4. Baseline demos sharing a device never conflict with each other — only a sidelined (scenario) demo takes exclusive control.
+
+**Related decisions:** [0046 — demos](../decisions/0046-demos.md), [0044 — config scenarios](../decisions/0044-config-scenarios.md).
+
+## US-DW-010 — Load a sidelined demo, then put it back
+
+**As an** operator who needs the loitering demo (which needs a special config), **I want** one button to load it and one to put everything back.
+
+**Acceptance criteria:**
+1. **Prepare** pushes the demo's scenario to all its devices in **one** gated plan — the same approval widget as any other config push (ADR-0034). A demo introduces no new way to touch a device.
+2. Prepare **refuses** (409) if another scenario holds one of the devices, naming it, rather than silently stealing it.
+3. Prepare/End on a **baseline** demo refuse outright — its config is already the device's normal state, so there's nothing to load or end.
+4. **End** returns every device to its blessed baseline and clears the marker. `baseline_sha` never moved, so this is a clean snap-back rather than a restore-from-history.
+5. Devices without the named scenario are skipped and reported, not half-applied.
+
+**Related requirements:** [snapshot-restore](../requirements/snapshot-restore.md), [security](../requirements/security.md).
+
+**Related decisions:** [0046 — demos](../decisions/0046-demos.md), [0044 — config scenarios](../decisions/0044-config-scenarios.md), [0034 — uniform widget gating](../decisions/0034-uniform-widget-gating.md).
+
 ## Known limitations
 
+- 📋 **A demo's readiness is "will it work", not "is it working".** Signals are matched one event at a time, so the Demos page shows a per-signal "last seen" — it can't yet prove the *sequence* ran (person walks in → speaker announces → ACS records). That's ADR-0041 Layer 4 proper; ADR-0046 ships the green light first.
+- ⚠️ **A sidelined demo's loaded config is asserted, not verified.** Drift is measured against `baseline_sha` only, so once a scenario is active ADMZ trusts that the push landed. Baseline demos are fully drift-verified.
+- ⚠️ **Prepare may not recreate v2beta action rules.** `ActionRulesFacet` is snapshot-only, so a *sidelined* demo whose behavior lives in AXIS OS ≥ 12 action rules can restore `root.Event.*` but not those. Baseline demos are unaffected — the rules are already there.
 - 📋 **No `fork_device_config` yet.** Manual `cp -r` in the config-repo works, but isn't ergonomic.
 - 📋 **No branch-based parallel demo support.** Tag + restore is the v1 answer.
 - 📋 **No `tag_snapshot` MCP tool.** Operators tag manually via `git tag` in the config-repo for now.
