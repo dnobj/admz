@@ -891,80 +891,19 @@ async def activate_scenario(
     saved config of that name in ONE gated plan, and mark it ``active_scenario``.
     The blessed baseline is NOT moved — this is a temporary mode. Devices without
     a scenario by that name are skipped + reported."""
-    from admz import operations
-    from admz.audit import record_event
     from admz.auth import get_current_principal
     from admz.authz import require_authenticated_principal
+    from admz.snapshot.scenarios import activate_scenario_core
 
     principal = await get_current_principal(request)
     require_authenticated_principal(principal)
     targets, err = _scenario_targets(ctx, req.device_id, req.tag)
     if err:
         raise HTTPException(status_code=400, detail=err)
-
-    applied: List[dict] = []
-    skipped: List[str] = []
-    all_steps: List[dict] = []
-    for d in targets:
-        did = d.get("device_id")
-        if not did:
-            continue
-        try:
-            variants = ctx.registry.list_named_baselines(did)
-        except NotImplementedError:
-            variants = []
-        match = next((b for b in variants if b.get("name") == req.name), None)
-        if not match:
-            skipped.append(did)
-            continue
-        sha = match["commit_sha"]
-        # Temporary push — collect the steps and mark the scenario active, but
-        # DO NOT move baseline_sha (that's the whole point vs the old behavior).
-        spec = ctx.restore_builder.build_restore_plan(did, ref=sha)
-        all_steps.extend(spec.get("steps", []))
-        ctx.registry.set_active_scenario(did, req.name)
-        applied.append({"device_id": did, "commit_sha": sha})
-
-    resource = f"scenario:{req.name}"
-    if not applied:
-        record_event(principal, "snapshot.scenario_activate", resource=resource,
-                     details={"name": req.name, "outcome": "none-matched"})
-        return {
-            "message": f"No devices in scope have a scenario named '{req.name}'.",
-            "applied": [], "skipped": skipped, "name": req.name,
-        }
-    if not all_steps:
-        record_event(principal, "snapshot.scenario_activate", resource=resource,
-                     details={"name": req.name,
-                              "applied": [a["device_id"] for a in applied],
-                              "outcome": "marked-no-push"})
-        return {
-            "success": True,
-            "message": (f"Marked {len(applied)} device(s) as scenario '{req.name}'; "
-                        "they already match — nothing to push."),
-            "applied": applied, "skipped": skipped, "name": req.name,
-        }
-
-    description = (f"Activate scenario '{req.name}' on {len(applied)} device"
-                   + ("s" if len(applied) != 1 else ""))
     try:
-        plan = ctx.plan_engine.create_plan(
-            description=description, steps=all_steps, on_failure="stop",
-        )
+        return await activate_scenario_core(ctx, req.name, targets, principal)
     except ValueError as e:
-        record_event(principal, "snapshot.scenario_activate", resource=resource,
-                     success=False, error_message=str(e))
         raise HTTPException(status_code=400, detail=str(e))
-
-    record_event(principal, "snapshot.scenario_activate", resource=resource,
-                 details={"name": req.name, "plan_id": plan.plan_id,
-                          "applied": [a["device_id"] for a in applied],
-                          "skipped": skipped, "step_count": len(all_steps)})
-    result = await operations.execute_gated_plan(ctx.plan_engine, plan.plan_id)
-    result["applied"] = applied
-    result["skipped"] = skipped
-    result["name"] = req.name
-    return result
 
 
 @router.post("/snapshot/scenario/return-to-baseline")
@@ -976,68 +915,19 @@ async def return_to_baseline(
     """Return the target device(s) to their blessed baseline in ONE gated plan
     and clear the ``active_scenario`` marker. Devices with no baseline are
     skipped."""
-    from admz import operations
-    from admz.audit import record_event
     from admz.auth import get_current_principal
     from admz.authz import require_authenticated_principal
+    from admz.snapshot.scenarios import return_to_baseline_core
 
     principal = await get_current_principal(request)
     require_authenticated_principal(principal)
     targets, err = _scenario_targets(ctx, req.device_id, req.tag)
     if err:
         raise HTTPException(status_code=400, detail=err)
-
-    applied: List[dict] = []
-    skipped: List[str] = []
-    all_steps: List[dict] = []
-    for d in targets:
-        did = d.get("device_id")
-        if not did:
-            continue
-        if not d.get("baseline_sha"):
-            skipped.append(did)
-            continue
-        spec = ctx.restore_builder.build_restore_plan(did, ref=None)  # → baseline_sha
-        all_steps.extend(spec.get("steps", []))
-        ctx.registry.set_active_scenario(did, None)  # back on baseline
-        applied.append({"device_id": did})
-
-    resource = "scenario:return-to-baseline"
-    if not applied:
-        record_event(principal, "snapshot.scenario_return", resource=resource,
-                     details={"outcome": "none-with-baseline"})
-        return {"message": "No devices in scope have a baseline to return to.",
-                "applied": [], "skipped": skipped}
-    if not all_steps:
-        record_event(principal, "snapshot.scenario_return", resource=resource,
-                     details={"applied": [a["device_id"] for a in applied],
-                              "outcome": "cleared-no-push"})
-        return {
-            "success": True,
-            "message": (f"Cleared the scenario on {len(applied)} device(s); "
-                        "already at baseline — nothing to push."),
-            "applied": applied, "skipped": skipped,
-        }
-
-    description = (f"Return {len(applied)} device"
-                   + ("s" if len(applied) != 1 else "") + " to baseline")
     try:
-        plan = ctx.plan_engine.create_plan(
-            description=description, steps=all_steps, on_failure="stop",
-        )
+        return await return_to_baseline_core(ctx, targets, principal)
     except ValueError as e:
-        record_event(principal, "snapshot.scenario_return", resource=resource,
-                     success=False, error_message=str(e))
         raise HTTPException(status_code=400, detail=str(e))
-
-    record_event(principal, "snapshot.scenario_return", resource=resource,
-                 details={"plan_id": plan.plan_id,
-                          "applied": [a["device_id"] for a in applied],
-                          "skipped": skipped, "step_count": len(all_steps)})
-    result = await operations.execute_gated_plan(ctx.plan_engine, plan.plan_id)
-    result["applied"] = applied
-    result["skipped"] = skipped
-    return result
 
 
 @router.get("/snapshot/drift")

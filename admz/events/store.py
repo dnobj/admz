@@ -169,6 +169,50 @@ class EventStore:
         except sqlite3.Error:  # pragma: no cover — defensive
             return 0
 
+    def activity_since(
+        self,
+        *,
+        since_ms: int,
+        source: Optional[str] = None,
+        type_filter: Optional[str] = None,
+        device_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """"Did this signal fire since ``since_ms`` — and when last?"
+
+        One indexed aggregate instead of pulling rows: :meth:`query` answers
+        per-event, but a rollup (the Demos readiness panel) only needs
+        ``{"count", "last_ms"}``. Filters match :meth:`query` semantics —
+        ``device_id`` exact, ``type_filter`` a case-insensitive substring.
+        """
+        where: List[str] = ["ts_ms >= ?"]
+        args: List[Any] = [int(since_ms)]
+        if source:
+            where.append("source = ?")
+            args.append(source)
+        if device_id:
+            where.append("device_id = ?")
+            args.append(device_id)
+        if type_filter:
+            where.append("LOWER(type) LIKE ?")
+            args.append(f"%{type_filter.lower()}%")
+        sql = (f"SELECT COUNT(*), MAX(ts_ms) FROM events "
+               f"WHERE {' AND '.join(where)}")
+        try:
+            conn = self._connect()
+            try:
+                row = conn.execute(sql, args).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:  # pragma: no cover — defensive
+            logger.warning("EventStore activity_since failed: %s", exc)
+            return {"count": 0, "last_ms": None}
+        count = int(row[0] or 0)
+        return {"count": count, "last_ms": int(row[1]) if row[1] else None}
+
+    def count_since(self, *, since_ms: int, **kw) -> int:
+        """Convenience: just the count from :meth:`activity_since`."""
+        return self.activity_since(since_ms=since_ms, **kw)["count"]
+
     def prune_before(self, ts_ms: int) -> int:
         """Delete events older than ``ts_ms`` (retention hook). Returns rows removed."""
         try:

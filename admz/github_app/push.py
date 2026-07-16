@@ -9,6 +9,7 @@ non-blocking guarantee).
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -16,7 +17,16 @@ logger = logging.getLogger(__name__)
 
 def installation_token_for_push() -> Optional[str]:
     """A valid installation access token for the config-repo, or None when no
-    GitHub App is connected / the mint fails."""
+    GitHub App is connected / the mint fails.
+
+    ``ADMZ_DISABLE_GITHUB_APP_PUSH=1`` short-circuits before any store or network
+    access. The connection lives in the machine's secret store, so without this a
+    unit test on a developer's connected machine would silently mint a REAL token
+    over the network and push differently than on a clean box (same class as
+    ``ADMZ_DISABLE_ONBOARDING_PROBES`` — see tests/conftest.py).
+    """
+    if os.getenv("ADMZ_DISABLE_GITHUB_APP_PUSH") == "1":
+        return None
     from admz.github_app import secrets as s
 
     if not s.is_connected():

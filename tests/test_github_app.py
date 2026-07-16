@@ -228,3 +228,27 @@ class TestSecrets:
         # domain-separated — not the raw key-file bytes
         raw = Path(gh_settings._db_path).with_name("admz.key").read_bytes()
         assert k1 != raw
+
+
+class TestPushBridgeIsolation:
+    """``installation_token_for_push`` is the one place the git layer reaches
+    into the App's stored connection — and the connection is machine-level, so a
+    developer's real credentials must not leak into a unit-test push."""
+
+    def test_disable_flag_short_circuits_before_the_store(self, monkeypatch):
+        from admz.github_app import push as gh_push
+
+        # Would raise if the guard didn't return first.
+        def _boom():
+            raise AssertionError("secret store must not be touched")
+
+        monkeypatch.setattr(gh_secrets, "is_connected", _boom)
+        monkeypatch.setenv("ADMZ_DISABLE_GITHUB_APP_PUSH", "1")
+        assert gh_push.installation_token_for_push() is None
+
+    def test_without_the_flag_an_unconnected_app_is_none(self, monkeypatch):
+        from admz.github_app import push as gh_push
+
+        monkeypatch.delenv("ADMZ_DISABLE_GITHUB_APP_PUSH", raising=False)
+        monkeypatch.setattr(gh_secrets, "is_connected", lambda: False)
+        assert gh_push.installation_token_for_push() is None

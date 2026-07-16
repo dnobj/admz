@@ -27,6 +27,7 @@ from admz.api.routes import (
     chat as chat_route,
     confirm,
     detections as detections_route,
+    demos as demos_route,
     watched_events as watched_events_route,
     devices,
     discovery,
@@ -276,6 +277,8 @@ app.include_router(confirm.router, tags=["confirm"])
 app.include_router(chat_route.router, tags=["chat"])
 app.include_router(voice_route.router, tags=["voice"])
 app.include_router(survey_route.router, tags=["survey"])
+# ADR-0046: demos — both /api/demos and the /demos pages live in one router.
+app.include_router(demos_route.router, tags=["demos"])
 # GitHub App "Connect GitHub" flow — paths already include /api/github.
 app.include_router(github_app_route.router, tags=["github"])
 app.include_router(web.router, tags=["web"])

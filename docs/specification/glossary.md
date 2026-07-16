@@ -58,6 +58,8 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **Device** — An Axis network device known to the registry. Identified by a `device_id` (typically the MAC address). Has `device_info` (model, host, tags, location) and zero or more accounts.
 
+**Demo** — What you show a customer (ADR-0046): named devices (each with a **role**) + the config that makes it work (`config_source`: `baseline` or `scenario:<name>`) + the signals that prove it's running + the narrative you say. The experience-center unit of work — it composes a **Scenario** and **detections** rather than replacing them. Its computed **readiness** is the green light.
+
 **Device family** — The category of an Axis device: camera, encoder, speaker, intercom, access-control, switch, radar, I/O module, etc.
 
 **DeviceRegistry** — The ABC defining the credential-storage contract. Concrete: `SQLiteDeviceRegistry`, `VaultDeviceRegistry`. The factory picks one based on `DEVICE_REGISTRY_BACKEND`.
