@@ -224,18 +224,23 @@
     </div>
     <div class="modal-body">
       <div class="fld">
-        <label for="s-label">Label</label>
-        <input type="text" id="s-label" placeholder="e.g. Speaker announces" autocomplete="off">
+        <label for="s-watch">Watched event</label>
+        <select id="s-watch"><option value="">Loading…</option></select>
+        <div class="hint" id="s-watch-hint">Pick a pattern you bookmarked from the <a href="/activity">Activity feed</a> — the same library detections start from.</div>
       </div>
-      <div class="fld">
+      <div class="fld hidden" id="s-custom-wrap">
         <label for="s-filter">Event type contains</label>
         <input type="text" id="s-filter" placeholder="e.g. MotionAlarm, IO/Port, PTZ" autocomplete="off">
         <div class="hint">Matched against the event topic — see the <a href="/activity">Activity feed</a> for real ones.</div>
       </div>
       <div class="fld">
-        <label for="s-role">From role (optional)</label>
-        <input type="text" id="s-role" placeholder="e.g. detector" autocomplete="off">
-        <div class="hint">Blank = any device in the demo.</div>
+        <label for="s-label">Label</label>
+        <input type="text" id="s-label" placeholder="What this signal proves — e.g. Speaker announces" autocomplete="off">
+      </div>
+      <div class="fld" id="s-from-wrap">
+        <label for="s-role">From</label>
+        <select id="s-role"><option value="">Any device in the demo</option></select>
+        <div class="hint" id="s-from-hint"></div>
       </div>
       <div id="sig-error" class="err hidden"></div>
     </div>
@@ -291,24 +296,100 @@
     });
   });
 
-  // ── Signals ──
+  // ── Signals — pick a WATCHED EVENT (the same bookmarked-pattern library
+  // detections start from); a free-text filter stays as the fallback. ──
   const sigModal = document.getElementById('signal-modal');
   const sigErr = document.getElementById('sig-error');
+  const watchSel = document.getElementById('s-watch');
+  const watchHint = document.getElementById('s-watch-hint');
+  const customWrap = document.getElementById('s-custom-wrap');
+  const roleSel = document.getElementById('s-role');
+  const fromHint = document.getElementById('s-from-hint');
+  let WATCHES = [];
+  let labelTouched = false;
+
+  // Roles already named on this demo — the "From" choices.
+  Array.from(new Set(Object.values(ROLES))).sort().forEach(r => {
+    const o = document.createElement('option');
+    o.value = r; o.textContent = 'Role: ' + r;
+    roleSel.appendChild(o);
+  });
+
   const closeSig = () => { sigModal.classList.add('hidden'); sigErr.classList.add('hidden'); };
-  document.getElementById('add-signal').addEventListener('click', () => sigModal.classList.remove('hidden'));
+
+  const selectedWatch = () =>
+    WATCHES.find(w => w.id === watchSel.value) || null;
+
+  const onWatchChange = () => {
+    const w = selectedWatch();
+    customWrap.classList.toggle('hidden', watchSel.value !== '__custom');
+    if (w && !labelTouched) document.getElementById('s-label').value = w.name;
+    // A device- or tag-scoped watch brings its own scope; the role picker
+    // only matters when the watch (or custom filter) is fleet-wide.
+    if (w && w.device_id) {
+      roleSel.value = ''; roleSel.disabled = true;
+      fromHint.textContent = 'Scoped to ' + w.device_id + ' by the watched event.';
+    } else if (w && w.tag) {
+      roleSel.value = ''; roleSel.disabled = true;
+      fromHint.textContent = 'Scoped to tag “' + w.tag + '” by the watched event.';
+    } else {
+      roleSel.disabled = false;
+      fromHint.textContent = '';
+    }
+  };
+
+  const openSig = async () => {
+    sigModal.classList.remove('hidden');
+    labelTouched = false;
+    try {
+      const res = await fetch('/api/watched-events');
+      WATCHES = ((await res.json()).watched || []);
+    } catch (e) { WATCHES = []; }
+    watchSel.innerHTML = '';
+    WATCHES.forEach(w => {
+      const o = document.createElement('option');
+      o.value = w.id;
+      const scope = w.device_id ? w.device_id : (w.tag ? '#' + w.tag : 'any device');
+      o.textContent = w.name + ' — ' + scope;
+      watchSel.appendChild(o);
+    });
+    const custom = document.createElement('option');
+    custom.value = '__custom'; custom.textContent = '— custom event filter —';
+    watchSel.appendChild(custom);
+    if (!WATCHES.length) {
+      watchSel.value = '__custom';
+      watchHint.innerHTML = 'No watched events yet — bookmark one from the <a href="/activity">Activity feed</a> (star an event), or use a custom filter below.';
+    }
+    onWatchChange();
+  };
+
+  document.getElementById('add-signal').addEventListener('click', openSig);
   document.getElementById('sig-close').addEventListener('click', closeSig);
   document.getElementById('sig-cancel').addEventListener('click', closeSig);
   sigModal.addEventListener('click', (e) => { if (e.target === sigModal) closeSig(); });
+  watchSel.addEventListener('change', onWatchChange);
+  document.getElementById('s-label').addEventListener('input', () => { labelTouched = true; });
 
   document.getElementById('sig-save').addEventListener('click', async () => {
-    const filter = document.getElementById('s-filter').value.trim();
-    if (!filter) { sigErr.textContent = 'Event type is required.'; sigErr.classList.remove('hidden'); return; }
-    const next = SIGNALS.concat([{
-      label: document.getElementById('s-label').value.trim() || filter,
-      category: filter,
-      role: document.getElementById('s-role').value.trim() || undefined,
-    }]);
-    try { await patch({ signals: next }); window.location.reload(); }
+    const label = document.getElementById('s-label').value.trim();
+    const role = roleSel.disabled ? '' : roleSel.value;
+    let sig;
+    if (watchSel.value === '__custom') {
+      const filter = document.getElementById('s-filter').value.trim();
+      if (!filter) { sigErr.textContent = 'Type an event filter (or pick a watched event).'; sigErr.classList.remove('hidden'); return; }
+      sig = { label: label || filter, category: filter };
+    } else {
+      const w = selectedWatch();
+      if (!w) { sigErr.textContent = 'Pick a watched event.'; sigErr.classList.remove('hidden'); return; }
+      // Copy semantics, same as the detection builder: the watch seeds the
+      // signal; it is never referenced live, so it can be edited/deleted freely.
+      sig = { watch_id: w.id, label: label || w.name };
+      if (w.match && w.match.topic) sig.topic = w.match.topic;
+      if (w.match && w.match.category) sig.category = w.match.category;
+      if (w.device_id) sig.device_id = w.device_id;
+    }
+    if (role) sig.role = role;
+    try { await patch({ signals: SIGNALS.concat([sig]) }); window.location.reload(); }
     catch (e) { sigErr.textContent = e.message; sigErr.classList.remove('hidden'); }
   });
 

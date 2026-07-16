@@ -442,12 +442,20 @@ async def demos_page(request: Request, ctx: AppContext = Depends(get_context)):
     """
     demos = service.demo_views(ctx.demo_store.list(), ctx.registry, ctx.event_store)
     try:
+        devices = [
+            {"device_id": d.get("device_id"),
+             "name": d.get("nickname") or d.get("device_id"),
+             "model": d.get("model") or ""}
+            for d in ctx.registry.list_devices() if d.get("device_id")
+        ]
+        devices.sort(key=lambda d: d["name"])
         tags = sorted({t for d in ctx.registry.list_devices() for t in (d.get("tags") or [])})
     except Exception:  # noqa: BLE001
-        tags = []
+        devices, tags = [], []
     return templates.TemplateResponse(
         "demos.html",
-        {"request": request, "title": "Demos", "demos": demos, "tags": tags},
+        {"request": request, "title": "Demos", "demos": demos, "tags": tags,
+         "all_devices": devices},
     )
 
 
