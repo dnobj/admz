@@ -98,6 +98,10 @@ class DriftReport:
     # Commit-on-change: an unchanged device points at the existing commit.
     # None when observation recording failed/was unavailable.
     observed_sha: Optional[str] = None
+    # The blessed baseline this report was diffed against. Stored in the drift
+    # cache so a cached report can be invalidated the moment the baseline moves
+    # (accept / re-snapshot) — a stale-baseline cache must never drive a revert.
+    baseline_sha: Optional[str] = None
     # The drift-alert transition this check produced ("appeared"/"changed"/
     # "cleared"), or None when the drift state didn't change.
     alert_transition: Optional[str] = None
@@ -121,6 +125,7 @@ class DriftReport:
             "unreadable": self.unreadable,
             "unreadable_reason": self.unreadable_reason,
             "observed_sha": self.observed_sha,
+            "baseline_sha": self.baseline_sha,
             "facets_checked": self.facets_checked,
             "facets_drifted": self.facets_drifted,
             "timestamp": self.timestamp,
