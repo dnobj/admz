@@ -1,6 +1,11 @@
 # ADR-0041 — Activity / observability layer: log search, a cross-source event timeline, and event-pattern detections
 
-**Status:** Accepted (2026-06-19). Operationalizes the planning half of
+**Status:** Accepted (2026-06-19). **Ingestion model amended by
+[ADR-0048](0048-watch-scoped-event-capture.md)** (2026-07-18): capture is now
+watch-scoped (only devices/events an operator watches) with a transient preview
+feed for discovery — the original "subscribe every device to every topic, store
+all" firehose did not scale. The rest of this ADR stands.
+Operationalizes the planning half of
 **ADR-0028** ("Demo / activity tracking as a bounded module"), which was
 "discussion-captured, not a committed plan." This ADR commits the architecture
 now that the substrate ADR-0028 assumed actually exists.

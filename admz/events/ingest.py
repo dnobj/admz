@@ -17,30 +17,21 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from admz.events import config as cfg
 from admz.events.store import EventStore, event_store
+from admz.events.subscriptions import WatchGate
 from admz.events.wsstream import DeviceEventStream, EventCallback
 
 logger = logging.getLogger(__name__)
 
 
-def _scoped_device_ids(registry: Any, tag: Optional[str]) -> List[str]:
-    try:
-        devices = registry.list_devices()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("event ingest: list_devices failed: %s", exc)
-        return []
-    out: List[str] = []
-    for d in devices:
-        did = d.get("device_id") or d.get("id")
-        if not did:
-            continue
-        if tag and tag not in (d.get("tags") or []):
-            continue
-        out.append(did)
-    return out
-
-
 class EventIngestSupervisor:
-    """Maintains the set of per-device WS event streams."""
+    """Maintains the set of per-device WS event streams.
+
+    Watch-scoped (ADR-0041 amendment): a stream is opened only for devices a
+    watched event / enabled detection targets (via :class:`WatchGate`), and each
+    stream persists only events matching a watched-event/detection spec — not the
+    whole fleet's whole event firehose. Enabling ingest with zero watched events
+    therefore opens zero streams and stores nothing.
+    """
 
     def __init__(
         self,
@@ -48,10 +39,12 @@ class EventIngestSupervisor:
         registry: Any,
         store: Optional[EventStore] = None,
         on_event: Optional[EventCallback] = None,
+        gate: Optional[WatchGate] = None,
     ):
         self.registry = registry
         self.store = store or event_store
         self.on_event = on_event
+        self.gate = gate or WatchGate(registry=registry)
         self._streams: Dict[str, DeviceEventStream] = {}
         self._task: Optional[asyncio.Task] = None
         self._running = False
@@ -112,7 +105,12 @@ class EventIngestSupervisor:
             await self._stop_all()
             return {"added": 0, "removed": 0, "active": 0}
 
-        want = _scoped_device_ids(self.registry, cfg.tag_filter())
+        # Only devices a watched event / enabled detection targets — NOT the whole
+        # roster. An additional per-tag/device filter can still narrow further.
+        want = self.gate.device_ids()
+        tag = cfg.tag_filter()
+        if tag:
+            want = [d for d in want if tag in self.gate._device_tags(d)]
         want = want[: cfg.MAX_STREAMS]
         want_set = set(want)
         have = set(self._streams)
@@ -121,7 +119,8 @@ class EventIngestSupervisor:
         for did in want:
             if did not in self._streams:
                 stream = DeviceEventStream(
-                    did, registry=self.registry, store=self.store, on_event=self.on_event,
+                    did, registry=self.registry, store=self.store,
+                    on_event=self.on_event, event_filter=self.gate.matches,
                 )
                 self._streams[did] = stream
                 await stream.start()
@@ -134,8 +133,16 @@ class EventIngestSupervisor:
                 await stream.stop()
                 removed += 1
 
+        # Retention safety net — even watched-only capture should never grow
+        # without bound (a chatty watched topic, a long-lived deployment).
+        try:
+            self.store.enforce_retention()
+        except Exception:  # noqa: BLE001 — retention must never break the loop
+            logger.debug("event store retention sweep failed", exc_info=True)
+
         if added or removed:
-            logger.info("event ingest reconcile: +%d -%d (active=%d)", added, removed, len(self._streams))
+            logger.info("event ingest reconcile: +%d -%d (active=%d, watched-scoped)",
+                        added, removed, len(self._streams))
         return {"added": added, "removed": removed, "active": len(self._streams)}
 
     # ----- observability -----

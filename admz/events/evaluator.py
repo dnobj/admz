@@ -18,6 +18,7 @@ from typing import Any, Dict, List
 from admz.events.detections import (
     DetectionStore, EventDetection, SERVICE_AFFECTING_ACTIONS, detection_store,
 )
+from admz.events.matching import record_matches
 
 logger = logging.getLogger(__name__)
 
@@ -52,37 +53,12 @@ class DetectionEvaluator:
 
     # ----- matching -----
     def _matches(self, rule: EventDetection, rec: Dict[str, Any]) -> bool:
-        if rec.get("source") != rule.source:
-            return False
-        did = rec.get("device_id")
-        if rule.device_id:
-            if did != rule.device_id:
-                return False
-        elif rule.tag:
-            if rule.tag not in self._device_tags(did):
-                return False
-        m = rule.match or {}
-        data = rec.get("data") or {}
-        if m.get("category") and data.get("category") != m["category"]:
-            return False
-        if m.get("topic") and str(m["topic"]).lower() not in (rec.get("type") or "").lower():
-            return False
-        cond = m.get("condition") or {}
-        key = cond.get("key")
-        if key:
-            inner = data.get("data") or {}
-            op = (cond.get("op") or "eq").lower()
-            if op == "exists":
-                if key not in inner:
-                    return False
-            else:
-                val, target = inner.get(key), cond.get("value")
-                if op == "ne":
-                    if str(val) == str(target):
-                        return False
-                elif str(val) != str(target):  # eq (default)
-                    return False
-        return True
+        # Delegates to the shared matcher so detections and the watched-event
+        # ingest gate never diverge on what "matches" means.
+        return record_matches(
+            rec, source=rule.source, device_id=rule.device_id, tag=rule.tag,
+            match=rule.match, device_tags=self._device_tags(rec.get("device_id")),
+        )
 
     # ----- evaluate (on_event hook) -----
     async def evaluate(self, rec: Dict[str, Any]) -> None:
