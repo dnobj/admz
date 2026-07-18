@@ -154,6 +154,52 @@ class TestCrossProcessRoundTrip:
 # ---------------------------------------------------------------------------
 
 
+class TestScenarioMarkersHandler:
+    """The scenario_markers handler (task_7f8c285b fix): the active_scenario
+    marker flips ONLY on completion, and ONLY for devices whose steps all
+    succeeded."""
+
+    def _reg(self):
+        class _R:
+            def __init__(self):
+                self.calls = []
+            def set_active_scenario(self, did, name):
+                self.calls.append((did, name))
+        return _R()
+
+    def _plan(self, results):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            results=[SimpleNamespace(device_id=d, success=s) for d, s in results])
+
+    def test_marker_set_when_all_steps_succeed(self):
+        from admz.snapshot.scenarios import on_markers_complete
+        reg = self._reg()
+        plan = self._plan([("a", True), ("a", True), ("b", True)])
+        on_markers_complete(plan, {"markers": {"a": "night", "b": "night"}}, registry=reg)
+        assert set(reg.calls) == {("a", "night"), ("b", "night")}
+
+    def test_partial_failure_skips_that_device(self):
+        from admz.snapshot.scenarios import on_markers_complete
+        reg = self._reg()
+        plan = self._plan([("a", True), ("a", False), ("b", True)])  # a half-failed
+        on_markers_complete(plan, {"markers": {"a": "night", "b": "night"}}, registry=reg)
+        assert reg.calls == [("b", "night")]  # a keeps its prior marker
+
+    def test_return_clears_marker(self):
+        from admz.snapshot.scenarios import on_markers_complete
+        reg = self._reg()
+        on_markers_complete(self._plan([("a", True)]), {"markers": {"a": None}}, registry=reg)
+        assert reg.calls == [("a", None)]
+
+    def test_device_with_no_results_not_marked(self):
+        from admz.snapshot.scenarios import on_markers_complete
+        reg = self._reg()
+        on_markers_complete(self._plan([("a", True)]),
+                            {"markers": {"a": "n", "c": "n"}}, registry=reg)
+        assert reg.calls == [("a", "n")]  # c never ran
+
+
 class TestEngineDispatch:
     def test_run_plan_dispatches_completion(self, completion):
         from admz.plans.engine import PlanEngine

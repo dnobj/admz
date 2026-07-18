@@ -76,6 +76,11 @@ class DriftField:
     owner: Optional[str] = None        # demo id (demo_set / demo_broken)
     owner_name: Optional[str] = None
     candidates: List[Dict[str, str]] = field(default_factory=list)  # [{id,name}]
+    # ADR-0048: the BASELINE value for a demo-owned key, captured at the
+    # demo_set/demo_broken sites. For demo_broken, ``expected`` holds the DEMO's
+    # value (so a targeted revert repairs the demo); ``base_value`` is what a
+    # deactivate-with-restore pushes to return the device to baseline.
+    base_value: Optional[str] = None
 
 
 @dataclass
@@ -140,6 +145,7 @@ class DriftReport:
                     "owner": f.owner,
                     "owner_name": f.owner_name,
                     "candidates": f.candidates,
+                    "base_value": f.base_value,
                 }
                 for f in self.fields
             ],

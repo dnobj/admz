@@ -189,6 +189,7 @@ class DriftDetector:
                                 canonical_key=canonical,
                                 bucket="demo_set",
                                 owner=demo_id, owner_name=demo_name,
+                                base_value=base_val,
                             ))
                         continue  # matches base AND demo → nothing at all
                     # Owned but wrong: the DEMO is broken. expected = the
@@ -199,6 +200,7 @@ class DriftDetector:
                         canonical_key=canonical,
                         bucket="demo_broken",
                         owner=demo_id, owner_name=demo_name,
+                        base_value=base_val,
                     ))
                     facet_drifted = True
                     continue
