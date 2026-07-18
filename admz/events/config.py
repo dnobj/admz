@@ -26,12 +26,24 @@ DEFAULT_STORE_CATEGORIES: Set[str] = {
 }
 
 # Supervisor knobs.
-RECONCILE_INTERVAL_SECONDS = 60.0   # re-read the device roster to add/drop streams
+RECONCILE_INTERVAL_SECONDS = 60.0   # re-read watched scope to add/drop streams
 MAX_STREAMS = 64                    # safety cap on concurrent device connections
 RECONNECT_BASE_DELAY = 2.0          # exponential backoff base (seconds)
 RECONNECT_MAX_DELAY = 120.0
 WSSESSION_TIMEOUT = 10.0
 WS_OPEN_TIMEOUT = 15.0
+
+# Retention (safety net). The store now holds only watched hits, but a chatty
+# watched topic over a long-lived deployment should still never grow unbounded.
+EVENTS_MAX_ROWS = 50000             # keep only the newest N stored events
+EVENTS_RETENTION_DAYS = 30          # drop stored events older than this
+
+# Transient preview feed (the "pick a new watched event" picker). Streams the
+# SELECTED device(s) live to the browser WITHOUT persisting — never the store.
+MAX_PREVIEW_STREAMS = 8             # bound concurrent device connections previews open
+PREVIEW_MAX_SECONDS = 600.0         # a picker SSE auto-closes after this (abandoned-tab guard)
+PREVIEW_RING = 200                  # events buffered per preview (replay to the picker)
+PREVIEW_IDLE_TIMEOUT = 120.0        # close a preview this long after its last subscriber leaves
 
 # ACS Pro action-rule poller (ADR-0041 — ACS has NO push API, so we POLL the
 # recorded-events log for "Action Rule" firings). Separate flag from the device
@@ -94,9 +106,27 @@ def store_categories() -> Optional[Set[str]]:
 
 
 def tag_filter() -> Optional[str]:
-    """Optional tag to scope which devices we subscribe to (None = all)."""
+    """Optional tag to further narrow the watched device set (None = no extra narrowing)."""
     try:
         v = (_settings().get("event_ingest_tag") or "").strip()
         return v or None
     except Exception:  # noqa: BLE001
         return None
+
+
+def _int_setting(key: str, default: int) -> int:
+    try:
+        v = _settings().get(key)
+        return int(v) if v not in (None, "") else default
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def events_max_rows() -> int:
+    """Max stored events to retain (fleet-overridable via ``event_store_max_rows``)."""
+    return _int_setting("event_store_max_rows", EVENTS_MAX_ROWS)
+
+
+def events_retention_days() -> int:
+    """Days of stored events to keep (fleet-overridable via ``event_store_retention_days``)."""
+    return _int_setting("event_store_retention_days", EVENTS_RETENTION_DAYS)

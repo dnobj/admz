@@ -44,6 +44,7 @@ from admz.events.acs_firebird_ingest import AcsFirebirdPoller
 from admz.events.detections import DetectionStore
 from admz.events.evaluator import DetectionEvaluator
 from admz.events.watched import WatchedEventStore
+from admz.events.preview import PreviewManager
 from admz.demos.store import DemoStore
 
 
@@ -72,6 +73,9 @@ class Components:
     acs_event_poller: AcsActionRulePoller
     acs_firebird_poller: AcsFirebirdPoller
     watched_event_store: WatchedEventStore
+    # ADR-0041 amendment: transient preview feed for the watched-event picker
+    # (ephemeral, non-persisting per-device streams — never the firehose).
+    preview_manager: "PreviewManager"
     # ADR-0041 layer 3: event-pattern detection rules + the evaluator that fires
     # them (the supervisor's on_event callback).
     detection_store: DetectionStore
@@ -384,9 +388,22 @@ def build_components(
     # supervisor's on_event callback, so it's built first.
     detection_store = DetectionStore(str(_events_db_path()))
     detection_evaluator = DetectionEvaluator(registry=registry, store=detection_store)
+    # Watched events: a library of bookmarked event patterns. Built BEFORE the
+    # supervisor because (ADR-0041 amendment) they now scope ingest.
+    watched_event_store = WatchedEventStore(str(_events_db_path()))
+    # Watch-scoped ingest: the gate reads these RESOLVED-path stores (not the
+    # default-path module singletons), so a stream opens only for a watched
+    # device and only watched hits are persisted — no firehose.
+    from admz.events.subscriptions import WatchGate
+    from admz.events.preview import PreviewManager
+    event_gate = WatchGate(registry=registry, watched_store=watched_event_store,
+                           detection_store=detection_store)
     event_supervisor = EventIngestSupervisor(
         registry=registry, store=event_store, on_event=detection_evaluator.evaluate,
+        gate=event_gate,
     )
+    # Transient preview for the picker — ephemeral, non-persisting.
+    preview_manager = PreviewManager(registry=registry)
     # ACS Pro has no push API, so action-rule firings are POLLED into the same
     # store + evaluator as device events (source="acs"). Off until both the ACS
     # module and acs_event_ingest_enabled are on.
@@ -399,9 +416,6 @@ def build_components(
     acs_firebird_poller = AcsFirebirdPoller(
         store=event_store, on_event=detection_evaluator.evaluate,
     )
-    # Watched events: a passive library of bookmarked event patterns (no worker,
-    # no evaluator, no ingest dependency — it just feeds the detection builder).
-    watched_event_store = WatchedEventStore(str(_events_db_path()))
 
     return Components(
         registry=registry,
@@ -421,6 +435,7 @@ def build_components(
         acs_event_poller=acs_event_poller,
         acs_firebird_poller=acs_firebird_poller,
         watched_event_store=watched_event_store,
+        preview_manager=preview_manager,
         detection_store=detection_store,
         detection_evaluator=detection_evaluator,
         demo_store=demo_store,

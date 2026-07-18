@@ -20,6 +20,19 @@ def isolate_admz_dirs(tmp_path, monkeypatch):
     monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    # The confirm-store/audit singletons bind their DB path at import time —
+    # rebind them or the gated-write tests leak pending sessions into the REAL
+    # deployment DB (observed live 2026-07-18).
+    from admz import audit as audit_module
+    monkeypatch.setattr(
+        audit_module, "audit_log",
+        audit_module.AuditLog(db_path=str(tmp_path / "admz.db")))
+    import admz.api.confirm_store as cs_module
+    store = cs_module.ConfirmStore(db_path=str(tmp_path / "admz.db"))
+    monkeypatch.setattr(cs_module, "confirm_store", store)
+    # routes/confirm.py binds the instance at import time — patch its name too
+    # so the approve endpoint reads the same store the gates write.
+    monkeypatch.setattr("admz.api.routes.confirm.confirm_store", store)
 
 
 @pytest.fixture
@@ -27,6 +40,22 @@ def client(isolate_admz_dirs, monkeypatch):
     monkeypatch.setenv("ADMZ_AUTH_BACKEND", "none")
     # Demo writes require an authenticated principal; under the 'none' backend the
     # principal is anonymous, so neutralize that gate (same as the GitHub App tests).
+    monkeypatch.setattr("admz.authz.require_authenticated_principal", lambda p: None)
+    # These tests exercise the CONSOLE-USER flow: a signed-in windows principal
+    # clicking the web UI writes directly. The widget-gated (non-interactive)
+    # path is covered separately by TestDriftAffectingGate.
+    monkeypatch.setattr("admz.demos.gated.is_interactive", lambda p: True)
+    from admz.api.main import app
+
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture
+def api_client(isolate_admz_dirs, monkeypatch):
+    """Same app, but the caller is NON-interactive (api key / chat) — the
+    drift-affecting writes must gate behind the approval widget."""
+    monkeypatch.setenv("ADMZ_AUTH_BACKEND", "none")
     monkeypatch.setattr("admz.authz.require_authenticated_principal", lambda p: None)
     from admz.api.main import app
 
@@ -188,6 +217,116 @@ class TestPrepareEndGuards:
         res = client.post(f"/api/demos/{demo['id']}/end")
         assert res.status_code == 200, res.text
         assert seen["devices"] == ["cam-1"]
+
+
+class TestDriftAffectingGate:
+    """ADR-0047 policy: assign-fragment + adopt gate behind the approval widget
+    for NON-interactive principals (api key / chat). Drives the REAL confirm
+    endpoint, so approval executes the registered action executors."""
+
+    @pytest.fixture
+    def fake_drift(self, monkeypatch):
+        from admz.snapshot.models import DriftField, DriftReport
+
+        async def _fake(self, device_id, baseline_sha=None, family="vapix"):
+            return DriftReport(device_id=device_id, has_drift=True, fields=[
+                DriftField(facet="other", path="Motion.M0.Enabled",
+                           expected="no", actual="yes",
+                           canonical_key="root.Motion.M0.Enabled"),
+            ])
+
+        from admz.snapshot.drift import DriftDetector
+        monkeypatch.setattr(DriftDetector, "check_drift", _fake)
+
+    def _mk_api(self, api_client, **kw):
+        body = {"name": "Gated demo", "narrative": ""}
+        body.update(kw)
+        res = api_client.post("/api/demos", json=body)
+        assert res.status_code == 200, res.text
+        return res.json()["demo"]
+
+    def test_assign_gates_then_approval_executes(self, api_client, registry,
+                                                 fake_drift):
+        from admz.demos import fragments as fr
+        from admz.api.context import get_context
+
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = self._mk_api(api_client, tag="speakers")
+        res = api_client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [{"device_id": "cam-1", "facet": "other",
+                        "path": "Motion.M0.Enabled"}]})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["blocked"] is True and data["confirm_url"]
+        # NOT written yet — the widget holds it.
+        assert fr.load_all_fragments(get_context().git_repo, demo["id"]) == {}
+
+        # Approve at the real endpoint → the action executor runs the core.
+        ok = api_client.post(f"/api/chat/confirm/{data['confirm_token']}",
+                             json={})
+        assert ok.status_code == 200, ok.text
+        outcome = ok.json().get("outcome") or {}
+        assert outcome.get("success") is True, ok.json()
+        frags = fr.load_all_fragments(get_context().git_repo, demo["id"])
+        assert frags["default"]["other"]["set"]["Motion.M0.Enabled"] == "yes"
+
+    def test_adopt_gates_then_approval_executes(self, api_client, registry,
+                                                fake_drift):
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = self._mk_api(api_client, tag="speakers")
+        res = api_client.post(f"/api/demos/{demo['id']}/adopt")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["blocked"] is True and data["confirm_token"]
+        from admz.api.context import get_context
+        assert get_context().demo_store.get(demo["id"]).active is False
+
+        ok = api_client.post(f"/api/chat/confirm/{data['confirm_token']}",
+                             json={})
+        assert ok.status_code == 200, ok.text
+        assert get_context().demo_store.get(demo["id"]).active is True
+
+    def test_adopt_apply_time_guard_recheck(self, api_client, registry,
+                                            fake_drift):
+        # Approve an adopt AFTER a conflicting demo went active — the executor
+        # re-runs the guards and fails cleanly instead of slipping through.
+        from admz.api.context import get_context
+        from admz.demos import fragments as fr
+
+        _add_device(registry, "cam-1", tags=["speakers"])
+        a = self._mk_api(api_client, name="Demo A", tag="speakers")
+        b = self._mk_api(api_client, name="Demo B", tag="speakers")
+        ctx = get_context()
+        for d in (a, b):
+            demo_obj = ctx.demo_store.get(d["id"])
+            fr.add_entries(ctx.git_repo, demo_obj, "default",
+                           [{"facet": "other", "path": "Motion.M0.Enabled",
+                             "value": "yes"}])
+
+        # Gate B's adopt, then A becomes active before B is approved.
+        env = api_client.post(f"/api/demos/{b['id']}/adopt").json()
+        assert env["blocked"] is True
+        demo_a = ctx.demo_store.get(a["id"])
+        demo_a.active = True
+        ctx.demo_store.update(demo_a)
+
+        ok = api_client.post(f"/api/chat/confirm/{env['confirm_token']}",
+                             json={})
+        outcome = ok.json().get("outcome") or {}
+        assert outcome.get("success") is False, ok.json()
+        assert "Demo A" in (outcome.get("error") or str(outcome))
+        assert ctx.demo_store.get(b["id"]).active is False
+
+    def test_deactivate_and_metadata_stay_direct(self, api_client, registry):
+        # Only the drift-affecting writes gate — create/update/delete and
+        # deactivate answer directly even for non-interactive callers.
+        demo = self._mk_api(api_client)
+        r = api_client.patch(f"/api/demos/{demo['id']}",
+                             json={"narrative": "updated"})
+        assert r.status_code == 200 and "blocked" not in r.json()
+        r = api_client.post(f"/api/demos/{demo['id']}/deactivate")
+        assert r.status_code == 200 and r.json()["success"] is True
+        assert api_client.delete(f"/api/demos/{demo['id']}").status_code == 200
 
 
 class TestPages:

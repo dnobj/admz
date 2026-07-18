@@ -1,9 +1,12 @@
-"""REST + web surface for demos (ADR-0046).
+"""REST + web surface for demos (ADR-0046/0047).
 
-A demo is inert metadata — it never fires anything on its own, so CRUD needs only
-an authenticated principal (same bar as detections). The one action that *touches*
-devices, Prepare, delegates to the existing gated scenario push, so it inherits the
-approval widget rather than inventing a second gate.
+Thin HTTP layer over the shared cores in :mod:`admz.demos.actions` — MCP and
+the confirm-widget executors call the SAME cores, so every surface runs one
+implementation. Metadata CRUD is inert (authenticated principal only). The
+drift-affecting writes (assign-fragment, adopt) gate behind the approval widget
+for non-interactive principals (api keys, chat) — the signed-in console user
+writes directly, mirroring the tasks policy. Prepare/End inherit the scenario
+plan gate.
 """
 
 from __future__ import annotations
@@ -18,7 +21,8 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from admz.api.context import AppContext, get_context
-from admz.demos import service
+from admz.demos import actions, service
+from admz.demos.actions import DemoActionError
 from admz.demos.store import Demo
 
 logger = logging.getLogger(__name__)
@@ -82,6 +86,10 @@ def _get(ctx: AppContext, demo_id: str) -> Demo:
     return demo
 
 
+def _http(e: DemoActionError) -> HTTPException:
+    return HTTPException(status_code=e.status, detail=str(e))
+
+
 # ── REST ─────────────────────────────────────────────────────────────────────
 
 @router.get("/api/demos")
@@ -104,22 +112,11 @@ async def get_demo(demo_id: str, ctx: AppContext = Depends(get_context)):
 @router.post("/api/demos")
 async def create_demo(req: DemoRequest, request: Request,
                       ctx: AppContext = Depends(get_context)):
-    from admz.audit import record_event
-
     principal = await _principal(request)
-    if not (req.name or "").strip():
-        raise HTTPException(400, "name is required")
-    demo = ctx.demo_store.create(Demo(
-        id="", name=req.name.strip(), narrative=req.narrative or "",
-        tag=req.tag or None, device_ids=req.device_ids or [],
-        roles=req.roles or {}, config_source=req.config_source or "baseline",
-        signals=req.signals or [], enabled=bool(req.enabled),
-        created_by=str(principal),
-    ))
-    record_event(principal, "demo.create", resource=f"demo:{demo.id}",
-                 details={"name": demo.name,
-                          "scope": demo.tag or f"{len(demo.device_ids)} device(s)",
-                          "config_source": demo.config_source})
+    try:
+        demo = actions.create_demo_core(ctx, req.model_dump(), principal)
+    except DemoActionError as e:
+        raise _http(e)
     return {"success": True,
             "demo": service.demo_view(demo, ctx.registry, ctx.event_store)}
 
@@ -127,18 +124,13 @@ async def create_demo(req: DemoRequest, request: Request,
 @router.patch("/api/demos/{demo_id}")
 async def update_demo(demo_id: str, request: Request,
                       ctx: AppContext = Depends(get_context)):
-    from admz.audit import record_event
-
     principal = await _principal(request)
     demo = _get(ctx, demo_id)
     body = await request.json()
-    for f in ("name", "narrative", "tag", "device_ids", "roles",
-              "config_source", "signals", "enabled"):
-        if f in body:
-            setattr(demo, f, body[f])
-    ctx.demo_store.update(demo)
-    record_event(principal, "demo.update", resource=f"demo:{demo_id}",
-                 details={"fields": [f for f in body]})
+    try:
+        demo = actions.update_demo_core(ctx, demo, body, principal)
+    except DemoActionError as e:
+        raise _http(e)
     return {"success": True,
             "demo": service.demo_view(demo, ctx.registry, ctx.event_store)}
 
@@ -146,19 +138,9 @@ async def update_demo(demo_id: str, request: Request,
 @router.delete("/api/demos/{demo_id}")
 async def delete_demo(demo_id: str, request: Request,
                       ctx: AppContext = Depends(get_context)):
-    from admz.audit import record_event
-
     principal = await _principal(request)
     demo = _get(ctx, demo_id)
-    ctx.demo_store.delete(demo_id)
-    try:
-        from admz.demos import fragments as fr
-
-        fr.delete_demo_fragments(ctx.git_repo, demo_id, demo.name)
-    except Exception:  # noqa: BLE001 — orphan fragments are harmless; history keeps them
-        logger.warning("demo %s: fragment cleanup failed", demo_id, exc_info=True)
-    record_event(principal, "demo.delete", resource=f"demo:{demo_id}",
-                 details={"name": demo.name})
+    actions.delete_demo_core(ctx, demo, principal)
     return {"success": True}
 
 
@@ -166,13 +148,7 @@ async def delete_demo(demo_id: str, request: Request,
 
 
 def _fragments_view(ctx: AppContext, demo: Demo) -> Dict[str, Any]:
-    """``{role: {facets, counts}}`` for the demo's owned config, or {}."""
-    from admz.demos import fragments as fr
-
-    out: Dict[str, Any] = {}
-    for role, facets in fr.load_all_fragments(ctx.git_repo, demo.id).items():
-        out[role] = {"facets": facets, "counts": fr.fragment_entry_count(facets)}
-    return out
+    return actions.fragments_view(ctx, demo)
 
 
 @router.post("/api/demos/{demo_id}/fragment")
@@ -180,85 +156,31 @@ async def assign_fragment(demo_id: str, req: FragmentAssignRequest, request: Req
                           ctx: AppContext = Depends(get_context)):
     """Assign selected drift-diff rows to the demo's fragment (capture).
 
-    The server re-checks drift per device (same pattern as ``/snapshot/revert``)
-    so values come from the REAL diff, not the client: the captured value is the
-    device's **actual live value** — the operator configured the device the way
-    the demo needs it, so the live side IS the demo's config. Writes only; no
-    device is touched.
+    Drift-affecting (ADR-0047 policy): api-key and other non-interactive
+    principals get the approval widget; the signed-in console user writes
+    directly. The core re-checks drift so captured values come from the REAL
+    diff. Writes only; no device is touched.
     """
-    from admz.audit import record_event
-    from admz.demos import fragments as fr
-    from admz.snapshot.facets import get_facets_for_device
+    from admz.demos.gated import gate_demo_write, is_interactive
 
     principal = await _principal(request)
     demo = _get(ctx, demo_id)
-    if not req.fields:
-        raise HTTPException(400, "no fields selected")
-    if req.mode not in fr.MODES:
-        raise HTTPException(400, f"mode must be one of {fr.MODES}")
-
-    selected: Dict[str, set] = {}
-    for f in req.fields:
-        selected.setdefault(f.device_id, set()).add((f.facet, f.path))
-
-    added: List[Dict[str, Any]] = []
-    skipped: List[Dict[str, str]] = []
-    warnings: List[str] = []
-    entries_by_role: Dict[str, List[Dict[str, str]]] = {}
-    roles_learned: Dict[str, str] = {}
-
-    for did, chosen in selected.items():
-        if not ctx.registry.device_exists(did):
-            skipped.append({"device_id": did, "facet": "", "path": "",
-                            "reason": "device not found"})
-            continue
-        device_info = ctx.registry.get_device_info(did)
-        device_info["device_id"] = did
-        facets_by_name = {f.name: f for f in get_facets_for_device(device_info)}
-        role = fr.normalize_role(req.role or (demo.roles or {}).get(did))
-
-        report = await ctx.drift_detector.check_drift(did)
-        by_key = {(f.facet, f.path): f for f in report.fields}
-        for facet_name, path in sorted(chosen):
-            field = by_key.get((facet_name, path))
-            if field is None:
-                skipped.append({"device_id": did, "facet": facet_name,
-                                "path": path, "reason": "not-drifted"})
-                continue
-            ok, reason, warns = fr.validate_assignment(
-                field, facets_by_name.get(facet_name), req.mode, device_info)
-            warnings.extend(warns)
-            if not ok:
-                skipped.append({"device_id": did, "facet": facet_name,
-                                "path": path, "reason": reason})
-                continue
-            entries_by_role.setdefault(role, []).append(
-                {"facet": facet_name, "path": path, "value": field.actual})
-            added.append({"device_id": did, "role": role, "facet": facet_name,
-                          "path": path, "value": field.actual,
-                          "canonical_key": field.canonical_key})
-            roles_learned[did] = role
-
-    commit_sha = None
-    for role, entries in entries_by_role.items():
-        sha = fr.add_entries(ctx.git_repo, demo, role, entries, mode=req.mode)
-        commit_sha = sha or commit_sha
-
-    # Capturing from a device implicitly binds it: record the role, and put the
-    # device in scope when the demo isn't tag-scoped.
-    if roles_learned:
-        demo.roles = {**(demo.roles or {}), **roles_learned}
-        if not demo.tag:
-            missing = [d for d in roles_learned if d not in (demo.device_ids or [])]
-            demo.device_ids = list(demo.device_ids or []) + missing
-        ctx.demo_store.update(demo)
-
-    record_event(principal, "demo.fragment_assign", resource=f"demo:{demo_id}",
-                 details={"added": len(added), "skipped": len(skipped),
-                          "mode": req.mode, "commit": commit_sha})
-    return {"success": True, "added": added, "skipped": skipped,
-            "warnings": warnings, "commit_sha": commit_sha,
-            "fragments": _fragments_view(ctx, demo)}
+    fields = [{"device_id": f.device_id, "facet": f.facet, "path": f.path}
+              for f in req.fields]
+    if not is_interactive(principal):
+        n = len(fields)
+        return gate_demo_write(
+            "assign_demo_fragment", demo.id,
+            {"demo": demo.id, "fields": fields, "role": req.role,
+             "mode": req.mode},
+            f"Assign {n} config field{'s' if n != 1 else ''} to demo "
+            f"'{demo.name}' — its keys become deliberate (not drift) once "
+            "the demo is active.")
+    try:
+        return await actions.assign_fragment_core(
+            ctx, demo, fields, req.role, req.mode, principal)
+    except DemoActionError as e:
+        raise _http(e)
 
 
 @router.post("/api/demos/{demo_id}/fragment/remove")
@@ -286,71 +208,31 @@ async def remove_fragment_entries(demo_id: str, req: FragmentRemoveRequest,
 @router.post("/api/demos/{demo_id}/adopt")
 async def adopt_demo(demo_id: str, request: Request,
                      ctx: AppContext = Depends(get_context)):
-    """Mark a demo ACTIVE without pushing anything.
-
-    Activation state is *intent*: the demo's owned keys join each device's
-    expected state on the next drift check. Keys already in place flip from
-    "drifted" to "set by <demo>"; keys not yet in place surface as drift
-    AGAINST the demo. Guards: no key may be claimed by two active demos
-    (v1 forbids all same-key overlap), and devices held by a legacy scenario
-    keep ADR-0044 semantics until it ends.
-    """
-    from admz.audit import record_event
-    from admz.demos import fragments as fr
+    """Mark a demo ACTIVE without pushing anything (drift-affecting →
+    non-interactive principals get the approval widget; guards re-run at
+    apply time). See :func:`admz.demos.actions.adopt_demo_core`."""
+    from admz.demos.gated import gate_demo_write, is_interactive
 
     principal = await _principal(request)
     demo = _get(ctx, demo_id)
-    if demo.active:
-        return {"success": True, "demo": demo.to_dict(),
-                "message": "Already active."}
-
-    devices = service.resolve_devices(demo, ctx.registry)
-    held = sorted({
-        f"{d.get('device_id')} (scenario '{d.get('active_scenario')}')"
-        for d in devices if d.get("active_scenario")
-    })
-    if held:
-        raise HTTPException(
-            409, "Held by a legacy scenario — end it before adopting: "
-                 + ", ".join(held))
-
-    others = [d for d in ctx.demo_store.list() if d.active and d.id != demo.id]
-    conflicts = fr.overlap_conflicts(ctx.git_repo, demo, others, ctx.registry)
-    if conflicts:
-        lines = sorted({
-            f"{c['facet']}/{c['path']} on {c['device_id']} "
-            f"(claimed by '{c['other_demo']}')" for c in conflicts})
-        raise HTTPException(
-            409, "Key conflict with another active demo: " + "; ".join(lines))
-
-    demo.active = True
-    ctx.demo_store.update(demo)
-    record_event(principal, "demo.adopt", resource=f"demo:{demo_id}",
-                 details={"name": demo.name,
-                          "devices": [d.get("device_id") for d in devices]})
-    return {"success": True, "demo": demo.to_dict(),
-            "message": ("Marked active. The next drift check attributes its "
-                        "keys — nothing was pushed.")}
+    if not is_interactive(principal):
+        return gate_demo_write(
+            "adopt_demo", demo.id, {"demo": demo.id},
+            f"Adopt demo '{demo.name}' (mark active) — its owned keys stop "
+            "counting as drift and join each device's expected state.")
+    try:
+        return actions.adopt_demo_core(ctx, demo, principal)
+    except DemoActionError as e:
+        raise _http(e)
 
 
 @router.post("/api/demos/{demo_id}/deactivate")
 async def deactivate_demo(demo_id: str, request: Request,
                           ctx: AppContext = Depends(get_context)):
-    """Stop claiming the demo's keys (no push — the config stays on the
-    devices; its keys read as plain drift again on the next check)."""
-    from admz.audit import record_event
-
+    """Stop claiming the demo's keys (no push — only reveals drift again)."""
     principal = await _principal(request)
     demo = _get(ctx, demo_id)
-    if demo.active:
-        demo.active = False
-        ctx.demo_store.update(demo)
-    record_event(principal, "demo.deactivate", resource=f"demo:{demo_id}",
-                 details={"name": demo.name})
-    return {"success": True, "demo": demo.to_dict(),
-            "message": ("Deactivated. Its keys return to unclaimed drift on "
-                        "the next check; revert them to restore the base "
-                        "values.")}
+    return actions.deactivate_demo_core(ctx, demo, principal)
 
 
 # ── Prepare / End ────────────────────────────────────────────────────────────
@@ -362,73 +244,26 @@ async def deactivate_demo(demo_id: str, request: Request,
 @router.post("/api/demos/{demo_id}/prepare")
 async def prepare_demo(demo_id: str, request: Request,
                        ctx: AppContext = Depends(get_context)):
-    """Load a sidelined demo's scenario onto its devices in one gated plan.
-
-    A **baseline** demo has nothing to load — its config is already the device's
-    normal state — so this refuses rather than inventing a push. Devices held by
-    another demo's scenario are reported as blockers instead of being stolen:
-    exclusivity is the point of a scenario.
-    """
-    from admz.demos import readiness as rd
-    from admz.snapshot.scenarios import activate_scenario_core
-
+    """Load a sidelined demo's scenario in one gated plan. See
+    :func:`admz.demos.actions.prepare_demo_core` for the guards."""
     principal = await _principal(request)
     demo = _get(ctx, demo_id)
-    name = rd.scenario_of(demo.config_source)
-    if not name:
-        raise HTTPException(
-            400, "This demo runs on the baseline config — there's nothing to "
-                 "load. Its devices are ready when they're in sync and online.")
-
-    targets = service.resolve_devices(demo, ctx.registry)
-    if not targets:
-        raise HTTPException(400, "This demo has no devices.")
-
-    held = [
-        d.get("device_id") for d in targets
-        if d.get("active_scenario") and d.get("active_scenario") != name
-    ]
-    if held:
-        raise HTTPException(
-            409, f"{', '.join(held)} currently held by another scenario "
-                 f"({', '.join(sorted({d.get('active_scenario') for d in targets if d.get('active_scenario') and d.get('active_scenario') != name}))}). "
-                 "End that demo first.")
-
     try:
-        result = await activate_scenario_core(
-            ctx, name, targets, principal,
-            description=f"Prepare demo '{demo.name}' (scenario '{name}')")
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    result["demo_id"] = demo.id
-    return result
+        return await actions.prepare_demo_core(ctx, demo, principal)
+    except DemoActionError as e:
+        raise _http(e)
 
 
 @router.post("/api/demos/{demo_id}/end")
 async def end_demo(demo_id: str, request: Request,
                    ctx: AppContext = Depends(get_context)):
     """Snap a sidelined demo's devices back to baseline, handing them back."""
-    from admz.demos import readiness as rd
-    from admz.snapshot.scenarios import return_to_baseline_core
-
     principal = await _principal(request)
     demo = _get(ctx, demo_id)
-    if not rd.scenario_of(demo.config_source):
-        raise HTTPException(
-            400, "This demo runs on the baseline config — there's nothing to "
-                 "end. Its devices were never taken out of their normal state.")
-
-    targets = service.resolve_devices(demo, ctx.registry)
-    if not targets:
-        raise HTTPException(400, "This demo has no devices.")
     try:
-        result = await return_to_baseline_core(
-            ctx, targets, principal,
-            description=f"End demo '{demo.name}' — return to baseline")
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    result["demo_id"] = demo.id
-    return result
+        return await actions.end_demo_core(ctx, demo, principal)
+    except DemoActionError as e:
+        raise _http(e)
 
 
 # ── Web ──────────────────────────────────────────────────────────────────────

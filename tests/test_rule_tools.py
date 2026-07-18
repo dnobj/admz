@@ -287,3 +287,140 @@ def test_capture_store_discard():
 def test_capture_store_unknown_token():
     assert capture.consume_captured_rule_secrets("never") == {}
     assert capture.has_rule_secrets("never") is False
+
+
+# ---------------------------------------------------------------------------
+# Condition grounding: survey notes, device applications, publisher lint
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace
+
+
+def test_condition_dicts_carry_notes_and_requires():
+    caps = capabilities.list_capabilities("AXIS C1710")
+    assert caps["available"] is True
+    pir = next(c for c in caps["conditions"] if c["id"] == "pir-sensor")
+    assert pir["requires"] == {"hardware": "pir_sensor"}
+    assert pir["notes"]  # survey caveats reach the model
+
+
+def test_trim_notes_collapses_and_caps():
+    noisy = "line one\n  line   two\n" + "x" * 500
+    out = capabilities._trim_notes(noisy)
+    assert "\n" not in out
+    assert len(out) <= 281  # 280 + ellipsis
+
+
+def test_device_applications_reads_latest_observation():
+    registry = SimpleNamespace(
+        get_device_info=lambda did: {"latest_observed_sha": "abc123"})
+    seen = {}
+
+    class Repo:
+        def read_facet(self, device_id, facet, ref):
+            seen.update(device_id=device_id, facet=facet, ref=ref)
+            return {"vmd": {"status": "Running", "version": "4.5.66"},
+                    "BarcodeReader": {"status": "Stopped"}}
+
+    apps = capabilities.device_applications(Repo(), registry, "dev1")
+    assert apps == {"vmd": "Running", "BarcodeReader": "Stopped"}
+    assert seen == {"device_id": "dev1", "facet": "applications", "ref": "abc123"}
+
+
+def test_device_applications_degrades_to_empty():
+    registry = SimpleNamespace(
+        get_device_info=lambda did: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert capabilities.device_applications(object(), registry, "dev1") == {}
+
+
+def test_publisher_app_for_topic_matrix():
+    cases = [
+        ("tnsaxis:CameraApplicationPlatform/VMD/Camera1ProfileANY", "vmd"),
+        ("tnsaxis:RuleEngine/VMD3/vmd3_video_1", "vmd"),
+        ("tnsaxis:CameraApplicationPlatform/ObjectAnalytics/Device1Scenario1",
+         "objectanalytics"),
+        ("tns1:Device/tnsaxis:Sensor/PIR", None),
+        ("tns1:VideoSource/MotionAlarm", None),
+    ]
+    for topic, expected in cases:
+        cond = SimpleNamespace(topic=topic)
+        assert capabilities.publisher_app_for(cond) == expected, topic
+
+
+def test_check_condition_publisher_blocks_absent_and_stopped():
+    vmd_cond = SimpleNamespace(
+        topic="tnsaxis:CameraApplicationPlatform/VMD/Camera1ProfileANY",
+        label="VMD any profile", id="vmd4-camera1-profile-any")
+    absent = capabilities.check_condition_publisher(
+        vmd_cond, {"stream_monitor": "Running"})
+    assert absent and "not installed" in absent and "'vmd'" in absent
+    stopped = capabilities.check_condition_publisher(
+        vmd_cond, {"vmd": "Stopped"})
+    assert stopped and "Stopped" in stopped
+    # Running app, unknown state, and built-in topics never block.
+    assert capabilities.check_condition_publisher(
+        vmd_cond, {"vmd": "Running"}) is None
+    assert capabilities.check_condition_publisher(vmd_cond, {}) is None
+    pir = SimpleNamespace(topic="tns1:Device/tnsaxis:Sensor/PIR")
+    assert capabilities.check_condition_publisher(
+        pir, {"stream_monitor": "Running"}) is None
+
+
+def test_condition_caution_flags_shadowed_motion_alarm():
+    motion = SimpleNamespace(topic="tns1:VideoSource/MotionAlarm")
+    caution = capabilities.condition_caution(motion, {"vmd": "Running"})
+    assert caution and "never fire" in caution and "vmd" in caution
+    # No analytics running -> MotionAlarm may be the only motion source; no nag.
+    assert capabilities.condition_caution(
+        motion, {"stream_monitor": "Running"}) is None
+    assert capabilities.condition_caution(motion, {}) is None
+    other = SimpleNamespace(topic="tns1:Device/tnsaxis:IO/Port")
+    assert capabilities.condition_caution(other, {"vmd": "Running"}) is None
+
+
+@pytest.mark.asyncio
+async def test_list_rule_capabilities_includes_device_applications(
+        server, monkeypatch):
+    async def _no_rules(**kw):
+        return []
+    monkeypatch.setattr("admz.rules.runner.list_rules", _no_rules)
+    monkeypatch.setattr(
+        capabilities, "device_applications",
+        lambda git_repo, registry, device_id: {"vmd": "Running"})
+    out = await _call_tool(server, "list_rule_capabilities", {"device_id": "cam"})
+    assert out["device_applications"] == {"vmd": "Running"}
+    assert "Running" in out["device_applications_note"]
+
+
+@pytest.mark.asyncio
+async def test_create_rule_blocked_when_publisher_app_missing(
+        server, monkeypatch):
+    server.registry.update_device("cam", {"model": "AXIS I8016-LVE"})
+    monkeypatch.setattr(capabilities, "build", lambda *a, **k: _FakeResult(True))
+    monkeypatch.setattr(
+        capabilities, "device_applications",
+        lambda git_repo, registry, device_id: {"stream_monitor": "Running"})
+    result = await _call_tool(server, "create_action_rule", {
+        "device_id": "cam", "condition_id": "vmd4-camera1-profile-any",
+        "action_token": "com.axis.action.fixed.ledcontrol",
+        "rule_name": "doomed"})
+    assert result["success"] is False
+    assert result.get("blocked") is not True  # refused outright, no card
+    assert "'vmd'" in result["error"] and "not installed" in result["error"]
+    assert result["device_applications"] == {"stream_monitor": "Running"}
+
+
+@pytest.mark.asyncio
+async def test_create_rule_warns_on_shadowed_motion_alarm(server, monkeypatch):
+    server.registry.update_device("cam", {"model": "AXIS I8016-LVE"})
+    monkeypatch.setattr(capabilities, "build", lambda *a, **k: _FakeResult(True))
+    monkeypatch.setattr(
+        capabilities, "device_applications",
+        lambda git_repo, registry, device_id: {"vmd": "Running"})
+    result = await _call_tool(server, "create_action_rule", {
+        "device_id": "cam", "condition_id": "motion-alarm",
+        "action_token": "com.axis.action.fixed.ledcontrol",
+        "rule_name": "shadowed"})
+    # Card still offered (the user may know better), but with a loud warning.
+    assert result.get("blocked") is True
+    assert result["warnings"] and "never fire" in result["warnings"][0]
