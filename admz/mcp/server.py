@@ -333,6 +333,10 @@ class ADMZMCPServer:
         self.restore_builder = components.restore_builder
         self.drift_detector = components.drift_detector
         self.scheduler = components.scheduler
+        # The whole bundle, for shared cores that take a ctx-shaped object
+        # (demo actions use .demo_store/.registry/.git_repo/.drift_detector/
+        # .plan_engine/... — Components is duck-compatible with AppContext).
+        self.components = components
 
         # MCP-only: knowledge base (product hints) and capabilities
         # (per-model API support). These are not currently exposed via
@@ -2210,6 +2214,149 @@ class ADMZMCPServer:
         env = operations.blocked_envelope(session)
         env["success"] = False
         return env
+
+    # ── Demos (ADR-0046/0047) — manage the experience-center unit of work ──
+    #
+    # All demo tools resolve by NAME or id and run the same shared cores the
+    # REST surface uses (admz/demos/actions.py). The drift-affecting writes
+    # (assign fragment, adopt) always gate from MCP — an LLM is never an
+    # interactive principal.
+
+    def _resolve_demo(self, ref: str):
+        from admz.demos.actions import resolve_demo
+
+        return resolve_demo(self.components.demo_store, ref)
+
+    @staticmethod
+    def _demo_err(exc) -> Dict[str, Any]:
+        return {"success": False, "error": str(exc)}
+
+    def _list_demos(self) -> Dict[str, Any]:
+        from admz.demos import service as demo_service
+
+        views = demo_service.demo_views(
+            self.components.demo_store.list(), self.registry,
+            self.components.event_store)
+        return {"success": True, "count": len(views), "demos": views}
+
+    def _get_demo(self, ref: str) -> Dict[str, Any]:
+        from admz.demos import actions as demo_actions
+        from admz.demos import service as demo_service
+        from admz.demos.actions import DemoActionError
+
+        try:
+            demo = self._resolve_demo(ref)
+        except DemoActionError as exc:
+            return self._demo_err(exc)
+        view = demo_service.demo_view(demo, self.registry,
+                                      self.components.event_store)
+        view["fragments"] = demo_actions.fragments_view(self.components, demo)
+        return {"success": True, "demo": view}
+
+    def _create_demo(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from admz.demos import service as demo_service
+        from admz.demos.actions import DemoActionError, create_demo_core
+
+        try:
+            demo = create_demo_core(self.components, arguments, self.principal)
+        except DemoActionError as exc:
+            return self._demo_err(exc)
+        return {"success": True,
+                "demo": demo_service.demo_view(
+                    demo, self.registry, self.components.event_store),
+                "message": f"Demo '{demo.name}' created."}
+
+    def _update_demo(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from admz.demos import service as demo_service
+        from admz.demos.actions import DemoActionError, update_demo_core
+
+        try:
+            demo = self._resolve_demo(arguments.get("demo") or "")
+            body = {k: v for k, v in arguments.items() if k != "demo"}
+            demo = update_demo_core(self.components, demo, body, self.principal)
+        except DemoActionError as exc:
+            return self._demo_err(exc)
+        return {"success": True,
+                "demo": demo_service.demo_view(
+                    demo, self.registry, self.components.event_store),
+                "message": f"Demo '{demo.name}' updated."}
+
+    def _delete_demo(self, ref: str) -> Dict[str, Any]:
+        from admz.demos.actions import DemoActionError, delete_demo_core
+
+        try:
+            demo = self._resolve_demo(ref)
+            delete_demo_core(self.components, demo, self.principal)
+        except DemoActionError as exc:
+            return self._demo_err(exc)
+        return {"success": True,
+                "message": (f"Demo '{demo.name}' deleted. Devices and their "
+                            "config are untouched; fragment history stays in git.")}
+
+    def _assign_demo_fragment(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Gate the capture behind the approval widget (drift-affecting)."""
+        from admz.demos.actions import DemoActionError
+        from admz.demos.gated import gate_demo_write
+
+        try:
+            demo = self._resolve_demo(arguments.get("demo") or "")
+        except DemoActionError as exc:
+            return self._demo_err(exc)
+        fields = list(arguments.get("fields") or [])
+        if not fields:
+            return {"success": False, "error": "no fields given — pick them "
+                    "from a fresh check_drift diff"}
+        n = len(fields)
+        return gate_demo_write(
+            "assign_demo_fragment", demo.id,
+            {"demo": demo.id, "fields": fields,
+             "role": arguments.get("role"), "mode": "set"},
+            f"Assign {n} config field{'s' if n != 1 else ''} to demo "
+            f"'{demo.name}' — its keys become deliberate (not drift) once "
+            "the demo is active.")
+
+    def _adopt_demo(self, ref: str) -> Dict[str, Any]:
+        """Gate adoption behind the approval widget (drift-affecting)."""
+        from admz.demos.actions import DemoActionError
+        from admz.demos.gated import gate_demo_write
+
+        try:
+            demo = self._resolve_demo(ref)
+        except DemoActionError as exc:
+            return self._demo_err(exc)
+        if demo.active:
+            return {"success": True, "message": "Already active."}
+        return gate_demo_write(
+            "adopt_demo", demo.id, {"demo": demo.id},
+            f"Adopt demo '{demo.name}' (mark active) — its owned keys stop "
+            "counting as drift and join each device's expected state.")
+
+    def _deactivate_demo(self, ref: str) -> Dict[str, Any]:
+        from admz.demos.actions import DemoActionError, deactivate_demo_core
+
+        try:
+            demo = self._resolve_demo(ref)
+            return deactivate_demo_core(self.components, demo, self.principal)
+        except DemoActionError as exc:
+            return self._demo_err(exc)
+
+    async def _prepare_demo(self, ref: str) -> Dict[str, Any]:
+        from admz.demos.actions import DemoActionError, prepare_demo_core
+
+        try:
+            demo = self._resolve_demo(ref)
+            return await prepare_demo_core(self.components, demo, self.principal)
+        except DemoActionError as exc:
+            return self._demo_err(exc)
+
+    async def _end_demo(self, ref: str) -> Dict[str, Any]:
+        from admz.demos.actions import DemoActionError, end_demo_core
+
+        try:
+            demo = self._resolve_demo(ref)
+            return await end_demo_core(self.components, demo, self.principal)
+        except DemoActionError as exc:
+            return self._demo_err(exc)
 
     async def _delete_account(
         self,

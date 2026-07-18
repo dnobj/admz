@@ -1,6 +1,6 @@
 # ADMZ MCP Tools Reference
 
-Complete reference for the **56 tools** the ADMZ MCP server exposes.
+Complete reference for the **67 tools** the ADMZ MCP server exposes.
 
 > Note: a `get_credentials` MCP tool used to exist. It was **removed**
 > (CR-1) because returning plaintext passwords into LLM context violates
@@ -587,6 +587,57 @@ Remove a rule (and its linked action configuration) by id (GATED).
 - **Args:** `device_id`, `rule_id`
 - **Returns:** a `url_only` confirm envelope; on approval `{success,
   removed_rule, removed_config}`.
+
+---
+
+## 🎬 Demos (ADR-0046/0047)
+
+The experience-center unit of work: named devices (each with a role) + the
+config that makes it work (an owned *fragment* over each device's baseline) +
+signals + narrative. Every tool below takes `demo` = the demo's **name**
+(case-insensitive, unique) or id.
+
+### `list_demos`
+Every demo with computed readiness (state, blockers, devices, active flag).
+Read-only, cache-backed — never probes a device.
+- **Returns:** `{success, count, demos: [{name, readiness: {state, blockers,
+  devices}, active, scenario_name, …}]}`
+
+### `get_demo`
+Full detail for one demo: per-device readiness rows, the owned config
+fragment per role, signals with last-seen, narrative.
+- **Args:** `demo`
+
+### `create_demo` / `update_demo` / `delete_demo`
+Metadata CRUD — nothing is pushed to any device. Scope by `tag` (picks up
+newly-tagged devices) or `device_ids`. `update_demo` takes only the fields to
+change; `delete_demo` also removes the demo's fragments from the working tree
+(git history keeps them).
+- **Args (create):** `name` (required), `narrative?`, `tag?`, `device_ids?`,
+  `roles?` (device_id→role), `signals?`
+
+### `assign_demo_fragment`
+Capture currently-drifted fields into the demo's owned fragment (GATED —
+returns the approval card; values are re-read from the live diff at apply
+time). Run `check_drift` first and pick fields from that diff.
+- **Args:** `demo`, `fields: [{device_id, facet, path}]`, `role?`
+- **Returns:** a blocked/`url_only` confirm envelope; on approval
+  `{success, added, skipped, warnings, commit_sha}`.
+
+### `adopt_demo`
+Mark a demo ACTIVE without pushing anything (GATED — its owned keys stop
+counting as drift). Guards re-run at apply time: same-key overlap with
+another active demo or a device held by a legacy scenario refuse cleanly.
+- **Args:** `demo`
+
+### `deactivate_demo`
+Stop claiming the demo's keys (direct, no gate — it only reveals drift).
+- **Args:** `demo`
+
+### `prepare_demo` / `end_demo`
+Load / unload a SIDELINED demo's scenario as ONE gated config-push plan
+(both return the plan's confirm envelope). Refused for baseline demos.
+- **Args:** `demo`
 
 ---
 

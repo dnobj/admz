@@ -305,6 +305,47 @@ async def _delete_action_rule(ctx, a):
     return await ctx.server._delete_action_rule(a["device_id"], a["rule_id"])
 
 
+# --- Demos (ADR-0046/0047) ---------------------------------------------------
+async def _list_demos(ctx, a):
+    return ctx.server._list_demos()
+
+
+async def _get_demo(ctx, a):
+    return ctx.server._get_demo(a["demo"])
+
+
+async def _create_demo(ctx, a):
+    return ctx.server._create_demo(a)
+
+
+async def _update_demo(ctx, a):
+    return ctx.server._update_demo(a)
+
+
+async def _delete_demo(ctx, a):
+    return ctx.server._delete_demo(a["demo"])
+
+
+async def _assign_demo_fragment(ctx, a):
+    return ctx.server._assign_demo_fragment(a)
+
+
+async def _adopt_demo(ctx, a):
+    return ctx.server._adopt_demo(a["demo"])
+
+
+async def _deactivate_demo(ctx, a):
+    return ctx.server._deactivate_demo(a["demo"])
+
+
+async def _prepare_demo(ctx, a):
+    return await ctx.server._prepare_demo(a["demo"])
+
+
+async def _end_demo(ctx, a):
+    return await ctx.server._end_demo(a["demo"])
+
+
 # --- Temporary credentials ---------------------------------------------------
 async def _create_temp_credentials(ctx, a):
     return await ctx.server._create_temp_credentials(a)
@@ -371,6 +412,16 @@ TOOL_HANDLERS: Dict[str, ToolHandler] = {
     "list_rule_capabilities": _list_rule_capabilities,
     "create_action_rule": _create_action_rule,
     "delete_action_rule": _delete_action_rule,
+    "list_demos": _list_demos,
+    "get_demo": _get_demo,
+    "create_demo": _create_demo,
+    "update_demo": _update_demo,
+    "delete_demo": _delete_demo,
+    "assign_demo_fragment": _assign_demo_fragment,
+    "adopt_demo": _adopt_demo,
+    "deactivate_demo": _deactivate_demo,
+    "prepare_demo": _prepare_demo,
+    "end_demo": _end_demo,
     "create_temp_credentials": _create_temp_credentials,
     "cleanup_temp_credentials": _cleanup_temp_credentials,
 }

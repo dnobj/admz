@@ -209,6 +209,46 @@ _COMMON_INTENTS = (
 _common_ops_cache: dict = {}
 
 
+def build_demos_section() -> str:
+    """A compact one-line-per-demo readiness list for the system prompt, or "".
+
+    Lets the model answer "is the <X> demo ready?" / "what demos exist?" with
+    no tool call. Entirely cache-backed: readiness comes from the drift/health
+    caches; ``event_store=None`` skips the per-signal event queries (the model
+    calls ``get_demo`` when it needs signal last-seen). Same degrade-to-""
+    contract as the device roster.
+    """
+    try:
+        from admz.api.context import get_context
+        from admz.demos import service as demo_service
+
+        ctx = get_context()
+        views = demo_service.demo_views(
+            ctx.demo_store.list(), ctx.registry, None)
+    except Exception:  # noqa: BLE001 - never let context-building break chat
+        logger.debug("[chat] demos section unavailable", exc_info=True)
+        return ""
+    if not views:
+        return ""
+
+    lines: List[str] = []
+    for v in views:
+        r = v.get("readiness") or {}
+        parts = [f"{v.get('name')} — {r.get('state', '?')}"]
+        n = len(r.get("devices") or [])
+        parts.append(f"{n} device{'s' if n != 1 else ''}")
+        if v.get("active"):
+            parts.append("ACTIVE")
+        if v.get("scenario_name"):
+            parts.append(f"scenario:{v['scenario_name']}")
+        blockers = r.get("blockers") or []
+        if blockers:
+            parts.append("blockers: " + "; ".join(str(b) for b in blockers[:3])
+                         + ("; …" if len(blockers) > 3 else ""))
+        lines.append(" · ".join(parts))
+    return "\n".join(lines)
+
+
 def _resolve_top_op(resolver: Any, device_id: str, device_info: dict, intent: str) -> str:
     """The top catalog operation_id for an intent, or "" (never raises)."""
     try:

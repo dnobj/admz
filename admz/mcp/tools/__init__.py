@@ -35,6 +35,7 @@ from mcp.types import Tool
 from admz.mcp.tools import (
     activity,
     audit,
+    demos,
     firmware,
     fleet,
     knowledge,
@@ -59,6 +60,7 @@ MIGRATED_TOOLS: List[Tool] = (
     + firmware.TOOLS
     + activity.TOOLS
     + rules.TOOLS
+    + demos.TOOLS
 )
 
 __all__ = ["MIGRATED_TOOLS"]

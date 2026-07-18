@@ -25,7 +25,7 @@ Authenticated user: {user_line}
 You operate through the ADMZ MCP tools (provided as your tool
 surface). Every tool call is audit-logged against the
 authenticated user above.
-{fleet_section}
+{fleet_section}{demos_section}
 # Device identification — read this carefully
 
 Every device has TWO names:
@@ -373,6 +373,31 @@ create, change, or remove one:
   — relay it EXACTLY; the user enters the recipient login/password there, then
   approves. NEVER ask for that password in chat or put it in `param_choices`.
 
+# Demos
+
+A *demo* is the experience-center unit of work: named devices (each with a
+role) + the config that makes it work + the signals that prove it's running +
+the narrative the presenter says. A demo can OWN config keys (a "fragment" —
+its deliberate delta over each device's baseline); when the demo is ACTIVE
+those keys count as deliberate, not drift. Address demos by NAME — every demo
+tool accepts the name directly.
+
+- **"Is the X demo ready?" / "what demos exist?"** — answer from the preloaded
+  demos list above when present; call `list_demos`/`get_demo` for fresh detail
+  (per-device verdicts, owned config, signal last-seen).
+- **Create/edit** with `create_demo`/`update_demo` (metadata only — nothing is
+  pushed to devices). Scope by tag or explicit device list.
+- **Capture config into a demo**: run `check_drift` on the device, then pass
+  the drifted fields you and the user chose to `assign_demo_fragment`. Only
+  currently-drifted, writable fields can be captured.
+- **`assign_demo_fragment` and `adopt_demo` are GATED**: they return a
+  confirmation card — present it and STOP; the change happens only after the
+  user approves. Never state the assignment/adoption happened before then.
+  `deactivate_demo` is direct (it only reveals drift, never masks it).
+- **`prepare_demo` / `end_demo`** load/unload a SIDELINED demo's scenario as
+  one gated config-push plan (same approval card). Baseline demos need no
+  prepare — they're ready when their devices are in sync and online.
+
 # House style
 
 - Concise, factual answers. If you need data, call a tool — don't
@@ -394,6 +419,7 @@ def build_system_prompt(
     device_roster: Optional[str] = None,
     common_ops: Optional[str] = None,
     module_sections: Optional[str] = None,
+    demos_section: Optional[str] = None,
 ) -> str:
     """Construct the chatbot's system prompt for a given principal.
 
@@ -456,9 +482,23 @@ def build_system_prompt(
     if module_sections and module_sections.strip():
         module_section_text = f"\n{module_sections.strip()}\n"
 
+    # ADR-0046/47: preloaded demo readiness. Empty → slot vanishes.
+    demos_section_text = ""
+    if demos_section and demos_section.strip():
+        demos_section_text = (
+            "\n# Demos — already loaded; answer readiness questions from here\n\n"
+            "One line per demo: `name — readiness · N devices [· ACTIVE] "
+            "[· scenario:<name>] [· blockers]`. Answer \"is the <X> demo "
+            "ready?\" and \"what demos exist?\" straight from this list — call "
+            "`get_demo` only for per-device detail, owned config, or signal "
+            "last-seen, and `list_demos` only to re-check on demand:\n\n"
+            f"{demos_section.strip()}\n"
+        )
+
     return _PROMPT_TEMPLATE.format(
         user_line=user_line,
         fleet_section=fleet_section,
         common_ops_section=common_ops_section,
         module_sections=module_section_text,
+        demos_section=demos_section_text,
     )
