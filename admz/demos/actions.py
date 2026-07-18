@@ -288,60 +288,73 @@ def deactivate_demo_core(ctx, demo: Demo, principal) -> Dict[str, Any]:
 
 
 async def prepare_demo_core(ctx, demo: Demo, principal) -> Dict[str, Any]:
-    """Load a sidelined demo's scenario in one gated plan (ADR-0044 core)."""
+    """Load a demo in one gated plan. Three-way: a legacy ADR-0044 *scenario*
+    demo pushes its saved config; a fragment demo (ADR-0047) pushes its owned
+    keys via the fragment core; a demo that owns nothing yet is steered to
+    capture."""
+    from admz.demos import activation as act
     from admz.demos import readiness as rd
     from admz.snapshot.scenarios import activate_scenario_core
 
     name = rd.scenario_of(demo.config_source)
-    if not name:
-        raise DemoActionError(
-            "This demo runs on the baseline config — there's nothing to "
-            "load. Its devices are ready when they're in sync and online.")
+    if name:
+        targets = service.resolve_devices(demo, ctx.registry)
+        if not targets:
+            raise DemoActionError("This demo has no devices.")
+        held = [
+            d.get("device_id") for d in targets
+            if d.get("active_scenario") and d.get("active_scenario") != name
+        ]
+        if held:
+            holders = sorted({
+                d.get("active_scenario") for d in targets
+                if d.get("active_scenario") and d.get("active_scenario") != name})
+            raise DemoActionError(
+                f"{', '.join(held)} currently held by another scenario "
+                f"({', '.join(holders)}). End that demo first.", status=409)
+        try:
+            result = await activate_scenario_core(
+                ctx, name, targets, principal,
+                description=f"Prepare demo '{demo.name}' (scenario '{name}')")
+        except ValueError as e:
+            raise DemoActionError(str(e))
+        result["demo_id"] = demo.id
+        return result
 
-    targets = service.resolve_devices(demo, ctx.registry)
-    if not targets:
-        raise DemoActionError("This demo has no devices.")
+    # Fragment demo (ADR-0047 slice 3): push its owned set-keys.
+    if act.demo_has_fragments(ctx, demo):
+        return await act.prepare_fragment_demo_core(ctx, demo, principal)
 
-    held = [
-        d.get("device_id") for d in targets
-        if d.get("active_scenario") and d.get("active_scenario") != name
-    ]
-    if held:
-        holders = sorted({
-            d.get("active_scenario") for d in targets
-            if d.get("active_scenario") and d.get("active_scenario") != name})
-        raise DemoActionError(
-            f"{', '.join(held)} currently held by another scenario "
-            f"({', '.join(holders)}). End that demo first.", status=409)
-
-    try:
-        result = await activate_scenario_core(
-            ctx, name, targets, principal,
-            description=f"Prepare demo '{demo.name}' (scenario '{name}')")
-    except ValueError as e:
-        raise DemoActionError(str(e))
-    result["demo_id"] = demo.id
-    return result
+    raise DemoActionError(
+        "This demo owns no config to load yet. Capture some first — run "
+        "check_drift on its devices, then assign_demo_fragment — or it runs on "
+        "the baseline (its devices are ready when they're in sync and online).")
 
 
 async def end_demo_core(ctx, demo: Demo, principal) -> Dict[str, Any]:
-    """Snap a sidelined demo's devices back to baseline (gated plan)."""
+    """End a demo (gated plan). Mirror of prepare: scenario demos snap back to
+    baseline; fragment demos push base values back for their owned keys and
+    deactivate; a demo that owns nothing is steered off."""
+    from admz.demos import activation as act
     from admz.demos import readiness as rd
     from admz.snapshot.scenarios import return_to_baseline_core
 
-    if not rd.scenario_of(demo.config_source):
-        raise DemoActionError(
-            "This demo runs on the baseline config — there's nothing to "
-            "end. Its devices were never taken out of their normal state.")
+    if rd.scenario_of(demo.config_source):
+        targets = service.resolve_devices(demo, ctx.registry)
+        if not targets:
+            raise DemoActionError("This demo has no devices.")
+        try:
+            result = await return_to_baseline_core(
+                ctx, targets, principal,
+                description=f"End demo '{demo.name}' — return to baseline")
+        except ValueError as e:
+            raise DemoActionError(str(e))
+        result["demo_id"] = demo.id
+        return result
 
-    targets = service.resolve_devices(demo, ctx.registry)
-    if not targets:
-        raise DemoActionError("This demo has no devices.")
-    try:
-        result = await return_to_baseline_core(
-            ctx, targets, principal,
-            description=f"End demo '{demo.name}' — return to baseline")
-    except ValueError as e:
-        raise DemoActionError(str(e))
-    result["demo_id"] = demo.id
-    return result
+    if act.demo_has_fragments(ctx, demo):
+        return await act.end_fragment_demo_core(ctx, demo, principal)
+
+    raise DemoActionError(
+        "This demo owns no config — there's nothing to end. Its devices were "
+        "never taken out of their normal state.")
