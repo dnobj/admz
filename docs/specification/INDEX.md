@@ -6,6 +6,7 @@ Complete table of contents for the ADMZ specification.
 
 - **[README.md](README.md)** — what this directory is and how to read it
 - **[process.md](process.md)** — how the spec and GitHub issues work together (requirements as source of truth, issues as the work queue); the two-loop async workflow
+- **[orchestration.md](orchestration.md)** — the master-agent session model: who runs each loop, session naming/roles, `status:` labels, worktree safety, validation gates
 - **[00-overview.md](00-overview.md)** — mission, scope, non-goals
 - **[glossary.md](glossary.md)** — terms and abbreviations
 
