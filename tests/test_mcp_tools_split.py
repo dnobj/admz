@@ -86,8 +86,9 @@ class TestMigratedToolsAggregate:
         from admz.mcp.tools import MIGRATED_TOOLS
         # 2 + 5 + 2 + 1 + 3 (recovery) + 1 (tasks) + 1 (audit) + 3 (firmware)
         # + 1 (activity: search_activity) + 3 (rules: list_rule_capabilities,
-        # create_action_rule, delete_action_rule) + 10 (demos, ADR-0046/47) = 32
-        assert len(MIGRATED_TOOLS) == 32
+        # create_action_rule, delete_action_rule) + 12 (demos, ADR-0046/47 +
+        # ADR-0050 demo_setup_status/set_event_ingest) = 34
+        assert len(MIGRATED_TOOLS) == 34
 
     def test_migrated_tools_all_named(self):
         from admz.mcp.tools import MIGRATED_TOOLS
