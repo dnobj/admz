@@ -7,12 +7,12 @@
 <div class="page-header">
   <div class="pt">
     <h1 class="page-title">Activity</h1>
-    <p class="page-sub">Live device-event feed — motion, object detection, I/O, PTZ, tampering, storage and system events streamed straight from your devices over WebSocket. Read-only.</p>
+    <p class="page-sub">Only <strong>watched events</strong> are captured — the device patterns you've bookmarked (and detection triggers). To find a new one, use <strong>Discover events</strong> below to preview a device live. The app never firehoses or stores every event from every device.</p>
   </div>
   <div class="page-actions" style="display:flex;gap:16px;align-items:center">
-    <label class="page-sub" style="display:flex;align-items:center;gap:8px">
+    <label class="page-sub" style="display:flex;align-items:center;gap:8px" title="Master switch for steady-state capture. When on, a live stream opens ONLY for devices with a watched event / detection, and only matching events are stored.">
       <input type="checkbox" id="ev-enable" {{ 'checked' if status.enabled }}>
-      Device ingest
+      Capture watched events
     </label>
     {% if acs_status and acs_status.enabled is defined %}
     <label class="page-sub" style="display:flex;align-items:center;gap:8px" title="Poll ACS Pro for action-rule firings. ACS has no push/trigger API, so this only sees action rules whose action RECORDS (the only firing signal ACS exposes); non-recording rules are invisible.">
@@ -25,7 +25,7 @@
 
 <div class="note-band" id="ev-band" style="margin-bottom:16px">
   <i data-lucide="radio"></i>
-  <span id="ev-ingest">{% if status.enabled %}Ingest on — {{ status.connected }}/{{ status.streams }} device streams connected.{% else %}Ingest is off. Toggle “Live ingest” to start streaming device events.{% endif %}</span>
+  <span id="ev-ingest">{% if status.enabled %}Capture on — {{ status.connected }}/{{ status.streams }} watched-device streams connected.{% else %}Capture is off. Bookmark a watched event, then toggle “Capture watched events” to start.{% endif %}</span>
 </div>
 
 <!-- Watched events — bookmarked event patterns; managed here, picked from later in the detection builder -->
@@ -41,7 +41,40 @@
     <tbody id="watched-body"></tbody>
   </table>
   <div class="empty-state" id="watched-empty" style="padding:14px"><i data-lucide="bookmark-plus"></i>
-    <div style="margin-top:6px">No watched events yet — expand an event below and click <strong>Watch this event</strong>.</div></div>
+    <div style="margin-top:6px">No watched events yet — use <strong>Discover events</strong> below to preview a device live and click <strong>Watch this event</strong>.</div></div>
+</div>
+
+<!-- Discover: transient live preview of selected device(s) to find new patterns to
+     watch. Streams straight to the browser over SSE — NOTHING is persisted — and
+     stops when you leave. This is how you pick a new watched event now that
+     steady-state capture only keeps watched hits. -->
+<div id="discover-section" style="margin-bottom:18px;border:1px solid var(--border);border-radius:10px;padding:12px 14px;background:var(--panel2)">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+    <i data-lucide="radar" style="width:15px;height:15px;opacity:.7"></i>
+    <h2 class="page-title" style="font-size:15px;margin:0">Discover events (live preview)</h2>
+  </div>
+  <p class="page-sub" style="margin:0 0 8px">Preview a device live to find an event worth watching. It streams only the selected device to your browser — <strong>nothing is stored</strong> — and tears down when you stop or leave. Bookmark one with <strong>Watch this event</strong>; only watched events are captured going forward.</p>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <select id="pv-device" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--text);max-width:260px">
+      <option value="">Select a device…</option>
+      {% for d in device_sources %}
+      <option value="{{ d.device_id }}">{{ d.name }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn sm" id="pv-start" type="button"><i data-lucide="play"></i> Start preview</button>
+    <button class="btn sm ghost" id="pv-stop" type="button" hidden><i data-lucide="square"></i> Stop</button>
+    <span id="pv-status" class="page-sub" aria-live="polite"></span>
+  </div>
+  <table class="data-table" id="pv-table" hidden style="margin-top:10px">
+    <thead><tr><th style="width:200px">Time (UTC)</th><th style="width:90px">Kind</th><th>Event</th><th>Device</th><th></th></tr></thead>
+    <tbody id="pv-body"></tbody>
+  </table>
+</div>
+
+<div style="display:flex;align-items:center;gap:8px;margin:0 0 6px">
+  <i data-lucide="history" style="width:15px;height:15px;opacity:.7"></i>
+  <h2 class="page-title" style="font-size:15px;margin:0">Watched activity</h2>
+  <span class="page-sub">— captured events matching a watched event or detection</span>
 </div>
 
 <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
@@ -318,6 +351,69 @@
     try { await fetch('/api/watched-events/' + encodeURIComponent(id), { method: 'DELETE' }); } catch (x) {}
     loadWatched(); loadEvents();   // refresh feed so the "Watching" state updates
   }
+
+  // ── Discover: transient live preview via SSE. Opens an ephemeral server-side
+  //    stream to the selected device (nothing persisted); closing the EventSource
+  //    tears the server stream down. Reuses the same watch/detection helpers. ──
+  var pvSource = null, pvSeen = 0;
+  var pvBody = document.getElementById('pv-body');
+  function pvStatus(t) { var s = document.getElementById('pv-status'); if (s) s.textContent = t; }
+  function pvRow(e) {
+    BY_ID[e.id] = e;
+    var t = (e.ts || '').replace('T', ' ').slice(0, 23);
+    var cat = (e.data && e.data.category) || '';
+    var watched = isWatched(e);
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td class="page-sub" style="font-family:var(--mono);white-space:nowrap">' + esc(t) + '</td>' +
+      '<td><span class="badge">' + esc(cat) + '</span></td>' +
+      '<td>' + esc(e.summary || e.type) + '</td>' +
+      '<td>' + esc(e.device_name || e.device_id || '—') + '</td>' +
+      '<td style="text-align:right;white-space:nowrap">' +
+      '<button class="btn sm ghost pv-watch" type="button"' + (watched ? ' disabled' : '') + '>' +
+      '<i data-lucide="' + (watched ? 'check' : 'bookmark-plus') + '"></i> ' + (watched ? 'Watching' : 'Watch this event') + '</button> ' +
+      '<button class="btn sm ghost pv-det" type="button"><i data-lucide="zap"></i> Detection</button></td>';
+    tr.querySelector('.pv-watch').addEventListener('click', function (ev) {
+      ev.stopPropagation(); watchEvent(BY_ID[e.id], ev.currentTarget);
+    });
+    tr.querySelector('.pv-det').addEventListener('click', function () {
+      try { sessionStorage.setItem('admz_det_seed', JSON.stringify(detSeed(BY_ID[e.id]))); } catch (x) {}
+      window.location.href = '/tasks#new-detection';
+    });
+    return tr;
+  }
+  function startPreview() {
+    var did = document.getElementById('pv-device').value;
+    if (!did) { pvStatus('Pick a device first.'); return; }
+    stopPreview();
+    pvBody.innerHTML = ''; pvSeen = 0;
+    document.getElementById('pv-table').hidden = false;
+    document.getElementById('pv-start').hidden = true;
+    document.getElementById('pv-stop').hidden = false;
+    pvStatus('Connecting…');
+    pvSource = new EventSource('/api/events/preview?device_id=' + encodeURIComponent(did));
+    pvSource.addEventListener('open', function () { pvStatus('Live — waiting for events (nothing is stored)…'); });
+    pvSource.onmessage = function (msg) {
+      var e; try { e = JSON.parse(msg.data); } catch (x) { return; }
+      if (!e || !e.id) return;
+      pvBody.insertBefore(pvRow(e), pvBody.firstChild);
+      while (pvBody.children.length > 200) pvBody.removeChild(pvBody.lastChild);
+      pvSeen++; pvStatus(pvSeen + ' event' + (pvSeen === 1 ? '' : 's') + ' seen · not stored');
+      if (window.lucide) window.lucide.createIcons();
+    };
+    // EventSource auto-reconnects on error; we don't want that to silently
+    // reopen a server stream, so close on error and let the operator restart.
+    pvSource.onerror = function () { pvStatus('Preview ended.'); stopPreview(); };
+  }
+  function stopPreview() {
+    if (pvSource) { pvSource.close(); pvSource = null; }
+    var startB = document.getElementById('pv-start'), stopB = document.getElementById('pv-stop');
+    if (startB) startB.hidden = false;
+    if (stopB) stopB.hidden = true;
+  }
+  document.getElementById('pv-start').addEventListener('click', startPreview);
+  document.getElementById('pv-stop').addEventListener('click', stopPreview);
+  window.addEventListener('beforeunload', stopPreview);   // leaving the page tears down the server stream
 
   loadWatched().then(loadEvents);   // populate WATCHED before the first feed render
   // Only auto-refresh while ingest is live AND no row is open — a static feed

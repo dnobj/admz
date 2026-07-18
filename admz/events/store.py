@@ -180,6 +180,48 @@ class EventStore:
         except sqlite3.Error:  # pragma: no cover — defensive
             return 0
 
+    def prune(self, *, older_than_ms: Optional[int] = None,
+              keep_max: Optional[int] = None) -> int:
+        """Delete old events. ``older_than_ms`` drops anything older than a cutoff;
+        ``keep_max`` keeps only the newest N rows. Returns rows deleted.
+
+        Cheap in the watch-scoped world (the store holds only watched hits) and
+        the backstop against any single chatty watched topic growing without end.
+        """
+        total = 0
+        try:
+            conn = self._connect()
+            try:
+                if older_than_ms is not None:
+                    cur = conn.execute("DELETE FROM events WHERE ts_ms < ?", (int(older_than_ms),))
+                    total += max(cur.rowcount, 0)
+                if keep_max is not None:
+                    cur = conn.execute(
+                        "DELETE FROM events WHERE id NOT IN "
+                        "(SELECT id FROM events ORDER BY ts_ms DESC, created_at DESC LIMIT ?)",
+                        (int(keep_max),),
+                    )
+                    total += max(cur.rowcount, 0)
+                conn.commit()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:  # pragma: no cover — defensive
+            logger.warning("EventStore prune failed: %s", exc)
+        return total
+
+    def enforce_retention(self) -> int:
+        """Apply the configured retention (days, then max-rows). Returns deleted."""
+        from admz.events import config as cfg
+        deleted = 0
+        days = cfg.events_retention_days()
+        if days and days > 0:
+            cutoff_ms = int((time.time() - days * 86400) * 1000)
+            deleted += self.prune(older_than_ms=cutoff_ms)
+        max_rows = cfg.events_max_rows()
+        if max_rows and max_rows > 0:
+            deleted += self.prune(keep_max=max_rows)
+        return deleted
+
     def activity_since(
         self,
         *,
