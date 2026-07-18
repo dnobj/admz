@@ -389,6 +389,39 @@ async function loadDiff(did) {
   }
 }
 
+// The diff is served from the cached last drift-check (instant). This shows how
+// fresh it is and lets the operator force a live re-probe (ADR-0049). A cached
+// diff can be slightly stale — further drift is reconciled by the next audit.
+function driftAgo(ts) {
+  if (ts == null) return '';
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+function driftFreshBanner(did, data) {
+  const label = (data.cached ? 'as of ' : 'checked ') + driftAgo(data.computed_at);
+  return '<div class="drift-fresh" style="display:flex;align-items:center;gap:8px;margin:0 0 8px;font-size:12px;color:var(--text-faint)">'
+    + '<i data-lucide="clock" style="width:12px;height:12px"></i><span>' + esc(label) + '</span>'
+    + '<button type="button" class="btn ghost drift-refresh" data-did="' + esc(did) + '" style="padding:2px 8px;font-size:12px">'
+    + '<i data-lucide="refresh-cw" style="width:12px;height:12px"></i> Refresh</button></div>';
+}
+async function refreshDiff(did) {
+  delete _driftCache[did];
+  const diffWrap = document.getElementById('diff-' + did);
+  if (diffWrap) diffWrap.innerHTML = '<span style="color:var(--text-faint);font-size:13px">Re-checking the device…</span>';
+  try {
+    const resp = await fetch('/api/snapshot/drift?device_id=' + encodeURIComponent(did) + '&refresh=true');
+    if (!resp.ok) throw new Error(resp.status);
+    const data = await resp.json();
+    _driftCache[did] = data;
+    renderDiff(did, data);
+  } catch (e) {
+    if (diffWrap) diffWrap.innerHTML = '<span style="color:var(--fg-red,#f87171)">Refresh failed.</span>';
+  }
+}
+
 function renderDiff(did, data) {
   const loadingEl = document.getElementById('loading-' + did);
   const diffWrap = document.getElementById('diff-' + did);
@@ -567,8 +600,15 @@ function renderDiff(did, data) {
     }
     diffWrap.classList.remove('hidden');
   }
+  // Freshness stamp + Refresh (the diff came from the cached last check).
+  if (diffWrap && data.computed_at != null) {
+    diffWrap.insertAdjacentHTML('afterbegin', driftFreshBanner(did, data));
+    const rb = diffWrap.querySelector('.drift-refresh');
+    if (rb) rb.addEventListener('click', () => refreshDiff(did));
+  }
   if (actionsWrap) actionsWrap.style.display = '';
   updateRevertBtn(did);
+  if (window.lucide) lucide.createIcons();
 }
 
 // Fields the operator checked for a single device's revert.

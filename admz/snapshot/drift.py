@@ -106,7 +106,8 @@ class DriftDetector:
             )
 
         report = DriftReport(
-            device_id=device_id, has_drift=False, observed_sha=observed_sha
+            device_id=device_id, has_drift=False, observed_sha=observed_sha,
+            baseline_sha=baseline_sha,
         )
 
         # Operator ignore list, scoped to this device. Applied to BOTH sides of

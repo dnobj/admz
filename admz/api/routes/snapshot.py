@@ -1,6 +1,7 @@
 """REST routes for config snapshot, restore, diff, and drift."""
 
 import logging
+import time as _t
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -182,7 +183,16 @@ async def accept_baseline(
     device_info = ctx.registry.get_device_info(req.device_id)
     device_info["device_id"] = req.device_id
     _reject_accept_with_active_demos(ctx, req.device_id, device_info)
-    target = req.commit_sha or device_info.get("latest_observed_sha")
+    # Accept the CACHED drift the operator inspected: bless that report's
+    # observed_sha (the exact commit the diff was computed against). Explicit
+    # commit_sha wins; otherwise the cache; otherwise the latest observation.
+    target = req.commit_sha
+    if not target:
+        _cached = _cached_drift_report(ctx, req.device_id)
+        if _cached and _cached.get("observed_sha"):
+            target = _cached["observed_sha"]
+    if not target:
+        target = device_info.get("latest_observed_sha")
     if not target:
         record_event(principal, "snapshot.accept_baseline", resource=resource,
                      success=False, error_message="no-target")
@@ -358,6 +368,56 @@ class RevertRequest(BaseModel):
         return v
 
 
+def _cached_drift_report(ctx, device_id: str):
+    """The cached drift report for a device, but ONLY when it is still diffed
+    against the device's CURRENT baseline. A stale-baseline cache (the baseline
+    moved via accept / re-snapshot) is ignored so it can never drive a wrong
+    revert or a misleading inspect — the caller falls back to a live check.
+    Returns the cache dict ``{"report", "observed_sha", "signature",
+    "computed_at"}`` or None. Best-effort."""
+    try:
+        from admz.snapshot import drift_alerts as _da
+        cached = _da.drift_alerts.get_report(device_id)
+    except Exception:  # noqa: BLE001 — a cache miss falls back to a live check
+        return None
+    if cached is None:
+        return None
+    try:
+        current_baseline = ctx.registry.get_device_info(device_id).get("baseline_sha")
+    except Exception:  # noqa: BLE001
+        return None
+    if (cached.get("report") or {}).get("baseline_sha") != current_baseline:
+        return None  # baseline moved → cache stale → force a live check
+    return cached
+
+
+async def _revert_fields_for(ctx, device_id: str):
+    """The drifted fields to revert. Per the drift-cache design, accept/revert
+    act on the CACHED diff (so they match exactly what was inspected, without a
+    fresh probe); falls back to a live ``check_drift`` when nothing is cached
+    yet. Returns a list of DriftField, excluding ``demo_set`` rows (ADR-0047 —
+    those belong to an active demo; a whole-device revert must not kick it off)."""
+    from admz.snapshot.models import DriftField
+
+    cached = _cached_drift_report(ctx, device_id)
+    if cached is not None:
+        rows = (cached.get("report") or {}).get("drifted_fields", [])
+        fields = [
+            DriftField(
+                facet=r.get("facet", ""), path=r.get("path", ""),
+                expected=r.get("expected", ""), actual=r.get("actual", ""),
+                canonical_key=r.get("canonical_key"),
+                bucket=r.get("bucket", "unclaimed"),
+                owner=r.get("owner"), owner_name=r.get("owner_name"),
+                candidates=r.get("candidates") or [],
+            )
+            for r in rows
+        ]
+        return [f for f in fields if f.bucket != "demo_set"]
+    report = await ctx.drift_detector.check_drift(device_id)
+    return report.real_fields
+
+
 @router.post("/snapshot/revert")
 async def revert_devices(
     request: Request,
@@ -402,13 +462,13 @@ async def revert_devices(
         if not ctx.registry.device_exists(did):
             missing.append(did)
             continue
-        report = await ctx.drift_detector.check_drift(did)
-        # Never revert "demo_set" rows (ADR-0047): those values are an active
-        # demo's config, deliberately different from base — a whole-device
-        # revert would silently kick the demo off the device. Deactivating the
-        # demo is the way to undo them. Note demo_broken rows keep the DEMO's
-        # value in ``expected``, so reverting them REPAIRS the demo.
-        fields = report.real_fields
+        # Revert the CACHED drift (matches what the operator inspected), falling
+        # back to a live check if nothing is cached. Excludes "demo_set" rows
+        # (ADR-0047): those are an active demo's config, deliberately different
+        # from base — a whole-device revert would silently kick the demo off.
+        # (demo_broken rows keep the DEMO's value in ``expected``, so reverting
+        # them REPAIRS the demo.)
+        fields = await _revert_fields_for(ctx, did)
         if selected_by_device is not None:
             chosen = selected_by_device.get(did, set())
             fields = [f for f in fields if (f.facet, f.path) in chosen]
@@ -977,56 +1037,68 @@ async def return_to_baseline(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+def _annotate_revertable(summary: dict, ctx, device_id: str) -> None:
+    """Annotate each drifted field with whether a TARGETED revert can write it
+    back — the UI uses this to enable/disable the per-row checkbox. Uses the SAME
+    facet.revert_param/op_revertable the revert plan builder uses, so the checkbox
+    matches exactly what revert would do. Pure (no device probe), so it's applied
+    on both the live and the cached path."""
+    from admz.snapshot.facets import get_facets_for_device
+
+    device_info = ctx.registry.get_device_info(device_id)
+    device_info["device_id"] = device_id
+    facets_by_name = {f.name: f for f in get_facets_for_device(device_info)}
+    for fld in summary.get("drifted_fields", []):
+        facet = facets_by_name.get(fld.get("facet"))
+        if not fld.get("canonical_key") and facet is not None:
+            fld["canonical_key"] = facet.canonical_key(fld.get("path"))
+        revertable = False
+        reason = "read-only"
+        if facet is not None and facet.op_revertable(fld.get("path")):
+            revertable = True
+        elif str(fld.get("expected")) == "<missing>":
+            reason = "added"  # appeared live; no baseline value to restore
+        elif facet is not None and facet.revert_param(
+            fld.get("path"), fld.get("expected")
+        ) is not None:
+            revertable = True
+        if fld.get("bucket") == "demo_set":
+            revertable = False
+            reason = "demo-owned"
+        fld["revertable"] = revertable
+        if not revertable:
+            fld["revert_skip_reason"] = reason
+
+
 @router.get("/snapshot/drift")
 async def check_drift(
     device_id: Optional[str] = Query(None),
     tag_filter: Optional[str] = Query(None),
+    refresh: bool = Query(False),
     ctx: AppContext = Depends(get_context),
 ):
     if device_id:
         if not ctx.registry.device_exists(device_id):
             raise HTTPException(status_code=404, detail=f"Device not found: {device_id}")
-        report = await ctx.drift_detector.check_drift(device_id)
-        summary = report.to_summary()
-        # Annotate each drifted field with whether a TARGETED revert can write
-        # it back — the UI uses this to enable/disable the per-row checkbox.
-        # Uses the SAME facet.revert_param the revert plan builder uses, so the
-        # checkbox state matches exactly what revert would actually do.
-        from admz.snapshot.facets import get_facets_for_device
 
-        device_info = ctx.registry.get_device_info(device_id)
-        device_info["device_id"] = device_id
-        facets_by_name = {
-            f.name: f for f in get_facets_for_device(device_info)
-        }
-        for fld in summary.get("drifted_fields", []):
-            facet = facets_by_name.get(fld.get("facet"))
-            # canonical_key for the "exclude from tracking" action — normally
-            # set by the drift loop; backfill here for robustness.
-            if not fld.get("canonical_key") and facet is not None:
-                fld["canonical_key"] = facet.canonical_key(fld.get("path"))
-            revertable = False
-            reason = "read-only"
-            if facet is not None and facet.op_revertable(fld.get("path")):
-                # API-backed facet: revert writes the whole baseline object
-                # through the facet's own setter — covers value changes AND
-                # live-added fields (the write-back removes additions).
-                revertable = True
-            elif str(fld.get("expected")) == "<missing>":
-                reason = "added"  # appeared live; no baseline value to restore
-            elif facet is not None and facet.revert_param(
-                fld.get("path"), fld.get("expected")
-            ) is not None:
-                revertable = True
-            # "demo_set" rows aren't drift (ADR-0047) — the value belongs to an
-            # active demo. Reverting one would kick the demo off the key, so
-            # the row is display-only; deactivate the demo to undo it.
-            if fld.get("bucket") == "demo_set":
-                revertable = False
-                reason = "demo-owned"
-            fld["revertable"] = revertable
-            if not revertable:
-                fld["revert_skip_reason"] = reason
+        # Serve the CACHED diff by default so the drift can be inspected right
+        # away without a live device probe (the background audit warms it). The
+        # cache may be stale — that's accepted; ?refresh=true forces a live
+        # recompute (and re-caches). No cache yet (never audited) → fall back to
+        # a live check.
+        cached = None if refresh else _cached_drift_report(ctx, device_id)
+
+        if cached is not None:
+            summary = cached["report"]
+            summary["cached"] = True
+            summary["computed_at"] = cached["computed_at"]
+        else:
+            report = await ctx.drift_detector.check_drift(device_id)
+            summary = report.to_summary()
+            summary["cached"] = False
+            summary["computed_at"] = _t.time()
+
+        _annotate_revertable(summary, ctx, device_id)
         return summary
     reports = await ctx.drift_detector.check_fleet_drift(tag_filter=tag_filter)
     return {
