@@ -481,6 +481,9 @@ def _register_plan_from_session(plan_engine: Any, session: "ConfirmSession") -> 
         on_failure=on_failure,
         status=PlanStatus.APPROVED,
         risk_summary=summary.get("risk_summary", {}),
+        # The completion hook rides the plan summary across the approving
+        # process boundary (ADR-0048) — this line is the whole cross-process story.
+        on_complete=summary.get("on_complete"),
     )
     plan_engine.register_plan(plan)
 
