@@ -40,6 +40,14 @@ def is_surveyed(model: str) -> bool:
     return bool(model) and _atlas().events_survey(model) is not None
 
 
+def _trim_notes(text: Any) -> str:
+    """Survey notes collapsed to one line and capped — enough for the model to
+    pick between similar conditions (publisher caveats, preferred umbrellas)
+    without ballooning the tool result."""
+    flat = " ".join(str(text or "").split())
+    return flat[:280] + ("…" if len(flat) > 280 else "")
+
+
 def _condition_dict(c: Any) -> Dict[str, Any]:
     return {
         "id": c.id,
@@ -49,6 +57,8 @@ def _condition_dict(c: Any) -> Dict[str, Any]:
         "stateful": c.stateful,
         "params": sorted((c.params or {}).keys()),
         "verified": c.verified,
+        "requires": dict(getattr(c, "requires", None) or {}),
+        "notes": _trim_notes(getattr(c, "notes", "")),
     }
 
 
@@ -72,6 +82,7 @@ def _action_dict(a: Any) -> Dict[str, Any]:
         "verified": a.verified,
         "params": [_param_dict(p) for p in (a.soap_params or [])],
         "needs_capture": bool(capture_param_names(a)),
+        "notes": _trim_notes(getattr(a, "notes", "")),
     }
 
 
@@ -118,6 +129,108 @@ def build(
 def condition_for(model: str, condition_id: str) -> Any:
     survey = _atlas().events_survey(model)
     return survey.condition(condition_id) if survey else None
+
+
+# --------------------------------------------------------------------------
+# Device grounding: which analytics apps actually run on this unit
+# --------------------------------------------------------------------------
+
+# Topic substrings → the ACAP that publishes them. A condition on one of these
+# topics is dead unless the matching application is Running on the device.
+_TOPIC_APP_HINTS = (
+    ("CameraApplicationPlatform/VMD", "vmd"),
+    ("RuleEngine/VMD3", "vmd"),
+    ("ObjectAnalytics", "objectanalytics"),
+    ("fenceguard", "fenceguard"),
+    ("loiteringguard", "loiteringguard"),
+    ("motionguard", "motionguard"),
+)
+
+
+def device_applications(git_repo: Any, registry: Any, device_id: str) -> Dict[str, str]:
+    """``{acap_name: status}`` from the device's latest applications
+    observation (the snapshot ApplicationsFacet). Empty when the device has no
+    snapshot or the facet is missing — callers must treat that as unknown, not
+    as "no apps"."""
+    try:
+        info = registry.get_device_info(device_id) or {}
+        ref = info.get("latest_observed_sha") or info.get("baseline_sha") or "HEAD"
+        doc = git_repo.read_facet(device_id, "applications", ref) or {}
+        return {
+            str(name): str((entry or {}).get("status", "Unknown"))
+            for name, entry in doc.items()
+            if isinstance(entry, dict)
+        }
+    except Exception:  # noqa: BLE001 — grounding is best-effort, never fatal
+        return {}
+
+
+def publisher_app_for(condition: Any) -> Optional[str]:
+    """The ACAP a condition's topic depends on, or None for built-in topics."""
+    topic = getattr(condition, "topic", "") or ""
+    for fragment, app in _TOPIC_APP_HINTS:
+        if fragment.lower() in topic.lower():
+            return app
+    return None
+
+
+def check_condition_publisher(
+    condition: Any, applications: Dict[str, str]
+) -> Optional[str]:
+    """Error text when the condition's publishing app is known to be absent or
+    stopped on the device; None when the condition looks viable (or the app
+    state is unknown — empty ``applications`` never blocks)."""
+    app = publisher_app_for(condition)
+    if not app or not applications:
+        return None
+    status = next(
+        (s for name, s in applications.items() if name.lower() == app), None)
+    label = getattr(condition, "label", None) or getattr(condition, "id", "?")
+    if status is None:
+        return (
+            f"The condition '{label}' is published by the '{app}' application, "
+            f"which is not installed on this device. Installed applications: "
+            f"{', '.join(f'{n} ({s})' for n, s in sorted(applications.items()))}. "
+            "Choose a condition backed by a running application."
+        )
+    if status.lower() != "running":
+        return (
+            f"The condition '{label}' is published by the '{app}' application, "
+            f"which is installed but {status} on this device. Start it or "
+            "choose a condition backed by a running application."
+        )
+    return None
+
+
+def condition_caution(
+    condition: Any, applications: Dict[str, str]
+) -> Optional[str]:
+    """Non-blocking warning for known-trap conditions.
+
+    The bare ONVIF ``tns1:VideoSource/MotionAlarm`` topic exists in the event
+    vocabulary of AXIS OS 12 devices but typically has NO publisher when motion
+    detection is done by an application (VMD/AOA) — a rule on it saves fine and
+    then never fires. Steer toward the application's own condition."""
+    topic = (getattr(condition, "topic", "") or "").strip()
+    if topic != "tns1:VideoSource/MotionAlarm":
+        return None
+    running = sorted(
+        n for n, s in applications.items()
+        if s.lower() == "running" and publisher_app_for_name(n))
+    if not running:
+        return None
+    return (
+        "The bare ONVIF MotionAlarm topic usually has no publisher on this "
+        f"device — motion is detected by the running '{', '.join(running)}' "
+        "application(s). A rule on this condition may never fire; prefer that "
+        "application's own condition (e.g. the VMD any-profile umbrella)."
+    )
+
+
+def publisher_app_for_name(acap_name: str) -> bool:
+    """True when an installed ACAP name is one of the known motion/analytics
+    publishers (used to decide whether MotionAlarm is likely shadowed)."""
+    return acap_name.lower() in {app for _, app in _TOPIC_APP_HINTS}
 
 
 def action_for(model: str, action_token: str) -> Any:

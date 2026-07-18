@@ -2108,6 +2108,17 @@ class ADMZMCPServer:
         out: Dict[str, Any] = {"success": True, "device_id": device_id,
                                "model": model, **caps}
         if caps.get("available"):
+            # Ground condition choice in what THIS unit actually runs: several
+            # survey conditions are published by ACAPs (VMD/AOA), and the bare
+            # ONVIF motion topic is usually dead when motion is app-based.
+            apps = capabilities.device_applications(
+                self.git_repo, self.registry, device_id)
+            if apps:
+                out["device_applications"] = apps
+                out["device_applications_note"] = (
+                    "Application run-state from the latest config snapshot. "
+                    "Prefer conditions published by a Running application; "
+                    "conditions for absent/stopped applications never fire.")
             try:
                 device, creds = operations._resolve_device_and_creds(
                     self.registry, device_id)
@@ -2149,10 +2160,25 @@ class ADMZMCPServer:
 
         action = capabilities.action_for(model, action_token)
         condition = capabilities.condition_for(model, condition_id)
+
+        # Create-time lint: a rule whose condition topic has no publisher on
+        # THIS unit saves fine and then never fires. Block conditions that
+        # depend on an ACAP the device doesn't run; warn on the known-trap
+        # bare ONVIF motion topic when an analytics app is what does motion.
+        apps = capabilities.device_applications(
+            self.git_repo, self.registry, device_id)
+        publisher_error = capabilities.check_condition_publisher(condition, apps)
+        if publisher_error:
+            return {"success": False, "error": publisher_error,
+                    "device_applications": apps}
+        caution = capabilities.condition_caution(condition, apps)
+
         label = info.get("nickname") or model or device_id
         reason = capabilities.describe_rule(
             result, device_label=label, device_id=device_id,
             rule_name=rule_name, condition=condition, action=action)
+        if caution:
+            reason = f"{reason} WARNING: {caution}"
 
         # Recipient-credential actions (HTTP/SMTP/send-*): the login/password
         # must be captured out-of-band via a secure form, never taken from chat.
@@ -2194,6 +2220,8 @@ class ADMZMCPServer:
             reason=reason)
         env = operations.blocked_envelope(session)
         env["success"] = False
+        if caution:
+            env["warnings"] = [caution]
         return env
 
     async def _delete_action_rule(self, device_id: str, rule_id: str) -> Dict[str, Any]:
