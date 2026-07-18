@@ -297,7 +297,7 @@ async def _list_rule_capabilities(ctx, a):
 async def _create_action_rule(ctx, a):
     return await ctx.server._create_action_rule(
         a["device_id"], a["condition_id"], a["action_token"],
-        a.get("param_choices"), a.get("rule_name"),
+        a.get("param_choices"), a.get("rule_name"), a.get("demo"),
     )
 
 

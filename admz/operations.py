@@ -832,6 +832,24 @@ async def _action_create_action_rule(
     except RuleRunnerError as exc:
         return {"success": False, "action": "create_action_rule",
                 "error": str(exc), "steps": exc.steps}
+
+    # ADR-0048 Phase B: correlate the rule with a demo (membership + auto-signal
+    # from its condition topic). Best-effort — a bookkeeping failure must never
+    # falsify the successful rule creation.
+    demo_id = action.get("demo_id")
+    if demo_id and out.get("rule_id"):
+        try:
+            from admz.demos import actions as _da
+            demo = ctx.demo_store.get(demo_id)
+            if demo is not None:
+                _da.attach_rule_to_demo(ctx, demo, {
+                    "device_id": device_id, "rule_id": out.get("rule_id"),
+                    "rule_name": rule_name, "condition_id": condition_id,
+                    "condition_topic": action.get("condition_topic"),
+                })
+        except Exception:  # noqa: BLE001
+            logger.warning("attach_rule_to_demo failed for %s", demo_id, exc_info=True)
+
     return {
         "success": True, "action": "create_action_rule", "device_id": device_id,
         "rule_id": out.get("rule_id"), "config_id": out.get("config_id"),
@@ -868,6 +886,14 @@ async def _action_delete_action_rule(
     except RuleRunnerError as exc:
         return {"success": False, "action": "delete_action_rule",
                 "error": str(exc), "steps": exc.steps}
+
+    # ADR-0048 Phase B: drop this rule's demo membership (reverse-scan). Best-effort.
+    try:
+        from admz.demos import actions as _da
+        _da.detach_rule_from_demo(ctx, rule_id, device_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("detach_rule_from_demo failed for rule %s", rule_id, exc_info=True)
+
     return {
         "success": True, "action": "delete_action_rule", "device_id": device_id,
         **out,

@@ -63,6 +63,11 @@ class Demo:
     # expected state (drift attribution). Activation state is *intent* —
     # adopting marks active without pushing anything.
     active: bool = False
+    # ADR-0048 Phase B: rules this demo created, as membership entries
+    # {device_id, rule_id, rule_name, condition_id, condition_topic, created_at}.
+    # SYSTEM-managed (not in DEMO_FIELDS) — mutated only by attach/detach, so a
+    # metadata update never clobbers it.
+    rules: List[Dict[str, Any]] = field(default_factory=list)
     created_by: str = ""
     created_at: float = 0.0
 
@@ -71,7 +76,7 @@ class Demo:
             "id": self.id, "name": self.name, "narrative": self.narrative,
             "tag": self.tag, "device_ids": self.device_ids, "roles": self.roles,
             "config_source": self.config_source, "signals": self.signals,
-            "enabled": self.enabled, "active": self.active,
+            "enabled": self.enabled, "active": self.active, "rules": self.rules,
             "created_by": self.created_by,
             "created_at": self.created_at,
         }
@@ -88,13 +93,14 @@ def _row_to_demo(r) -> Demo:
         device_ids=_j(r[4], []), roles=_j(r[5], {}),
         config_source=r[6] or "baseline", signals=_j(r[7], []),
         enabled=bool(r[8]), created_by=r[9], created_at=r[10],
-        active=bool(r[11]),
+        active=bool(r[11]), rules=_j(r[12] if len(r) > 12 else None, []),
     )
 
 
 _SELECT = (
     "SELECT id, name, narrative, tag, device_ids_json, roles_json, "
-    "config_source, signals_json, enabled, created_by, created_at, active "
+    "config_source, signals_json, enabled, created_by, created_at, active, "
+    "rules_json "
     "FROM demos"
 )
 
@@ -122,6 +128,13 @@ class DemoStore:
                 )
             except sqlite3.OperationalError:
                 pass  # column already exists
+            # ADR-0048 Phase B: rule-membership list, added after first ship.
+            try:
+                conn.execute(
+                    "ALTER TABLE demos ADD COLUMN rules_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            except sqlite3.OperationalError:
+                pass
             conn.commit()
         finally:
             conn.close()
@@ -150,12 +163,12 @@ class DemoStore:
             conn.execute(
                 "INSERT INTO demos (id, name, narrative, tag, device_ids_json, "
                 "roles_json, config_source, signals_json, enabled, created_by, "
-                "created_at, active) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "created_at, active, rules_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (demo.id, demo.name, demo.narrative, demo.tag,
                  json.dumps(demo.device_ids), json.dumps(demo.roles),
                  demo.config_source, json.dumps(demo.signals),
                  1 if demo.enabled else 0, demo.created_by, demo.created_at,
-                 1 if demo.active else 0),
+                 1 if demo.active else 0, json.dumps(demo.rules or [])),
             )
             conn.commit()
         finally:
@@ -168,11 +181,11 @@ class DemoStore:
             conn.execute(
                 "UPDATE demos SET name=?, narrative=?, tag=?, device_ids_json=?, "
                 "roles_json=?, config_source=?, signals_json=?, enabled=?, "
-                "active=? WHERE id=?",
+                "active=?, rules_json=? WHERE id=?",
                 (demo.name, demo.narrative, demo.tag, json.dumps(demo.device_ids),
                  json.dumps(demo.roles), demo.config_source,
                  json.dumps(demo.signals), 1 if demo.enabled else 0,
-                 1 if demo.active else 0, demo.id),
+                 1 if demo.active else 0, json.dumps(demo.rules or []), demo.id),
             )
             conn.commit()
         finally:

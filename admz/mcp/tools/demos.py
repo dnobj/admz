@@ -146,6 +146,16 @@ TOOLS: List[Tool] = [
                     "type": "string",
                     "description": "Optional role the fragment belongs to (default: the device's role in the demo).",
                 },
+                "mode": {
+                    "type": "string",
+                    "enum": ["set", "require"],
+                    "description": (
+                        "'set' (default) — a value the demo PUSHES and owns. "
+                        "'require' — a value the demo only ASSERTS at readiness, "
+                        "never pushed (for demo-bound drift you can't/won't write, "
+                        "e.g. an observed rule or an already-in-place API value)."
+                    ),
+                },
             },
             "required": ["demo", "fields"],
         },

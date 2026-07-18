@@ -284,6 +284,90 @@ def deactivate_demo_core(ctx, demo: Demo, principal) -> Dict[str, Any]:
                         "values.")}
 
 
+# ── Rule ↔ demo correlation (ADR-0048 Phase B) ───────────────────────────────
+
+
+def attach_rule_to_demo(ctx, demo: Demo, rule: Dict[str, Any]) -> None:
+    """Record a created rule's membership on a demo, and auto-attach its condition
+    topic as a demo signal (the device publishes that topic independently of the
+    rule — it IS the correlated watched event). Implicitly binds the device.
+
+    Called best-effort from the rule executor: a bookkeeping failure must NEVER
+    falsify the rule creation itself.
+    """
+    import time
+    from types import SimpleNamespace
+
+    from admz.audit import record_event
+
+    did = rule.get("device_id") or ""
+    rid = str(rule.get("rule_id") or "")
+    if not (did and rid):
+        return
+    entry = {
+        "device_id": did, "rule_id": rid, "rule_name": rule.get("rule_name"),
+        "condition_id": rule.get("condition_id"),
+        "condition_topic": rule.get("condition_topic"), "created_at": time.time(),
+    }
+    # membership deduped on (device_id, rule_id)
+    demo.rules = [r for r in (demo.rules or [])
+                  if not (r.get("device_id") == did and str(r.get("rule_id")) == rid)]
+    demo.rules.append(entry)
+
+    # auto-signal from the condition topic, deduped on (topic, device_id)
+    topic = entry.get("condition_topic")
+    if topic:
+        sigs = list(demo.signals or [])
+        if not any(s.get("topic") == topic and s.get("device_id") == did for s in sigs):
+            sigs.append({"label": entry.get("rule_name") or "rule",
+                         "topic": topic, "device_id": did})
+            demo.signals = sigs
+
+    # implicit device bind (device-scoped demos): pull the device into scope
+    if not demo.tag and did not in (demo.device_ids or []):
+        demo.device_ids = list(demo.device_ids or []) + [did]
+
+    ctx.demo_store.update(demo)
+    try:
+        record_event(SimpleNamespace(name=f"demo:{demo.name}", source="rule-attach"),
+                     "demo.rule_attach", resource=f"demo:{demo.id}",
+                     details={"rule_id": rid, "device_id": did, "topic": topic})
+    except Exception:  # noqa: BLE001 — audit best-effort
+        logger.debug("rule_attach audit failed", exc_info=True)
+
+
+def detach_rule_from_demo(ctx, rule_id: str, device_id: str) -> None:
+    """Reverse-scan on rule delete: drop the membership entry (and its auto-signal
+    when no remaining rule shares that topic on the device) from whichever demo
+    owns it. Best-effort."""
+    from types import SimpleNamespace
+
+    from admz.audit import record_event
+
+    rid = str(rule_id or "")
+    for demo in ctx.demo_store.list():
+        match = next((r for r in (demo.rules or [])
+                      if str(r.get("rule_id")) == rid and r.get("device_id") == device_id),
+                     None)
+        if match is None:
+            continue
+        demo.rules = [r for r in demo.rules if r is not match]
+        topic = match.get("condition_topic")
+        if topic and not any(
+                r.get("condition_topic") == topic and r.get("device_id") == device_id
+                for r in demo.rules):
+            demo.signals = [s for s in (demo.signals or [])
+                            if not (s.get("topic") == topic and s.get("device_id") == device_id)]
+        ctx.demo_store.update(demo)
+        try:
+            record_event(SimpleNamespace(name=f"demo:{demo.name}", source="rule-detach"),
+                         "demo.rule_detach", resource=f"demo:{demo.id}",
+                         details={"rule_id": rid, "device_id": device_id})
+        except Exception:  # noqa: BLE001
+            logger.debug("rule_detach audit failed", exc_info=True)
+        return
+
+
 # ── Prepare / End (device-touching — the scenario cores gate the push) ───────
 
 

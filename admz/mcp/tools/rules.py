@@ -80,6 +80,16 @@ TOOLS: List[Tool] = [
                     "type": "string",
                     "description": "Short human name for the rule (e.g. 'ding-dong on input 2')",
                 },
+                "demo": {
+                    "type": "string",
+                    "description": (
+                        "Optional demo name or id to correlate this rule with. On "
+                        "approval the rule is recorded as part of that demo and its "
+                        "trigger topic becomes the demo's signal (the watched event "
+                        "that proves the demo runs). Use when the user asks to create "
+                        "a rule 'for'/'as part of' a demo."
+                    ),
+                },
             },
             "required": ["device_id", "condition_id", "action_token"],
         },

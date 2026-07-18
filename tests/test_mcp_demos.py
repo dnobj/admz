@@ -158,7 +158,9 @@ class TestPrepareEnd:
         server._create_demo({"name": "Baseline demo", "tag": "speakers"})
         res = await server._prepare_demo("Baseline demo")
         assert res["success"] is False
-        assert "nothing to load" in res["error"]
+        # ADR-0048 Phase A reworded this toward capture (a demo owning no config
+        # is steered to capture some, or told it runs on the baseline).
+        assert "Capture some first" in res["error"]
 
     @pytest.mark.asyncio
     async def test_end_refuses_baseline_demo(self, server):
