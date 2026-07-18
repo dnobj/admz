@@ -129,6 +129,7 @@ def _detect_existing_origin(repo_path: str) -> str:
         result = subprocess.run(
             ["git", "remote", "get-url", "origin"],
             cwd=repo_path, capture_output=True, text=True, check=False,
+            encoding="utf-8", errors="replace",
         )
         if result.returncode == 0:
             return result.stdout.strip()

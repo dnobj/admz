@@ -57,6 +57,31 @@ def test_diff_commit_root_and_child(tmp_path):
     assert "+brightness: 80" in d2
 
 
+def test_log_preserves_utf8_commit_message(tmp_path):
+    """Regression: git output must decode as UTF-8, not the locale codepage.
+
+    On Windows, ``subprocess.Popen(text=True)`` without an explicit
+    ``encoding=`` decodes git's UTF-8 stdout with cp1252, so an em dash
+    (``E2 80 94``) in a commit message rendered as ``â€”`` on every history
+    surface (GH #112). Writes were never affected (argv goes through the
+    wide-char API), so round-tripping a non-ASCII message through
+    commit_snapshot -> log() catches the read-side decode bug.
+    """
+    repo = GitRepo(str(tmp_path / "repo"))
+    _init_git(repo)
+    message = "Accept baseline: 4 devices — Part of new BIOE demo (ü 監視)"
+    _write_facet(repo, "cam1", "image", "brightness: 50\n")
+    sha = repo.commit_snapshot("cam1", message, auto_push=False)
+    assert sha
+
+    commits = repo.log()
+    assert commits, "expected at least one commit in log()"
+    got = commits[0]["message"]
+    assert got == message
+    # The tell-tale cp1252 mojibake prefix of a UTF-8 em dash.
+    assert "â€" not in got
+
+
 def test_classify_commit():
     assert _classify_commit("Snapshot cam1") == "snapshot"
     assert _classify_commit("Accept baseline: cam1") == "baseline"

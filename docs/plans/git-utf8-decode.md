@@ -1,6 +1,6 @@
 # Plan: fix config-history mojibake — git output decoded as cp1252 on Windows
 
-Status: **planned, not implemented** (tracked by the linked GitHub issue).
+Status: **✅ implemented** (GH #112; fix + regression test shipped via `fix/git-utf8-decode`).
 
 ## Symptom
 
