@@ -20,6 +20,19 @@ def isolate_admz_dirs(tmp_path, monkeypatch):
     monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    # The confirm-store/audit singletons bind their DB path at import time —
+    # rebind them or the gated-write tests leak pending sessions into the REAL
+    # deployment DB (observed live 2026-07-18).
+    from admz import audit as audit_module
+    monkeypatch.setattr(
+        audit_module, "audit_log",
+        audit_module.AuditLog(db_path=str(tmp_path / "admz.db")))
+    import admz.api.confirm_store as cs_module
+    store = cs_module.ConfirmStore(db_path=str(tmp_path / "admz.db"))
+    monkeypatch.setattr(cs_module, "confirm_store", store)
+    # routes/confirm.py binds the instance at import time — patch its name too
+    # so the approve endpoint reads the same store the gates write.
+    monkeypatch.setattr("admz.api.routes.confirm.confirm_store", store)
 
 
 @pytest.fixture

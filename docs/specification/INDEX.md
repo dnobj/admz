@@ -141,6 +141,12 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 - [0016 — Merge discovery results by MAC](decisions/0016-merge-discovery-by-mac.md)
 - [0017 — Two-phase discovery (broadcast then enrich)](decisions/0017-two-phase-discovery.md)
 
+## Plans
+
+Approved implementation plans for staged work (design fixed, build pending — tracked as GitHub issues).
+
+- [Demo setup wizard](plans/demo-setup-wizard.md) — ADR-0047 slice 3+: fragment activation pushes with state-flip-on-completion (fixes the scenario marker-timing bug), demo-aware rules with auto-attached trigger signals, and the guided chat setup surface (`demo_setup_status` + gated `set_event_ingest`)
+
 ## Reviews
 
 Point-in-time production-readiness reviews and their follow-up trackers.

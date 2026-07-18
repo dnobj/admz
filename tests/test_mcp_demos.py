@@ -24,6 +24,18 @@ def server(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
 
+    # The confirm-store/audit singletons bind their DB path at import time —
+    # rebind them or the gated-write tests leak sessions into the REAL
+    # deployment DB (observed live 2026-07-18: pending cam-1 rows in prod).
+    from admz import audit as audit_module
+    monkeypatch.setattr(
+        audit_module, "audit_log",
+        audit_module.AuditLog(db_path=str(tmp_path / "admz.db")))
+    import admz.api.confirm_store as cs_module
+    monkeypatch.setattr(
+        cs_module, "confirm_store",
+        cs_module.ConfirmStore(db_path=str(tmp_path / "admz.db")))
+
     from admz.mcp.server import ADMZMCPServer
 
     srv = ADMZMCPServer()
