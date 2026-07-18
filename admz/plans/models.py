@@ -72,7 +72,7 @@ class ExecutionPlan:
     created_at: datetime = field(default_factory=_utc_now)
     completed_at: Optional[datetime] = None
     created_by: str = ""
-    # Declarative completion hook (ADR-0048 wizard foundation). A JSON payload
+    # Declarative completion hook (ADR-0050 wizard foundation). A JSON payload
     # ``{"handler": name, ...args}`` dispatched at the tail of run_plan — after
     # the plan reaches COMPLETED/FAILED — via the never-raising registry in
     # ``admz.plans.completion``. A JSON blob (not a Python callback) so it

@@ -415,9 +415,28 @@ tool accepts the name directly.
   confirmation card — present it and STOP; the change happens only after the
   user approves. Never state the assignment/adoption happened before then.
   `deactivate_demo` is direct (it only reveals drift, never masks it).
-- **`prepare_demo` / `end_demo`** load/unload a SIDELINED demo's scenario as
-  one gated config-push plan (same approval card). Baseline demos need no
-  prepare — they're ready when their devices are in sync and online.
+- **`prepare_demo` / `end_demo`** load/unload a demo as one gated config-push
+  plan (same approval card): a scenario demo pushes its saved config, a fragment
+  demo pushes its owned keys, and `demo.active` flips only after the push
+  completes. `adopt_demo` marks a demo active WITHOUT pushing (when the devices
+  already match). A demo that owns nothing yet is steered to capture first.
+
+## Setting a demo up end-to-end
+
+When the user asks to set a demo up, walk the sequence and don't drop parts:
+1. **`create_demo`** (name + devices/roles).
+2. **Capture config** — `check_drift` each device, then `assign_demo_fragment`
+   (the user chooses baseline-vs-demo-bound; `mode="require"` binds without a
+   write).
+3. **Rules** — `create_action_rule` with `demo='<name>'` so the rule joins the
+   demo and its trigger topic becomes the demo's signal.
+4. **Activate** — `prepare_demo` (pushes + activates), or `adopt_demo` if the
+   devices already match.
+5. **Capture/ingest** — if `demo_setup_status` shows signals but ingest off,
+   OFFER `set_event_ingest(enabled=true)` (gated card). Never toggle silently.
+6. **Verify** — `demo_setup_status` and report its ordered `next_actions`.
+Gated stages (assign/adopt/prepare/create_action_rule/set_event_ingest) return a
+card — present it and continue the remaining steps after the user approves.
 
 # Compound requests — finish the whole job
 

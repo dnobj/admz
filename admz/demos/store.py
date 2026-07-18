@@ -63,7 +63,7 @@ class Demo:
     # expected state (drift attribution). Activation state is *intent* —
     # adopting marks active without pushing anything.
     active: bool = False
-    # ADR-0048 Phase B: rules this demo created, as membership entries
+    # ADR-0050 Phase B: rules this demo created, as membership entries
     # {device_id, rule_id, rule_name, condition_id, condition_topic, created_at}.
     # SYSTEM-managed (not in DEMO_FIELDS) — mutated only by attach/detach, so a
     # metadata update never clobbers it.
@@ -128,7 +128,7 @@ class DemoStore:
                 )
             except sqlite3.OperationalError:
                 pass  # column already exists
-            # ADR-0048 Phase B: rule-membership list, added after first ship.
+            # ADR-0050 Phase B: rule-membership list, added after first ship.
             try:
                 conn.execute(
                     "ALTER TABLE demos ADD COLUMN rules_json TEXT NOT NULL DEFAULT '[]'"

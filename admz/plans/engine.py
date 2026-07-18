@@ -223,7 +223,7 @@ class PlanEngine:
         else:
             plan.status = PlanStatus.FAILED
 
-        # Declarative completion hook (ADR-0048) — dispatched here, the single
+        # Declarative completion hook (ADR-0050) — dispatched here, the single
         # choke point every execution path funnels through. Never raises.
         from admz.plans.completion import run_completion
         run_completion(plan, registry=self.registry)

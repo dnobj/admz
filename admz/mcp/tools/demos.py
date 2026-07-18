@@ -217,4 +217,37 @@ TOOLS: List[Tool] = [
             "required": ["demo"],
         },
     ),
+    Tool(
+        name="demo_setup_status",
+        description=(
+            "READ-ONLY setup checklist for a demo: devices/roles, owned config + "
+            "activation, rules (recorded vs observed), signals + last-seen, and "
+            "event-capture state — ending in ordered `next_actions` naming the "
+            "exact remaining tool calls. Answer 'is the demo set up?' from this "
+            "alone (no device probe). Report next_actions to the user in order."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {"demo": _DEMO_REF},
+            "required": ["demo"],
+        },
+    ),
+    Tool(
+        name="set_event_ingest",
+        description=(
+            "Turn fleet event capture on or off (needed so a demo's signals are "
+            "recorded). GATED: returns an approval card — present it; capture only "
+            "changes after the user approves. OFFER this when demo_setup_status "
+            "shows signals but ingest off; never toggle it silently. One global "
+            "flag: enabling opens a live stream per WATCHED device."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean",
+                            "description": "true to start capture, false to stop"},
+            },
+            "required": ["enabled"],
+        },
+    ),
 ]

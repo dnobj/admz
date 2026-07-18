@@ -1,4 +1,4 @@
-"""Fragment demo activation pushes (ADR-0047 slice 3 / ADR-0048 wizard, Phase A).
+"""Fragment demo activation pushes (ADR-0047 slice 3 / ADR-0050 wizard, Phase A).
 
 A *fragment* demo owns a sparse set of config keys (``fragments.py``). Preparing
 it means **pushing those keys to its devices** in one gated plan, then flipping

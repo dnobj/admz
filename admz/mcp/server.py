@@ -2143,7 +2143,7 @@ class ADMZMCPServer:
         the user approves — the executor re-renders and runs the SOAP sequence,
         so no rendered body (or secret) is ever stored in the confirm session.
 
-        ``demo`` (name-or-id, ADR-0048 Phase B): correlate the rule with a demo —
+        ``demo`` (name-or-id, ADR-0050 Phase B): correlate the rule with a demo —
         on approval its membership is recorded and its condition topic becomes the
         demo's signal. Resolved here so an unknown demo fails fast in chat."""
         if not self.registry.device_exists(device_id):
@@ -2175,7 +2175,7 @@ class ADMZMCPServer:
         action = capabilities.action_for(model, action_token)
         condition = capabilities.condition_for(model, condition_id)
 
-        # ADR-0048 Phase B: the condition's ONVIF topic (the device publishes it
+        # ADR-0050 Phase B: the condition's ONVIF topic (the device publishes it
         # independently of the rule → it IS the demo's correlated signal). Carried
         # in the action payload so the executor records it on approval.
         demo_extra: Dict[str, Any] = {}
@@ -2416,6 +2416,37 @@ class ADMZMCPServer:
             return await end_demo_core(self.components, demo, self.principal)
         except DemoActionError as exc:
             return self._demo_err(exc)
+
+    def _demo_setup_status(self, ref: str) -> Dict[str, Any]:
+        """Read-only guided-setup checklist for a demo (ADR-0050 Phase C)."""
+        from admz.demos import wizard
+        from admz.demos.actions import DemoActionError
+
+        try:
+            demo = self._resolve_demo(ref)
+        except DemoActionError as exc:
+            return self._demo_err(exc)
+        return {"success": True, **wizard.setup_status(self.components, demo)}
+
+    async def _set_event_ingest(self, enabled: bool) -> Dict[str, Any]:
+        """Gate turning fleet event capture on/off (ADR-0050 Phase C — prompted,
+        never auto). Returns the approval card; the flag flips on approval."""
+        from admz import operations
+
+        reason = (
+            f"Turn fleet event capture {'ON' if enabled else 'OFF'}. "
+            + ("Opens a live event stream for each WATCHED device so this demo's "
+               "signals get recorded and can be verified."
+               if enabled else
+               "Stops all device event streams — demo signals won't be recorded "
+               "until re-enabled.")
+            + " This is one global fleet setting.")
+        session = operations.create_action_session(
+            action="set_event_ingest", device_id="",
+            payload={"enabled": bool(enabled)}, reason=reason)
+        env = operations.blocked_envelope(session)
+        env["success"] = False
+        return env
 
     async def _delete_account(
         self,

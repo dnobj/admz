@@ -284,7 +284,7 @@ def deactivate_demo_core(ctx, demo: Demo, principal) -> Dict[str, Any]:
                         "values.")}
 
 
-# ── Rule ↔ demo correlation (ADR-0048 Phase B) ───────────────────────────────
+# ── Rule ↔ demo correlation (ADR-0050 Phase B) ───────────────────────────────
 
 
 def attach_rule_to_demo(ctx, demo: Demo, rule: Dict[str, Any]) -> None:

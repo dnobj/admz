@@ -1,4 +1,4 @@
-"""Rule ↔ demo correlation (ADR-0048 Phase B).
+"""Rule ↔ demo correlation (ADR-0050 Phase B).
 
 The demo store's rule-membership column and the attach/detach bookkeeping that
 records a created rule on a demo + auto-attaches its condition topic as a demo

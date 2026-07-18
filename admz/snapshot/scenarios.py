@@ -34,7 +34,7 @@ def _set_scenario_safe(registry: Any, device_id: str, name: Optional[str]) -> No
 
 
 def on_markers_complete(plan: Any, args: Dict[str, Any], registry: Any = None) -> None:
-    """``scenario_markers`` completion handler (ADR-0048) — the task_7f8c285b fix.
+    """``scenario_markers`` completion handler (ADR-0050) — the task_7f8c285b fix.
 
     Set/clear ``active_scenario`` ONLY for devices whose steps in this plan ALL
     succeeded, and ONLY once the plan has run. A device with any failed/unrun step

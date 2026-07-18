@@ -158,7 +158,7 @@ class TestPrepareEnd:
         server._create_demo({"name": "Baseline demo", "tag": "speakers"})
         res = await server._prepare_demo("Baseline demo")
         assert res["success"] is False
-        # ADR-0048 Phase A reworded this toward capture (a demo owning no config
+        # ADR-0050 Phase A reworded this toward capture (a demo owning no config
         # is steered to capture some, or told it runs on the baseline).
         assert "Capture some first" in res["error"]
 
@@ -169,6 +169,31 @@ class TestPrepareEnd:
         res = await server._end_demo("Baseline demo")
         assert res["success"] is False and "nothing to end" in res["error"]
 
+
+class TestSetupStatusAndIngest:
+    def test_setup_status_shape_and_next_actions(self, server):
+        _add_device(server, "cam-1")
+        server._create_demo({"name": "Speaker demo", "device_ids": ["cam-1"]})
+        res = server._demo_setup_status("Speaker demo")
+        assert res["success"] is True
+        assert res["demo_name"] == "Speaker demo"
+        for key in ("devices", "fragments", "rules", "signals", "ingest", "next_actions"):
+            assert key in res
+        assert len(res["next_actions"]) >= 1
+        # a demo owning no config yet is steered toward capture or rules.
+        assert any("Capture config" in a or "Create the demo's rules" in a
+                   for a in res["next_actions"])
+
+    def test_setup_status_unknown_demo(self, server):
+        assert server._demo_setup_status("nope")["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_set_event_ingest_is_gated(self, server):
+        res = await server._set_event_ingest(True)
+        # returns an approval envelope; nothing flips until approval.
+        assert res.get("success") is False
+        assert res.get("confirm_url") or res.get("blocked") or res.get("confirm_token")
+
     @pytest.mark.asyncio
     async def test_prepare_by_name_resolves(self, server):
         res = await server._prepare_demo("does-not-exist")
@@ -176,7 +201,7 @@ class TestPrepareEnd:
 
 
 class TestDispatchWiring:
-    def test_all_ten_tools_have_handlers_and_schemas(self, server):
+    def test_all_demo_tools_have_handlers_and_schemas(self, server):
         from admz.mcp.dispatch import TOOL_HANDLERS
         from admz.mcp.tools.demos import TOOLS
 
@@ -185,6 +210,8 @@ class TestDispatchWiring:
             "list_demos", "get_demo", "create_demo", "update_demo",
             "delete_demo", "assign_demo_fragment", "adopt_demo",
             "deactivate_demo", "prepare_demo", "end_demo",
+            # ADR-0050 Phase C
+            "demo_setup_status", "set_event_ingest",
         }
         for n in names:
             assert n in TOOL_HANDLERS

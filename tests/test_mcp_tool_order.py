@@ -85,6 +85,8 @@ EXPECTED_TOOL_ORDER = [
     "deactivate_demo",
     "prepare_demo",
     "end_demo",
+    "demo_setup_status",
+    "set_event_ingest",
 ]
 
 

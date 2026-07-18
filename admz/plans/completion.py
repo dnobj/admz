@@ -1,4 +1,4 @@
-"""Declarative plan-completion dispatch (ADR-0048 wizard foundation).
+"""Declarative plan-completion dispatch (ADR-0050 wizard foundation).
 
 A plan may carry an ``on_complete`` payload ``{"handler": name, ...args}``. At
 the tail of :meth:`PlanEngine.run_plan` — once the plan has reached COMPLETED or

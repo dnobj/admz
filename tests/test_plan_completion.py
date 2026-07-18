@@ -1,4 +1,4 @@
-"""Plan-completion hook (ADR-0048 wizard foundation).
+"""Plan-completion hook (ADR-0050 wizard foundation).
 
 The declarative ``on_complete`` payload dispatched at the tail of run_plan:
 covers direct dispatch (COMPLETED + FAILED), the never-raises contract (unknown

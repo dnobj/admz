@@ -1,4 +1,4 @@
-"""Fragment demo activation (ADR-0047 slice 3 / ADR-0048 Phase A).
+"""Fragment demo activation (ADR-0047 slice 3 / ADR-0050 Phase A).
 
 Covers push-field synthesis (values + op-revertable/non-param prefilter) and the
 completion handlers that flip demo.active — the core guarantee being that the

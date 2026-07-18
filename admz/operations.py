@@ -482,7 +482,7 @@ def _register_plan_from_session(plan_engine: Any, session: "ConfirmSession") -> 
         status=PlanStatus.APPROVED,
         risk_summary=summary.get("risk_summary", {}),
         # The completion hook rides the plan summary across the approving
-        # process boundary (ADR-0048) — this line is the whole cross-process story.
+        # process boundary (ADR-0050) — this line is the whole cross-process story.
         on_complete=summary.get("on_complete"),
     )
     plan_engine.register_plan(plan)
@@ -833,7 +833,7 @@ async def _action_create_action_rule(
         return {"success": False, "action": "create_action_rule",
                 "error": str(exc), "steps": exc.steps}
 
-    # ADR-0048 Phase B: correlate the rule with a demo (membership + auto-signal
+    # ADR-0050 Phase B: correlate the rule with a demo (membership + auto-signal
     # from its condition topic). Best-effort — a bookkeeping failure must never
     # falsify the successful rule creation.
     demo_id = action.get("demo_id")
@@ -887,7 +887,7 @@ async def _action_delete_action_rule(
         return {"success": False, "action": "delete_action_rule",
                 "error": str(exc), "steps": exc.steps}
 
-    # ADR-0048 Phase B: drop this rule's demo membership (reverse-scan). Best-effort.
+    # ADR-0050 Phase B: drop this rule's demo membership (reverse-scan). Best-effort.
     try:
         from admz.demos import actions as _da
         _da.detach_rule_from_demo(ctx, rule_id, device_id)
@@ -903,9 +903,39 @@ async def _action_delete_action_rule(
     }
 
 
+async def _action_set_event_ingest(
+    action: Mapping[str, Any], registry: Any, git_repo: Any = None,
+) -> Dict[str, Any]:
+    """Approved set-event-ingest (ADR-0050 Phase C): flip the fleet capture flag
+    and start/stop + reconcile the WS supervisor in the web process — mirrors
+    ``POST /api/events/control``. Ingest is prompted, never auto (user decision)."""
+    from admz.api.context import get_context
+    from admz.fleet_settings import fleet_settings
+
+    enabled = bool(action.get("enabled"))
+    fleet_settings.set("event_ingest_enabled", "true" if enabled else "false")
+    try:
+        ctx = get_context()
+        if enabled:
+            await ctx.event_supervisor.start()
+            await ctx.event_supervisor.reconcile()
+        else:
+            await ctx.event_supervisor.stop()
+    except Exception as exc:  # noqa: BLE001 — flag is set; supervisor best-effort
+        return {"success": False, "action": "set_event_ingest",
+                "error": f"flag set, but supervisor did not (re)start cleanly: {exc}"}
+    return {
+        "success": True, "action": "set_event_ingest", "enabled": enabled,
+        "message": (f"Event capture is now {'ON' if enabled else 'OFF'}. "
+                    + ("Watched-device streams (re)started."
+                       if enabled else "Streams stopped.")),
+    }
+
+
 _ACTION_EXECUTORS = {
     "accept_baseline": _action_accept_baseline,
     "delete_device": _action_delete_device,
+    "set_event_ingest": _action_set_event_ingest,
     "create_task": _action_create_task,
     "update_task": _action_update_task,
     "delete_task": _action_delete_task,
