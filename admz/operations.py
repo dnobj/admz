@@ -696,6 +696,60 @@ def _action_delete_task(
     }
 
 
+async def _action_assign_demo_fragment(
+    action: Mapping[str, Any], registry: Any, git_repo: Any = None,
+) -> Dict[str, Any]:
+    """Approved fragment capture: run the shared core the session was holding.
+
+    The core re-checks drift at APPLY time, so the captured values come from
+    the diff as it exists NOW — not as it looked when the widget was raised."""
+    from admz.api.context import get_context
+    from admz.demos.actions import (
+        DemoActionError, assign_fragment_core, resolve_demo,
+    )
+
+    ctx = get_context()
+    try:
+        demo = resolve_demo(ctx.demo_store, action.get("demo") or "")
+        result = await assign_fragment_core(
+            ctx, demo,
+            fields=list(action.get("fields") or []),
+            role=action.get("role"),
+            mode=action.get("mode") or "set",
+            principal=action.get("_confirmed_by") or "confirm-widget",
+        )
+    except DemoActionError as exc:
+        return {"success": False, "action": "assign_demo_fragment",
+                "error": str(exc)}
+    n = len(result.get("added") or [])
+    return {
+        "success": True, "action": "assign_demo_fragment", **result,
+        "message": f"Assigned {n} field(s) to demo '{demo.name}'.",
+    }
+
+
+def _action_adopt_demo(
+    action: Mapping[str, Any], registry: Any, git_repo: Any = None,
+) -> Dict[str, Any]:
+    """Approved adopt: mark the demo active. The core re-runs BOTH guards
+    (legacy-scenario hold + same-key overlap) at apply time — a conflict that
+    appeared since approval fails cleanly instead of slipping through."""
+    from admz.api.context import get_context
+    from admz.demos.actions import (
+        DemoActionError, adopt_demo_core, resolve_demo,
+    )
+
+    ctx = get_context()
+    try:
+        demo = resolve_demo(ctx.demo_store, action.get("demo") or "")
+        result = adopt_demo_core(
+            ctx, demo, principal=action.get("_confirmed_by") or "confirm-widget",
+        )
+    except DemoActionError as exc:
+        return {"success": False, "action": "adopt_demo", "error": str(exc)}
+    return {"action": "adopt_demo", **result}
+
+
 def _resolve_device_and_creds(registry: Any, device_id: str) -> Tuple[Dict[str, Any], Dict[str, str]]:
     """Device info dict (with ``device_id`` set) + credentials, mirroring
     ``run_execution_tail`` — empty creds if the device has no stored account."""
@@ -828,6 +882,10 @@ _ACTION_EXECUTORS = {
     "delete_task": _action_delete_task,
     "create_action_rule": _action_create_action_rule,
     "delete_action_rule": _action_delete_action_rule,
+    # ADR-0047: the drift-affecting demo writes (capture + adopt re-label what
+    # counts as drift, so LLM/api-key callers hold them for the widget).
+    "assign_demo_fragment": _action_assign_demo_fragment,
+    "adopt_demo": _action_adopt_demo,
 }
 
 
