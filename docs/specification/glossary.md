@@ -58,7 +58,9 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **Device** — An Axis network device known to the registry. Identified by a `device_id` (typically the MAC address). Has `device_info` (model, host, tags, location) and zero or more accounts.
 
-**Demo** — What you show a customer (ADR-0046): named devices (each with a **role**) + the config that makes it work (`config_source`: `baseline` or `scenario:<name>`) + the signals that prove it's running + the narrative you say. The experience-center unit of work — it composes a **Scenario** and **detections** rather than replacing them. Its computed **readiness** is the green light.
+**Demo** — What you show a customer (ADR-0046): named devices (each with a **role**) + the config that makes it work + the signals that prove it's running + the narrative you say. The experience-center unit of work — it composes a **Scenario** and **detections** rather than replacing them. Its computed **readiness** is the green light. Since ADR-0047, a demo can **own a fragment** and be **active** (its keys count toward expected state) or defined-but-inactive.
+
+**Fragment** — The sparse set of config keys a demo *owns*, per role, stored in git at `demos/<id>/roles/<role>.yaml` (ADR-0047). `set` entries are pushed + attributed; `require` entries are asserted at readiness, never pushed. Captured from a live drift diff ("Assign to a demo"), never authored by hand. A device's **expected state** = its baseline ⊕ the set-fragments of every active demo bound to it; drift **attribution** buckets each differing key as `demo_set` (deliberate), `demo_broken` (drift against the demo), `candidate` ("looks like demo Y"), or `unclaimed` (true drift).
 
 **Device family** — The category of an Axis device: camera, encoder, speaker, intercom, access-control, switch, radar, I/O module, etc.
 

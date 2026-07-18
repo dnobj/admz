@@ -21,9 +21,12 @@ class DriftDetector:
     only an explicit snapshot or accept/promote moves the baseline.
     """
 
-    def __init__(self, snapshot_engine, git_repo: GitRepo):
+    def __init__(self, snapshot_engine, git_repo: GitRepo, demo_store=None):
         self.engine = snapshot_engine
         self.git = git_repo
+        # ADR-0047: source of active demos for fragment attribution. Optional
+        # so direct constructions (tests, tools) skip attribution entirely.
+        self.demo_store = demo_store
 
     async def check_drift(
         self,
@@ -103,7 +106,8 @@ class DriftDetector:
             )
 
         report = DriftReport(
-            device_id=device_id, has_drift=False, observed_sha=observed_sha
+            device_id=device_id, has_drift=False, observed_sha=observed_sha,
+            baseline_sha=baseline_sha,
         )
 
         # Operator ignore list, scoped to this device. Applied to BOTH sides of
@@ -114,6 +118,23 @@ class DriftDetector:
         facets_by_name = {
             f.name: f for f in get_facets_for_device(device_info)
         }
+
+        # ADR-0047: demo-fragment attribution. Keys an ACTIVE demo owns are
+        # part of this device's *expected* state; keys matching an INACTIVE
+        # demo's fragment get a "looks like demo Y" annotation. Devices held
+        # by a legacy scenario keep ADR-0044 semantics untouched (partition
+        # rule — the in_scenario supersede already covers them).
+        owned: Dict[Any, Any] = {}
+        candidates_map: Dict[Any, Any] = {}
+        if self.demo_store is not None and not device_info.get("active_scenario"):
+            try:
+                from admz.demos.fragments import attribution_maps
+                owned, candidates_map = attribution_maps(
+                    self.git, self.demo_store.list(), device_id, device_info)
+            except Exception:  # noqa: BLE001 — attribution must never break drift
+                logger.warning(
+                    "demo attribution unavailable for %s", device_id,
+                    exc_info=True)
 
         for facet_name in sorted(live_by_facet):
             stored = self.git.read_facet(device_id, facet_name, baseline_sha)
@@ -137,23 +158,64 @@ class DriftDetector:
                 }
 
             all_keys = set(stored_flat.keys()) | set(live_flat.keys())
+            # Keys an active demo owns take part in expected state even when
+            # base and live agree elsewhere (a not-yet-loaded fragment key
+            # must surface as drift AGAINST the demo).
+            all_keys |= {k[1] for k in owned if k[0] == facet_name}
             facet_drifted = False
 
             for key in sorted(all_keys):
-                expected = stored_flat.get(key, "<missing>")
+                base_val = stored_flat.get(key, "<missing>")
                 actual = live_flat.get(key, "<missing>")
-                if expected != actual:
-                    report.fields.append(
-                        DriftField(
-                            facet=facet_name,
-                            path=key,
-                            expected=expected,
-                            actual=actual,
-                            canonical_key=(
-                                facet.canonical_key(key) if facet else None
-                            ),
-                        )
-                    )
+                own = owned.get((facet_name, key))
+                canonical = facet.canonical_key(key) if facet else None
+
+                if own is not None:
+                    # An ignore rule added AFTER capture strips the key from
+                    # both sides above — attributing the resulting "<missing>"
+                    # would false-flag the demo as broken. Ignored = invisible,
+                    # for demos too.
+                    if (ignore_rules and canonical
+                            and is_ignored(canonical, rules=ignore_rules)):
+                        continue
+                    want, demo_id, demo_name = own
+                    if actual == want:
+                        if base_val != actual:
+                            # Deliberate: the active demo set this. Recorded
+                            # for display, NOT counted as drift.
+                            report.fields.append(DriftField(
+                                facet=facet_name, path=key,
+                                expected=base_val, actual=actual,
+                                canonical_key=canonical,
+                                bucket="demo_set",
+                                owner=demo_id, owner_name=demo_name,
+                            ))
+                        continue  # matches base AND demo → nothing at all
+                    # Owned but wrong: the DEMO is broken. expected = the
+                    # demo's value, so a targeted revert repairs the demo.
+                    report.fields.append(DriftField(
+                        facet=facet_name, path=key,
+                        expected=want, actual=actual,
+                        canonical_key=canonical,
+                        bucket="demo_broken",
+                        owner=demo_id, owner_name=demo_name,
+                    ))
+                    facet_drifted = True
+                    continue
+
+                if base_val != actual:
+                    cands = [
+                        {"id": c["id"], "name": c["name"]}
+                        for c in candidates_map.get((facet_name, key), [])
+                        if c.get("value") == actual
+                    ]
+                    report.fields.append(DriftField(
+                        facet=facet_name, path=key,
+                        expected=base_val, actual=actual,
+                        canonical_key=canonical,
+                        bucket="candidate" if cands else "unclaimed",
+                        candidates=cands,
+                    ))
                     facet_drifted = True
 
             if facet_drifted:

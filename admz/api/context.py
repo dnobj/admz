@@ -95,6 +95,10 @@ class AppContext:
         return self._components.watched_event_store
 
     @property
+    def preview_manager(self):
+        return self._components.preview_manager
+
+    @property
     def detection_store(self):
         return self._components.detection_store
 

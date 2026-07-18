@@ -103,7 +103,8 @@ CREATE TABLE IF NOT EXISTS drift_signatures (
     device_id      TEXT PRIMARY KEY,
     signature      TEXT NOT NULL,
     field_count    INTEGER NOT NULL,
-    updated_at     REAL NOT NULL
+    updated_at     REAL NOT NULL,
+    attributed     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS drift_alerts (
@@ -118,6 +119,20 @@ CREATE TABLE IF NOT EXISTS drift_alerts (
 );
 CREATE INDEX IF NOT EXISTS idx_drift_alerts_ts ON drift_alerts(timestamp);
 CREATE INDEX IF NOT EXISTS idx_drift_alerts_device ON drift_alerts(device_id);
+
+-- Full drift DIFF cache (one row per device). The signature/count above is a
+-- cheap alerting hash; this holds the complete DriftReport.to_summary() so the
+-- diff can be inspected / accepted / reverted instantly, without re-probing the
+-- device. Written on every check_drift, so the background audit warms it. A
+-- cached report may be stale (further drift can occur after it was computed) —
+-- that's accepted by design and reconciled by the next audit.
+CREATE TABLE IF NOT EXISTS drift_reports (
+    device_id     TEXT PRIMARY KEY,
+    report_json   TEXT NOT NULL,
+    observed_sha  TEXT,
+    signature     TEXT,
+    computed_at   REAL NOT NULL
+);
 """
 
 
@@ -131,13 +146,40 @@ def _signature_for(report: DriftReport) -> str:
 
     Sorted on (facet, path) so the same set in different field
     order produces the same hash. Includes expected/actual values
-    so a value-only change still counts as 'changed'.
+    so a value-only change still counts as 'changed', and the
+    attribution bucket/owner (ADR-0047) so adopting or deactivating
+    a demo registers as one deliberate transition — not silence.
     """
     rows = sorted(
-        (f.facet, f.path, f.expected, f.actual) for f in report.fields
+        (f.facet, f.path, f.expected, f.actual, f.bucket, f.owner or "")
+        for f in report.fields
     )
     blob = json.dumps(rows, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _attributed_counts(report: DriftReport) -> Dict[str, Any]:
+    """Per-bucket rollup of a report's fields (ADR-0047).
+
+    ``by_demo`` counts demo_broken keys per owning demo — "is demo X's
+    fragment intact on this device" — with names for display.
+    """
+    counts: Dict[str, Any] = {
+        "unclaimed": 0, "candidate": 0, "demo_set": 0,
+        "by_demo": {}, "demo_names": {},
+    }
+    for f in report.fields:
+        if f.bucket == "demo_set":
+            counts["demo_set"] += 1
+        elif f.bucket == "candidate":
+            counts["candidate"] += 1
+        elif f.bucket == "demo_broken" and f.owner:
+            counts["by_demo"][f.owner] = counts["by_demo"].get(f.owner, 0) + 1
+        else:
+            counts["unclaimed"] += 1
+        if f.owner:
+            counts["demo_names"][f.owner] = f.owner_name or f.owner
+    return counts
 
 
 def _build_summary(transition: str, prev: int, curr: int) -> str:
@@ -165,6 +207,13 @@ class DriftAlertStore:
         try:
             with self._connect() as conn:
                 conn.executescript(_SCHEMA)
+                # ADR-0047: attributed-counts column, added after first ship.
+                try:
+                    conn.execute(
+                        "ALTER TABLE drift_signatures ADD COLUMN attributed TEXT"
+                    )
+                except sqlite3.OperationalError:
+                    pass  # column already exists
                 conn.commit()
         except sqlite3.Error as exc:  # pragma: no cover — defensive
             logger.warning("DriftAlertStore table creation failed: %s", exc)
@@ -185,7 +234,7 @@ class DriftAlertStore:
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT signature, field_count, updated_at "
+                "SELECT signature, field_count, updated_at, attributed "
                 "FROM drift_signatures WHERE device_id=?",
                 (device_id,),
             ).fetchone()
@@ -193,27 +242,37 @@ class DriftAlertStore:
             conn.close()
         if not row:
             return None
+        attributed = None
+        if row[3]:
+            try:
+                attributed = json.loads(row[3])
+            except (TypeError, ValueError):
+                attributed = None
         return {
             "signature": row[0],
             "field_count": row[1],
             "updated_at": row[2],
+            "attributed": attributed,
         }
 
     def _record_signature(
-        self, device_id: str, signature: str, field_count: int
+        self, device_id: str, signature: str, field_count: int,
+        attributed: Optional[Dict[str, Any]] = None,
     ) -> None:
         now = time.time()
         conn = self._connect()
         try:
             conn.execute(
                 "INSERT INTO drift_signatures "
-                "(device_id, signature, field_count, updated_at) "
-                "VALUES (?, ?, ?, ?) "
+                "(device_id, signature, field_count, updated_at, attributed) "
+                "VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(device_id) DO UPDATE SET "
                 "    signature   = excluded.signature, "
                 "    field_count = excluded.field_count, "
-                "    updated_at  = excluded.updated_at",
-                (device_id, signature, field_count, now),
+                "    updated_at  = excluded.updated_at, "
+                "    attributed  = excluded.attributed",
+                (device_id, signature, field_count, now,
+                 json.dumps(attributed) if attributed is not None else None),
             )
             conn.commit()
         finally:
@@ -274,8 +333,15 @@ class DriftAlertStore:
         ``None`` when nothing changed compared to last time.
         """
         device_id = report.device_id
-        current_count = len(report.fields)
+        # Cache the full diff on every check (warms from the background audit) so
+        # inspect/accept/revert can read it without re-probing the device.
+        self.store_report(report)
+        # field_count counts REAL drift only (ADR-0047): keys an active demo
+        # deliberately set don't make the roster cry "drifted". The full
+        # per-bucket breakdown rides in ``attributed``.
+        current_count = len(report.real_fields)
         signature = _signature_for(report)
+        attributed = _attributed_counts(report)
 
         previous = self.get_last_signature(device_id)
         prev_signature = previous["signature"] if previous else None
@@ -283,13 +349,13 @@ class DriftAlertStore:
 
         if previous is None:
             # First-ever observation: set baseline, no alert.
-            self._record_signature(device_id, signature, current_count)
+            self._record_signature(device_id, signature, current_count, attributed)
             return None
 
         if signature == prev_signature:
             # No change. Refresh the timestamp so age queries reflect
             # "we've seen this state recently" not "we haven't looked".
-            self._record_signature(device_id, signature, current_count)
+            self._record_signature(device_id, signature, current_count, attributed)
             return None
 
         # Transition: decide which kind.
@@ -309,7 +375,7 @@ class DriftAlertStore:
             signature=signature,
             summary=summary,
         )
-        self._record_signature(device_id, signature, current_count)
+        self._record_signature(device_id, signature, current_count, attributed)
         logger.info(
             "Drift alert recorded: %s/%s (%s)",
             device_id,
@@ -317,6 +383,81 @@ class DriftAlertStore:
             summary,
         )
         return alert
+
+    # ------------------------------------------------------------------
+    # Full-report cache (the drift DIFF, for instant inspect/accept/revert)
+    # ------------------------------------------------------------------
+
+    def store_report(self, report: DriftReport) -> None:
+        """Cache the complete drift report for a device (the full field-level
+        diff), keyed by device_id. Called on every check_drift via
+        :meth:`process_report`, so the background audit/health sweep warms it and
+        an inspect can render the diff with no live device probe. Best-effort — a
+        cache write must never break drift detection."""
+        try:
+            payload = json.dumps(report.to_summary(), separators=(",", ":"), default=str)
+        except (TypeError, ValueError) as exc:  # pragma: no cover — defensive
+            logger.warning("store_report: could not serialize %s: %s", report.device_id, exc)
+            return
+        try:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "INSERT INTO drift_reports "
+                    "(device_id, report_json, observed_sha, signature, computed_at) "
+                    "VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(device_id) DO UPDATE SET "
+                    "    report_json = excluded.report_json, "
+                    "    observed_sha = excluded.observed_sha, "
+                    "    signature = excluded.signature, "
+                    "    computed_at = excluded.computed_at",
+                    (report.device_id, payload, report.observed_sha,
+                     _signature_for(report), time.time()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:  # pragma: no cover — defensive
+            logger.warning("store_report failed for %s: %s", report.device_id, exc)
+
+    def get_report(self, device_id: str) -> Optional[Dict[str, Any]]:
+        """Return the cached drift report, or None. Shape:
+        ``{"report": <to_summary dict>, "observed_sha", "signature", "computed_at"}``.
+        The report may be stale — ``computed_at`` is the freshness stamp."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT report_json, observed_sha, signature, computed_at "
+                "FROM drift_reports WHERE device_id=?",
+                (device_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        try:
+            report = json.loads(row[0])
+        except (TypeError, ValueError):
+            return None
+        return {
+            "report": report,
+            "observed_sha": row[1],
+            "signature": row[2],
+            "computed_at": row[3],
+        }
+
+    def clear_report(self, device_id: str) -> bool:
+        """Drop a device's cached drift report (e.g. after a baseline change, so
+        the next check recomputes). Returns True if a row existed."""
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "DELETE FROM drift_reports WHERE device_id=?", (device_id,)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
 
     def list_alerts(
         self,
@@ -388,9 +529,12 @@ class DriftAlertStore:
                 (device_id,),
             )
             conn.commit()
-            return cursor.rowcount > 0
+            existed = cursor.rowcount > 0
         finally:
             conn.close()
+        # The cached diff is now stale (the next check will recompute) — drop it.
+        self.clear_report(device_id)
+        return existed
 
 
 # Module-level singleton.

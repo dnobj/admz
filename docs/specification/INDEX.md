@@ -134,11 +134,18 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 
 - [0028 — Demo / activity tracking as a bounded module on ADMZ's shared substrate](decisions/0028-demo-activity-tracking-shared-substrate.md) 📋 — AEC demo-session detection and reporting; reuses ACS layer, inventory, and UI chrome; runs as a separate, independently-deployable module
 - [0046 — Demos (the experience-center unit of work)](decisions/0046-demos.md) ✅ — the demo as a first-class object composing Scenario (config) + detections (signal); readiness as a pure rollup over the drift/health caches; Prepare/End delegate to a shared gated scenario core. ADR-0041 Layer 4, phase 1 (liveness deferred)
+- [0047 — Demo-owned config fragments (composition + attribution)](decisions/0047-demo-config-fragments.md) ✅ — a demo owns a sparse key-set over each device's base; expected = base ⊕ active demos' keys; every drifted key attributed (set-by-demo / demo-broken / looks-like-demo / unclaimed) — the mechanical answer to "drifted or deliberately changed?". Capture from the drift diff; adopt without pushing; accept-baseline guard. Slices 1–2 shipped (activation pushes staged)
 
 ### Discovery
 
 - [0016 — Merge discovery results by MAC](decisions/0016-merge-discovery-by-mac.md)
 - [0017 — Two-phase discovery (broadcast then enrich)](decisions/0017-two-phase-discovery.md)
+
+## Plans
+
+Approved implementation plans for staged work (design fixed, build pending — tracked as GitHub issues).
+
+- [Demo setup wizard](plans/demo-setup-wizard.md) — ADR-0047 slice 3+: fragment activation pushes with state-flip-on-completion (fixes the scenario marker-timing bug), demo-aware rules with auto-attached trigger signals, and the guided chat setup surface (`demo_setup_status` + gated `set_event_ingest`)
 
 ## Reviews
 

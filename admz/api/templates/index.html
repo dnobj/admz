@@ -185,6 +185,16 @@
                 <button class="btn ghost sm" id="btn-exclude-{{ device.device_id }}" onclick="bulkExclude('{{ device.device_id }}', event)"><i data-lucide="eye-off"></i> Exclude selected</button>
               </div>
             </div>
+            <div class="drift-action-group" style="border-top:1px solid var(--border);padding-top:12px">
+              <div class="drift-action-label">
+                <i data-lucide="presentation" style="color:var(--fg-blue,#60a5fa)"></i>
+                <strong>Assign to a demo</strong>
+                <span class="page-sub" style="margin:0">These changes aren't drift — they're a demo's config. Move the ticked fields into that demo's owned fragment (recorded in git; nothing is pushed).</span>
+              </div>
+              <div class="drift-action-controls">
+                <button class="btn ghost sm" id="btn-assign-{{ device.device_id }}" onclick="assignToDemo('{{ device.device_id }}')"><i data-lucide="presentation"></i> Assign selected</button>
+              </div>
+            </div>
           </div>
           <div class="drift-result hidden" id="result-{{ device.device_id }}"></div>
         </div>
@@ -379,6 +389,39 @@ async function loadDiff(did) {
   }
 }
 
+// The diff is served from the cached last drift-check (instant). This shows how
+// fresh it is and lets the operator force a live re-probe (ADR-0049). A cached
+// diff can be slightly stale — further drift is reconciled by the next audit.
+function driftAgo(ts) {
+  if (ts == null) return '';
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+function driftFreshBanner(did, data) {
+  const label = (data.cached ? 'as of ' : 'checked ') + driftAgo(data.computed_at);
+  return '<div class="drift-fresh" style="display:flex;align-items:center;gap:8px;margin:0 0 8px;font-size:12px;color:var(--text-faint)">'
+    + '<i data-lucide="clock" style="width:12px;height:12px"></i><span>' + esc(label) + '</span>'
+    + '<button type="button" class="btn ghost drift-refresh" data-did="' + esc(did) + '" style="padding:2px 8px;font-size:12px">'
+    + '<i data-lucide="refresh-cw" style="width:12px;height:12px"></i> Refresh</button></div>';
+}
+async function refreshDiff(did) {
+  delete _driftCache[did];
+  const diffWrap = document.getElementById('diff-' + did);
+  if (diffWrap) diffWrap.innerHTML = '<span style="color:var(--text-faint);font-size:13px">Re-checking the device…</span>';
+  try {
+    const resp = await fetch('/api/snapshot/drift?device_id=' + encodeURIComponent(did) + '&refresh=true');
+    if (!resp.ok) throw new Error(resp.status);
+    const data = await resp.json();
+    _driftCache[did] = data;
+    renderDiff(did, data);
+  } catch (e) {
+    if (diffWrap) diffWrap.innerHTML = '<span style="color:var(--fg-red,#f87171)">Refresh failed.</span>';
+  }
+}
+
 function renderDiff(did, data) {
   const loadingEl = document.getElementById('loading-' + did);
   const diffWrap = document.getElementById('diff-' + did);
@@ -434,6 +477,21 @@ function renderDiff(did, data) {
             + ' data-canonical="' + esc(ck) + '">'
           : '<span class="field-noselect" title="Not auto-revertable (' + esc(reason) + ')">—</span>';
         const roTag = rv ? '' : '<span class="ro-tag">' + esc(reason) + '</span>';
+        // ADR-0047 attribution chips — who explains this difference.
+        let demoChip = '';
+        if (f.bucket === 'demo_set') {
+          demoChip = '<span class="ro-tag" style="background:var(--blue-bg);color:var(--blue-fg);border-color:var(--blue-bd)"'
+            + ' title="Deliberate — this value belongs to the active demo. Deactivate the demo to undo it.">set by '
+            + esc(f.owner_name || 'demo') + '</span>';
+        } else if (f.bucket === 'demo_broken') {
+          demoChip = '<span class="ro-tag" style="background:var(--amber-bg);color:var(--amber-fg);border-color:var(--amber-bd)"'
+            + ' title="The active demo owns this key but the live value differs — reverting pushes the demo’s value back (repair).">'
+            + esc(f.owner_name || 'demo') + ' expects this</span>';
+        } else if (f.bucket === 'candidate' && (f.candidates || []).length) {
+          demoChip = '<span class="ro-tag"'
+            + ' title="Matches an inactive demo’s owned config — adopt that demo on its page, or revert.">looks like '
+            + esc(f.candidates.map(c => c.name).join(', ')) + '</span>';
+        }
         // ⊘ exclude-from-tracking — available on EVERY row (incl. read-only
         // facet fields like ACAP run-state), since ignore covers any field.
         const ign = '<button type="button" class="row-ignore-btn" title="Exclude this field from tracking"'
@@ -445,7 +503,7 @@ function renderDiff(did, data) {
         const style = hidden ? ' style="display:none"' : '';
         return '<tr class="' + cls + '"' + dg + style + '>'
           + '<td class="col-sel">' + sel + '</td>'
-          + '<td class="col-path">' + chip + esc(f.path) + roTag + '</td>'
+          + '<td class="col-path">' + chip + esc(f.path) + roTag + demoChip + '</td>'
           + '<td class="col-base">' + esc(f.expected) + '</td>'
           + '<td class="col-live">' + esc(f.actual) + '</td>'
           + '<td class="col-ign">' + ign + '</td></tr>';
@@ -472,13 +530,18 @@ function renderDiff(did, data) {
           + '<span class="grp-count">' + items.length + '</span></td></tr>';
         rows += items.map(f => mkRow(f, collapsed, c)).join('');
       });
-      // Read-only observed fields: one collapsed block at the bottom.
+      // Read-only observed fields (plus demo-owned "set by X" rows, which are
+      // deliberate rather than drift): one collapsed block at the bottom.
       if (roFields.length) {
+        const nDemo = roFields.filter(f => f.bucket === 'demo_set').length;
+        const label = nDemo
+          ? (nDemo + ' demo-owned (deliberate)' + (roFields.length > nDemo
+              ? ' + ' + (roFields.length - nDemo) + ' read-only' : ''))
+          : roFields.length + ' read-only observed change' + (roFields.length !== 1 ? 's' : '') + ' (not revertable)';
         rows += '<tr class="ro-group-head"><td colspan="5" onclick="toggleReadOnly(this)"'
           + ' style="cursor:pointer;color:var(--text-muted);font-size:12px;padding:8px 6px;user-select:none">'
           + '<i data-lucide="chevron-right" class="ro-chev" style="width:13px;height:13px;vertical-align:-2px;transition:transform .15s"></i> '
-          + roFields.length + ' read-only observed change' + (roFields.length !== 1 ? 's' : '')
-          + ' (not revertable)</td></tr>';
+          + label + '</td></tr>';
         rows += roFields.map(f => mkRow(f, true, '')).join('');
       }
       const anyRevertable = rvFields.length > 0;
@@ -537,8 +600,15 @@ function renderDiff(did, data) {
     }
     diffWrap.classList.remove('hidden');
   }
+  // Freshness stamp + Refresh (the diff came from the cached last check).
+  if (diffWrap && data.computed_at != null) {
+    diffWrap.insertAdjacentHTML('afterbegin', driftFreshBanner(did, data));
+    const rb = diffWrap.querySelector('.drift-refresh');
+    if (rb) rb.addEventListener('click', () => refreshDiff(did));
+  }
   if (actionsWrap) actionsWrap.style.display = '';
   updateRevertBtn(did);
+  if (window.lucide) lucide.createIcons();
 }
 
 // Fields the operator checked for a single device's revert.
@@ -650,6 +720,73 @@ function bulkExclude(did, evt) {
     return;
   }
   openIgnoreMenu(document.getElementById('btn-exclude-' + did), did, keys);
+}
+
+// ── Assign to demo (ADR-0047 fragment capture) ──
+// The ticked fields become the demo's owned config: the server re-checks the
+// diff and records the LIVE values in the demo's fragment (git). No push.
+async function assignToDemo(did) {
+  const fields = selectedFields(did);
+  const resultEl = document.getElementById('result-' + did);
+  if (!fields.length) {
+    if (resultEl) { resultEl.innerHTML = '<span style="color:var(--text-faint)">Tick at least one field to assign.</span>'; resultEl.classList.remove('hidden'); }
+    return;
+  }
+  closeIgnoreMenu();
+  let demos = [];
+  try {
+    const r = await fetch('/api/demos');
+    demos = ((await r.json()).demos || []);
+  } catch (e) { /* fall through to empty message */ }
+  if (!demos.length) {
+    if (resultEl) { resultEl.innerHTML = '<span style="color:var(--text-faint)">No demos defined yet — <a href="/demos">create one</a> first.</span>'; resultEl.classList.remove('hidden'); }
+    return;
+  }
+  const anchorEl = document.getElementById('btn-assign-' + did);
+  const menu = document.createElement('div');
+  menu.className = 'ignore-menu';
+  menu.innerHTML = '<div class="ig-head">Assign ' + fields.length + ' field' + (fields.length !== 1 ? 's' : '') + ' to…</div>'
+    + demos.map(d => '<button type="button" class="ig-opt" data-demo="' + esc(d.id) + '">' + esc(d.name) + '</button>').join('');
+  document.body.appendChild(menu);
+  const r = anchorEl.getBoundingClientRect();
+  menu.style.top = (window.scrollY + r.bottom + 4) + 'px';
+  menu.style.left = (window.scrollX + Math.max(8, Math.min(r.left, window.innerWidth - 250))) + 'px';
+  menu.addEventListener('click', e => e.stopPropagation());
+  _ignoreMenuEl = menu;
+  menu.querySelectorAll('.ig-opt').forEach(b => b.addEventListener('click', async () => {
+    const demoId = b.getAttribute('data-demo');
+    const demoName = b.textContent;
+    closeIgnoreMenu();
+    try {
+      const resp = await fetch('/api/demos/' + demoId + '/fragment', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({fields: fields}),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || 'failed');
+      const n = (data.added || []).length, s = (data.skipped || []).length;
+      // Tag the assigned rows so the operator sees what moved (real
+      // attribution shows up on the next drift check).
+      const moved = new Set((data.added || []).map(a => a.facet + ' ' + a.path));
+      document.querySelectorAll('.drift-field-cb').forEach(cb => {
+        if (cb.getAttribute('data-did') !== did) return;
+        if (!moved.has((cb.getAttribute('data-facet') || '') + ' ' + cb.getAttribute('data-path'))) return;
+        cb.checked = false;
+        const tr = cb.closest('tr');
+        const pathTd = tr && tr.querySelector('.col-path');
+        if (pathTd && !tr.querySelector('.demo-tag')) pathTd.insertAdjacentHTML('beforeend', ' <span class="ro-tag demo-tag">' + esc(demoName) + '</span>');
+      });
+      updateRevertBtn(did);
+      if (resultEl) {
+        let msg = '<span style="color:var(--fg-green,#4ade80)"><i data-lucide="check-circle"></i> Assigned ' + n + ' field' + (n !== 1 ? 's' : '') + ' to <a href="/demos/' + esc(demoId) + '">' + esc(demoName) + '</a>' + (s ? ' — ' + s + ' skipped (read-only / not in baseline / ignored)' : '') + '.</span>';
+        (data.warnings || []).forEach(w => { msg += '<div style="color:var(--fg-amber,#fbbf24);font-size:12px;margin-top:4px">' + esc(w) + '</div>'; });
+        resultEl.innerHTML = msg; resultEl.classList.remove('hidden');
+        if (window.lucide) lucide.createIcons();
+      }
+    } catch (e) {
+      if (resultEl) { resultEl.innerHTML = '<span style="color:var(--fg-red,#f87171)">Couldn\'t assign: ' + esc(e.message || 'request failed') + '</span>'; resultEl.classList.remove('hidden'); }
+    }
+  }));
 }
 
 // Flip a row to in-sync after a successful accept (single or bulk).

@@ -64,6 +64,18 @@ class DriftField:
     # facets, else "<facet>:<path>"). For the UI's "exclude from tracking"
     # action; NOT used in drift comparison (which joins on facet+path).
     canonical_key: Optional[str] = None
+    # ADR-0047 attribution — which demo (if any) explains this difference:
+    #   "unclaimed"   true drift (nothing claims it)
+    #   "demo_set"    matches an ACTIVE demo's owned value — deliberate, not
+    #                 drift; ``expected`` holds the BASE value for display
+    #   "demo_broken" owned by an active demo but live differs — drift AGAINST
+    #                 the demo; ``expected`` holds the DEMO's value, so a
+    #                 targeted revert re-pushes the demo's config (repair)
+    #   "candidate"   matches ≥1 INACTIVE demo's fragment — adopt or revert
+    bucket: str = "unclaimed"
+    owner: Optional[str] = None        # demo id (demo_set / demo_broken)
+    owner_name: Optional[str] = None
+    candidates: List[Dict[str, str]] = field(default_factory=list)  # [{id,name}]
 
 
 @dataclass
@@ -86,12 +98,24 @@ class DriftReport:
     # Commit-on-change: an unchanged device points at the existing commit.
     # None when observation recording failed/was unavailable.
     observed_sha: Optional[str] = None
+    # The blessed baseline this report was diffed against. Stored in the drift
+    # cache so a cached report can be invalidated the moment the baseline moves
+    # (accept / re-snapshot) — a stale-baseline cache must never drive a revert.
+    baseline_sha: Optional[str] = None
     # The drift-alert transition this check produced ("appeared"/"changed"/
     # "cleared"), or None when the drift state didn't change.
     alert_transition: Optional[str] = None
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+
+    @property
+    def real_fields(self) -> List[DriftField]:
+        """The fields that are actually DRIFT — everything except ``demo_set``
+        rows, which record a deliberate difference an active demo owns
+        (ADR-0047). ``has_drift``/counts key off this, so a device fully
+        explained by its active demos reads in-sync."""
+        return [f for f in self.fields if f.bucket != "demo_set"]
 
     def to_summary(self) -> Dict[str, Any]:
         return {
@@ -101,6 +125,7 @@ class DriftReport:
             "unreadable": self.unreadable,
             "unreadable_reason": self.unreadable_reason,
             "observed_sha": self.observed_sha,
+            "baseline_sha": self.baseline_sha,
             "facets_checked": self.facets_checked,
             "facets_drifted": self.facets_drifted,
             "timestamp": self.timestamp,
@@ -111,6 +136,10 @@ class DriftReport:
                     "expected": f.expected,
                     "actual": f.actual,
                     "canonical_key": f.canonical_key,
+                    "bucket": f.bucket,
+                    "owner": f.owner,
+                    "owner_name": f.owner_name,
+                    "candidates": f.candidates,
                 }
                 for f in self.fields
             ],

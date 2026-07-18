@@ -91,17 +91,29 @@
       </div>
       <div class="fld">
         <label>Devices</label>
+        {% if tags %}
         <div class="radio-row">
-          <label class="rb"><input type="radio" name="scope" value="tag" checked> Tag</label>
+          <label class="rb"><input type="radio" name="scope" value="tag" checked> Everything tagged</label>
           <select id="f-tag" style="flex:1">
             {% for t in tags %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
           </select>
         </div>
         <div class="radio-row" style="margin-top:6px">
-          <label class="rb"><input type="radio" name="scope" value="list"> Pick devices</label>
-          <span class="hint" style="flex:1">Choose them on the demo page after creating.</span>
+          <label class="rb"><input type="radio" name="scope" value="list"> These devices</label>
         </div>
-        <div class="hint">A tag-scoped demo picks up newly-tagged devices automatically.</div>
+        {% endif %}
+        <div id="device-picklist" style="{% if tags %}display:none;{% endif %}max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 10px;margin-top:6px">
+          {% for d in all_devices %}
+          <label class="rb" style="display:flex;align-items:center;gap:8px;padding:3px 0;cursor:pointer">
+            <input type="checkbox" class="pick-device" value="{{ d.device_id }}">
+            <span>{{ d.name }}</span>
+            {% if d.model %}<span class="page-sub" style="margin:0;font-size:11.5px">{{ d.model }}</span>{% endif %}
+          </label>
+          {% else %}
+          <span class="hint">No devices registered yet.</span>
+          {% endfor %}
+        </div>
+        <div class="hint">{% if tags %}A tag-scoped demo picks up newly-tagged devices automatically; a device list stays exactly as picked.{% else %}Tick the devices this demo uses.{% endif %} Assigning config from a drift diff also pulls a device in.</div>
       </div>
       <div class="fld">
         <label>Config</label>
@@ -145,23 +157,34 @@
     scenarioInput.disabled = document.querySelector('input[name="cfg"]:checked').value !== 'scenario';
     if (!scenarioInput.disabled) scenarioInput.focus();
   }));
+  // Scope: tag select vs device picklist. With no tags defined there are no
+  // scope radios at all — the picklist is the only mode.
+  const pickList = document.getElementById('device-picklist');
+  const currentScope = () => {
+    const r = document.querySelector('input[name="scope"]:checked');
+    return r ? r.value : 'list';
+  };
   document.querySelectorAll('input[name="scope"]').forEach(r => r.addEventListener('change', () => {
-    tagSelect.disabled = document.querySelector('input[name="scope"]:checked').value !== 'tag';
+    const scope = currentScope();
+    if (tagSelect) tagSelect.disabled = scope !== 'tag';
+    if (pickList) pickList.style.display = scope === 'tag' ? 'none' : '';
   }));
 
   document.getElementById('demo-create').addEventListener('click', async () => {
     const name = document.getElementById('f-name').value.trim();
     if (!name) { err.textContent = 'Name is required.'; err.classList.remove('hidden'); return; }
-    const scope = document.querySelector('input[name="scope"]:checked').value;
+    const scope = currentScope();
     const cfg = document.querySelector('input[name="cfg"]:checked').value;
     const scenario = scenarioInput.value.trim();
     if (cfg === 'scenario' && !scenario) { err.textContent = 'Scenario name is required.'; err.classList.remove('hidden'); return; }
+    const picked = Array.from(document.querySelectorAll('.pick-device:checked')).map(cb => cb.value);
+    if (scope !== 'tag' && !picked.length) { err.textContent = 'Tick at least one device (or scope by tag).'; err.classList.remove('hidden'); return; }
 
     const body = {
       name,
       narrative: document.getElementById('f-narrative').value.trim(),
       tag: scope === 'tag' ? tagSelect.value : null,
-      device_ids: [],
+      device_ids: scope === 'tag' ? [] : picked,
       config_source: cfg === 'scenario' ? 'scenario:' + scenario : 'baseline',
     };
     try {

@@ -87,14 +87,19 @@ class DeviceEventStream:
         device_id: str,
         *,
         registry: Any,
-        store: Any,
+        store: Any = None,
         on_event: Optional[EventCallback] = None,
         topic_filters: Optional[List[str]] = None,
+        event_filter: Optional[Callable[[Dict[str, Any]], bool]] = None,
     ):
         self.device_id = device_id
         self.registry = registry
+        # store=None → don't persist (transient preview mode). event_filter, when
+        # set, gates which events are kept (ingest passes the WatchGate here so
+        # only watched hits are stored; preview passes None to see everything).
         self.store = store
         self.on_event = on_event
+        self.event_filter = event_filter
         self.topic_filters = topic_filters or cfg.topic_filters()
         self._task: Optional[asyncio.Task] = None
         self._running = False
@@ -156,7 +161,6 @@ class DeviceEventStream:
         uri = f"{ep['ws_scheme']}://{ep['host']}/vapix/ws-data-stream?{qs}"
         ssl_ctx = _INSECURE_SSL if ep["ws_scheme"] == "wss" else None
 
-        store_cats = cfg.store_categories()
         async with websockets.connect(uri, ssl=ssl_ctx, open_timeout=cfg.WS_OPEN_TIMEOUT,
                                       max_size=2 ** 21) as ws:
             await ws.send(json.dumps({
@@ -179,14 +183,28 @@ class DeviceEventStream:
                 rec = normalize_vapix_event(msg, device_id=self.device_id, device_name=device_name)
                 if rec is None:
                     continue
-                if store_cats is not None and (rec.get("data") or {}).get("category") not in store_cats:
-                    continue
-                rec["created_at"] = time.time()
-                self.last_event_at = rec["created_at"]
-                self.store.append(rec)
-                if self.on_event is not None:
-                    try:
-                        await self.on_event(rec)
-                    except Exception:  # noqa: BLE001 — a detection error must not wedge the stream
-                        logger.debug("on_event handler failed for %s", self.device_id, exc_info=True)
+                await self._handle(rec)
         self.connected = False
+
+    async def _handle(self, rec: Dict[str, Any]) -> bool:
+        """Gate, (maybe) persist, and fan one normalized event to ``on_event``.
+
+        The gate is what stops the firehose: ingest passes the WatchGate as
+        ``event_filter``, so only events matching a watched event / detection are
+        kept. An event that matches nothing can't fire any detection either, so
+        it's dropped outright — never stored, no ``on_event``. Preview mode passes
+        no filter and ``store=None``, so it sees everything live and persists
+        nothing. Returns True if the event was kept.
+        """
+        if self.event_filter is not None and not self.event_filter(rec):
+            return False
+        rec["created_at"] = time.time()
+        self.last_event_at = rec["created_at"]
+        if self.store is not None:
+            self.store.append(rec)
+        if self.on_event is not None:
+            try:
+                await self.on_event(rec)
+            except Exception:  # noqa: BLE001 — a handler error must not wedge the stream
+                logger.debug("on_event handler failed for %s", self.device_id, exc_info=True)
+        return True

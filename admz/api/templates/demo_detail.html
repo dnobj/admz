@@ -12,6 +12,11 @@
       <span class="badge {{ r.state | demo_sem }}">
         <span class="dot sem-{{ r.state | demo_sem }}"></span>{{ r.state | demo_label }}
       </span>
+      {% if demo.active %}
+      <span class="badge blue solid" title="This demo's owned config counts toward its devices' expected state — drift attributes those keys to it.">
+        <span class="dot"></span>Active
+      </span>
+      {% endif %}
     </div>
     <p class="page-sub">
       {% if demo.scenario_name %}
@@ -23,6 +28,13 @@
     </p>
   </div>
   <div class="page-actions">
+    {% if fragments %}
+      {% if demo.active %}
+      <button class="btn" type="button" id="deactivate-btn" title="Stop claiming this demo's keys — nothing is pushed; they read as plain drift again."><i data-lucide="power-off"></i> Deactivate</button>
+      {% else %}
+      <button class="btn primary" type="button" id="adopt-btn" title="Mark active without pushing — its owned keys join the devices' expected state on the next drift check."><i data-lucide="power"></i> Mark active</button>
+      {% endif %}
+    {% endif %}
     {% if demo.scenario_name %}
     <button class="btn" type="button" id="end-btn"><i data-lucide="rotate-ccw"></i> End demo</button>
     <button class="btn primary" type="button" id="prepare-btn"><i data-lucide="play"></i> Prepare</button>
@@ -112,6 +124,58 @@
     </div>
   </div>
 
+  <!-- Owned config (ADR-0047 fragments) — the keys THIS demo sets, layered
+       over each device's baseline. Captured from the Devices drift diff. -->
+  <div class="card" style="grid-column:1 / -1">
+    <div class="card-header"><i data-lucide="layers"></i><span class="title">Owned config</span></div>
+    <div class="card-body">
+      <p class="page-sub" style="margin:0 0 12px">
+        The config keys this demo owns, per role — its delta over the devices' baseline.
+        Capture more from a device's <a href="/devices?filter=drifted">drift diff</a> ("Assign to a demo").
+      </p>
+      {% if fragments %}
+      {% for role, frag in fragments.items() %}
+      <div style="margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <span class="tag">{{ role }}</span>
+          <span class="page-sub" style="margin:0;font-size:12px">{{ frag.counts.set }} owned{% if frag.counts.require %} · {{ frag.counts.require }} required{% endif %}</span>
+        </div>
+        <table class="data-table">
+          <thead><tr><th>Facet</th><th>Key</th><th>Value</th><th></th><th></th></tr></thead>
+          <tbody>
+            {% for facet, modes in frag.facets.items() %}
+              {% for path, value in (modes.get('set') or {}).items() %}
+              <tr>
+                <td class="mono">{{ facet }}</td>
+                <td class="mono text">{{ path }}</td>
+                <td class="mono">{{ value }}</td>
+                <td><span class="badge blue">owns</span></td>
+                <td style="text-align:right"><button class="btn sm ghost frag-del" data-role="{{ role }}" data-facet="{{ facet }}" data-path="{{ path }}" title="Remove from this demo"><i data-lucide="x"></i></button></td>
+              </tr>
+              {% endfor %}
+              {% for path, value in (modes.get('require') or {}).items() %}
+              <tr>
+                <td class="mono">{{ facet }}</td>
+                <td class="mono text">{{ path }}</td>
+                <td class="mono">{{ value }}</td>
+                <td><span class="badge grey">requires</span></td>
+                <td style="text-align:right"><button class="btn sm ghost frag-del" data-role="{{ role }}" data-facet="{{ facet }}" data-path="{{ path }}" title="Remove from this demo"><i data-lucide="x"></i></button></td>
+              </tr>
+              {% endfor %}
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endfor %}
+      {% else %}
+      <div class="page-sub" style="margin:0">
+        No owned config yet{% if not demo.scenario_name %} — this demo rides the baseline as-is{% endif %}.
+        To claim keys: set a device up for the demo, run a drift check, then assign the changed fields here from the diff.
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
   <!-- Signals — the evidence it's actually running. -->
   <div class="card" style="grid-column:1 / -1">
     <div class="card-header" style="justify-content:space-between">
@@ -130,7 +194,7 @@
           {% for s in demo.signal_status %}
           <tr>
             <td>{{ s.label }}</td>
-            <td>{% if s.role %}<span class="tag">{{ s.role }}</span>{% elif s.device_id %}{{ s.device_id }}{% else %}any device{% endif %}</td>
+            <td>{% if s.device_id %}{{ device_names.get(s.device_id, s.device_id) }}{% elif s.role %}<span class="tag">{{ s.role }}</span>{% else %}any device{% endif %}</td>
             <td>
               {% if s.seen %}
                 <span class="badge green"><span class="dot sem-green"></span>{{ s.count }}×</span>
@@ -160,18 +224,19 @@
     </div>
     <div class="modal-body">
       <div class="fld">
-        <label for="s-label">Label</label>
-        <input type="text" id="s-label" placeholder="e.g. Speaker announces" autocomplete="off">
+        <label for="s-watch">Watched event</label>
+        <select id="s-watch"><option value="">Loading…</option></select>
+        <div class="hint" id="s-watch-scope" style="display:none"></div>
+        <div class="hint" id="s-watch-hint">Pick a pattern you bookmarked from the <a href="/activity">Activity feed</a> — the same library detections start from.</div>
       </div>
-      <div class="fld">
+      <div class="fld hidden" id="s-custom-wrap">
         <label for="s-filter">Event type contains</label>
         <input type="text" id="s-filter" placeholder="e.g. MotionAlarm, IO/Port, PTZ" autocomplete="off">
-        <div class="hint">Matched against the event topic — see the <a href="/activity">Activity feed</a> for real ones.</div>
+        <div class="hint">Matched against the event topic on any device in the demo — see the <a href="/activity">Activity feed</a> for real ones.</div>
       </div>
       <div class="fld">
-        <label for="s-role">From role (optional)</label>
-        <input type="text" id="s-role" placeholder="e.g. detector" autocomplete="off">
-        <div class="hint">Blank = any device in the demo.</div>
+        <label for="s-label">Label</label>
+        <input type="text" id="s-label" placeholder="What this signal proves — e.g. Speaker announces" autocomplete="off">
       </div>
       <div id="sig-error" class="err hidden"></div>
     </div>
@@ -187,6 +252,7 @@
   const DEMO_ID = {{ demo.id | tojson }};
   const SIGNALS = {{ demo.signals | tojson }};
   const ROLES = {{ demo.roles | tojson }};
+  const DEVICE_NAMES = {{ device_names | tojson }};
 
   const patch = async (body) => {
     const res = await fetch('/api/demos/' + DEMO_ID, {
@@ -227,24 +293,92 @@
     });
   });
 
-  // ── Signals ──
+  // ── Signals — pick a WATCHED EVENT (the same bookmarked-pattern library
+  // detections start from); a free-text filter stays as the fallback. The
+  // watch carries its own device, shown by name — no extra scoping to ask.
   const sigModal = document.getElementById('signal-modal');
   const sigErr = document.getElementById('sig-error');
+  const watchSel = document.getElementById('s-watch');
+  const watchHint = document.getElementById('s-watch-hint');
+  const watchScope = document.getElementById('s-watch-scope');
+  const customWrap = document.getElementById('s-custom-wrap');
+  let WATCHES = [];
+  let labelTouched = false;
+
+  const devName = (id) => DEVICE_NAMES[id] || id;
+
   const closeSig = () => { sigModal.classList.add('hidden'); sigErr.classList.add('hidden'); };
-  document.getElementById('add-signal').addEventListener('click', () => sigModal.classList.remove('hidden'));
+
+  const selectedWatch = () =>
+    WATCHES.find(w => w.id === watchSel.value) || null;
+
+  const onWatchChange = () => {
+    const w = selectedWatch();
+    customWrap.classList.toggle('hidden', watchSel.value !== '__custom');
+    if (w && !labelTouched) document.getElementById('s-label').value = w.name;
+    if (w && w.device_id) {
+      watchScope.textContent = 'Watches ' + devName(w.device_id) + '.';
+      watchScope.style.display = '';
+    } else if (w && w.tag) {
+      watchScope.textContent = 'Watches every device tagged “' + w.tag + '”.';
+      watchScope.style.display = '';
+    } else {
+      watchScope.style.display = 'none';
+    }
+  };
+
+  const openSig = async () => {
+    sigModal.classList.remove('hidden');
+    labelTouched = false;
+    try {
+      const res = await fetch('/api/watched-events');
+      WATCHES = ((await res.json()).watched || []);
+    } catch (e) { WATCHES = []; }
+    watchSel.innerHTML = '';
+    WATCHES.forEach(w => {
+      const o = document.createElement('option');
+      o.value = w.id;
+      const scope = w.device_id ? devName(w.device_id) : (w.tag ? '#' + w.tag : 'any device');
+      o.textContent = w.name + ' — ' + scope;
+      watchSel.appendChild(o);
+    });
+    const custom = document.createElement('option');
+    custom.value = '__custom'; custom.textContent = '— custom event filter —';
+    watchSel.appendChild(custom);
+    if (!WATCHES.length) {
+      watchSel.value = '__custom';
+      watchHint.innerHTML = 'No watched events yet — bookmark one from the <a href="/activity">Activity feed</a> (star an event), or use a custom filter below.';
+    }
+    onWatchChange();
+  };
+
+  document.getElementById('add-signal').addEventListener('click', openSig);
   document.getElementById('sig-close').addEventListener('click', closeSig);
   document.getElementById('sig-cancel').addEventListener('click', closeSig);
   sigModal.addEventListener('click', (e) => { if (e.target === sigModal) closeSig(); });
+  watchSel.addEventListener('change', onWatchChange);
+  document.getElementById('s-label').addEventListener('input', () => { labelTouched = true; });
 
   document.getElementById('sig-save').addEventListener('click', async () => {
-    const filter = document.getElementById('s-filter').value.trim();
-    if (!filter) { sigErr.textContent = 'Event type is required.'; sigErr.classList.remove('hidden'); return; }
-    const next = SIGNALS.concat([{
-      label: document.getElementById('s-label').value.trim() || filter,
-      category: filter,
-      role: document.getElementById('s-role').value.trim() || undefined,
-    }]);
-    try { await patch({ signals: next }); window.location.reload(); }
+    const label = document.getElementById('s-label').value.trim();
+    let sig;
+    if (watchSel.value === '__custom') {
+      const filter = document.getElementById('s-filter').value.trim();
+      if (!filter) { sigErr.textContent = 'Type an event filter (or pick a watched event).'; sigErr.classList.remove('hidden'); return; }
+      sig = { label: label || filter, category: filter };
+    } else {
+      const w = selectedWatch();
+      if (!w) { sigErr.textContent = 'Pick a watched event.'; sigErr.classList.remove('hidden'); return; }
+      // Copy semantics, same as the detection builder: the watch seeds the
+      // signal (match + its own device scope); it is never referenced live,
+      // so the watched event stays freely editable.
+      sig = { watch_id: w.id, label: label || w.name };
+      if (w.match && w.match.topic) sig.topic = w.match.topic;
+      if (w.match && w.match.category) sig.category = w.match.category;
+      if (w.device_id) sig.device_id = w.device_id;
+      if (w.tag) sig.tag = w.tag;
+    }
+    try { await patch({ signals: SIGNALS.concat([sig]) }); window.location.reload(); }
     catch (e) { sigErr.textContent = e.message; sigErr.classList.remove('hidden'); }
   });
 
@@ -263,6 +397,24 @@
     el.textContent = secs < 60 ? secs + 's ago'
       : secs < 3600 ? Math.round(secs / 60) + 'm ago'
       : Math.round(secs / 3600) + 'h ago';
+  });
+
+  // ── Owned config: remove an entry from the fragment ──
+  document.querySelectorAll('.frag-del').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Remove this key from the demo’s owned config? (The device is untouched.)')) return;
+      try {
+        const res = await fetch('/api/demos/' + DEMO_ID + '/fragment/remove', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            role: btn.dataset.role,
+            entries: [{ facet: btn.dataset.facet, path: btn.dataset.path }],
+          }),
+        });
+        if (!res.ok) throw new Error((await res.json()).detail || 'failed');
+        window.location.reload();
+      } catch (e) { alert(e.message || 'Request failed'); }
+    });
   });
 
   // ── Prepare / End (sidelined demos only) ──
@@ -286,6 +438,14 @@
   const endBtn = document.getElementById('end-btn');
   if (endBtn) endBtn.addEventListener('click', () =>
     run(endBtn, '/end', 'Return this demo’s devices to their baseline config?'));
+
+  // ── Adopt / deactivate (ADR-0047 — activation state only, no pushes) ──
+  const adoptBtn = document.getElementById('adopt-btn');
+  if (adoptBtn) adoptBtn.addEventListener('click', () => run(adoptBtn, '/adopt', null));
+  const deactBtn = document.getElementById('deactivate-btn');
+  if (deactBtn) deactBtn.addEventListener('click', () =>
+    run(deactBtn, '/deactivate',
+        'Deactivate? Its keys stay on the devices and read as plain drift on the next check.'));
 
   // ── Delete ──
   document.getElementById('delete-btn').addEventListener('click', async () => {

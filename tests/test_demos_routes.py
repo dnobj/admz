@@ -20,6 +20,19 @@ def isolate_admz_dirs(tmp_path, monkeypatch):
     monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    # The confirm-store/audit singletons bind their DB path at import time —
+    # rebind them or the gated-write tests leak pending sessions into the REAL
+    # deployment DB (observed live 2026-07-18).
+    from admz import audit as audit_module
+    monkeypatch.setattr(
+        audit_module, "audit_log",
+        audit_module.AuditLog(db_path=str(tmp_path / "admz.db")))
+    import admz.api.confirm_store as cs_module
+    store = cs_module.ConfirmStore(db_path=str(tmp_path / "admz.db"))
+    monkeypatch.setattr(cs_module, "confirm_store", store)
+    # routes/confirm.py binds the instance at import time — patch its name too
+    # so the approve endpoint reads the same store the gates write.
+    monkeypatch.setattr("admz.api.routes.confirm.confirm_store", store)
 
 
 @pytest.fixture
@@ -27,6 +40,22 @@ def client(isolate_admz_dirs, monkeypatch):
     monkeypatch.setenv("ADMZ_AUTH_BACKEND", "none")
     # Demo writes require an authenticated principal; under the 'none' backend the
     # principal is anonymous, so neutralize that gate (same as the GitHub App tests).
+    monkeypatch.setattr("admz.authz.require_authenticated_principal", lambda p: None)
+    # These tests exercise the CONSOLE-USER flow: a signed-in windows principal
+    # clicking the web UI writes directly. The widget-gated (non-interactive)
+    # path is covered separately by TestDriftAffectingGate.
+    monkeypatch.setattr("admz.demos.gated.is_interactive", lambda p: True)
+    from admz.api.main import app
+
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture
+def api_client(isolate_admz_dirs, monkeypatch):
+    """Same app, but the caller is NON-interactive (api key / chat) — the
+    drift-affecting writes must gate behind the approval widget."""
+    monkeypatch.setenv("ADMZ_AUTH_BACKEND", "none")
     monkeypatch.setattr("admz.authz.require_authenticated_principal", lambda p: None)
     from admz.api.main import app
 
@@ -190,6 +219,116 @@ class TestPrepareEndGuards:
         assert seen["devices"] == ["cam-1"]
 
 
+class TestDriftAffectingGate:
+    """ADR-0047 policy: assign-fragment + adopt gate behind the approval widget
+    for NON-interactive principals (api key / chat). Drives the REAL confirm
+    endpoint, so approval executes the registered action executors."""
+
+    @pytest.fixture
+    def fake_drift(self, monkeypatch):
+        from admz.snapshot.models import DriftField, DriftReport
+
+        async def _fake(self, device_id, baseline_sha=None, family="vapix"):
+            return DriftReport(device_id=device_id, has_drift=True, fields=[
+                DriftField(facet="other", path="Motion.M0.Enabled",
+                           expected="no", actual="yes",
+                           canonical_key="root.Motion.M0.Enabled"),
+            ])
+
+        from admz.snapshot.drift import DriftDetector
+        monkeypatch.setattr(DriftDetector, "check_drift", _fake)
+
+    def _mk_api(self, api_client, **kw):
+        body = {"name": "Gated demo", "narrative": ""}
+        body.update(kw)
+        res = api_client.post("/api/demos", json=body)
+        assert res.status_code == 200, res.text
+        return res.json()["demo"]
+
+    def test_assign_gates_then_approval_executes(self, api_client, registry,
+                                                 fake_drift):
+        from admz.demos import fragments as fr
+        from admz.api.context import get_context
+
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = self._mk_api(api_client, tag="speakers")
+        res = api_client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [{"device_id": "cam-1", "facet": "other",
+                        "path": "Motion.M0.Enabled"}]})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["blocked"] is True and data["confirm_url"]
+        # NOT written yet — the widget holds it.
+        assert fr.load_all_fragments(get_context().git_repo, demo["id"]) == {}
+
+        # Approve at the real endpoint → the action executor runs the core.
+        ok = api_client.post(f"/api/chat/confirm/{data['confirm_token']}",
+                             json={})
+        assert ok.status_code == 200, ok.text
+        outcome = ok.json().get("outcome") or {}
+        assert outcome.get("success") is True, ok.json()
+        frags = fr.load_all_fragments(get_context().git_repo, demo["id"])
+        assert frags["default"]["other"]["set"]["Motion.M0.Enabled"] == "yes"
+
+    def test_adopt_gates_then_approval_executes(self, api_client, registry,
+                                                fake_drift):
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = self._mk_api(api_client, tag="speakers")
+        res = api_client.post(f"/api/demos/{demo['id']}/adopt")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["blocked"] is True and data["confirm_token"]
+        from admz.api.context import get_context
+        assert get_context().demo_store.get(demo["id"]).active is False
+
+        ok = api_client.post(f"/api/chat/confirm/{data['confirm_token']}",
+                             json={})
+        assert ok.status_code == 200, ok.text
+        assert get_context().demo_store.get(demo["id"]).active is True
+
+    def test_adopt_apply_time_guard_recheck(self, api_client, registry,
+                                            fake_drift):
+        # Approve an adopt AFTER a conflicting demo went active — the executor
+        # re-runs the guards and fails cleanly instead of slipping through.
+        from admz.api.context import get_context
+        from admz.demos import fragments as fr
+
+        _add_device(registry, "cam-1", tags=["speakers"])
+        a = self._mk_api(api_client, name="Demo A", tag="speakers")
+        b = self._mk_api(api_client, name="Demo B", tag="speakers")
+        ctx = get_context()
+        for d in (a, b):
+            demo_obj = ctx.demo_store.get(d["id"])
+            fr.add_entries(ctx.git_repo, demo_obj, "default",
+                           [{"facet": "other", "path": "Motion.M0.Enabled",
+                             "value": "yes"}])
+
+        # Gate B's adopt, then A becomes active before B is approved.
+        env = api_client.post(f"/api/demos/{b['id']}/adopt").json()
+        assert env["blocked"] is True
+        demo_a = ctx.demo_store.get(a["id"])
+        demo_a.active = True
+        ctx.demo_store.update(demo_a)
+
+        ok = api_client.post(f"/api/chat/confirm/{env['confirm_token']}",
+                             json={})
+        outcome = ok.json().get("outcome") or {}
+        assert outcome.get("success") is False, ok.json()
+        assert "Demo A" in (outcome.get("error") or str(outcome))
+        assert ctx.demo_store.get(b["id"]).active is False
+
+    def test_deactivate_and_metadata_stay_direct(self, api_client, registry):
+        # Only the drift-affecting writes gate — create/update/delete and
+        # deactivate answer directly even for non-interactive callers.
+        demo = self._mk_api(api_client)
+        r = api_client.patch(f"/api/demos/{demo['id']}",
+                             json={"narrative": "updated"})
+        assert r.status_code == 200 and "blocked" not in r.json()
+        r = api_client.post(f"/api/demos/{demo['id']}/deactivate")
+        assert r.status_code == 200 and r.json()["success"] is True
+        assert api_client.delete(f"/api/demos/{demo['id']}").status_code == 200
+
+
 class TestPages:
     def test_list_page_renders_the_verdict(self, client, registry):
         _add_device(registry, "cam-1", tags=["speakers"])
@@ -226,3 +365,183 @@ class TestPages:
 
     def test_detail_404(self, client):
         assert client.get("/demos/nope").status_code == 404
+
+
+class TestFragmentCapture:
+    """ADR-0047 slice 1 — 'Assign to demo' from the drift diff."""
+
+    @pytest.fixture
+    def fake_drift(self, monkeypatch):
+        """check_drift returns a synthetic report: one assignable param field,
+        one not-in-baseline field, and one snapshot-only-facet field."""
+        from admz.snapshot.models import DriftField, DriftReport
+
+        async def _fake(self, device_id, baseline_sha=None, family="vapix"):
+            return DriftReport(device_id=device_id, has_drift=True, fields=[
+                DriftField(facet="other", path="Motion.M0.Enabled",
+                           expected="no", actual="yes",
+                           canonical_key="root.Motion.M0.Enabled"),
+                DriftField(facet="other", path="Brand.New.Key",
+                           expected="<missing>", actual="x",
+                           canonical_key="root.Brand.New.Key"),
+                DriftField(facet="action_rules", path="rules.0.name",
+                           expected="a", actual="b",
+                           canonical_key="action_rules:rules.0.name"),
+            ])
+
+        from admz.snapshot.drift import DriftDetector
+        monkeypatch.setattr(DriftDetector, "check_drift", _fake)
+
+    def test_assign_captures_live_values_and_skips_unwritable(
+            self, client, registry, fake_drift):
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = _mk(client, name="Frag demo", tag="speakers")
+        res = client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [
+                {"device_id": "cam-1", "facet": "other", "path": "Motion.M0.Enabled"},
+                {"device_id": "cam-1", "facet": "other", "path": "Brand.New.Key"},
+                {"device_id": "cam-1", "facet": "action_rules", "path": "rules.0.name"},
+                {"device_id": "cam-1", "facet": "other", "path": "Never.Drifted"},
+            ],
+        })
+        assert res.status_code == 200, res.text
+        data = res.json()
+        # The one writable, in-baseline, actually-drifted field made it in —
+        # with the LIVE value (the operator configured the device for the demo).
+        assert [a["path"] for a in data["added"]] == ["Motion.M0.Enabled"]
+        assert data["added"][0]["value"] == "yes"
+        reasons = {s["path"]: s["reason"] for s in data["skipped"]}
+        assert reasons["Brand.New.Key"] == "not-in-baseline"
+        assert reasons["rules.0.name"] == "read-only"
+        assert reasons["Never.Drifted"] == "not-drifted"
+        assert data["commit_sha"]
+        # Fragment is now visible on the demo.
+        frag = data["fragments"]["default"]["facets"]["other"]["set"]
+        assert frag["Motion.M0.Enabled"] == "yes"
+
+    def test_assign_binds_device_and_learns_role(self, client, registry, fake_drift):
+        _add_device(registry, "cam-1")
+        demo = _mk(client, name="Bind demo", device_ids=[])
+        res = client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [{"device_id": "cam-1", "facet": "other",
+                        "path": "Motion.M0.Enabled"}],
+            "role": "Detector Cam",
+        })
+        assert res.status_code == 200, res.text
+        got = client.get(f"/api/demos/{demo['id']}").json()["demo"]
+        assert got["roles"]["cam-1"] == "detector-cam"   # normalized
+        assert "cam-1" in got["device_ids"]              # pulled into scope
+        assert "detector-cam" in got["fragments"]
+
+    def test_assign_requires_fields(self, client):
+        demo = _mk(client, name="Empty")
+        assert client.post(f"/api/demos/{demo['id']}/fragment",
+                           json={"fields": []}).status_code == 400
+
+    def test_remove_entry_and_empty_state(self, client, registry, fake_drift):
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = _mk(client, name="Rm demo", tag="speakers")
+        client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [{"device_id": "cam-1", "facet": "other",
+                        "path": "Motion.M0.Enabled"}]})
+        res = client.post(f"/api/demos/{demo['id']}/fragment/remove", json={
+            "role": "default",
+            "entries": [{"facet": "other", "path": "Motion.M0.Enabled"}]})
+        assert res.status_code == 200
+        assert res.json()["fragments"] == {}
+
+    def test_delete_demo_cleans_up_fragments(self, client, registry, fake_drift):
+        import admz.api.main as main_mod
+        from admz.demos import fragments as fr
+
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = _mk(client, name="Del demo", tag="speakers")
+        client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [{"device_id": "cam-1", "facet": "other",
+                        "path": "Motion.M0.Enabled"}]})
+        from admz.api.context import get_context
+        git = get_context().git_repo
+        assert fr.load_all_fragments(git, demo["id"]) != {}
+        assert client.delete(f"/api/demos/{demo['id']}").status_code == 200
+        assert fr.load_all_fragments(git, demo["id"]) == {}
+
+    def test_adopt_and_deactivate(self, client, registry, fake_drift):
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = _mk(client, name="Adopt demo", tag="speakers")
+        client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [{"device_id": "cam-1", "facet": "other",
+                        "path": "Motion.M0.Enabled"}]})
+        res = client.post(f"/api/demos/{demo['id']}/adopt")
+        assert res.status_code == 200, res.text
+        assert res.json()["demo"]["active"] is True
+        # Idempotent.
+        assert client.post(f"/api/demos/{demo['id']}/adopt").status_code == 200
+        res = client.post(f"/api/demos/{demo['id']}/deactivate")
+        assert res.status_code == 200
+        assert res.json()["demo"]["active"] is False
+
+    def test_adopt_conflicts_on_shared_key(self, client, registry, fake_drift):
+        # v1 forbids ALL same-key overlap between active demos — even equal
+        # values — so deactivation is trivially "push base".
+        _add_device(registry, "cam-1", tags=["speakers"])
+        a = _mk(client, name="Demo A", tag="speakers")
+        b = _mk(client, name="Demo B", tag="speakers")
+        for d in (a, b):
+            client.post(f"/api/demos/{d['id']}/fragment", json={
+                "fields": [{"device_id": "cam-1", "facet": "other",
+                            "path": "Motion.M0.Enabled"}]})
+        assert client.post(f"/api/demos/{a['id']}/adopt").status_code == 200
+        res = client.post(f"/api/demos/{b['id']}/adopt")
+        assert res.status_code == 409
+        assert "Demo A" in res.json()["detail"]
+
+    def test_adopt_blocked_by_legacy_scenario(self, client, registry, fake_drift):
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = _mk(client, name="Legacy blocked", tag="speakers")
+        client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [{"device_id": "cam-1", "facet": "other",
+                        "path": "Motion.M0.Enabled"}]})
+        registry.set_active_scenario("cam-1", "night-mode")
+        res = client.post(f"/api/demos/{demo['id']}/adopt")
+        assert res.status_code == 409
+        assert "night-mode" in res.json()["detail"]
+
+    def test_accept_baseline_guard(self, client, registry, fake_drift):
+        # THE trap (ADR-0047 H1): accepting an observation while an active demo
+        # owns keys would bake the demo's config into base forever.
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = _mk(client, name="Guard demo", tag="speakers")
+        client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [{"device_id": "cam-1", "facet": "other",
+                        "path": "Motion.M0.Enabled"}]})
+        client.post(f"/api/demos/{demo['id']}/adopt")
+
+        res = client.post("/api/snapshot/accept-baseline",
+                          json={"device_id": "cam-1"})
+        assert res.status_code == 409
+        assert "Guard demo" in res.json()["detail"]
+
+        # Bulk: skip-and-report, not a hard failure.
+        res = client.post("/api/snapshot/accept-baseline-bulk",
+                          json={"device_ids": ["cam-1"]})
+        assert res.status_code == 200
+        [skip] = res.json()["skipped"]
+        assert skip["reason"] == "active-demo-config"
+
+        # Deactivated -> accept proceeds past the guard (fails later only on
+        # no-observation, which is fine — the guard is what we're testing).
+        client.post(f"/api/demos/{demo['id']}/deactivate")
+        res = client.post("/api/snapshot/accept-baseline",
+                          json={"device_id": "cam-1"})
+        assert res.status_code != 409
+
+    def test_detail_page_shows_owned_config(self, client, registry, fake_drift):
+        _add_device(registry, "cam-1", tags=["speakers"])
+        demo = _mk(client, name="Page demo", tag="speakers")
+        client.post(f"/api/demos/{demo['id']}/fragment", json={
+            "fields": [{"device_id": "cam-1", "facet": "other",
+                        "path": "Motion.M0.Enabled"}]})
+        res = client.get(f"/demos/{demo['id']}")
+        assert res.status_code == 200
+        assert "Owned config" in res.text
+        assert "Motion.M0.Enabled" in res.text

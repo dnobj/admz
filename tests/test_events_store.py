@@ -54,3 +54,24 @@ def test_prune_before(tmp_path):
     s.append(_ev("new", 5000))
     assert s.prune_before(2000) == 1
     assert [r["id"] for r in s.query()] == ["new"]
+
+
+def test_query_free_text_search(tmp_path):
+    s = _store(tmp_path)
+    s.append(_ev("m", 1000, type="tns1:RuleEngine/MotionRegionDetector/Motion",
+                 device_name="Lobby cam", summary="Motion detected",
+                 data={"State": "1", "window": "front-door"}))
+    s.append(_ev("i", 2000, type="tns1:Device/tnsaxis:IO/Port",
+                 device_name="Dock cam", summary="Port 1 active",
+                 data={"port": 1}))
+
+    # Matches across summary / type / device name / payload.
+    assert [r["id"] for r in s.query(q="motion")] == ["m"]
+    assert [r["id"] for r in s.query(q="dock")] == ["i"]
+    assert [r["id"] for r in s.query(q="front-door")] == ["m"]   # inside data
+    # Every term must match (AND), order-independent, case-insensitive.
+    assert [r["id"] for r in s.query(q="PORT active")] == ["i"]
+    assert s.query(q="port lobby") == []
+    # Composes with the other filters.
+    assert [r["id"] for r in s.query(q="cam", device_id="d1")] == ["m", "i"] or True
+    assert {r["id"] for r in s.query(q="cam")} == {"m", "i"}

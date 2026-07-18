@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -558,6 +559,42 @@ class GitRepo:
                 yaml.dump(raw, f, default_flow_style=False, sort_keys=True)
 
         return config_path
+
+    def _safe_rel_path(self, rel_path: str) -> Path:
+        """Resolve a repo-relative path and refuse anything that escapes the
+        repo (traversal, absolute paths, drive letters)."""
+        candidate = (self.repo_path / rel_path).resolve()
+        root = self.repo_path.resolve()
+        if root != candidate and root not in candidate.parents:
+            raise ValueError(f"path escapes the config repo: {rel_path!r}")
+        return candidate
+
+    def write_yaml(self, rel_path: str, data: Dict) -> Path:
+        """Write a YAML document at an arbitrary repo-relative path.
+
+        First generic writer — every other writer is device-scoped
+        (``write_facet``/``write_device_yaml``). Callers own the path
+        vocabulary (e.g. ``demos/<id>/roles/<role>.yaml``, ADR-0047); commit
+        via the usual ``commit_snapshot``/``commit_fleet_snapshot``.
+        """
+        path = self._safe_rel_path(rel_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=True)
+        return path
+
+    def remove_path(self, rel_path: str) -> bool:
+        """Delete a file or directory tree from the working tree (history is
+        untouched — the next commit records the removal). Returns True if
+        anything was removed."""
+        path = self._safe_rel_path(rel_path)
+        if path.is_dir():
+            shutil.rmtree(path)
+            return True
+        if path.exists():
+            path.unlink()
+            return True
+        return False
 
     def read_facet(
         self, device_id: str, facet_name: str, ref: str = "HEAD"

@@ -75,6 +75,16 @@ EXPECTED_TOOL_ORDER = [
     "list_rule_capabilities",
     "create_action_rule",
     "delete_action_rule",
+    "list_demos",
+    "get_demo",
+    "create_demo",
+    "update_demo",
+    "delete_demo",
+    "assign_demo_fragment",
+    "adopt_demo",
+    "deactivate_demo",
+    "prepare_demo",
+    "end_demo",
 ]
 
 

@@ -205,7 +205,10 @@ class VoiceSession:
         from google.genai import types
 
         from admz.chatbot.system_prompt import build_system_prompt
-        from admz.chatbot.context import build_module_prompt_sections
+        from admz.chatbot.context import (
+            build_demos_section,
+            build_module_prompt_sections,
+        )
         from admz.chatbot.client import _mcp_declarations
 
         self._types = types
@@ -234,6 +237,7 @@ class VoiceSession:
             self._principal_name, display_name=self._display_name,
             groups=self._groups,
             module_sections=build_module_prompt_sections(),
+            demos_section=build_demos_section(),
         ) + _VOICE_PROMPT_NOTE
 
         config = types.LiveConnectConfig(

@@ -109,13 +109,18 @@ class EventStore:
         type_filter: Optional[str] = None,
         device_id: Optional[str] = None,
         device_filter: Optional[str] = None,
+        q: Optional[str] = None,
         since_ms: Optional[int] = None,
         limit: int = 500,
     ) -> List[Dict[str, Any]]:
         """Return events newest-first with optional filters.
 
         ``type_filter`` / ``device_filter`` are case-insensitive substring
-        matches; ``device_id`` is an exact match; ``since_ms`` bounds by epoch ms.
+        matches; ``device_id`` is an exact match; ``since_ms`` bounds by epoch
+        ms. ``q`` is a general text search — every whitespace-separated term
+        must appear somewhere in the event (summary, type, device name, or the
+        raw data payload), so "port 1 active" narrows the way an operator
+        expects.
         """
         where: List[str] = []
         args: List[Any] = []
@@ -131,6 +136,12 @@ class EventStore:
         if device_filter:
             where.append("LOWER(COALESCE(device_name, '')) LIKE ?")
             args.append(f"%{device_filter.lower()}%")
+        for term in (q or "").split():
+            where.append(
+                "LOWER(COALESCE(summary,'') || ' ' || COALESCE(type,'') || ' ' "
+                "|| COALESCE(device_name,'') || ' ' || COALESCE(data,'')) LIKE ?"
+            )
+            args.append(f"%{term.lower()}%")
         if since_ms is not None:
             where.append("ts_ms >= ?")
             args.append(int(since_ms))
@@ -168,6 +179,48 @@ class EventStore:
                 conn.close()
         except sqlite3.Error:  # pragma: no cover — defensive
             return 0
+
+    def prune(self, *, older_than_ms: Optional[int] = None,
+              keep_max: Optional[int] = None) -> int:
+        """Delete old events. ``older_than_ms`` drops anything older than a cutoff;
+        ``keep_max`` keeps only the newest N rows. Returns rows deleted.
+
+        Cheap in the watch-scoped world (the store holds only watched hits) and
+        the backstop against any single chatty watched topic growing without end.
+        """
+        total = 0
+        try:
+            conn = self._connect()
+            try:
+                if older_than_ms is not None:
+                    cur = conn.execute("DELETE FROM events WHERE ts_ms < ?", (int(older_than_ms),))
+                    total += max(cur.rowcount, 0)
+                if keep_max is not None:
+                    cur = conn.execute(
+                        "DELETE FROM events WHERE id NOT IN "
+                        "(SELECT id FROM events ORDER BY ts_ms DESC, created_at DESC LIMIT ?)",
+                        (int(keep_max),),
+                    )
+                    total += max(cur.rowcount, 0)
+                conn.commit()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:  # pragma: no cover — defensive
+            logger.warning("EventStore prune failed: %s", exc)
+        return total
+
+    def enforce_retention(self) -> int:
+        """Apply the configured retention (days, then max-rows). Returns deleted."""
+        from admz.events import config as cfg
+        deleted = 0
+        days = cfg.events_retention_days()
+        if days and days > 0:
+            cutoff_ms = int((time.time() - days * 86400) * 1000)
+            deleted += self.prune(older_than_ms=cutoff_ms)
+        max_rows = cfg.events_max_rows()
+        if max_rows and max_rows > 0:
+            deleted += self.prune(keep_max=max_rows)
+        return deleted
 
     def activity_since(
         self,

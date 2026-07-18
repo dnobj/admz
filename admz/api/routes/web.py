@@ -73,11 +73,24 @@ async def set_active_site(site_id: str, request: Request):
 @router.get("/activity", response_class=HTMLResponse)
 async def activity_page(request: Request, ctx: AppContext = Depends(get_context)):
     """Live activity feed (ADR-0041 layer 2) — the device-event timeline."""
+    # The "From" picker: each registered device by name, plus software sources.
+    # Operators mostly watch one device or one system at a time and narrow
+    # from there, so the picker is explicit rather than a name-substring box.
+    try:
+        sources = sorted(
+            ({"device_id": d.get("device_id"),
+              "name": d.get("nickname") or d.get("model") or d.get("device_id")}
+             for d in ctx.registry.list_devices() if d.get("device_id")),
+            key=lambda d: d["name"],
+        )
+    except Exception:  # noqa: BLE001 — the feed must render without a registry
+        sources = []
     return templates.TemplateResponse(
         "activity.html",
         {"request": request, "title": "Activity",
          "status": ctx.event_supervisor.status(),
-         "acs_status": ctx.acs_event_poller.status()},
+         "acs_status": ctx.acs_event_poller.status(),
+         "device_sources": sources},
     )
 
 

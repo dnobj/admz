@@ -18,11 +18,15 @@ TOOLS: List[Tool] = [
             "change, or remove an event rule (e.g. 'play a sound when input 2 "
             "activates', 'flash the LED when motion is detected'). Returns the "
             "event CONDITIONS (triggers) and ACTIONS available for the device's "
-            "model — each with its id/token, human label, and parameter choices "
-            "— plus `current_rules` (rule_id + name). Pick a `condition_id` and "
-            "`action_token` from this result, then call create_action_rule. If "
-            "the model isn't surveyed, `available` is false with a reason — tell "
-            "the user rather than guessing. Read-only."
+            "model — each with its id/token, human label, parameter choices, and "
+            "`notes` (survey caveats — READ them when choosing between similar "
+            "conditions) — plus `current_rules` (rule_id + name) and "
+            "`device_applications` (which analytics ACAPs actually run on this "
+            "unit). Prefer conditions published by a Running application; a "
+            "condition whose app is absent or stopped never fires. Pick a "
+            "`condition_id` and `action_token` from this result, then call "
+            "create_action_rule. If the model isn't surveyed, `available` is "
+            "false with a reason — tell the user rather than guessing. Read-only."
         ),
         inputSchema={
             "type": "object",
