@@ -156,7 +156,8 @@ class TestPrepareEndGuards:
         demo = _mk(client, tag="speakers")
         res = client.post(f"/api/demos/{demo['id']}/prepare")
         assert res.status_code == 400
-        assert "nothing to load" in res.json()["detail"]
+        # ADR-0050 Phase A reworded the refusal toward capture.
+        assert "owns no config to load yet" in res.json()["detail"]
 
     def test_end_on_baseline_demo_refuses(self, client, registry):
         _add_device(registry, "cam-1", tags=["speakers"])
