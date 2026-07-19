@@ -251,6 +251,13 @@ class GitRepo:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # git emits UTF-8; without an explicit encoding, Windows decodes
+            # with the locale codepage (cp1252) and non-ASCII commit messages
+            # mojibake on every history surface ("—" -> "â€”"). errors="replace"
+            # so a stray invalid byte in a diff/file read degrades to U+FFFD
+            # instead of crashing a history endpoint.
+            encoding="utf-8",
+            errors="replace",
             creationflags=_CREATE_NO_WINDOW,
         )
         if env is not None:
