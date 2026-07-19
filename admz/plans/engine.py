@@ -56,6 +56,7 @@ class PlanEngine:
         steps: List[Dict[str, Any]],
         on_failure: str = "stop",
         created_by: str = "",
+        on_complete: Optional[Dict[str, Any]] = None,
     ) -> ExecutionPlan:
         """
         Validate and store an execution plan.
@@ -165,6 +166,7 @@ class PlanEngine:
             on_failure=failure_policy,
             risk_summary=risk_counts,
             created_by=created_by,
+            on_complete=on_complete,
         )
 
         self._plans[plan.plan_id] = plan
@@ -220,6 +222,11 @@ class PlanEngine:
             plan.status = PlanStatus.COMPLETED
         else:
             plan.status = PlanStatus.FAILED
+
+        # Declarative completion hook (ADR-0050) — dispatched here, the single
+        # choke point every execution path funnels through. Never raises.
+        from admz.plans.completion import run_completion
+        run_completion(plan, registry=self.registry)
 
         return plan
 

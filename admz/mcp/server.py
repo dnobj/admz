@@ -2134,13 +2134,18 @@ class ADMZMCPServer:
         self, device_id: str, condition_id: str, action_token: str,
         param_choices: Optional[Dict[str, Any]] = None,
         rule_name: Optional[str] = None,
+        demo: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Gate creating a device event rule (ADR-0034 widget-gated action).
 
         Validates the spec via the atlas (fail fast in chat on an unbuildable
         rule), then returns the approval card. The rule is only created after
         the user approves — the executor re-renders and runs the SOAP sequence,
-        so no rendered body (or secret) is ever stored in the confirm session."""
+        so no rendered body (or secret) is ever stored in the confirm session.
+
+        ``demo`` (name-or-id, ADR-0050 Phase B): correlate the rule with a demo —
+        on approval its membership is recorded and its condition topic becomes the
+        demo's signal. Resolved here so an unknown demo fails fast in chat."""
         if not self.registry.device_exists(device_id):
             raise DeviceNotFoundError(f"Device not found: {device_id}")
         from admz import operations
@@ -2149,6 +2154,15 @@ class ADMZMCPServer:
         model = info.get("model") or ""
         rule_name = rule_name or "AtlasRule"
         param_choices = dict(param_choices or {})
+
+        demo_id = demo_name = None
+        if demo:
+            from admz.demos.actions import DemoActionError
+            try:
+                demo_obj = self._resolve_demo(demo)
+                demo_id, demo_name = demo_obj.id, demo_obj.name
+            except DemoActionError as exc:
+                return {"success": False, "error": str(exc)}
 
         result = capabilities.build(
             model, condition_id, action_token,
@@ -2160,6 +2174,14 @@ class ADMZMCPServer:
 
         action = capabilities.action_for(model, action_token)
         condition = capabilities.condition_for(model, condition_id)
+
+        # ADR-0050 Phase B: the condition's ONVIF topic (the device publishes it
+        # independently of the rule → it IS the demo's correlated signal). Carried
+        # in the action payload so the executor records it on approval.
+        demo_extra: Dict[str, Any] = {}
+        if demo_id:
+            demo_extra = {"demo_id": demo_id, "demo_name": demo_name,
+                          "condition_topic": getattr(condition, "topic", None)}
 
         # Create-time lint: a rule whose condition topic has no publisher on
         # THIS unit saves fine and then never fires. Block conditions that
@@ -2179,6 +2201,10 @@ class ADMZMCPServer:
             rule_name=rule_name, condition=condition, action=action)
         if caution:
             reason = f"{reason} WARNING: {caution}"
+        if demo_id:
+            reason = (f"{reason} This rule is correlated with demo "
+                      f"'{demo_name}' — on approval its condition topic becomes "
+                      "the demo's signal.")
 
         # Recipient-credential actions (HTTP/SMTP/send-*): the login/password
         # must be captured out-of-band via a secure form, never taken from chat.
@@ -2195,7 +2221,7 @@ class ADMZMCPServer:
                          "condition_id": condition_id, "action_token": action_token,
                          "param_choices": param_choices, "rule_name": rule_name,
                          "requires_secret_capture": True,
-                         "secret_fields": secret_fields},
+                         "secret_fields": secret_fields, **demo_extra},
                 reason=reason)
             return {
                 "success": False,
@@ -2216,7 +2242,8 @@ class ADMZMCPServer:
             action="create_action_rule", device_id=device_id,
             payload={"device_id": device_id, "model": model,
                      "condition_id": condition_id, "action_token": action_token,
-                     "param_choices": param_choices, "rule_name": rule_name},
+                     "param_choices": param_choices, "rule_name": rule_name,
+                     **demo_extra},
             reason=reason)
         env = operations.blocked_envelope(session)
         env["success"] = False
@@ -2335,11 +2362,15 @@ class ADMZMCPServer:
             return {"success": False, "error": "no fields given — pick them "
                     "from a fresh check_drift diff"}
         n = len(fields)
+        mode = arguments.get("mode") or "set"
+        if mode not in ("set", "require"):
+            return {"success": False, "error": "mode must be 'set' or 'require'"}
+        verb = ("Assign" if mode == "set" else "Bind (assert-only)")
         return gate_demo_write(
             "assign_demo_fragment", demo.id,
             {"demo": demo.id, "fields": fields,
-             "role": arguments.get("role"), "mode": "set"},
-            f"Assign {n} config field{'s' if n != 1 else ''} to demo "
+             "role": arguments.get("role"), "mode": mode},
+            f"{verb} {n} config field{'s' if n != 1 else ''} to demo "
             f"'{demo.name}' — its keys become deliberate (not drift) once "
             "the demo is active.")
 
@@ -2385,6 +2416,37 @@ class ADMZMCPServer:
             return await end_demo_core(self.components, demo, self.principal)
         except DemoActionError as exc:
             return self._demo_err(exc)
+
+    def _demo_setup_status(self, ref: str) -> Dict[str, Any]:
+        """Read-only guided-setup checklist for a demo (ADR-0050 Phase C)."""
+        from admz.demos import wizard
+        from admz.demos.actions import DemoActionError
+
+        try:
+            demo = self._resolve_demo(ref)
+        except DemoActionError as exc:
+            return self._demo_err(exc)
+        return {"success": True, **wizard.setup_status(self.components, demo)}
+
+    async def _set_event_ingest(self, enabled: bool) -> Dict[str, Any]:
+        """Gate turning fleet event capture on/off (ADR-0050 Phase C — prompted,
+        never auto). Returns the approval card; the flag flips on approval."""
+        from admz import operations
+
+        reason = (
+            f"Turn fleet event capture {'ON' if enabled else 'OFF'}. "
+            + ("Opens a live event stream for each WATCHED device so this demo's "
+               "signals get recorded and can be verified."
+               if enabled else
+               "Stops all device event streams — demo signals won't be recorded "
+               "until re-enabled.")
+            + " This is one global fleet setting.")
+        session = operations.create_action_session(
+            action="set_event_ingest", device_id="",
+            payload={"enabled": bool(enabled)}, reason=reason)
+        env = operations.blocked_envelope(session)
+        env["success"] = False
+        return env
 
     async def _delete_account(
         self,

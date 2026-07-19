@@ -297,7 +297,7 @@ async def _list_rule_capabilities(ctx, a):
 async def _create_action_rule(ctx, a):
     return await ctx.server._create_action_rule(
         a["device_id"], a["condition_id"], a["action_token"],
-        a.get("param_choices"), a.get("rule_name"),
+        a.get("param_choices"), a.get("rule_name"), a.get("demo"),
     )
 
 
@@ -344,6 +344,14 @@ async def _prepare_demo(ctx, a):
 
 async def _end_demo(ctx, a):
     return await ctx.server._end_demo(a["demo"])
+
+
+async def _demo_setup_status(ctx, a):
+    return ctx.server._demo_setup_status(a["demo"])
+
+
+async def _set_event_ingest(ctx, a):
+    return await ctx.server._set_event_ingest(bool(a.get("enabled")))
 
 
 # --- Temporary credentials ---------------------------------------------------
@@ -420,6 +428,8 @@ TOOL_HANDLERS: Dict[str, ToolHandler] = {
     "assign_demo_fragment": _assign_demo_fragment,
     "adopt_demo": _adopt_demo,
     "deactivate_demo": _deactivate_demo,
+    "demo_setup_status": _demo_setup_status,
+    "set_event_ingest": _set_event_ingest,
     "prepare_demo": _prepare_demo,
     "end_demo": _end_demo,
     "create_temp_credentials": _create_temp_credentials,

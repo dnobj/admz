@@ -16,9 +16,42 @@ clean snap-back rather than a restore-from-history.
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _set_scenario_safe(registry: Any, device_id: str, name: Optional[str]) -> None:
+    """Set/clear the ``active_scenario`` marker, tolerating a backend without
+    pointer support (the stubbed Vault, H-4)."""
+    try:
+        registry.set_active_scenario(device_id, name)
+    except NotImplementedError:
+        pass
+    except Exception:  # noqa: BLE001 — a marker write must never break the flow
+        logger.warning("set_active_scenario failed for %s", device_id, exc_info=True)
+
+
+def on_markers_complete(plan: Any, args: Dict[str, Any], registry: Any = None) -> None:
+    """``scenario_markers`` completion handler (ADR-0050) — the task_7f8c285b fix.
+
+    Set/clear ``active_scenario`` ONLY for devices whose steps in this plan ALL
+    succeeded, and ONLY once the plan has run. A device with any failed/unrun step
+    keeps its prior marker — honest in both directions: a half-pushed scenario
+    reads as drift, a half-returned device stays marked. ``markers`` maps
+    device_id → scenario name (activate) or None (return-to-baseline).
+    """
+    markers: Dict[str, Optional[str]] = args.get("markers") or {}
+    if registry is None or not markers:
+        return
+    ok: Dict[str, List[bool]] = defaultdict(list)
+    for r in getattr(plan, "results", []) or []:
+        ok[getattr(r, "device_id", None)].append(bool(getattr(r, "success", False)))
+    for did, name in markers.items():
+        outcomes = ok.get(did, [])
+        if outcomes and all(outcomes):
+            _set_scenario_safe(registry, did, name)
 
 
 async def activate_scenario_core(
@@ -54,7 +87,8 @@ async def activate_scenario_core(
         sha = match["commit_sha"]
         spec = ctx.restore_builder.build_restore_plan(did, ref=sha)
         all_steps.extend(spec.get("steps", []))
-        ctx.registry.set_active_scenario(did, name)
+        # The marker is NOT set here (that was the marker-before-approval bug):
+        # it rides the plan's completion hook and flips only after the push runs.
         applied.append({"device_id": did, "commit_sha": sha})
 
     resource = f"scenario:{name}"
@@ -66,6 +100,10 @@ async def activate_scenario_core(
             "applied": [], "skipped": skipped, "name": name,
         }
     if not all_steps:
+        # No push needed (already matches) → no plan to ride the hook, so set the
+        # marker directly. This is the deliberate direct-set the wizard keeps.
+        for a in applied:
+            _set_scenario_safe(ctx.registry, a["device_id"], name)
         record_event(principal, "snapshot.scenario_activate", resource=resource,
                      details={"name": name,
                               "applied": [a["device_id"] for a in applied],
@@ -82,6 +120,8 @@ async def activate_scenario_core(
     try:
         plan = ctx.plan_engine.create_plan(
             description=desc, steps=all_steps, on_failure="stop",
+            on_complete={"handler": "scenario_markers",
+                         "markers": {a["device_id"]: name for a in applied}},
         )
     except ValueError as e:
         record_event(principal, "snapshot.scenario_activate", resource=resource,
@@ -122,7 +162,8 @@ async def return_to_baseline_core(
             continue
         spec = ctx.restore_builder.build_restore_plan(did, ref=None)  # → baseline_sha
         all_steps.extend(spec.get("steps", []))
-        ctx.registry.set_active_scenario(did, None)  # back on baseline
+        # Marker cleared by the completion hook after the baseline push runs, not
+        # here at request time (the marker-before-approval bug).
         applied.append({"device_id": did})
 
     resource = "scenario:return-to-baseline"
@@ -132,6 +173,9 @@ async def return_to_baseline_core(
         return {"message": "No devices in scope have a baseline to return to.",
                 "applied": [], "skipped": skipped}
     if not all_steps:
+        # Already at baseline → no plan; clear the marker directly.
+        for a in applied:
+            _set_scenario_safe(ctx.registry, a["device_id"], None)
         record_event(principal, "snapshot.scenario_return", resource=resource,
                      details={"applied": [a["device_id"] for a in applied],
                               "outcome": "cleared-no-push"})
@@ -147,6 +191,8 @@ async def return_to_baseline_core(
     try:
         plan = ctx.plan_engine.create_plan(
             description=desc, steps=all_steps, on_failure="stop",
+            on_complete={"handler": "scenario_markers",
+                         "markers": {a["device_id"]: None for a in applied}},
         )
     except ValueError as e:
         record_event(principal, "snapshot.scenario_return", resource=resource,

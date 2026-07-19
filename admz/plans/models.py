@@ -72,6 +72,16 @@ class ExecutionPlan:
     created_at: datetime = field(default_factory=_utc_now)
     completed_at: Optional[datetime] = None
     created_by: str = ""
+    # Declarative completion hook (ADR-0050 wizard foundation). A JSON payload
+    # ``{"handler": name, ...args}`` dispatched at the tail of run_plan — after
+    # the plan reaches COMPLETED/FAILED — via the never-raising registry in
+    # ``admz.plans.completion``. A JSON blob (not a Python callback) so it
+    # survives the MCP-subprocess → web-process round-trip through
+    # ``plan_summary_json``. The handler owns partial-failure semantics.
+    on_complete: Optional[Dict[str, Any]] = None
+    # Free-text note a completion handler left (e.g. "demo stays inactive — one
+    # device failed"). Surfaced in to_results() so it flows to chat/REST/confirm.
+    completion_note: str = ""
 
     def to_summary(self) -> Dict[str, Any]:
         """Generate a summary dict suitable for LLM presentation."""
@@ -88,7 +98,7 @@ class ExecutionPlan:
                 summary["depends_on"] = step.depends_on
             step_summaries.append(summary)
 
-        return {
+        summary = {
             "plan_id": self.plan_id,
             "description": self.description,
             "status": self.status.value,
@@ -100,6 +110,11 @@ class ExecutionPlan:
                 s.to_dict() for s in self.steps if s.risk_level == "dangerous"
             ],
         }
+        # Only present when set, so plans without a completion hook produce a
+        # byte-identical summary to before (and it round-trips via plan_summary).
+        if self.on_complete:
+            summary["on_complete"] = self.on_complete
+        return summary
 
     def to_results(self) -> Dict[str, Any]:
         """Generate a results dict after execution."""
@@ -118,7 +133,7 @@ class ExecutionPlan:
                 "warnings": r.warnings,
             })
 
-        return {
+        results = {
             "plan_id": self.plan_id,
             "status": self.status.value,
             "steps_total": len(self.steps),
@@ -128,3 +143,8 @@ class ExecutionPlan:
             "results": result_summaries,
             "rollback_available": len(self.rollback_steps) > 0,
         }
+        # A completion handler's note (e.g. "demo stays inactive — device X
+        # failed") flows to chat/REST/confirm automatically via the results.
+        if self.completion_note:
+            results["completion_note"] = self.completion_note
+        return results
