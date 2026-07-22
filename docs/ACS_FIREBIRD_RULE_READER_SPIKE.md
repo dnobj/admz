@@ -1,7 +1,7 @@
 # Spike plan: ACS Pro action-rule reader (Firebird DB)
 
 **Status:** ✅ **SPIKE COMPLETE & VALIDATED (2026-06-22)** — both goals proven live on the deployment
-host. Reader NOT yet built (awaiting go-ahead). Opt-in, read-only.
+host. Reader since shipped: `admz/modules/acs_pro/firebird.py` (+ poller `admz/events/acs_firebird_ingest.py`). Opt-in, read-only.
 
 ## Spike results (2026-06-22) — VALIDATED
 

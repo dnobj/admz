@@ -174,11 +174,18 @@ def max_firing_id(reader: Optional[Reader] = None) -> int:
 
 
 def read_new_firings(since_id: int, reader: Optional[Reader] = None) -> List[Dict[str, Any]]:
-    """``AlarmEntity`` LOG rows with ID > ``since_id`` (oldest-first)."""
+    """``AlarmEntity`` LOG rows with ID > ``since_id`` (oldest-first).
+
+    ``RULE_ID <> 0`` excludes ACS *system* alarms (e.g. unexpected-server-shutdown
+    notices, LOG_CATEGORY=3/LOG_SUB_TYPE=4) — they are also ``AlarmEntity`` rows
+    but carry ``RULE_ID=0`` / ``RULE_NAME=NULL`` and are not rule firings (#125).
+    """
     r = reader or _read
+    # NB: "TRIGGER", "TIMESTAMP" and "VALUE" are Firebird reserved words — quote
+    # them (as "TIMESTAMP" is here) in any future query, e.g. against CONTENT_FILTER.
     return r(LOGS_DB,
              "SELECT ID, \"TIMESTAMP\", RULE_ID, RULE_NAME, TITLE, CAMERA_IDS, TRIGGER_TYPE "
-             "FROM LOG WHERE DISCRIMINATOR='AlarmEntity' AND ID > ? ORDER BY ID",
+             "FROM LOG WHERE DISCRIMINATOR='AlarmEntity' AND RULE_ID <> 0 AND ID > ? ORDER BY ID",
              [int(since_id)])
 
 

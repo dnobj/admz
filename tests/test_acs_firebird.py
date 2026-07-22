@@ -98,9 +98,42 @@ def test_max_and_read_new_firings_use_alarm_discriminator():
     assert rows and rows[0]["id"] == 33
     assert "DISCRIMINATOR='AlarmEntity'" in seen["sql"]
     assert "ID > ?" in seen["sql"]
+    # system alarms (RULE_ID=0) must be excluded — they're not rule firings (#125)
+    assert "RULE_ID <> 0" in seen["sql"]
     assert seen["params"] == [30]
     # reserved words must be quoted to survive the Firebird parser
     assert '"TIMESTAMP"' in seen["sql"]
+
+
+def test_read_new_firings_excludes_system_alarms():
+    """RULE_ID=0 ``AlarmEntity`` rows are ACS *system* alarms (unexpected-server-
+    shutdown notices etc., RULE_NAME=NULL) — not action-rule firings. A synthetic
+    LOG with both row shapes must yield only the real firing (#125)."""
+    from admz.modules.acs_pro.firebird import LOGS_DB, read_new_firings
+
+    log_rows = [
+        # system alarm as observed live (171/177 AlarmEntity rows on an unclean start)
+        {"id": 40, "discriminator": "AlarmEntity", "rule_id": 0, "rule_name": None,
+         "title": "Server was shut down unexpectedly", "camera_ids": None},
+        # real named rule firing
+        {"id": 41, "discriminator": "AlarmEntity", "rule_id": 18086,
+         "rule_name": "External Trigger Example", "title": "test", "camera_ids": "Lobby"},
+    ]
+
+    def reader(db, sql, params=None):
+        # Evaluate the query's WHERE clauses against the synthetic table the way
+        # Firebird would — if the SQL lacked the RULE_ID filter, the system alarm
+        # would come back and the assertion below would fail.
+        assert db == LOGS_DB
+        rows = [r for r in log_rows if r["discriminator"] == "AlarmEntity"]
+        rows = [r for r in rows if r["id"] > params[0]]
+        if "RULE_ID <> 0" in sql:
+            rows = [r for r in rows if r["rule_id"] != 0]
+        return sorted(rows, key=lambda r: r["id"])
+
+    rows = read_new_firings(0, reader=reader)
+    assert [r["id"] for r in rows] == [41]
+    assert rows[0]["rule_name"] == "External Trigger Example"
 
 
 # ── availability / gating ────────────────────────────────────────────────────
