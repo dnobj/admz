@@ -143,15 +143,24 @@ async def acs_detections(request: Request):
 
 
 @router.get("/api/acs/rules")
-async def acs_rules():
+async def acs_rules(request: Request):
     """The named action-rule inventory, read from ACS's embedded Firebird config
     DB (read-only copy; no rule edit). Returns ``{success, available, reason,
     rules:[{id,name,enabled,actions[]}]}``. ``available`` is False (with a reason,
     not an error) when Firebird isn't enabled/installed — the UI degrades quietly.
+
+    ``?anatomy=1`` returns the **full anatomy** instead (#124): per rule its
+    schedule, its triggers (kind, topic, content filters, trigger device) and its
+    actions (kind, target device, params), every device reference resolved to a
+    canonical MAC, plus a per-rule firing-``observability`` verdict. Same
+    envelope, same degradation — one extra query set over one DB copy.
     """
     import asyncio
 
-    from admz.modules.acs_pro.firebird import firebird_available, firebird_enabled, list_rules
+    from admz.modules.acs_pro.firebird import (firebird_available, firebird_enabled,
+                                               list_rules, rule_anatomy)
+
+    anatomy = str(request.query_params.get("anatomy") or "").lower() in ("1", "true", "yes", "on")
 
     if not firebird_enabled():
         return {"success": True, "available": False,
@@ -160,7 +169,13 @@ async def acs_rules():
     if not ok:
         return {"success": True, "available": False, "reason": reason, "rules": []}
     try:
-        rules = await asyncio.to_thread(list_rules)
+        if anatomy:
+            from admz.demos.inference.observability import classify_rule
+            rules = await asyncio.to_thread(rule_anatomy)
+            for rule in rules:
+                rule["observability"] = classify_rule(rule)
+        else:
+            rules = await asyncio.to_thread(list_rules)
     except Exception as exc:  # noqa: BLE001
         return {"success": False, "available": True,
                 "reason": f"read failed: {exc}", "rules": []}
