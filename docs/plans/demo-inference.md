@@ -1,7 +1,11 @@
 # Plan: infer existing demos from fleet + ACS state
 
 Status: **planned, not implemented** — GH [#124](https://github.com/dnobj/admz/issues/124).
-Three product decisions are still open (marked **[DECISION a/b/c]** below).
+The three product decisions are **RESOLVED** (owner, 2026-07-22) — see
+[Resolved decisions](#resolved-decisions). In short: **(a)** confirmation is
+**chat-driven** with rich tooling; **(b)** proposals **suggest owned config keys as
+evidence** and never write fragments; **(c)** the run is **operator-invoked at any
+time**, with no automatic ongoing re-inference in v1.
 
 ## Goal
 
@@ -71,7 +75,8 @@ the facet is not param-writable, or when an ignore rule covers it.
 **Consequence:** at first run there is no baseline and therefore no drift diff, so
 there is *nothing to capture*. Auto-capturing fragments at inference time is not
 merely undesirable — it is mechanically impossible on the flagship first-run path.
-See **[DECISION b]**.
+**Resolved [DECISION b]:** proposals therefore carry `suggested_owned_keys[]` as
+read-only evidence and never write fragments.
 
 ### The "wizard" (ADR-0050) is a checklist, not a page
 
@@ -86,7 +91,8 @@ returns only `demos/activation.py`, `mcp/server.py`, `plans/*` and docs.
 **Consequence:** "slot a confirmation step into the existing wizard" is not
 available. A wizard *page* would be net-new. The cheap hosts are the `/demos` page
 (whose empty state today reads "No demos yet. Define one" — `demos.html:69-71`)
-and the chat console. See **[DECISION a]**.
+and the chat console. **Resolved [DECISION a]: chat-driven review** — no wizard
+page is built in v1; a `/demos` section stays an optional slice-4 nicety.
 
 ### `correlate.py` correlates *devices to cameras*, not rules to demos
 
@@ -202,7 +208,8 @@ PR), unrelated to this feature. Do not overload the word in code: use `evidence`
 unrelated comment in `operations.py:337`. There is no install-state flag and no
 first-run route. "Runs at first install" must therefore be an **explicit operator
 action** (a button / a tool call), optionally remembered by a new fleet setting.
-See **[DECISION c]**.
+**Resolved [DECISION c]: operator-invoked at any time** — no install-state flag is
+built; the explicit run covers the first-install moment.
 
 ---
 
@@ -228,7 +235,7 @@ params_json   TEXT                 -- thresholds/weights in force for this run
 ```
 
 The graph is stored because it is the audit trail behind every score, and because
-re-inference (**[DECISION c]**) is a diff against the previous run. `params_json`
+re-inference (out of scope for v1 per resolved **[DECISION c]**) is a diff against the previous run. `params_json`
 pins the weights so an old proposal stays explainable after the constants change.
 
 ### `demo_proposals` — one candidate demo
@@ -243,6 +250,9 @@ roles_json      TEXT               -- {device_id: "detector"|"responder"|"record
 rules_json      TEXT               -- [{source:"device"|"acs", device_id, rule_id, rule_name,
                                    --   condition_id, condition_topic, actions[], observability{}}]
 evidence_json   TEXT               -- [{kind, weight, detail, source}] — the "why"
+suggested_owned_keys_json TEXT     -- [{device_id, facet, path, reason}] — READ-ONLY
+                                   --   evidence per resolved [DECISION b]; confirm
+                                   --   never writes these as fragments
 score           REAL               -- 0..1
 confidence      TEXT               -- high | medium | low
 flags_json      TEXT               -- ["no_topology", "acs_absent", "name_only", …]
@@ -396,6 +406,26 @@ proof the rule's full condition (`REQUIRE_ALL_TRIGGERS`, schedule gate, all
 `CONTENT_FILTER`s) passed — it answers *"did the triggering condition occur"*, which
 for single-trigger demo rules is usually equivalent.
 
+### 10. Suggested owned keys (evidence only — resolved [DECISION b])
+
+A proposal reports the config its linked rules *depend on*, so the operator can see
+what the demo probably owns without ADMZ claiming anything. Derived deterministically,
+each entry carrying its `reason`:
+
+| Signal | Suggested key | Reason string |
+|---|---|---|
+| Rule trigger topic names an ACAP/analytics app (e.g. `…/sfh_detector/…`) | that app's config facet on the trigger device | `"trigger topic <t> is produced by <app>"` |
+| Trigger is Motion / ObjectDetection | the device's analytics scenario/profile keys (cf. #121) | `"rule triggers on <detector> for this device"` |
+| Action targets an I/O port | that port's config on the target device | `"rule drives output port <n>"` |
+| Rule references a device-side event rule | that rule's own facet entry | `"demo's rule chain includes this device rule"` |
+
+Written to `suggested_owned_keys_json` and rendered in the chat review. **Never
+written as fragments on confirm** — the demo is created with an empty fragment set and
+`demo_setup_status` (`wizard.py:110-111`) already emits the correct next action for
+capturing them later through the normal drift-based path. Keys that would be refused
+by `validate_assignment` (read-only facet, ignore-rule covered) are still *listed*,
+flagged `not_capturable`, so the report stays honest.
+
 ---
 
 ## File-level implementation
@@ -422,7 +452,7 @@ for single-trigger demo rules is usually equivalent.
 | `admz/demos/actions.py:290-336` | `attach_rule_to_demo` persists `source` (default `"device"`); no other behaviour change |
 | `admz/api/routes/demos.py` | New inference endpoints (below) + `/demos` page context gains `proposals` |
 | `admz/mcp/tools/demos.py` + `admz/mcp/dispatch.py` | New tools (below) |
-| `admz/api/templates/demos.html` | "Proposed demos" section + confirm modal — **[DECISION a]** |
+| `admz/api/templates/demos.html` | *(optional, slice 4)* "Proposed demos" section — the resolved UX is chat-driven; this is a nicety, not a requirement |
 | `admz/chatbot` prompt (`# Demos` section) | An "inferring existing demos" sequence, hooked into the compound-intent rule as ADR-0050 Phase C did |
 | `docs/specification/decisions/00NN-demo-inference.md` | New ADR recording the proposal model, the scoring contract, and the never-silent rule |
 | `docs/specification/user-stories/demo-workflows.md` | New story: *US-DW-0NN — ADMZ already knows my demos* |
@@ -453,8 +483,8 @@ attaches rule membership — inert by the ADR-0046 bar — **unless** it also ca
 fragments, which is drift-affecting and therefore must route through
 `demos/gated.py::gate_demo_write` exactly as `assign_demo_fragment` and `adopt_demo`
 do (`gated.py:27-42`), with the console-UI exemption (`is_interactive`,
-`gated.py:18-24`). This hangs on **[DECISION b]**; under the recommended default
-(skeleton) confirm stays ungated and simple.
+`gated.py:18-24`). Under the **resolved [DECISION b]** (suggest-only, no fragment writes) confirm is
+not drift-affecting, so it stays **ungated and simple**.
 
 ## Migrations
 
@@ -562,9 +592,9 @@ with their tests. Already valuable: the agent can reason over the graph directly
 `dismiss_demo_proposal` + the `source` field on rule membership + the
 `wizard._rules_status` fix. The bulk of the test plan lands here.
 
-**Slice 4 — the confirmation surface + agent narration.** `/demos` "Proposed demos"
-section and confirm modal (**[DECISION a]**), the chatbot prompt sequence, the new
-ADR and the user story. Depends on **[DECISION a]** and **[DECISION c]**.
+**Slice 4 — agent narration surface.** The chatbot prompt sequence and review flow
+(the resolved **chat-driven** confirmation UX), the new ADR (**0051**) and the user
+story. The `/demos` "Proposed demos" section is **optional** here, not required.
 
 ## Acceptance criteria
 
@@ -600,41 +630,42 @@ ADR and the user story. Depends on **[DECISION a]** and **[DECISION c]**.
 
 ---
 
-## Open decisions
+## Resolved decisions
 
-### Product decisions pending from the human
+Settled by the owner 2026-07-22, after the current-state findings above.
 
-**[DECISION a] — Confirmation UX: wizard page, chat, or both?**
-*Status: PENDING.* Note the finding above: **no wizard page exists**, so "wizard" is
-net-new work, not an extension. Cheapest credible options:
-1. **`/demos` section** — a "Proposed demos" block above the demo list, reusing the
-   existing modal vocabulary; the empty state (`demos.html:69-71`) becomes "Nothing
-   defined yet — let ADMZ look around". Small, discoverable, no new route.
-2. **Chat-driven** — the agent presents proposals conversationally and calls
-   `confirm_demo_proposal`; matches how ADR-0050 Phase C shipped guided setup, and is
-   where the narration lives anyway. Near-zero UI work.
-3. **Both** — (1) for the inventory view, (2) for the narration. Recommended if
-   effort allows; slice 4 can ship (2) first since the tools land in slice 3.
+**[DECISION a] — Confirmation UX → CHAT-DRIVEN, with rich context/tooling.**
+The operator's reasoning: *working out how device/ACS configuration flows up into a
+"demo" will almost certainly require LLM review* — so the review belongs where the
+model can explain itself, not in a static form. The deterministic evidence graph and
+score sit underneath; the agent narrates each proposal, names it, surfaces the
+evidence and the firing-observability verdict, and calls `confirm_demo_proposal`.
+Near-zero net-new UI (no wizard page exists to extend anyway). Custom console widgets
+for a proposal card are a **possible later refinement**, not v1. A `/demos`
+"Proposed demos" section stays a nice-to-have in slice 4, not a requirement.
 
-**[DECISION b] — Do confirmed inferences auto-capture fragments, or start as skeletons?**
-*Status: PENDING. Recommendation: **skeleton**, and the evidence is close to decisive.*
-Fragment capture requires a live drift diff and refuses any key not already in the
-baseline (`fragments.py:177-180`, `actions.py:179`). On the flagship first-run path
-there is no baseline, hence no diff, hence **nothing to capture**. A confirmed
-proposal should therefore start as a demo with devices, roles, rules and signals but
-an empty fragment set, and `demo_setup_status` already emits exactly the right next
-action for it: *"Capture config: run check_drift on each device, then
-assign_demo_fragment…"* (`wizard.py:110-111`). If the human wants auto-capture, it
-can only work on an established install and must route through `gate_demo_write`.
+**[DECISION b] — Owned config → SUGGEST KEYS AS EVIDENCE; never write fragments.**
+Auto-capture is mechanically impossible on the flagship path: capture only accepts
+keys that are **currently drifted** (`actions.py:179` takes `check_drift` and skips
+`"not-drifted"`; `fragments.py:177-180` refuses `"not-in-baseline"`). At first run the
+baseline is snapshotted *from* live state, so live == baseline, zero drift, nothing
+capturable. But the analysis is still valuable, so a proposal carries
+`suggested_owned_keys[]` — candidate config keys the linked rules depend on
+(analytics/ACAP/event config), each with its reasoning — as **read-only evidence**.
+Confirming creates the demo with devices, roles, rules and signals and an **empty
+fragment set**; the keys become real fragments later through the normal capture path
+once the operator has deliberately changed something. ADR-0047 semantics are
+unchanged (a demo owns what *differs* from baseline), and `demo_setup_status` already
+emits the right next action (`wizard.py:110-111`).
 
-**[DECISION c] — v1 scope: first-run only, or ongoing re-inference?**
-*Status: PENDING. Recommendation: **operator-invoked, any time** — which is both
-simpler and strictly more useful than "first-run only".* There is no first-run
-concept in the codebase to hook into, so first-run-only would mean *building* an
-install-state flag purely to restrict a capability. Making the run explicit
-(button + tool) covers the flagship moment and the #122 attention-surface use case
-with the same code. The only extra work for ongoing use is `superseded` handling and
-respecting dismissals, both already in the model.
+**[DECISION c] — v1 scope → OPERATOR-INVOKED, ANY TIME; no automatic re-inference.**
+Reconciles the owner's "first-run only" intent (keep v1 small, land the flagship
+moment) with the finding that **no first-run concept exists** — restricting to
+first-run would mean *building* an install-state flag purely to disable a capability.
+So: an explicit operator-invoked run (tool + endpoint) that naturally covers the
+first-install moment. Out of scope for v1: automatic detection of demo-like
+structures appearing later (the #122 attention-surface use case). `superseded`
+handling and dismissal-respect stay in the model so that later slice is cheap.
 
 ### Engineering decisions to settle at implementation
 
