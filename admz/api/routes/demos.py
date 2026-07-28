@@ -65,6 +65,21 @@ class FragmentEntry(BaseModel):
     path: str
 
 
+class InferenceRunRequest(BaseModel):
+    """Start a demo-inference run (#124 slice 2 — evidence only, no proposals)."""
+
+    # "fast": registry + last snapshots + one live ACS read (seconds, works with
+    # the fleet offline). "survey": discover → onboard → snapshot → infer, run
+    # in the background because it takes minutes.
+    mode: str = "fast"
+    include_acs: bool = True
+    # survey only — leave onboarding on for a genuinely fresh install; turn it
+    # off for a strictly read-only sweep of what is already registered.
+    register_new: bool = True
+    subnet: Optional[str] = None
+    timeout: float = 5.0
+
+
 class FragmentRemoveRequest(BaseModel):
     role: str
     entries: List[FragmentEntry]
@@ -264,6 +279,87 @@ async def end_demo(demo_id: str, request: Request,
         return await actions.end_demo_core(ctx, demo, principal)
     except DemoActionError as e:
         raise _http(e)
+
+
+# ── Inference (#124 slice 2 — the evidence graph) ────────────────────────────
+#
+# Read-only and inert: a run reads the registry, the last snapshots and ACS, and
+# writes ONE row to `demo_inference_runs`. It touches no device, issues no ACS
+# write, and never creates a demo — so no confirmation gate, same bar as demo
+# metadata CRUD (0046-demos.md:126). `survey` mode's extra phases reuse the
+# existing discovery/onboarding/snapshot entry points; it adds no new
+# device-touch path.
+
+#: Strong refs to in-flight survey tasks (the loop holds only weak ones).
+_BACKGROUND_RUNS: set = set()
+
+
+@router.post("/api/demos/inference/runs")
+async def start_inference_run(req: InferenceRunRequest, request: Request,
+                              ctx: AppContext = Depends(get_context)):
+    """Start a run. ``fast`` completes inline; ``survey`` returns immediately
+    with a ``running`` row and finishes in the background — poll
+    ``GET /api/demos/inference/runs/{id}`` for progress."""
+    import asyncio
+
+    from admz.audit import record_event
+    from admz.demos.inference import collect
+    from admz.demos.inference.runs import (MODE_FAST, MODE_SURVEY,
+                                           SURVEY_STALE_SECONDS)
+
+    principal = await _principal(request)
+    mode = (req.mode or MODE_FAST).strip().lower()
+    if mode not in (MODE_FAST, MODE_SURVEY):
+        raise HTTPException(400, "mode must be 'fast' or 'survey'")
+    store = ctx.inference_run_store
+
+    if mode == MODE_FAST:
+        run = await collect.run_fast(ctx, store, created_by=str(principal),
+                                     include_acs=req.include_acs)
+        record_event(principal, "demo.inference_run", resource="demos:inference",
+                     success=run.status != "failed",
+                     details={"mode": mode, "run": run.id,
+                              "devices": run.device_count, "rules": run.rule_count})
+        return {"success": True, "run": run.to_dict()}
+
+    # A deep survey rewrites the registry and every snapshot — one at a time.
+    # A row abandoned by a dead process ages out, so a crash can't wedge this.
+    already = store.running(mode=MODE_SURVEY, max_age=SURVEY_STALE_SECONDS)
+    if already:
+        raise HTTPException(
+            409, f"a deep survey is already running (run {already[0].id})")
+    run = store.start(mode=MODE_SURVEY, created_by=str(principal),
+                      message="Starting deep survey…")
+    # Hold a strong reference: the event loop only keeps a weak one, so a
+    # minutes-long task can otherwise be garbage-collected mid-run.
+    task = asyncio.create_task(collect.run_survey(
+        ctx, store, run.id, register_new=req.register_new,
+        timeout=req.timeout, subnet=req.subnet))
+    _BACKGROUND_RUNS.add(task)
+    task.add_done_callback(_BACKGROUND_RUNS.discard)
+    record_event(principal, "demo.inference_run", resource="demos:inference",
+                 details={"mode": mode, "run": run.id,
+                          "register_new": req.register_new})
+    return {"success": True, "started": True, "run": run.header()}
+
+
+@router.get("/api/demos/inference/runs")
+async def list_inference_runs(limit: int = 25,
+                              ctx: AppContext = Depends(get_context)):
+    """Run headers, newest first — no graphs (they are the audit trail, fetched
+    one at a time)."""
+    runs = ctx.inference_run_store.list(limit=limit)
+    return {"success": True, "count": len(runs),
+            "runs": [r.header() for r in runs]}
+
+
+@router.get("/api/demos/inference/runs/{run_id}")
+async def get_inference_run(run_id: str, ctx: AppContext = Depends(get_context)):
+    """One run: status/progress plus the full evidence graph once complete."""
+    run = ctx.inference_run_store.get(run_id)
+    if run is None:
+        raise HTTPException(404, "inference run not found")
+    return {"success": True, "run": run.to_dict()}
 
 
 # ── Web ──────────────────────────────────────────────────────────────────────

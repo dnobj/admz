@@ -110,6 +110,11 @@ class AppContext:
     def demo_store(self):
         return self._components.demo_store
 
+    @property
+    def inference_run_store(self):
+        # #124 slice 2: demo-inference runs (evidence graph + provenance).
+        return self._components.inference_run_store
+
 
 _ctx: Optional[AppContext] = None
 

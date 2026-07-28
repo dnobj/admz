@@ -350,6 +350,10 @@ async def _demo_setup_status(ctx, a):
     return ctx.server._demo_setup_status(a["demo"])
 
 
+async def _survey_demo_evidence(ctx, a):
+    return await ctx.server._survey_demo_evidence(a.get("run_id"))
+
+
 async def _set_event_ingest(ctx, a):
     return await ctx.server._set_event_ingest(bool(a.get("enabled")))
 
@@ -429,6 +433,7 @@ TOOL_HANDLERS: Dict[str, ToolHandler] = {
     "adopt_demo": _adopt_demo,
     "deactivate_demo": _deactivate_demo,
     "demo_setup_status": _demo_setup_status,
+    "survey_demo_evidence": _survey_demo_evidence,
     "set_event_ingest": _set_event_ingest,
     "prepare_demo": _prepare_demo,
     "end_demo": _end_demo,

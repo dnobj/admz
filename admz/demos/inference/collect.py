@@ -1,0 +1,381 @@
+"""Collection orchestration for demo inference (#124, slice 2).
+
+This is the **only I/O module** in the inference package: it gathers what
+:mod:`admz.demos.inference.graph` then turns into the evidence graph, in one of
+two modes.
+
+``fast`` (the default, and what the "Infer demos" button runs)
+    Registry devices + the *latest existing* snapshot facets (``action_rules``,
+    ``applications``) + one live ACS read. Seconds, and — crucially — it works
+    with **the whole fleet offline**: nothing here probes a device. It also
+    works with **no ACS at all**: an absent/disabled Firebird reader degrades to
+    ``{available: false, reason}`` exactly as ``GET /api/acs/rules`` does
+    (``modules/acs_pro/routes.py:145-167``), and the graph is still built from
+    device-side rules.
+
+``survey``
+    discover → onboard → snapshot → then the fast path, for a genuinely fresh
+    install where the registry is empty and nothing has been snapshotted. It is
+    minutes-long, so it runs as a **background job** against the
+    ``demo_inference_runs`` row (never blocking the HTTP request), following the
+    house idiom: ``asyncio.create_task`` launching the work and writing terminal
+    state back (``fleet/health.py:904-951``), with a ``"n/total"`` progress
+    string in the same shape as the only existing progress contract
+    (``plans/engine.py:508-536``). Each phase reuses an existing entry point —
+    ``discovery.discover_devices``, ``onboarding.onboard_device_credentials``,
+    ``SnapshotEngine.snapshot_fleet`` — so the survey introduces **no new
+    device-touch path**.
+
+The ACS join prefers the **supported** route: ``DeviceListFacade:GetDeviceList``
+feeds ``rule_anatomy``'s resolver, which takes the live ``DeviceId``'s integer
+key (slice 1 proved it *is* the Firebird primary key) and reads that row's
+``MacAddress``; the Firebird ``DEVICE.MAC_ADDRESS`` is the free fallback.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any, Dict, List, Optional
+
+from admz.demos.inference import graph as graph_mod
+from admz.demos.inference.runs import (MODE_FAST, MODE_SURVEY, SURVEY_PHASES,
+                                       InferenceRun, InferenceRunStore)
+
+logger = logging.getLogger(__name__)
+
+#: ACS list facades page their results; ask for the whole fleet in one call
+#: (same range literal the ``/acs`` page uses).
+_LIST_RANGE = {"range": {"StartIndex": 0, "NumberOfElements": 10000}}
+
+ACS_DISABLED_REASON = (
+    "ACS Pro isn't connected — inference ran on device-side rules alone, so it "
+    "has no cross-device rule topology to work from."
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fast path
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _registry_nodes(ctx: Any) -> List[Dict[str, Any]]:
+    """Registry rows enriched with each device's installed ACAPs (cache-only).
+
+    ``device_applications`` returns ``{}`` for a device with no snapshot; that
+    is **unknown**, not "no apps", and the graph treats it as such.
+    """
+    from admz.rules.capabilities import device_applications
+
+    try:
+        rows = ctx.registry.list_devices() or []
+    except Exception:  # noqa: BLE001 — an unreadable registry yields an empty graph
+        logger.warning("demo inference: registry read failed", exc_info=True)
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        did = row.get("device_id") or row.get("id")
+        if not did:
+            continue
+        entry = dict(row)
+        entry["device_id"] = did
+        try:
+            entry["acaps"] = device_applications(ctx.git_repo, ctx.registry, did)
+        except Exception:  # noqa: BLE001 — grounding is best-effort, never fatal
+            entry["acaps"] = {}
+        out.append(entry)
+    return out
+
+
+def _device_rule_facets(ctx: Any, device_ids: List[str]) -> Dict[str, Any]:
+    """``device_id`` → its ``action_rules`` facet doc, or ``None`` when there is
+    no snapshot to read (which the graph reports rather than hiding).
+
+    Reads exactly what ``wizard.py:30`` reads — the device's latest observation,
+    falling back to its baseline. Never probes.
+    """
+    out: Dict[str, Any] = {}
+    for did in device_ids:
+        doc = None
+        try:
+            info = ctx.registry.get_device_info(did) or {}
+            ref = info.get("latest_observed_sha") or info.get("baseline_sha")
+            if ref:
+                doc = ctx.git_repo.read_facet(did, "action_rules", ref)
+        except Exception:  # noqa: BLE001 — an unreadable facet is "no snapshot"
+            doc = None
+        out[did] = doc
+    return out
+
+
+async def read_acs_rules(ctx: Any) -> Dict[str, Any]:
+    """``{available, reason, rules}`` — the ACS rule anatomy, or why not.
+
+    Degradation shape is identical to ``GET /api/acs/rules``: never an
+    exception, always a reason. The live ``DeviceListFacade`` read is
+    best-effort — losing it only costs the preferred ``api_device_id`` join
+    path, and the Firebird ``DEVICE`` MAC still resolves every reference.
+    """
+    from admz.modules.acs_pro.config import acs_enabled
+    from admz.modules.acs_pro.firebird import (firebird_available, firebird_enabled,
+                                               rule_anatomy)
+
+    if not acs_enabled():
+        return {"available": False, "reason": ACS_DISABLED_REASON, "rules": []}
+    if not firebird_enabled():
+        return {"available": False, "reason": "Firebird reader disabled — ACS rule "
+                                              "anatomy is unavailable.", "rules": []}
+    ok, reason = firebird_available()
+    if not ok:
+        return {"available": False, "reason": reason, "rules": []}
+
+    api_devices: List[Dict[str, Any]] = []
+    join_note = ""
+    try:
+        from admz.modules.acs_pro.client import run_acs_op
+
+        res = await run_acs_op(ctx.catalog, ctx.executors,
+                               "DeviceListFacade:GetDeviceList", _LIST_RANGE)
+        if res.get("success"):
+            api_devices = (res.get("data") or {}).get("Devices") or []
+        else:
+            join_note = (f" (live device list unavailable: {res.get('message')} — "
+                         "falling back to the Firebird DEVICE MAC)")
+    except Exception as exc:  # noqa: BLE001 — the fallback join still works
+        join_note = (f" (live device list unavailable: {exc} — falling back to the "
+                     "Firebird DEVICE MAC)")
+
+    try:
+        rules = await asyncio.to_thread(rule_anatomy, None, api_devices)
+    except Exception as exc:  # noqa: BLE001 — never crash a page on ACS internals
+        logger.warning("demo inference: ACS rule anatomy read failed", exc_info=True)
+        return {"available": False, "reason": f"ACS rule read failed: {exc}",
+                "rules": []}
+    return {"available": True, "reason": "ok" + join_note, "rules": rules,
+            "api_device_count": len(api_devices)}
+
+
+async def collect_graph(ctx: Any, *, include_acs: bool = True) -> Dict[str, Any]:
+    """The fast path: registry + latest snapshots + one live ACS read → graph."""
+    devices = _registry_nodes(ctx)
+    facets = _device_rule_facets(ctx, [d["device_id"] for d in devices])
+    if include_acs:
+        acs = await read_acs_rules(ctx)
+    else:
+        acs = {"available": False, "reason": "ACS read skipped by request",
+               "rules": []}
+    return graph_mod.build_graph(
+        devices,
+        device_rule_facets=facets,
+        acs_rules=acs.get("rules") or [],
+        acs={"available": acs["available"], "reason": acs["reason"]},
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Runs
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def run_fast(ctx: Any, store: InferenceRunStore, *, created_by: str = "",
+                   include_acs: bool = True) -> InferenceRun:
+    """Start, execute and finish a ``fast`` run inline — it takes seconds."""
+    run = store.start(mode=MODE_FAST, created_by=created_by,
+                      message="Reading the registry, the last snapshots and ACS…")
+    try:
+        graph = await collect_graph(ctx, include_acs=include_acs)
+    except Exception as exc:  # noqa: BLE001 — a failed run is recorded, not raised
+        logger.exception("demo inference run %s failed", run.id)
+        store.fail(run.id, str(exc))
+        failed = store.get(run.id)
+        return failed if failed is not None else run
+    done = store.finish(run.id, graph, message=describe(graph))
+    return done if done is not None else run
+
+
+async def run_survey(ctx: Any, store: InferenceRunStore, run_id: str, *,
+                     register_new: bool = True, timeout: float = 5.0,
+                     subnet: Optional[str] = None) -> None:
+    """The background body of a ``survey`` run: discover → onboard → snapshot →
+    collect, writing progress and terminal state onto the run row.
+
+    Every phase is best-effort and reports itself: a discovery that finds
+    nothing, an onboarding that can't authenticate, a snapshot that fails on
+    some devices — none of them abort the run, because the fast path underneath
+    still produces a graph from whatever *is* known. Only an unexpected error
+    marks the run ``failed``.
+    """
+    total = len(SURVEY_PHASES)
+    notes: List[str] = []
+    try:
+        # 1 ── discover (read-only network scan, existing 7-protocol orchestrator)
+        store.progress(run_id, phase="discover", step=0, total=total,
+                       message="Scanning the network for devices…")
+        discovered = await _discover(timeout=timeout, subnet=subnet)
+        notes.append(f"discovered {len(discovered)} device(s)")
+
+        # 2 ── onboard the ones ADMZ doesn't know yet (existing #101 path)
+        store.progress(run_id, phase="onboard", step=1, total=total,
+                       message=f"Found {len(discovered)} device(s); resolving "
+                               "credentials for any that are new…")
+        added = await _onboard(ctx, discovered) if register_new else []
+        notes.append(f"onboarded {len(added)} new device(s)"
+                     if register_new else "onboarding skipped by request")
+
+        # 3 ── snapshot, so action_rules / applications facets exist to read
+        device_ids = _all_device_ids(ctx)
+        store.progress(run_id, phase="snapshot", step=2, total=total,
+                       message=f"Snapshotting {len(device_ids)} device(s) so their "
+                               "rules and apps can be read…")
+        ok, failed = await _snapshot(ctx, device_ids)
+        notes.append(f"snapshotted {ok}/{ok + failed} device(s)")
+
+        # 4 ── the fast path over the now-populated state
+        store.progress(run_id, phase="collect", step=3, total=total,
+                       message="Building the evidence graph…")
+        graph = await collect_graph(ctx)
+        graph["survey"] = {"discovered": len(discovered), "onboarded": len(added),
+                           "snapshotted": ok, "snapshot_failed": failed,
+                           "notes": notes}
+        store.finish(run_id, graph, message=describe(graph) + " · " + "; ".join(notes))
+    except asyncio.CancelledError:
+        store.fail(run_id, "run cancelled (server shutting down)")
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("demo inference survey %s failed", run_id)
+        store.fail(run_id, str(exc))
+
+
+async def _discover(*, timeout: float, subnet: Optional[str]) -> List[Any]:
+    try:
+        from admz.discovery import discover_devices
+
+        return await discover_devices(timeout=timeout, axis_only=True, subnet=subnet)
+    except Exception:  # noqa: BLE001 — a failed scan just means nothing new
+        logger.warning("demo inference survey: discovery failed", exc_info=True)
+        return []
+
+
+async def _onboard(ctx: Any, discovered: List[Any]) -> List[str]:
+    """Register devices the fleet has but ADMZ doesn't, then run the standard
+    credential onboarding on each (stored-verify → needsetup → fleet pair →
+    capture widget). Reuses ``onboarding.onboard_device_credentials`` verbatim."""
+    from admz.device_registry import canonical_mac
+    from admz.onboarding import onboard_device_credentials
+
+    try:
+        known = {canonical_mac(d.get("mac_address") or d.get("device_id") or "")
+                 for d in (ctx.registry.list_devices() or [])}
+    except Exception:  # noqa: BLE001
+        return []
+
+    added: List[str] = []
+    for dev in discovered:
+        try:
+            info = dev.to_registry_dict() if hasattr(dev, "to_registry_dict") else dict(dev)
+        except Exception:  # noqa: BLE001
+            continue
+        mac = canonical_mac(info.get("mac_address") or "")
+        if not mac or mac in known:
+            continue
+        device_id = info.get("device_id") or mac
+        try:
+            ctx.registry.add_device(device_id, info)
+            known.add(mac)
+            added.append(device_id)
+        except Exception:  # noqa: BLE001 — a device we can't register is skipped
+            logger.info("demo inference survey: could not register %s", device_id,
+                        exc_info=True)
+            continue
+        try:
+            await onboard_device_credentials(
+                device_id=device_id, registry=ctx.registry, catalog=ctx.catalog,
+                executors=ctx.executors)
+        except Exception:  # noqa: BLE001 — onboarding never fails a survey
+            logger.info("demo inference survey: onboarding %s failed", device_id,
+                        exc_info=True)
+    return added
+
+
+def _all_device_ids(ctx: Any) -> List[str]:
+    try:
+        return [d.get("device_id") for d in (ctx.registry.list_devices() or [])
+                if d.get("device_id")]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+async def _snapshot(ctx: Any, device_ids: List[str]) -> tuple:
+    if not device_ids:
+        return 0, 0
+    try:
+        results = await ctx.snapshot_engine.snapshot_fleet(
+            device_ids=device_ids, message="demo inference deep survey")
+    except Exception:  # noqa: BLE001 — a failed snapshot still leaves old facets
+        logger.warning("demo inference survey: snapshot_fleet failed", exc_info=True)
+        return 0, len(device_ids)
+    # ``snapshot_fleet`` gathers with ``return_exceptions=True``, so a per-device
+    # failure arrives as the exception object itself; a DeviceSnapshot reports
+    # through ``status`` (SnapshotStatus.SUCCESS / PARTIAL / FAILED).
+    ok = 0
+    for res in results:
+        if isinstance(res, BaseException):
+            continue
+        status = getattr(getattr(res, "status", None), "value", None)
+        if status != "failed":
+            ok += 1
+    return ok, len(results) - ok
+
+
+def describe(graph: Dict[str, Any]) -> str:
+    """One line for the run header / the button's result banner."""
+    s = (graph or {}).get("summary") or {}
+    by_source = s.get("rules_by_source") or {}
+    parts = [
+        f"{s.get('device_count', 0)} device(s)",
+        f"{by_source.get('acs', 0)} ACS rule(s)",
+        f"{by_source.get('device', 0)} device rule(s)",
+        f"{s.get('edge_count', 0)} edge(s)",
+    ]
+    if s.get("unresolved_count"):
+        parts.append(f"{s['unresolved_count']} unresolved reference(s)")
+    if not ((s.get("acs") or {}).get("available")):
+        parts.append("ACS unavailable")
+    return " · ".join(parts)
+
+
+def summary_only(graph: Dict[str, Any]) -> Dict[str, Any]:
+    """The agent-facing digest: the summary plus one line per rule and edge —
+    everything needed to reason about the fleet without the full node dump."""
+    s = (graph or {}).get("summary") or {}
+    return {
+        "summary": s,
+        "acs": (graph or {}).get("acs"),
+        "devices": [
+            {"device_id": n["device_id"], "name": n["name"], "model": n["model"],
+             "tags": n["tags"],
+             "apps": [a["name"] for a in n["acaps"]],
+             "distinctive_apps": [a["name"] for a in n["acaps"] if a["distinctive"]]}
+            for n in (graph or {}).get("nodes") or []
+        ],
+        "rules": [
+            {"source": r["source"], "rule_id": r["rule_id"], "name": r["name"],
+             "enabled": r["enabled"], "device_ids": r["device_ids"],
+             "topics": r["topics"], "actions": r["action_kinds"],
+             "names_only": r["names_only"],
+             "observability": (r.get("observability") or {}).get("verdict"),
+             "app_grounding": [g["detail"] for g in (r.get("app_grounding") or [])]}
+            for r in (graph or {}).get("rules") or []
+        ],
+        "edges": [
+            {"id": e["id"], "a": e["a"], "b": e["b"], "weight": e["weight"],
+             "class": e["class"], "corroborating": e["corroborating"],
+             "why": [i["detail"] for i in e["evidence"]]}
+            for e in (graph or {}).get("edges") or []
+        ],
+        "unresolved": (graph or {}).get("unresolved") or [],
+        "unattached_rules": (graph or {}).get("unattached_rules") or [],
+    }
+
+
+__all__ = ["collect_graph", "read_acs_rules", "run_fast", "run_survey",
+           "describe", "summary_only", "MODE_FAST", "MODE_SURVEY"]

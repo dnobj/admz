@@ -233,6 +233,36 @@ TOOLS: List[Tool] = [
         },
     ),
     Tool(
+        name="survey_demo_evidence",
+        description=(
+            "READ-ONLY: build the demo-inference EVIDENCE GRAPH for the whole "
+            "site (#124) and return its summary — every device with its tags and "
+            "installed analytics apps, every action rule from BOTH sources (ACS "
+            "action rules and device-side rules) with the devices it links, and "
+            "the weighted edges between devices with the exact evidence for each "
+            "(E1/E2 = ACS rule topology, E3 = a device rule naming another "
+            "device, E4 = shared tag, E6 = shared distinctive app, E5 = shared "
+            "name token). Use it to answer 'what demos already exist here?', "
+            "'what is this device for?' or 'which devices work together?' when "
+            "no demo has been defined yet. Also reports unresolved references "
+            "and per-rule firing observability. Reads the registry, the last "
+            "snapshots and ACS — never probes a device, never writes anything, "
+            "and degrades with a reason when ACS isn't connected. It does NOT "
+            "propose or create demos."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "run_id": {
+                    "type": "string",
+                    "description": ("Return a previous run's graph instead of "
+                                    "collecting a fresh one."),
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
         name="set_event_ingest",
         description=(
             "Turn fleet event capture on or off (needed so a demo's signals are "

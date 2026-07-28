@@ -19,6 +19,35 @@
   <span>Readiness is read from the last known config + health — it never touches a device. Run <a href="/devices">Check drift</a> for a live answer.</span>
 </div>
 
+<!-- ── Inference (#124) — the evidence behind demos that already exist ──
+     Slice 2 renders the raw evidence summary; slice 3 replaces the body of
+     renderRun() with named proposals. Everything below the buttons is behind
+     that one function on purpose — the seam stays clean. -->
+<div class="card" id="infer-card" style="margin-bottom:16px">
+  <div class="card-header" style="justify-content:space-between">
+    <span class="title"><i data-lucide="sparkles"></i> Already running demos? Let ADMZ look around</span>
+    <span class="page-sub" style="margin:0;font-size:12px" id="infer-last"></span>
+  </div>
+  <div class="card-body">
+    <p class="page-sub" style="margin:0 0 12px">
+      ADMZ reads the registry, each device's last snapshot and ACS's action rules, then shows the
+      evidence that links your devices — which rule triggers on one and acts on another, what shares
+      a tag, an unusual analytics app, or a name. Read-only: no device is touched and no demo is created.
+    </p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="btn primary" type="button" id="infer-fast"><i data-lucide="sparkles"></i> Infer demos</button>
+      <button class="btn ghost" type="button" id="infer-survey"><i data-lucide="radar"></i> Deep survey, then infer</button>
+      <span class="page-sub" style="margin:0;font-size:12px" id="infer-status"></span>
+    </div>
+    <div class="page-sub" style="margin:8px 0 0;font-size:12px">
+      <strong>Infer demos</strong> takes seconds and works with the fleet offline.
+      <strong>Deep survey</strong> discovers, onboards and re-snapshots everything first — minutes, for a fresh install.
+    </div>
+    <div id="infer-error" class="err hidden" style="margin-top:10px;color:var(--red-fg)"></div>
+    <div id="infer-result" class="hidden" style="margin-top:16px"></div>
+  </div>
+</div>
+
 {% if demos %}
 <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px">
   {% for d in demos %}
@@ -68,7 +97,7 @@
 {% else %}
 <div class="empty-state" id="demos-empty">
   <i data-lucide="presentation"></i>
-  <div style="margin-top:10px">No demos yet. <a href="#" id="empty-new-link">Define one</a> — pick the devices, say what it shows, and this page tells you whether it's ready.</div>
+  <div style="margin-top:10px">No demos yet. <a href="#" id="empty-new-link">Define one</a> — pick the devices, say what it shows, and this page tells you whether it's ready.<br>Or <a href="#" id="empty-infer-link">let ADMZ look around</a> and show you what's already wired up.</div>
 </div>
 {% endif %}
 
@@ -198,6 +227,188 @@
     } catch (e) {
       err.textContent = e.message; err.classList.remove('hidden');
     }
+  });
+})();
+
+// ── Demo inference (#124 slice 2): kick off a run, render its evidence ──────
+(function () {
+  const fastBtn = document.getElementById('infer-fast');
+  const surveyBtn = document.getElementById('infer-survey');
+  const statusEl = document.getElementById('infer-status');
+  const lastEl = document.getElementById('infer-last');
+  const errEl = document.getElementById('infer-error');
+  const outEl = document.getElementById('infer-result');
+  if (!fastBtn) return;
+
+  const esc = (s) => String(s === null || s === undefined ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  // What each edge id means, in the page's own vocabulary.
+  const EDGE_LABEL = {
+    E1: 'a rule triggers on one and acts on the other',
+    E2: 'named by the same ACS rule',
+    E3: 'a device rule references the other device',
+    E4: 'shared tag',
+    E6: 'shared distinctive app',
+    E5: 'shared name token',
+  };
+
+  function stat(label, value, icon) {
+    return '<div class="stat"><div class="sl">' +
+      (icon ? '<i data-lucide="' + icon + '"></i>' : '') + esc(label) +
+      '</div><div class="sv">' + esc(value) + '</div></div>';
+  }
+
+  function nameOf(nodes, id) {
+    const n = nodes.find((x) => x.device_id === id);
+    return n ? (n.name || n.device_id) : id;
+  }
+
+  function busy(on, label) {
+    [fastBtn, surveyBtn].forEach((b) => { b.disabled = on; });
+    statusEl.textContent = label || '';
+  }
+
+  function fail(msg) {
+    errEl.textContent = msg;
+    errEl.classList.remove('hidden');
+    busy(false, '');
+  }
+
+  // The rendering seam. Slice 3 swaps this body for named proposal cards;
+  // everything above it (buttons, polling, error handling) stays put.
+  function renderRun(run) {
+    const g = run.graph || {};
+    const s = g.summary || {};
+    const nodes = g.nodes || [];
+    const bySrc = s.rules_by_source || {};
+    const byType = s.edges_by_type || {};
+    const acs = (s.acs || g.acs || {});
+    const parts = [];
+
+    parts.push('<div class="stat-strip" style="margin-bottom:14px">' +
+      stat('Devices', s.device_count || 0, 'cctv') +
+      stat('ACS rules', bySrc.acs || 0, 'layers') +
+      stat('Device rules', bySrc.device || 0, 'zap') +
+      stat('Links found', s.edge_count || 0, 'git-compare') +
+      stat('Unresolved', s.unresolved_count || 0, 'alert-triangle') +
+      '</div>');
+
+    parts.push('<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">' +
+      '<span class="badge ' + (acs.available ? 'green' : 'grey') + '">' +
+      '<span class="dot sem-' + (acs.available ? 'green' : 'grey') + '"></span>' +
+      (acs.available ? 'ACS connected' : 'ACS unavailable') + '</span>' +
+      (acs.reason && acs.reason !== 'ok'
+        ? '<span class="page-sub" style="margin:0;font-size:12px">' + esc(acs.reason) + '</span>' : '') +
+      (s.names_only_rules ? '<span class="badge amber">' + s.names_only_rules +
+        ' name-only rule(s) — older firmware</span>' : '') +
+      (s.devices_without_rule_facet ? '<span class="badge grey">' + s.devices_without_rule_facet +
+        ' device(s) with no action-rules facet</span>' : '') +
+      '</div>');
+
+    const edgeIds = Object.keys(byType).sort();
+    if (edgeIds.length) {
+      parts.push('<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">' +
+        edgeIds.map((id) => '<span class="badge blue">' + esc(id) + ' × ' + byType[id] +
+          ' · ' + esc(EDGE_LABEL[id] || '') + '</span>').join('') + '</div>');
+    }
+
+    const apps = (s.acaps && s.acaps.distinctive_apps) || [];
+    if (apps.length) {
+      parts.push('<div class="page-sub" style="margin:0 0 12px;font-size:12.5px">' +
+        'Distinctive apps on this fleet: ' +
+        apps.map((a) => '<span class="tag">' + esc(a) + '</span>').join(' ') + '</div>');
+    }
+
+    const edges = (g.edges || []).slice(0, 25);
+    if (edges.length) {
+      parts.push('<table class="data-table"><thead><tr>' +
+        '<th>Device</th><th>Device</th><th style="width:70px">Weight</th><th>Why</th>' +
+        '</tr></thead><tbody>' +
+        edges.map((e) => '<tr style="cursor:default"><td>' + esc(nameOf(nodes, e.a)) +
+          '</td><td>' + esc(nameOf(nodes, e.b)) +
+          '</td><td class="mono">' + esc(e.weight.toFixed(2)) + '</td><td>' +
+          '<span class="badge ' + (e.corroborating ? 'grey' : 'blue') + '">' + esc(e.id) + '</span> ' +
+          esc((e.evidence || []).map((i) => i.detail).join('; ')) + '</td></tr>').join('') +
+        '</tbody></table>');
+      if ((g.edges || []).length > edges.length) {
+        parts.push('<div class="page-sub" style="margin:8px 0 0;font-size:12px">+' +
+          ((g.edges || []).length - edges.length) + ' more link(s) in the full graph.</div>');
+      }
+    } else {
+      parts.push('<div class="page-sub" style="margin:0">No links between devices yet — ' +
+        'no ACS rule, device rule, shared tag, app or name token connects any two of them.</div>');
+    }
+
+    const unres = g.unresolved || [];
+    if (unres.length) {
+      parts.push('<div style="margin-top:14px"><div class="page-sub" style="margin:0 0 6px">' +
+        'Unresolved references (surfaced, never dropped):</div><ul style="margin:0;padding-left:18px">' +
+        unres.slice(0, 10).map((u) => '<li class="page-sub" style="margin:0;font-size:12.5px">' +
+          esc(u.rule_name || u.rule_id) + ' — ' + esc(u.reason) + '</li>').join('') +
+        '</ul></div>');
+    }
+
+    parts.push('<div class="page-sub" style="margin:14px 0 0;font-size:12px">' +
+      'Run <span class="mono">' + esc(run.id) + '</span> · ' + esc(run.mode) + ' · ' +
+      'the full graph is at <span class="mono">/api/demos/inference/runs/' + esc(run.id) + '</span>. ' +
+      'Naming these as demos comes next — ask the console about them in the meantime.</div>');
+
+    outEl.innerHTML = parts.join('');
+    outEl.classList.remove('hidden');
+    lastEl.textContent = run.message || '';
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  async function start(mode) {
+    errEl.classList.add('hidden');
+    outEl.classList.add('hidden');
+    busy(true, mode === 'survey' ? 'Starting deep survey…' : 'Reading registry, snapshots and ACS…');
+    let data;
+    try {
+      const res = await fetch('/api/demos/inference/runs', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: mode }),
+      });
+      data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Inference failed');
+    } catch (e) { fail(e.message); return; }
+
+    if (data.run && data.run.status === 'running') { poll(data.run.id); return; }
+    if (data.run && data.run.status === 'failed') { fail(data.run.error || 'Inference failed'); return; }
+    busy(false, '');
+    renderRun(data.run);
+  }
+
+  // Survey mode runs in the background — poll its row until it settles.
+  function poll(runId) {
+    const tick = async () => {
+      let run;
+      try {
+        const res = await fetch('/api/demos/inference/runs/' + encodeURIComponent(runId));
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.detail || 'Could not read the run');
+        run = body.run;
+      } catch (e) { fail(e.message); return; }
+      if (run.status === 'running') {
+        busy(true, (run.phase ? run.phase + ' ' : '') + (run.progress || '') +
+          (run.message ? ' — ' + run.message : ''));
+        setTimeout(tick, 2000);
+        return;
+      }
+      busy(false, '');
+      if (run.status === 'failed') { fail(run.error || 'Deep survey failed'); return; }
+      renderRun(run);
+    };
+    setTimeout(tick, 1200);
+  }
+
+  fastBtn.addEventListener('click', () => start('fast'));
+  surveyBtn.addEventListener('click', () => start('survey'));
+  document.getElementById('empty-infer-link')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    document.getElementById('infer-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    start('fast');
   });
 })();
 </script>

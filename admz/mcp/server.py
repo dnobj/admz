@@ -2428,6 +2428,32 @@ class ADMZMCPServer:
             return self._demo_err(exc)
         return {"success": True, **wizard.setup_status(self.components, demo)}
 
+    async def _survey_demo_evidence(self, run_id: Optional[str] = None) -> Dict[str, Any]:
+        """The demo-inference evidence graph, digested for the agent (#124).
+
+        Read-only and inert: registry rows, the last snapshots' facets and one
+        live ACS read. With ``run_id`` it replays a stored run instead of
+        collecting fresh, so a conversation can keep reasoning over the exact
+        graph it was shown.
+        """
+        from admz.demos.inference import collect
+
+        store = self.components.inference_run_store
+        if run_id:
+            run = store.get(run_id)
+            if run is None:
+                return {"success": False, "error": f"No inference run '{run_id}'."}
+        else:
+            run = await collect.run_fast(self.components, store,
+                                         created_by=str(self.principal))
+        if run.status == "failed":
+            return {"success": False, "run_id": run.id, "error": run.error}
+        return {
+            "success": True, "run_id": run.id, "status": run.status,
+            "mode": run.mode, "headline": run.message,
+            **collect.summary_only(run.graph),
+        }
+
     async def _set_event_ingest(self, enabled: bool) -> Dict[str, Any]:
         """Gate turning fleet event capture on/off (ADR-0050 Phase C — prompted,
         never auto). Returns the approval card; the flag flips on approval."""
