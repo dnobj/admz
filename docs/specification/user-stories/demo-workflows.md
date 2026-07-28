@@ -158,6 +158,26 @@ When the chatbot ships (per [ADR-0024](../decisions/0024-bundled-web-chatbot.md)
 
 **Related decisions:** [0047 — demo config fragments](../decisions/0047-demo-config-fragments.md), [0046 — demos](../decisions/0046-demos.md), [0034 — uniform widget gating](../decisions/0034-uniform-widget-gating.md).
 
+## US-DW-013 — ADMZ already knows my demos
+
+**As an** operator installing ADMZ into an experience centre that has been running demos for years, **I want** it to read the environment and tell me what it thinks the demos are — with its reasoning — **so that** my first job isn't re-typing an inventory the site already encodes.
+
+**Acceptance criteria:**
+1. One operator-invoked run (`infer_demos`, `POST /api/demos/inference/runs`, or the button on `/demos`) reads the registry, the last config snapshots (tags, installed analytics apps, device action rules) and ACS Pro's action rules, and returns scored **candidate demos** — member devices with roles, the rules that link them, and the config keys each probably owns. A **fast** mode works in seconds with the fleet offline; a **deep survey** mode (discover → onboard → snapshot → infer) runs as a background job with progress.
+2. **Nothing becomes a demo without an explicit confirm.** No device is touched, no ACS write is issued, and the `demos` table is untouched until `confirm_demo_proposal` — so a half-believed guess never reaches drift attribution.
+3. Every proposal shows **why**: each evidence item with its weight, the score broken down term by term, its confidence, and its flags. A proposal grouped only on a shared tag, app or name token is flagged `no_topology` and capped at **low** — surfaced with its reasoning, never hidden and never dressed up.
+4. Each linked rule carries a **firing-observability verdict** — which channel would reveal it running (direct device-event subscribe, ACS recording rows, the alarm log, an ADMZ-aimed webhook) or `blind`. The blind count is reported, because "is this demo running?" is unanswerable for those.
+5. Review is **a conversation**: the agent walks the proposals strongest-first with their evidence, explains the confidence in words (*"no rule links these two — they're grouped on a shared tag and a shared app"*), and proposes a **better name and a purpose** than the deterministic placeholder. Everything it needs is already on the proposal — answering a follow-up never re-runs collection.
+6. `confirm_demo_proposal` accepts that better `name` and `purpose` (and `device_ids` / `roles` / `tag`), creating a real demo with its rule membership and auto-derived signals. With no LLM in the loop the stored deterministic name is used instead, so the feature still works end to end.
+7. Confirm writes **no config fragments** — `suggested_owned_keys` stay evidence with a reason each, and `demo_setup_status` names capture as the next action. `dismiss_demo_proposal` is remembered, so a later run does not re-propose those devices; an unchanged environment reproduces the same proposals.
+8. With ACS absent or Firebird disabled the run still completes, reports the degradation with a reason, caps confidence, and proposes from device rules, tags and apps alone — it never errors.
+
+**Related requirements:** [drift-detection](../requirements/drift-detection.md), [web-ui](../requirements/web-ui.md).
+
+**Related stories:** [chatbot-driven-workflows](chatbot-driven-workflows.md).
+
+**Related decisions:** [0051 — demo inference](../decisions/0051-demo-inference.md), [0046 — demos](../decisions/0046-demos.md), [0047 — demo config fragments](../decisions/0047-demo-config-fragments.md), [0040 — ACS Pro module](../decisions/0040-acs-pro-module.md).
+
 ## Known limitations
 
 - 📋 **A demo's readiness is "will it work", not "is it working".** Signals are matched one event at a time, so the Demos page shows a per-signal "last seen" — it can't yet prove the *sequence* ran (person walks in → speaker announces → ACS records). That's ADR-0041 Layer 4 proper; ADR-0046 ships the green light first.
@@ -168,3 +188,6 @@ When the chatbot ships (per [ADR-0024](../decisions/0024-bundled-web-chatbot.md)
 - 📋 **No `tag_snapshot` MCP tool.** Operators tag manually via `git tag` in the config-repo for now.
 - 📋 **No "make camera B match camera A" diff-and-apply tool** — combination of snapshot + restore manually achieves this; first-class workflow would be nicer.
 - ⚠️ **Rollback breadth.** Only `param.cgi:update` operations have automatic pre-read rollback. A restore that touches REST APIs or SOAP services has no rollback data captured.
+- ⚠️ **Inferred demos usually rest on corroborating evidence, not topology.** On the reference fleet *every* ACS rule triggers and acts on the same device, so there is no device-to-device rule topology to cluster on and proposals are grouped by shared tag / app / name token — flagged `no_topology` and capped at low. Where demo topology actually lives (AudioManagerPro zones, device-side HTTP/SIP actions, or nowhere) is an open question for a future edge type.
+- 📋 **No automatic re-inference.** The run is operator-invoked. Detecting demo-like structures appearing *after* install (the attention-surface case) is deferred; `superseded` and the dismissal memory are already in the model for it.
+- 📋 **Blind rules are reported, not fixed.** A rule with no observable firing channel is named as such; instrumenting it (an extra alarm or an ADMZ-aimed HTTP notify) is an ACS write and stays out of scope.

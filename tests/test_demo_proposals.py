@@ -194,6 +194,85 @@ class TestConfirm:
         assert demo.name == "Reception greeting" and demo.narrative == "What we say"
         assert demo.device_ids == ["cam"] and demo.roles == {"cam": "greeter"}
 
+    # ── rename-on-confirm (ADR-0051 — the agent narration surface) ──────────
+    #
+    # The deterministic name is a serviceable PLACEHOLDER, not a good name (the
+    # reference fleet's two-speaker demo comes back "Activation demo"). Slice 4
+    # lets the agent hand a better name + a purpose narrative at confirm time —
+    # and the fallback has to keep working with no LLM in the loop at all.
+
+    def test_the_deterministic_name_survives_when_nothing_is_supplied(self,
+                                                                      tmp_path):
+        """No LLM, no override: the stored name and empty purpose are used
+        verbatim, on both the demo and the proposal row."""
+        from admz.demos.inference.confirm import confirm_proposal_core
+
+        ctx = _Ctx(tmp_path)
+        proposal = ctx.proposal_store.upsert(_proposal(name="Activation demo"))
+        out = confirm_proposal_core(ctx, proposal, "alice")
+
+        demo = ctx.demo_store.get(out["demo"]["id"])
+        assert demo.name == "Activation demo" and demo.narrative == ""
+        row = ctx.proposal_store.get("p1")
+        assert row.name == "Activation demo" and row.purpose == ""
+
+    def test_a_better_name_and_purpose_are_recorded_on_both_sides(self, tmp_path):
+        """The renamed proposal must not read back as the placeholder — the
+        audit trail is "ADMZ guessed X, the operator confirmed Y"."""
+        from admz.demos.inference.confirm import confirm_proposal_core
+
+        ctx = _Ctx(tmp_path)
+        proposal = ctx.proposal_store.upsert(_proposal(name="Activation demo"))
+        out = confirm_proposal_core(
+            ctx, proposal, "alice", name="Speaker announcement demo",
+            purpose="The C1110-E detects and the C1710 announces.")
+
+        demo = ctx.demo_store.get(out["demo"]["id"])
+        assert demo.name == "Speaker announcement demo"
+        assert demo.narrative == "The C1110-E detects and the C1710 announces."
+        row = ctx.proposal_store.get("p1")
+        assert row.name == "Speaker announcement demo"
+        assert row.purpose == "The C1110-E detects and the C1710 announces."
+        assert out["proposal"]["name"] == "Speaker announcement demo"
+
+    def test_a_purpose_alone_keeps_the_deterministic_name(self, tmp_path):
+        """Narration is per-field: writing only the narrative must not blank or
+        rewrite the fallback name."""
+        from admz.demos.inference.confirm import confirm_proposal_core
+
+        ctx = _Ctx(tmp_path)
+        proposal = ctx.proposal_store.upsert(_proposal(name="Activation demo"))
+        out = confirm_proposal_core(ctx, proposal, "alice",
+                                    purpose="What the presenter says.")
+        demo = ctx.demo_store.get(out["demo"]["id"])
+        assert demo.name == "Activation demo"
+        assert demo.narrative == "What the presenter says."
+
+    def test_a_pre_written_purpose_on_the_proposal_carries_into_the_demo(self,
+                                                                        tmp_path):
+        from admz.demos.inference.confirm import confirm_proposal_core
+
+        ctx = _Ctx(tmp_path)
+        proposal = ctx.proposal_store.upsert(
+            _proposal(purpose="Narrated earlier in the review."))
+        out = confirm_proposal_core(ctx, proposal, "alice")
+        assert ctx.demo_store.get(out["demo"]["id"]).narrative == (
+            "Narrated earlier in the review.")
+
+    def test_a_blank_name_override_is_rejected_not_silently_accepted(self,
+                                                                     tmp_path):
+        """An empty rename would mint an unresolvable demo (every demo tool
+        addresses demos by name)."""
+        from admz.demos.actions import DemoActionError
+        from admz.demos.inference.confirm import confirm_proposal_core
+
+        ctx = _Ctx(tmp_path)
+        proposal = ctx.proposal_store.upsert(_proposal())
+        with pytest.raises(DemoActionError):
+            confirm_proposal_core(ctx, proposal, "alice", name="   ")
+        assert ctx.demo_store.list() == []
+        assert ctx.proposal_store.get("p1").status == STATUS_PROPOSED
+
     def test_devices_deleted_since_the_run_are_skipped_and_reported(self, tmp_path):
         from admz.demos.inference.confirm import confirm_proposal_core
 
@@ -452,6 +531,21 @@ class TestProposalRoutes:
         assert client.get("/api/demos/proposals/p1").json()[
             "proposal"]["status"] == "confirmed"
 
+    def test_confirm_body_carries_the_narrated_name_and_purpose(self, client, ctx):
+        """The REST twin of the chat rename path (ADR-0051) — same core, so the
+        console and the agent cannot diverge."""
+        _add_device(ctx, "cam")
+        _add_device(ctx, "spk")
+        _seed(ctx)
+        res = client.post("/api/demos/proposals/p1/confirm",
+                          json={"name": "Speaker announcement demo",
+                                "purpose": "Camera detects, speaker announces."})
+        assert res.status_code == 200
+        demo = client.get("/api/demos").json()["demos"][0]
+        assert demo["name"] == "Speaker announcement demo"
+        assert client.get("/api/demos/proposals/p1").json()["proposal"][
+            "purpose"] == "Camera detects, speaker announces."
+
     def test_confirm_is_ungated_no_approval_envelope(self, client, ctx):
         """Inert by the ADR-0046 bar: metadata only, `active` stays False, no
         fragment is written — so it must NOT return a blocked envelope."""
@@ -566,3 +660,44 @@ class TestMcpTools:
         for name in ("infer_demos", "list_demo_proposals",
                      "confirm_demo_proposal", "dismiss_demo_proposal"):
             assert name in TOOL_HANDLERS
+
+    # ── rename-on-confirm reaches the tool surface (ADR-0051) ───────────────
+
+    def test_confirm_schema_takes_an_optional_name_and_purpose(self):
+        """No schema change was needed for slice 4 — but the narration flow
+        depends on both staying optional (the deterministic name is the
+        no-LLM fallback), so pin it."""
+        from admz.mcp.tools.demos import TOOLS
+
+        tool = next(t for t in TOOLS if t.name == "confirm_demo_proposal")
+        props = tool.inputSchema["properties"]
+        assert props["name"]["type"] == "string"
+        assert props["purpose"]["type"] == "string"
+        assert tool.inputSchema["required"] == ["proposal"]
+        # The description has to say the stored name is a placeholder, or the
+        # model happily confirms "Activation demo" forever.
+        assert "PLACEHOLDER" in tool.description
+
+    def test_confirm_through_mcp_carries_the_narrated_name_and_purpose(self,
+                                                                       server):
+        for did in ("cam", "spk"):
+            server.registry.add_device(did, {"host": "192.0.2.1", "nickname": did,
+                                             "model": "AXIS TEST", "tags": []})
+        server.components.proposal_store.upsert(_proposal(name="Activation demo"))
+        out = server._confirm_demo_proposal({
+            "proposal": "Activation demo", "name": "Speaker announcement demo",
+            "purpose": "The camera detects; the speaker announces."})
+        assert out["success"] is True
+        demo = server.components.demo_store.list()[0]
+        assert demo.name == "Speaker announcement demo"
+        assert demo.narrative == "The camera detects; the speaker announces."
+
+    def test_confirm_through_mcp_without_a_name_keeps_the_placeholder(self,
+                                                                      server):
+        for did in ("cam", "spk"):
+            server.registry.add_device(did, {"host": "192.0.2.1", "nickname": did,
+                                             "model": "AXIS TEST", "tags": []})
+        server.components.proposal_store.upsert(_proposal(name="Activation demo"))
+        out = server._confirm_demo_proposal({"proposal": "p1"})
+        assert out["success"] is True
+        assert server.components.demo_store.list()[0].name == "Activation demo"

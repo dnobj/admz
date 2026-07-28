@@ -243,3 +243,79 @@ class TestPreloadedContext:
         assert "{device_roster}" not in prompt
         assert "{fleet_section}" not in prompt
         assert "{common_ops_section}" not in prompt
+
+
+class TestDemoInferenceNarration:
+    """ADR-0051 — the demo-inference review flow, taught only where the
+    surface is live (``context.build_inference_section`` returns "" otherwise)."""
+
+    _STATE = ("ACS Pro is connected — its action rules are readable as evidence.\n"
+              "- Activation demo (ab12) — low · 2 device(s) · flags: no_topology")
+
+    def test_absent_when_the_surface_is_inactive(self):
+        """No ACS, no run, no proposal -> the builder passes "" and the whole
+        section (guidance included) is gone, like every other conditional slot."""
+        prompt = build_system_prompt("alice")
+        assert "Inferring the demos that already exist" not in prompt
+        assert "infer_demos" not in prompt
+        assert "{inference_section}" not in prompt
+        # …and the seam closes cleanly: byte-identical to before the slot
+        # existed, not a stray blank line where the section would go.
+        assert "after the user approves.\n\n# Compound requests" in prompt
+
+    def test_empty_string_injects_nothing(self):
+        prompt = build_system_prompt("alice", inference_section="   ")
+        assert "Inferring the demos that already exist" not in prompt
+
+    def test_present_when_the_surface_is_live(self):
+        prompt = build_system_prompt("alice", inference_section=self._STATE)
+        assert "# Inferring the demos that already exist (ADR-0051)" in prompt
+        assert "## Where this deployment stands right now" in prompt
+        assert "Activation demo (ab12)" in prompt
+        # The live block must not displace the rest of the prompt.
+        assert "/confirm/{token}" in prompt
+        assert "# Compound requests" in prompt
+
+    def test_names_the_review_tools(self):
+        prompt = build_system_prompt("alice", inference_section=self._STATE)
+        for tool in ("infer_demos", "list_demo_proposals",
+                     "confirm_demo_proposal", "dismiss_demo_proposal"):
+            assert tool in prompt
+
+    def test_the_proposed_name_is_framed_as_a_placeholder(self):
+        """The whole point of the slice: the deterministic name is serviceable,
+        not good ("Activation demo" for the speakers demo). The model must be
+        told to propose a better one."""
+        prompt = build_system_prompt("alice", inference_section=self._STATE)
+        assert "placeholder, not an answer" in prompt
+        assert "Activation demo" in prompt
+
+    def test_forbids_a_second_collection_pass(self):
+        """Everything a follow-up needs is already on the proposal — re-running
+        inference to answer "why?" is a full site read for nothing."""
+        low = build_system_prompt("alice", inference_section=self._STATE).lower()
+        assert "do not collect twice" in low
+        assert "re-run only when the environment has actually changed" in low
+
+    def test_teaches_the_flags_rather_than_the_number(self):
+        prompt = build_system_prompt("alice", inference_section=self._STATE)
+        for flag in ("no_topology", "acs_absent", "firing_unknown", "blind",
+                     "name_only", "acap_only", "tag_only",
+                     "overlaps_another_proposal", "single_device"):
+            assert flag in prompt
+        # The live finding that makes no_topology the normal case, not a bug.
+        assert "EVERY ACS rule" in prompt and "same device" in prompt
+        assert "never just recite the score" in prompt
+
+    def test_teaches_rename_and_purpose_on_confirm(self):
+        prompt = build_system_prompt("alice", inference_section=self._STATE)
+        assert "Pass your `name` and `purpose`" in prompt
+        assert "suggested_owned_keys" in prompt
+        assert "demo_setup_status" in prompt
+
+    def test_renders_without_stray_placeholders(self):
+        prompt = build_system_prompt(
+            "alice", inference_section=self._STATE, demos_section="X — ready",
+        )
+        assert "{inference_section}" not in prompt
+        assert "{demos_section}" not in prompt

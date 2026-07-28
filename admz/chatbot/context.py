@@ -15,6 +15,7 @@ back to calling the tools, as before).
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -246,6 +247,107 @@ def build_demos_section() -> str:
             parts.append("blockers: " + "; ".join(str(b) for b in blockers[:3])
                          + ("; …" if len(blockers) > 3 else ""))
         lines.append(" · ".join(parts))
+    return "\n".join(lines)
+
+
+#: Bound the proposal list the same way the roster is bounded — a noisy site
+#: must not balloon the per-turn token cost.
+_MAX_INFERENCE_PROPOSALS = 8
+
+
+def _age(started_at: float) -> str:
+    """"12m ago" / "3h ago" / "2d ago", or "" when the timestamp is unusable."""
+    try:
+        secs = time.time() - float(started_at or 0)
+    except (TypeError, ValueError):
+        return ""
+    if started_at and secs >= 0:
+        if secs < 3600:
+            return f"{int(secs // 60)}m ago"
+        if secs < 86400:
+            return f"{int(secs // 3600)}h ago"
+        return f"{int(secs // 86400)}d ago"
+    return ""
+
+
+def build_inference_section() -> str:
+    """Live demo-inference state for the system prompt, or "" (ADR-0051).
+
+    The narration guidance rides on this block, so returning "" switches the
+    whole section off. It is off unless inference can do real work here:
+
+    * **ACS Pro is connected** — its action rules are the strongest evidence
+      class, and an experience centre with ACS is the flagship case; or
+    * **a run or an open proposal already exists** — the operator has used the
+      feature and may be coming back to finish reviewing it.
+
+    On a device-only deployment that has never run inference, this returns ""
+    and the prompt is byte-identical to before the slot existed — the same
+    conditional contract the ACS Pro module's own section keeps (ADR-0039).
+
+    Reads two small SQLite tables; degrades to "" on any failure, so a store
+    hiccup can never break a chat turn.
+    """
+    try:
+        from admz.api.context import get_context
+        from admz.demos.inference.proposals import STATUS_PROPOSED
+
+        ctx = get_context()
+        rows = ctx.proposal_store.list(status=STATUS_PROPOSED,
+                                       limit=_MAX_INFERENCE_PROPOSALS + 1)
+        latest = ctx.inference_run_store.latest()
+    except Exception:  # noqa: BLE001 - never let context-building break chat
+        logger.debug("[chat] inference section unavailable", exc_info=True)
+        return ""
+
+    try:
+        from admz.modules.acs_pro.config import acs_enabled
+
+        acs = bool(acs_enabled())
+    except Exception:  # noqa: BLE001
+        acs = False
+
+    if not (acs or rows or latest is not None):
+        return ""
+
+    lines: List[str] = [
+        "ACS Pro is connected — its action rules are readable as evidence."
+        if acs else
+        "ACS Pro is NOT connected, so no ACS action rule is readable: inference "
+        "runs on device rules, tags and installed apps alone, and every "
+        "proposal carries `acs_absent`."
+    ]
+
+    if latest is None:
+        lines.append("No inference run has happened yet — offer `infer_demos`.")
+    else:
+        age = _age(latest.started_at)
+        lines.append(
+            f"Last run `{latest.id}` ({latest.mode}, {latest.status}"
+            + (f", {age}" if age else "") + f"): {latest.device_count} device(s), "
+            f"{latest.rule_count} rule(s), {latest.edge_count} edge(s)."
+            + (f" {latest.error}" if latest.error else ""))
+
+    if not rows:
+        lines.append("No proposal is open — either none was produced, or every "
+                     "one has been confirmed or dismissed.")
+    else:
+        shown = rows[:_MAX_INFERENCE_PROPOSALS]
+        more = len(rows) > len(shown)
+        lines.append(
+            f"{len(shown)}{'+' if more else ''} proposal(s) awaiting a decision. "
+            "Read them with `list_demo_proposals` — do NOT re-run inference to "
+            "see them. Each name below is the DETERMINISTIC placeholder, not a "
+            "good name:")
+        for p in shown:
+            parts = [f"{p.name} ({p.id}) — {p.confidence}",
+                     f"{len(p.device_ids)} device(s)"]
+            if p.flags:
+                parts.append("flags: " + ", ".join(str(f) for f in p.flags[:4]))
+            lines.append("- " + " · ".join(parts))
+        if more:
+            lines.append("- …and more (call `list_demo_proposals`)")
+
     return "\n".join(lines)
 
 

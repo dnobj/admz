@@ -207,6 +207,7 @@ class VoiceSession:
         from admz.chatbot.system_prompt import build_system_prompt
         from admz.chatbot.context import (
             build_demos_section,
+            build_inference_section,
             build_module_prompt_sections,
         )
         from admz.chatbot.client import _mcp_declarations
@@ -238,6 +239,7 @@ class VoiceSession:
             groups=self._groups,
             module_sections=build_module_prompt_sections(),
             demos_section=build_demos_section(),
+            inference_section=build_inference_section(),
         ) + _VOICE_PROMPT_NOTE
 
         config = types.LiveConnectConfig(

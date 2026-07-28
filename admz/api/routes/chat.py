@@ -57,6 +57,7 @@ from admz.chatbot.context import (
     build_common_ops_reference,
     build_demos_section,
     build_device_roster,
+    build_inference_section,
     build_module_prompt_sections,
 )
 from admz.chatbot.system_prompt import build_system_prompt
@@ -251,6 +252,7 @@ async def chat_submit(
         common_ops=build_common_ops_reference(),
         module_sections=build_module_prompt_sections(),
         demos_section=build_demos_section(),
+        inference_section=build_inference_section(),
     )
 
     logger.debug(
@@ -576,6 +578,7 @@ async def _run_chat_turn(
         common_ops=build_common_ops_reference(),
         module_sections=build_module_prompt_sections(),
         demos_section=build_demos_section(),
+        inference_section=build_inference_section(),
     )
 
     logger.debug(

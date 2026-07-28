@@ -1,6 +1,15 @@
 # Plan: infer existing demos from fleet + ACS state
 
-Status: **planned, not implemented** — GH [#124](https://github.com/dnobj/admz/issues/124).
+Status: **implemented** — GH [#124](https://github.com/dnobj/admz/issues/124), shipped
+as four slices (PRs #129 ACS rule anatomy, #130 evidence graph, #135 clustering +
+proposals + confirm, and the agent narration surface). The design decision record is
+[ADR-0051](../specification/decisions/0051-demo-inference.md); the user story is
+`US-DW-013`. Two live findings changed the algorithm against what this plan assumed —
+**zero rule-expressed topology** on the reference fleet (so `include_weak` defaults to
+**true**, not false) and **corroborating evidence does not chain** (hence
+`DENSITY_MIN_CORROBORATING` and `OVERLAP_MIN_LINKS`, neither of which is described
+below). The ADR is authoritative where the two disagree.
+
 The three product decisions are **RESOLVED** (owner, 2026-07-22) — see
 [Resolved decisions](#resolved-decisions). In short: **(a)** confirmation is
 **chat-driven** with rich tooling; **(b)** proposals **suggest owned config keys as
