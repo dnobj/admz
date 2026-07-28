@@ -24,12 +24,15 @@ here is enumerated by ``list_demos`` or walked by ``fragments.attribution_maps``
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # Job states. ``running`` is the only non-terminal one.
 STATUS_RUNNING = "running"
@@ -123,19 +126,45 @@ class InferenceRun:
 
 
 def _row(r) -> InferenceRun:
-    def _j(raw, default):
-        try:
-            return json.loads(raw) if raw else default
-        except (TypeError, ValueError):
+    """One DB row → a run.
+
+    Corrupt stored JSON is **reported, not smoothed over**: the graph is this
+    feature's audit trail, so a row whose ``graph_json`` will not parse has lost
+    it, and a run that silently reads back as "complete, no graph" would hide
+    that. The damage lands in ``error`` (and, for the graph itself, flips the
+    run to ``failed``) so every reader — REST, MCP and the page — sees it.
+    """
+    corrupt: List[str] = []
+
+    def _j(raw, default, field_name):
+        if not raw:
             return default
-    return InferenceRun(
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            logger.warning("demo inference run %s: stored %s_json is corrupt (%s)",
+                           r[0], field_name, exc)
+            corrupt.append(field_name)
+            return default
+
+    run = InferenceRun(
         id=r[0], started_at=r[1], finished_at=r[2], created_by=r[3],
         acs_available=bool(r[4]), acs_reason=r[5] or "", device_count=r[6] or 0,
-        rule_count=r[7] or 0, graph=_j(r[8], {}), params=_j(r[9], {}),
+        rule_count=r[7] or 0, graph=_j(r[8], {}, "graph"),
+        params=_j(r[9], {}, "params"),
         mode=r[10] or MODE_FAST, status=r[11] or STATUS_COMPLETE,
         phase=r[12] or "", progress=r[13] or "", message=r[14] or "",
         error=r[15] or "", edge_count=r[16] or 0,
     )
+    if corrupt:
+        note = ("stored " + " and ".join(corrupt) + " JSON is corrupt and could "
+                "not be read — this run's record is damaged")
+        run.error = f"{run.error}; {note}" if run.error else note
+        if "graph" in corrupt:
+            # Without its graph the run produced nothing usable, whatever the
+            # status column still claims.
+            run.status = STATUS_FAILED
+    return run
 
 
 class InferenceRunStore:
@@ -158,8 +187,12 @@ class InferenceRunStore:
                 try:
                     conn.execute(
                         f"ALTER TABLE demo_inference_runs ADD COLUMN {name} {decl}")
-                except sqlite3.OperationalError:
-                    pass   # column already exists
+                except sqlite3.OperationalError as exc:
+                    # Only "already there" is expected. A locked DB, a read-only
+                    # file or a damaged schema would otherwise be swallowed here
+                    # and reappear as an inexplicable missing column later.
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
             conn.commit()
         finally:
             conn.close()

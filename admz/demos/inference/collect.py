@@ -36,7 +36,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 from admz.demos.inference import graph as graph_mod
 from admz.demos.inference.runs import (MODE_FAST, MODE_SURVEY, SURVEY_PHASES,
@@ -54,6 +55,17 @@ ACS_DISABLED_REASON = (
 )
 
 
+class CollectionError(RuntimeError):
+    """Something the run *must* read could not be read.
+
+    Deliberately not a degradation. ACS is optional and an absent snapshot is
+    information, so both degrade with a reason — but the registry **is** the
+    node set, and an unreadable registry is indistinguishable from an empty
+    fleet once it has been turned into a graph. A run that cannot read it fails
+    loudly rather than presenting a clean, complete, empty result.
+    """
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Fast path
 # ═══════════════════════════════════════════════════════════════════════════
@@ -63,14 +75,21 @@ def _registry_nodes(ctx: Any) -> List[Dict[str, Any]]:
 
     ``device_applications`` returns ``{}`` for a device with no snapshot; that
     is **unknown**, not "no apps", and the graph treats it as such.
+
+    An unreadable registry raises :class:`CollectionError`: there is no honest
+    graph to build without the node set, and an empty one would be a lie a
+    caller cannot detect.
     """
     from admz.rules.capabilities import device_applications
 
     try:
         rows = ctx.registry.list_devices() or []
-    except Exception:  # noqa: BLE001 — an unreadable registry yields an empty graph
+    except Exception as exc:  # noqa: BLE001 — fail the run; never fake an empty fleet
         logger.warning("demo inference: registry read failed", exc_info=True)
-        return []
+        raise CollectionError(
+            f"the device registry could not be read ({exc}) — refusing to report "
+            "an empty fleet, which is what an unreadable registry would look "
+            "like.") from exc
 
     out: List[Dict[str, Any]] = []
     for row in rows:
@@ -87,14 +106,22 @@ def _registry_nodes(ctx: Any) -> List[Dict[str, Any]]:
     return out
 
 
-def _device_rule_facets(ctx: Any, device_ids: List[str]) -> Dict[str, Any]:
-    """``device_id`` → its ``action_rules`` facet doc, or ``None`` when there is
-    no snapshot to read (which the graph reports rather than hiding).
+def _device_rule_facets(ctx: Any,
+                        device_ids: List[str]) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    """``(facets, read_errors)``.
+
+    ``facets`` maps ``device_id`` → its ``action_rules`` facet doc, or ``None``
+    when there is **no snapshot to read**. ``read_errors`` maps ``device_id`` →
+    why the read *failed*, and the two are kept apart on purpose: a permission,
+    repository or parse failure is not the same fact as "this device has never
+    been snapshotted", and folding one into the other tells the operator to fix
+    the wrong thing. The graph reports each in its own terms.
 
     Reads exactly what ``wizard.py:30`` reads — the device's latest observation,
     falling back to its baseline. Never probes.
     """
     out: Dict[str, Any] = {}
+    errors: Dict[str, str] = {}
     for did in device_ids:
         doc = None
         try:
@@ -102,10 +129,13 @@ def _device_rule_facets(ctx: Any, device_ids: List[str]) -> Dict[str, Any]:
             ref = info.get("latest_observed_sha") or info.get("baseline_sha")
             if ref:
                 doc = ctx.git_repo.read_facet(did, "action_rules", ref)
-        except Exception:  # noqa: BLE001 — an unreadable facet is "no snapshot"
-            doc = None
+        except Exception as exc:  # noqa: BLE001 — reported as a read error, not "no snapshot"
+            logger.warning("demo inference: action_rules facet read failed for %s",
+                           did, exc_info=True)
+            errors[did] = f"{type(exc).__name__}: {exc}"
+            continue
         out[did] = doc
-    return out
+    return out, errors
 
 
 async def read_acs_rules(ctx: Any) -> Dict[str, Any]:
@@ -156,9 +186,14 @@ async def read_acs_rules(ctx: Any) -> Dict[str, Any]:
 
 
 async def collect_graph(ctx: Any, *, include_acs: bool = True) -> Dict[str, Any]:
-    """The fast path: registry + latest snapshots + one live ACS read → graph."""
+    """The fast path: registry + latest snapshots + one live ACS read → graph.
+
+    Raises :class:`CollectionError` if the registry is unreadable. This is the
+    layer that owns the clock, too: ``build_graph`` is pure and deterministic,
+    so the wall-clock stamp is applied here.
+    """
     devices = _registry_nodes(ctx)
-    facets = _device_rule_facets(ctx, [d["device_id"] for d in devices])
+    facets, facet_errors = _device_rule_facets(ctx, [d["device_id"] for d in devices])
     if include_acs:
         acs = await read_acs_rules(ctx)
     else:
@@ -167,8 +202,10 @@ async def collect_graph(ctx: Any, *, include_acs: bool = True) -> Dict[str, Any]
     return graph_mod.build_graph(
         devices,
         device_rule_facets=facets,
+        facet_read_errors=facet_errors,
         acs_rules=acs.get("rules") or [],
         acs={"available": acs["available"], "reason": acs["reason"]},
+        generated_at=time.time(),
     )
 
 
@@ -178,7 +215,13 @@ async def collect_graph(ctx: Any, *, include_acs: bool = True) -> Dict[str, Any]
 
 async def run_fast(ctx: Any, store: InferenceRunStore, *, created_by: str = "",
                    include_acs: bool = True) -> InferenceRun:
-    """Start, execute and finish a ``fast`` run inline — it takes seconds."""
+    """Start, execute and finish a ``fast`` run inline — it takes seconds.
+
+    A :class:`CollectionError` (today: an unreadable registry) lands here like
+    any other failure: the run is recorded ``failed`` with the reason, which is
+    what the button and the MCP tool render. It never becomes a ``complete``
+    run over an empty fleet.
+    """
     run = store.start(mode=MODE_FAST, created_by=created_by,
                       message="Reading the registry, the last snapshots and ACS…")
     try:
@@ -378,4 +421,5 @@ def summary_only(graph: Dict[str, Any]) -> Dict[str, Any]:
 
 
 __all__ = ["collect_graph", "read_acs_rules", "run_fast", "run_survey",
-           "describe", "summary_only", "MODE_FAST", "MODE_SURVEY"]
+           "describe", "summary_only", "CollectionError", "MODE_FAST",
+           "MODE_SURVEY"]

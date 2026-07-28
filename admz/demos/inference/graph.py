@@ -32,6 +32,12 @@ E4/E5/E6 are **corroborating** evidence only — a cluster built from them alone
 has no topology behind it, so every such edge is flagged ``corroborating: true``
 and slice 3 caps those clusters (the plan's ``no_topology`` treatment).
 
+A **disabled** rule produces no edge of any class. It is history — it says these
+devices *were* wired together, never that they currently work together — so it
+stays in ``rules[]`` (visible, with its device references still resolved) but
+contributes nothing to the evidence. The exclusion is counted in
+``summary.disabled_rules`` rather than being silent.
+
 Distinctiveness is **self-calibrating**, never a hardcoded list: both name tokens
 (E5) and ACAPs (E6) are filtered by their document frequency across *this run's*
 fleet, so a bundled app or a house-style naming prefix that sits on every device
@@ -46,7 +52,6 @@ This module outputs the graph plus per-rule detail and stops.
 from __future__ import annotations
 
 import re
-import time
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -326,10 +331,18 @@ def normalize_acs_rule(anatomy: Dict[str, Any], by_mac: Dict[str, str]) -> Dict[
     MAC and recorded its ``join_method`` (``api_device_id`` → the supported
     ``DeviceListFacade`` route proven in slice 1, then the Firebird ``DEVICE``
     MAC, then ``DeviceSerialNumber``). Here that MAC is joined the last hop, to
-    an ADMZ ``device_id``. Both hops can miss, and both misses are reported:
-    an ACS reference the anatomy could not resolve at all, and a MAC that
-    resolved but names no registered ADMZ device (usually a camera that is in
-    ACS but not yet onboarded here).
+    an ADMZ ``device_id``. Every hop that misses is reported: a reference the
+    anatomy could not resolve at all, a reference that *did* resolve to an ACS
+    device row carrying **no MAC** to join on (``build_device_resolver``'s
+    ``acs_device_id_only`` path), and a MAC that resolved but names no
+    registered ADMZ device (usually a camera that is in ACS but not yet
+    onboarded here).
+
+    A row with **no device reference at all** is a different thing entirely: an
+    ACS server-side action or an HTTPS trigger legitimately names no device, and
+    that is correct rather than unresolved. Only a reference that exists but is
+    *incomplete* is reported — conflating the two is how a partially-resolved
+    device silently vanishes from the graph.
     """
     unresolved: List[Dict[str, Any]] = []
     join_methods: Dict[str, str] = {}
@@ -339,9 +352,10 @@ def normalize_acs_rule(anatomy: Dict[str, Any], by_mac: Dict[str, str]) -> Dict[
     def _side(rows: Iterable[Dict[str, Any]], kind: str) -> List[str]:
         found: List[str] = []
         for row in rows or []:
-            ref = (row or {}).get("device") or (row or {}).get("target_device") or {}
-            ref_id = f"{kind}:{(row or {}).get('id')}"
-            if (row or {}).get("device_ref_unresolved"):
+            row = row or {}
+            ref = row.get("device") or row.get("target_device")
+            ref_id = f"{kind}:{row.get('id')}"
+            if row.get("device_ref_unresolved"):
                 unresolved.append({
                     "kind": "acs_reference", "rule_id": rule_id, "rule_name": rule_name,
                     "ref": ref_id,
@@ -349,9 +363,28 @@ def normalize_acs_rule(anatomy: Dict[str, Any], by_mac: Dict[str, str]) -> Dict[
                               "to a MAC (not in the ACS device table).",
                 })
                 continue
-            mac = (ref or {}).get("mac")
-            if not mac:
+            if not ref:
                 continue          # server-side action / HTTPS trigger — names no device
+            mac = ref.get("mac") if isinstance(ref, dict) else None
+            if not mac:
+                # The row DOES name a device — the reference is just incomplete
+                # (an ACS DEVICE row with a blank MAC_ADDRESS, which the
+                # resolver hands back as ``acs_device_id_only``). Dropping it
+                # here would hide a real device behind "names no device".
+                detail = ""
+                if isinstance(ref, dict):
+                    detail = str(ref.get("name") or ref.get("ip")
+                                 or ref.get("acs_device_id") or "")
+                unresolved.append({
+                    "kind": "incomplete_device_ref", "rule_id": rule_id,
+                    "rule_name": rule_name, "ref": ref_id, "mac": None,
+                    "reason": (f"this {kind} names an ACS device"
+                               + (f" ({detail})" if detail else "")
+                               + " whose reference carries no MAC — the ACS "
+                                 "device row has no MAC address, so it cannot "
+                                 "be joined to the ADMZ registry."),
+                })
+                continue
             did = by_mac.get(canonical_mac(mac))
             if not did:
                 unresolved.append({
@@ -370,12 +403,17 @@ def normalize_acs_rule(anatomy: Dict[str, Any], by_mac: Dict[str, str]) -> Dict[
     actions = _side(anatomy.get("actions"), "action")
     values: List[str] = []
     _strings([a.get("params") for a in anatomy.get("actions") or []], values)
+    # ``rule_anatomy`` always carries ``enabled``; an anatomy that somehow omits
+    # it must read as enabled, not disabled — edges now hang off this flag, and
+    # a missing field silently erasing a rule's evidence is exactly the failure
+    # mode this module exists to avoid. Same default as a device rule.
+    acs_enabled = anatomy.get("enabled")
     return {
         "source": "acs",
         "rule_key": f"acs:{rule_id}",
         "rule_id": str(rule_id),
         "name": rule_name,
-        "enabled": bool(anatomy.get("enabled")),
+        "enabled": True if acs_enabled is None else bool(acs_enabled),
         "owner_device_id": None,
         "trigger_device_ids": triggers,
         "action_device_ids": actions,
@@ -518,14 +556,20 @@ def _identity_hits(haystack: List[str], node: Dict[str, Any]) -> Optional[Dict[s
 
 def build_edges(nodes: Sequence[Dict[str, Any]],
                 rules: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Every edge the evidence supports, each carrying why it exists."""
+    """Every edge the evidence supports, each carrying why it exists.
+
+    A **disabled** rule contributes no edge of any class: it is a record of how
+    these devices were once wired, not evidence that they work together now.
+    Its device references are still resolved and recorded on the rule (nothing
+    is dropped) — only the edge is withheld.
+    """
     edges = _Edges()
     total = len(nodes)
     by_id = {n["device_id"]: n for n in nodes}
 
     # ── E1 / E2: ACS rule topology ──────────────────────────────────────────
     for rule in rules:
-        if rule["source"] != "acs":
+        if rule["source"] != "acs" or not rule["enabled"]:
             continue
         label = rule["name"] or rule["rule_id"]
         direct: Set[Tuple[str, str]] = set()
@@ -560,10 +604,14 @@ def build_edges(nodes: Sequence[Dict[str, Any]],
             hit = _identity_hits(values, node)
             if not hit:
                 continue
+            # Resolve the reference even for a disabled rule — the rule really
+            # does name this device, and that stays on the record…
             rule["action_device_ids"] = sorted(
                 set(rule["action_device_ids"]) | {node["device_id"]})
             rule["device_ids"] = sorted(set(rule["device_ids"]) | {node["device_id"]})
             rule["join_methods"][node["device_id"]] = f"action_{hit['kind']}"
+            if not rule["enabled"]:
+                continue      # …but a disabled rule is not a working link today
             edges.add("E3", owner, node["device_id"],
                       f"device rule '{rule['name']}' on {_label(by_id, owner)} "
                       f"references {_label(by_id, node['device_id'])} by "
@@ -613,6 +661,8 @@ def build_edges(nodes: Sequence[Dict[str, Any]],
         for tok in _tokens(node["name"]):
             token_devices.setdefault(tok, set()).add(node["device_id"])
     for rule in rules:
+        if not rule["enabled"]:
+            continue          # history names devices too — it is still not evidence
         for tok in _tokens(rule["name"]):
             for did in rule["device_ids"]:
                 token_devices.setdefault(tok, set()).add(did)
@@ -644,6 +694,7 @@ def build_graph(
     devices: Sequence[Dict[str, Any]],
     *,
     device_rule_facets: Optional[Dict[str, Any]] = None,
+    facet_read_errors: Optional[Dict[str, str]] = None,
     acs_rules: Optional[Sequence[Dict[str, Any]]] = None,
     acs: Optional[Dict[str, Any]] = None,
     generated_at: Optional[float] = None,
@@ -652,10 +703,18 @@ def build_graph(
 
     ``device_rule_facets`` maps ``device_id`` → that device's ``action_rules``
     facet document, or ``None`` when there is no snapshot to read (fast mode on
-    a never-surveyed device). ``acs_rules`` is ``firebird.rule_anatomy()``
-    output; ``acs`` is the degradation envelope
-    ``{available: bool, reason: str}`` — an absent ACS degrades the graph, it
-    never fails it.
+    a never-surveyed device). ``facet_read_errors`` maps ``device_id`` → why
+    that facet could not be read at all; a *failed read* is deliberately not the
+    same input as an *absent snapshot*, so a permission or repository error can
+    never masquerade as "this device has no rules yet".
+
+    ``acs_rules`` is ``firebird.rule_anatomy()`` output; ``acs`` is the
+    degradation envelope ``{available: bool, reason: str}`` — an absent ACS
+    degrades the graph, it never fails it.
+
+    ``generated_at`` is **not** defaulted from the clock: this builder reads no
+    clock at all, so the same inputs always produce the same document (the run
+    row owns the wall-clock provenance, and :mod:`collect` injects it).
     """
     acs = dict(acs or {"available": False, "reason": "ACS not read"})
     nodes = build_nodes(devices)
@@ -670,6 +729,20 @@ def build_graph(
     no_rule_facet: List[str] = []
 
     for did in sorted(known_ids):
+        err = (facet_read_errors or {}).get(did)
+        if err:
+            # The facet exists as far as we know — we simply could not read it.
+            # Reporting this as "no snapshot" would blame the fleet for what is
+            # a permission / repository / parse failure on our side.
+            unresolved.append({
+                "kind": "facet_read_error", "rule_id": "", "rule_name": "",
+                "ref": did,
+                "reason": f"the action_rules facet for {did} could not be read "
+                          f"({err}) — this is a read failure, not a missing "
+                          "snapshot, so this device's rules are unknown for a "
+                          "reason another snapshot will not fix.",
+            })
+            continue
         doc = (device_rule_facets or {}).get(did)
         if doc is None:
             # No snapshot yet, or AXIS OS < 12 (the facet is firmware-gated at
@@ -678,6 +751,17 @@ def build_graph(
             no_rule_facet.append(did)
             continue
         if not isinstance(doc, dict):
+            # A facet that is present but not a rule map is damaged, not empty.
+            # Silently treating it as "no rules" would break the no-silent-drop
+            # contract in the one place nobody would think to look.
+            unresolved.append({
+                "kind": "unparsable_device_rule_facet", "rule_id": "",
+                "rule_name": "", "ref": did,
+                "reason": f"the action_rules facet for {did} is a "
+                          f"{type(doc).__name__}, not a map of rules — its rules "
+                          "could not be read (reported rather than counted as "
+                          "'this device has no rules').",
+            })
             continue
         for key in sorted(doc, key=str):
             try:
@@ -716,7 +800,8 @@ def build_graph(
     rules.sort(key=lambda r: (r["source"], r["name"].lower(), r["rule_key"]))
 
     return {
-        "generated_at": generated_at if generated_at is not None else time.time(),
+        # Injected, never read from the clock — see the docstring.
+        "generated_at": generated_at,
         "params": params(),
         "acs": {"available": bool(acs.get("available")),
                 "reason": str(acs.get("reason") or "")},
@@ -758,6 +843,9 @@ def summarize(nodes: Sequence[Dict[str, Any]], rules: Sequence[Dict[str, Any]],
         "rule_count": len(rules),
         "rules_by_source": by_source,
         "names_only_rules": sum(1 for r in rules if r["names_only"]),
+        # Kept, shown, and excluded from every edge — the exclusion is counted
+        # here so a thin graph next to a lot of automation is explainable.
+        "disabled_rules": sum(1 for r in rules if not r["enabled"]),
         "edge_count": len(edges),
         "edges_by_type": by_type,
         "topology_edge_count": sum(1 for e in edges if not e["corroborating"]),

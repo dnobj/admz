@@ -136,6 +136,73 @@ class TestRunStore:
         assert legacy is not None and legacy.mode == MODE_FAST
         assert s.start(mode=MODE_FAST).id != "legacy"
 
+    def test_corrupt_stored_json_is_surfaced_not_read_as_an_empty_graph(self,
+                                                                        store):
+        """The graph IS the audit trail. A row whose ``graph_json`` will not
+        parse has lost it — reading back a tidy ``complete`` run with no graph
+        would hide the damage instead of reporting it."""
+        import sqlite3
+
+        run = store.start(mode=MODE_FAST)
+        store.finish(run.id, _graph(), message="7 device(s)")
+        conn = sqlite3.connect(store._db_path)
+        conn.execute("UPDATE demo_inference_runs SET graph_json = ? WHERE id = ?",
+                     ('{"summary": {"device_c', run.id))
+        conn.commit()
+        conn.close()
+
+        got = store.get(run.id)
+        assert got.graph == {}
+        assert got.status == STATUS_FAILED          # not a successful run
+        assert "corrupt" in got.error and "graph" in got.error
+        assert "corrupt" in got.header()["error"]
+
+    def test_corrupt_params_are_reported_without_condemning_the_run(self, store):
+        import sqlite3
+
+        run = store.start(mode=MODE_FAST)
+        store.finish(run.id, _graph())
+        conn = sqlite3.connect(store._db_path)
+        conn.execute("UPDATE demo_inference_runs SET params_json = ? WHERE id = ?",
+                     ("{not json", run.id))
+        conn.commit()
+        conn.close()
+
+        got = store.get(run.id)
+        assert got.status == STATUS_COMPLETE        # the graph survived
+        assert "params" in got.error and "corrupt" in got.error
+
+    def test_a_migration_failure_that_is_not_a_duplicate_column_is_raised(
+            self, tmp_path, monkeypatch):
+        """Suppressing every ``OperationalError`` here would let a locked or
+        read-only DB leave the job columns absent — failing much later, and
+        somewhere that gives no hint why. Only "already there" is expected.
+
+        (The duplicate-column half stays covered by
+        ``test_ensure_table_is_idempotent_and_upgrades_the_plan_schema``.)"""
+        import sqlite3
+
+        real_connect = sqlite3.connect
+
+        class _AlterFails:
+            """A connection whose ALTERs fail the way a locked DB's would."""
+
+            def __init__(self, conn):
+                self._conn = conn
+
+            def execute(self, sql, *args):
+                if sql.lstrip().upper().startswith("ALTER TABLE"):
+                    raise sqlite3.OperationalError("database is locked")
+                return self._conn.execute(sql, *args)
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
+
+        monkeypatch.setattr(sqlite3, "connect",
+                            lambda *a, **k: _AlterFails(real_connect(*a, **k)))
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            InferenceRunStore(db_path=str(tmp_path / "admz.db"))
+
     def test_the_demos_table_is_untouched(self, tmp_path):
         """A run is evidence, never a demo — it must not appear in list_demos."""
         from admz.demos.store import DemoStore

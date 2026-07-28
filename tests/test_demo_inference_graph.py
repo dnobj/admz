@@ -53,26 +53,31 @@ def acs_rule(rid, name, *, triggers=(), actions=(), enabled=True):
 
 
 def trig(tid, mac, *, kind="DeviceEvent", topic="tns1:Device/tnsaxis:IO/Port",
-         unresolved=False, join="api_device_id"):
+         unresolved=False, join="api_device_id", ref=None):
+    """``ref`` overrides the device reference outright — how a test expresses a
+    reference that *exists but is incomplete* (the resolver's
+    ``acs_device_id_only`` path yields a device dict whose ``mac`` is None)."""
     return {"id": tid, "kind": kind, "topic": topic, "filters": [],
             "device_ref_unresolved": unresolved,
-            "device": (None if (unresolved or mac is None)
-                       else {"mac": mac, "join_method": join, "acs_device_id": 1}),
+            "device": (ref if ref is not None else
+                       (None if (unresolved or mac is None)
+                        else {"mac": mac, "join_method": join, "acs_device_id": 1})),
             "join_method": join}
 
 
 def act(aid, mac, *, kind="Record", params=None, unresolved=False,
-        join="api_device_id"):
+        join="api_device_id", ref=None):
     return {"id": aid, "kind": kind, "params": dict(params or {}),
             "device_ref_unresolved": unresolved,
-            "target_device": (None if (unresolved or mac is None)
-                              else {"mac": mac, "join_method": join}),
+            "target_device": (ref if ref is not None else
+                              (None if (unresolved or mac is None)
+                               else {"mac": mac, "join_method": join})),
             "join_method": join}
 
 
 def device_rule(name, *, topic="tns1:Device/tnsaxis:IO/Port", template="com.axis.x",
-                params=()):
-    return {"id": "1", "name": name, "enabled": True,
+                params=(), enabled=True):
+    return {"id": "1", "name": name, "enabled": enabled,
             "activationConfig": {"condition": [{"topicExpression": topic,
                                                 "messageContent": "boolean(1)"}],
                                  "startEvent": None, "timeout": None},
@@ -198,6 +203,104 @@ class TestTopologyEdges:
                 "A": {},
             })
         assert edges_of(g, "E3") == []
+
+
+class TestDisabledRules:
+    """A disabled rule is *history*: it says these devices were once wired
+    together, never that they work together now. It stays fully visible in
+    ``rules[]`` — and contributes no edge of any class."""
+
+    def test_a_disabled_acs_rule_makes_no_e1_edge(self):
+        kw = dict(acs_rules=[acs_rule(1, "Greeting on motion",
+                                      triggers=[trig(10, "CAM1")],
+                                      actions=[act(20, "SPK1", kind="IO")],
+                                      enabled=False)],
+                  acs={"available": True, "reason": "ok"})
+        devices = [dev("CAM1", name="Lobby cam"), dev("SPK1", name="Lobby speaker")]
+        g = G.build_graph(devices, **kw)
+        assert edges_of(g, "E1") == []
+        assert g["summary"]["topology_edge_count"] == 0
+        # …and the same rule enabled DOES make the edge — the flag is the only
+        # difference between these two graphs.
+        kw["acs_rules"][0]["enabled"] = True
+        assert len(edges_of(G.build_graph(devices, **kw), "E1")) == 1
+
+    def test_a_disabled_acs_rule_makes_no_e2_edge(self):
+        g = G.build_graph(
+            [dev("CAM1"), dev("CAM2")],
+            acs_rules=[acs_rule(1, "Two cams", triggers=[trig(10, "CAM1"),
+                                                         trig(11, "CAM2")],
+                                actions=[], enabled=False)],
+            acs={"available": True, "reason": "ok"})
+        assert edges_of(g, "E2") == []
+
+    def test_a_disabled_device_rule_makes_no_e3_edge(self):
+        g = G.build_graph(
+            [dev("CAM1", name="Gate cam", host="192.0.2.10"),
+             dev("SPK1", name="Gate speaker", host="192.0.2.55")],
+            device_rule_facets={
+                "CAM1": {"1": device_rule(
+                    "Announce at the gate", enabled=False,
+                    params=[("url", "http://192.0.2.55/axis-cgi/x")])},
+                "SPK1": {},
+            })
+        assert edges_of(g, "E3") == []
+
+    def test_a_disabled_rule_still_records_what_it_references(self):
+        """Withholding the edge must not lose the reference: the rule is kept,
+        flagged disabled, with its target still resolved."""
+        g = G.build_graph(
+            [dev("CAM1", host="192.0.2.10"), dev("SPK1", host="192.0.2.55")],
+            device_rule_facets={
+                "CAM1": {"1": device_rule(
+                    "Announce", enabled=False,
+                    params=[("url", "http://192.0.2.55/axis-cgi/x")])},
+                "SPK1": {},
+            })
+        r = g["rules"][0]
+        assert r["enabled"] is False
+        assert r["action_device_ids"] == ["SPK1"]      # reference kept on the record
+        assert r["join_methods"]["SPK1"] == "action_host"
+        assert g["summary"]["disabled_rules"] == 1
+
+    def test_a_disabled_rules_name_is_not_naming_evidence_either(self):
+        """E5 draws on rule names as well as device names — a disabled rule must
+        not sneak its topology back in through the naming channel."""
+        devices = [dev(x, name=n) for x, n in
+                   [("A", "North"), ("B", "South"), ("C", "Reception"),
+                    ("D", "Store room"), ("E", "Yard")]]
+        rules = [acs_rule(1, "Loitering showcase",
+                          triggers=[trig(10, "A")],
+                          actions=[act(20, "B", kind="IO")], enabled=False)]
+        g = G.build_graph(devices, acs_rules=rules,
+                          acs={"available": True, "reason": "ok"})
+        assert g["edges"] == []
+        rules[0]["enabled"] = True
+        live = G.build_graph(devices, acs_rules=rules,
+                             acs={"available": True, "reason": "ok"})
+        assert {e["id"] for e in live["edges"]} == {"E1", "E5"}
+
+    def test_a_disabled_rule_is_still_reported_never_hidden(self):
+        g = G.build_graph(
+            [dev("CAM1"), dev("SPK1")],
+            acs_rules=[acs_rule(1, "Old greeting", triggers=[trig(10, "CAM1")],
+                                actions=[act(20, "SPK1", kind="IO")],
+                                enabled=False)],
+            acs={"available": True, "reason": "ok"})
+        assert [r["name"] for r in g["rules"]] == ["Old greeting"]
+        assert g["summary"]["rule_count"] == 1
+        assert g["summary"]["disabled_rules"] == 1
+
+    def test_an_anatomy_without_an_enabled_field_reads_as_enabled(self):
+        """A missing field must not silently erase a rule's evidence — the same
+        default a device rule gets."""
+        row = acs_rule(1, "R", triggers=[trig(10, "CAM1")],
+                       actions=[act(20, "SPK1", kind="IO")])
+        row.pop("enabled")
+        g = G.build_graph([dev("CAM1"), dev("SPK1")], acs_rules=[row],
+                          acs={"available": True, "reason": "ok"})
+        assert g["rules"][0]["enabled"] is True
+        assert len(edges_of(g, "E1")) == 1
 
 
 class TestCorroboratingEdges:
@@ -382,6 +485,37 @@ class TestRules:
         assert g["unresolved"] == []
         assert len(g["unattached_rules"]) == 1
 
+    def test_a_device_reference_with_no_mac_is_incomplete_not_device_free(self):
+        """``build_device_resolver``'s ``acs_device_id_only`` path hands back a
+        device ref with ``mac: None``. That is a real device ADMZ could not
+        join — never the same thing as an action that names no device."""
+        g = G.build_graph(
+            [dev("A")],
+            acs_rules=[acs_rule(1, "Half-resolved",
+                                triggers=[trig(10, None,
+                                               ref={"acs_device_id": 42, "mac": None,
+                                                    "name": "Cam 42", "ip": "10.0.0.9",
+                                                    "join_method": "acs_device_id_only"})],
+                                actions=[])],
+            acs={"available": True, "reason": "ok"})
+        assert [u["kind"] for u in g["unresolved"]] == ["incomplete_device_ref"]
+        u = g["unresolved"][0]
+        assert u["ref"] == "trigger:10" and u["rule_name"] == "Half-resolved"
+        assert "Cam 42" in u["reason"] and "no MAC" in u["reason"]
+        assert g["summary"]["unresolved_count"] == 1
+
+    def test_an_action_target_with_no_mac_is_reported_too(self):
+        g = G.build_graph(
+            [dev("A")],
+            acs_rules=[acs_rule(1, "Half-resolved action",
+                                triggers=[trig(10, "A")],
+                                actions=[act(20, None,
+                                             ref={"acs_device_id": 7, "mac": None,
+                                                  "join_method": "acs_device_id_only"})])],
+            acs={"available": True, "reason": "ok"})
+        assert [u["kind"] for u in g["unresolved"]] == ["incomplete_device_ref"]
+        assert g["unresolved"][0]["ref"] == "action:20"
+
     def test_observability_verdict_is_attached_to_acs_rules(self):
         g = G.build_graph(
             [dev("A")],
@@ -392,9 +526,18 @@ class TestRules:
         assert g["rules"][0]["observability"]["verdict"] == "acs_log_alarm"
         assert g["summary"]["observability"] == {"acs_log_alarm": 1}
 
-    def test_malformed_facet_entry_is_skipped_and_the_run_completes(self):
+    def test_a_facet_that_is_not_a_rule_map_is_reported_not_read_as_no_rules(self):
+        """A damaged facet is neither "no rules" nor "no snapshot". Skipping it
+        silently is the one place the no-silent-drop contract could break
+        without anybody noticing, so it lands in ``unresolved``."""
         g = G.build_graph([dev("A")], device_rule_facets={"A": "not-a-dict"})
-        assert g["rules"] == [] and g["summary"]["rule_count"] == 0
+        assert g["rules"] == [] and g["summary"]["rule_count"] == 0   # run completes
+        assert [u["kind"] for u in g["unresolved"]] == ["unparsable_device_rule_facet"]
+        u = g["unresolved"][0]
+        assert u["ref"] == "A" and "str" in u["reason"]
+        assert g["summary"]["unresolved_count"] == 1
+        # It HAS a facet — it must not be filed under "never snapshotted".
+        assert g["devices_without_rule_facet"] == []
 
 
 class TestAppGrounding:
@@ -457,6 +600,21 @@ class TestDegradationAndDeterminism:
         assert g["summary"]["devices_without_rule_facet"] == 2
         assert g["rules"] == []
 
+    def test_a_failed_facet_read_is_not_the_same_fact_as_no_snapshot(self):
+        """"Never snapshotted" tells the operator to run a survey. A permission
+        or repository failure tells them something else entirely — the two must
+        not arrive as the same diagnostic."""
+        g = G.build_graph(
+            [dev("A"), dev("B")],
+            device_rule_facets={"B": None},
+            facet_read_errors={"A": "PermissionError: [Errno 13] .git/objects"})
+        assert g["devices_without_rule_facet"] == ["B"]          # B only
+        assert [u["kind"] for u in g["unresolved"]] == ["facet_read_error"]
+        u = g["unresolved"][0]
+        assert u["ref"] == "A" and "PermissionError" in u["reason"]
+        assert "not a missing snapshot" in u["reason"]
+        assert g["summary"]["unresolved_count"] == 1
+
     def test_devices_with_no_rules_tags_apps_or_names_produce_no_edges(self):
         g = G.build_graph([dev("A", name="Alpha"), dev("B", name="Bravo"),
                            dev("C", name="Charlie")])
@@ -464,17 +622,38 @@ class TestDegradationAndDeterminism:
         assert g["summary"]["linked_device_count"] == 0
         assert g["summary"]["edge_count"] == 0
 
-    def test_the_same_inputs_build_an_identical_graph(self):
+    def _deterministic_inputs(self):
         devices = [dev("A", tags=["x"], acaps={"rare": "Running"}),
                    dev("B", tags=["x"], acaps={"rare": "Running"}),
                    dev("C", tags=["y"])]
         rules = [acs_rule(1, "R", triggers=[trig(10, "A")],
                           actions=[act(20, "C", kind="IO")])]
-        kw = dict(acs_rules=rules, acs={"available": True, "reason": "ok"},
-                  generated_at=1.0)
+        return devices, dict(acs_rules=rules,
+                             acs={"available": True, "reason": "ok"})
+
+    def test_the_same_inputs_build_an_identical_graph(self, monkeypatch):
+        """No fixed ``generated_at`` here on purpose: pinning the timestamp is
+        exactly what would let a clock read hide from this test. The clock is
+        made to move between the two builds, so any time-dependence in the pure
+        builder fails this outright."""
+        import itertools
+        import time as _time
+
+        clock = itertools.count(1_000_000.0, 1000.0)
+        monkeypatch.setattr(_time, "time", lambda: next(clock))
+
+        devices, kw = self._deterministic_inputs()
         first = json.dumps(G.build_graph(devices, **kw), sort_keys=True, default=str)
         second = json.dumps(G.build_graph(devices, **kw), sort_keys=True, default=str)
         assert first == second
+
+    def test_the_pure_builder_reads_no_clock_and_leaves_the_stamp_to_its_caller(self):
+        """``generated_at`` is provenance, and provenance is the run's job. The
+        builder echoes what it is handed and invents nothing."""
+        devices, kw = self._deterministic_inputs()
+        assert G.build_graph(devices, **kw)["generated_at"] is None
+        assert G.build_graph(devices, generated_at=1234.5, **kw)["generated_at"] == 1234.5
+        assert not hasattr(G, "time")      # the module does not even import it
 
     def test_edges_are_ordered_strongest_first(self):
         g = G.build_graph(
@@ -589,6 +768,73 @@ class TestCollect:
         res = _run(collect.read_acs_rules(FakeCtx(FakeRegistry([]), FakeGitRepo())))
         assert res["available"] is True and res["api_device_count"] == 1
         assert seen["api"][0]["MacAddress"] == "B8A44F0C5B32"
+
+    def test_an_unreadable_registry_fails_the_run_rather_than_faking_an_empty_fleet(self):
+        """The node set IS the registry. Swallowing the read turns "we could not
+        look" into "there is nothing there" — a complete, clean, false run that
+        no caller can tell from a genuinely empty fleet."""
+        from admz.demos.inference import collect
+
+        class Broken(FakeRegistry):
+            def list_devices(self):
+                raise RuntimeError("database is locked")
+
+        with pytest.raises(collect.CollectionError) as exc:
+            _run(collect.collect_graph(FakeCtx(Broken([]), FakeGitRepo())))
+        assert "database is locked" in str(exc.value)
+        assert "empty fleet" in str(exc.value)
+
+    def test_that_failure_is_recorded_on_the_run_not_smoothed_over(self, tmp_path):
+        from admz.demos.inference import collect
+        from admz.demos.inference.runs import STATUS_FAILED, InferenceRunStore
+
+        class Broken(FakeRegistry):
+            def list_devices(self):
+                raise RuntimeError("database is locked")
+
+        store = InferenceRunStore(db_path=str(tmp_path / "admz.db"))
+        run = _run(collect.run_fast(FakeCtx(Broken([]), FakeGitRepo()), store))
+        assert run.status == STATUS_FAILED
+        assert "database is locked" in run.error
+        assert store.get(run.id).status == STATUS_FAILED
+
+    def test_an_empty_registry_still_succeeds(self):
+        """The counterpart: zero devices is a fact, and a fact still builds."""
+        from admz.demos.inference import collect
+
+        g = _run(collect.collect_graph(FakeCtx(FakeRegistry([]), FakeGitRepo()),
+                                       include_acs=False))
+        assert g["summary"]["device_count"] == 0 and g["nodes"] == []
+
+    def test_a_facet_read_failure_is_not_reported_as_a_missing_snapshot(self):
+        """A permission/repo/parse failure must not masquerade as "this device
+        has never been snapshotted" — that sends the operator to run a survey
+        that cannot fix it."""
+        from admz.demos.inference import collect
+
+        class BrokenRepo(FakeGitRepo):
+            def read_facet(self, device_id, facet, ref=None):
+                if device_id == "A":
+                    raise PermissionError("[Errno 13] .git/objects")
+                return super().read_facet(device_id, facet, ref)
+
+        registry = FakeRegistry([{"device_id": "A"}, {"device_id": "B"}],
+                                info={"A": {"latest_observed_sha": "sha1"},
+                                      "B": {"latest_observed_sha": "sha2"}})
+        g = _run(collect.collect_graph(FakeCtx(registry, BrokenRepo()),
+                                       include_acs=False))
+        assert g["devices_without_rule_facet"] == ["B"]      # B genuinely has none
+        assert [u["kind"] for u in g["unresolved"]] == ["facet_read_error"]
+        assert "PermissionError" in g["unresolved"][0]["reason"]
+        assert g["summary"]["devices_without_rule_facet"] == 1
+
+    def test_the_collection_layer_is_what_stamps_the_graph(self):
+        """The builder is deterministic, so the wall clock enters here."""
+        from admz.demos.inference import collect
+
+        g = _run(collect.collect_graph(FakeCtx(FakeRegistry([]), FakeGitRepo()),
+                                       include_acs=False))
+        assert isinstance(g["generated_at"], float) and g["generated_at"] > 0
 
     def test_describe_headlines_the_run(self):
         from admz.demos.inference import collect

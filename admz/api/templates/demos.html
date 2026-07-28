@@ -302,6 +302,8 @@
         ? '<span class="page-sub" style="margin:0;font-size:12px">' + esc(acs.reason) + '</span>' : '') +
       (s.names_only_rules ? '<span class="badge amber">' + s.names_only_rules +
         ' name-only rule(s) — older firmware</span>' : '') +
+      (s.disabled_rules ? '<span class="badge grey">' + s.disabled_rules +
+        ' disabled rule(s) — history, not evidence</span>' : '') +
       (s.devices_without_rule_facet ? '<span class="badge grey">' + s.devices_without_rule_facet +
         ' device(s) with no action-rules facet</span>' : '') +
       '</div>');
@@ -345,7 +347,7 @@
       parts.push('<div style="margin-top:14px"><div class="page-sub" style="margin:0 0 6px">' +
         'Unresolved references (surfaced, never dropped):</div><ul style="margin:0;padding-left:18px">' +
         unres.slice(0, 10).map((u) => '<li class="page-sub" style="margin:0;font-size:12.5px">' +
-          esc(u.rule_name || u.rule_id) + ' — ' + esc(u.reason) + '</li>').join('') +
+          esc(u.rule_name || u.rule_id || u.ref) + ' — ' + esc(u.reason) + '</li>').join('') +
         '</ul></div>');
     }
 
