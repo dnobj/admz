@@ -237,7 +237,8 @@ async def run_fast(ctx: Any, store: InferenceRunStore, *, created_by: str = "",
 
 async def run_survey(ctx: Any, store: InferenceRunStore, run_id: str, *,
                      register_new: bool = True, timeout: float = 5.0,
-                     subnet: Optional[str] = None) -> None:
+                     subnet: Optional[str] = None, proposal_store: Any = None,
+                     include_weak: bool = True) -> None:
     """The background body of a ``survey`` run: discover → onboard → snapshot →
     collect, writing progress and terminal state onto the run row.
 
@@ -279,7 +280,18 @@ async def run_survey(ctx: Any, store: InferenceRunStore, run_id: str, *,
         graph["survey"] = {"discovered": len(discovered), "onboarded": len(added),
                            "snapshotted": ok, "snapshot_failed": failed,
                            "notes": notes}
-        store.finish(run_id, graph, message=describe(graph) + " · " + "; ".join(notes))
+        run = store.finish(run_id, graph,
+                           message=describe(graph) + " · " + "; ".join(notes))
+        # A deep survey exists to produce the inventory, so it clusters too —
+        # best-effort: the graph is already safely on the record, and a
+        # clustering failure must not turn a good survey into a failed run.
+        if proposal_store is not None and run is not None:
+            try:
+                persist_proposals(ctx, run, proposal_store,
+                                  include_weak=include_weak)
+            except Exception:  # noqa: BLE001
+                logger.warning("demo inference survey %s: clustering failed",
+                               run_id, exc_info=True)
     except asyncio.CancelledError:
         store.fail(run_id, "run cancelled (server shutting down)")
         raise
@@ -369,6 +381,124 @@ async def _snapshot(ctx: Any, device_ids: List[str]) -> tuple:
     return ok, len(results) - ok
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Proposals (#124 slice 3) — cluster the graph, persist the candidates
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: How far back the best-effort firing history looks. Matches the score's stale
+#: band — anything older contributes 0 either way, so reading it is wasted work.
+FIRING_WINDOW_SECONDS = 30 * 86400.0
+
+
+def collect_firings(ctx: Any, graph: Dict[str, Any]) -> Dict[str, float]:
+    """``{rule_key: last-seen epoch}`` — **best effort**, from the event log.
+
+    A rule "fired" is observed the same way the demo readiness panel observes a
+    signal: its trigger topic appearing on its trigger device in ADMZ's own
+    event log (``events/store.py:225``). That covers the ``device_event_direct``
+    majority with zero ACS touch and zero device probe.
+
+    Everything about this is optional. Event capture may be off, the store may
+    be empty, a rule may have no topic — in every case the key is simply absent
+    and :func:`admz.demos.inference.cluster.firing_recency` degrades the term to
+    0 with a ``firing_unknown`` flag. A scoring term whose data source is the
+    most fragile input in the system must never be able to fail the run.
+    """
+    store = getattr(ctx, "event_store", None)
+    if store is None:
+        return {}
+    since_ms = int((time.time() - FIRING_WINDOW_SECONDS) * 1000)
+    out: Dict[str, float] = {}
+    for rule in graph.get("rules") or []:
+        key = rule.get("rule_key")
+        devices = rule.get("trigger_device_ids") or rule.get("device_ids") or []
+        for topic in rule.get("topics") or []:
+            for did in devices:
+                try:
+                    got = store.activity_since(since_ms=since_ms, device_id=did,
+                                               type_filter=topic)
+                except Exception:  # noqa: BLE001 — best effort, always
+                    continue
+                last = got.get("last_ms")
+                if last and (key not in out or last / 1000.0 > out[key]):
+                    out[key] = last / 1000.0
+    return out
+
+
+def persist_proposals(ctx: Any, run, proposal_store, *,
+                      include_weak: bool = True) -> Dict[str, Any]:
+    """Cluster a finished run's graph and write the proposals it yields.
+
+    Respects two memories so a re-run is a *diff*, not a re-ask:
+
+    * a member set the operator already **confirmed or dismissed** is not
+      proposed again (it is counted and named in the report instead), and
+    * a still-open proposal for a member set this run re-proposes is marked
+      ``superseded`` — the newer evidence replaces it without erasing it.
+    """
+    from admz.demos.inference import cluster
+    from admz.demos.inference.proposals import DemoProposal
+
+    graph = run.graph or {}
+    firings = {}
+    try:
+        firings = collect_firings(ctx, graph)
+    except Exception:  # noqa: BLE001 — see collect_firings' docstring
+        logger.warning("demo inference: firing history unavailable", exc_info=True)
+
+    result = cluster.propose(graph, run_id=run.id, include_weak=include_weak,
+                             firings=firings, now=time.time())
+
+    decided = proposal_store.decided_content_keys()
+    written: List[Any] = []
+    already: List[Dict[str, Any]] = []
+    for draft in result["proposals"]:
+        prior = decided.get(draft["content_key"])
+        if prior is not None:
+            already.append({"content_key": draft["content_key"],
+                            "name": prior.name, "status": prior.status,
+                            "demo_id": prior.demo_id,
+                            "device_ids": draft["members"],
+                            "reason": (f"these devices were already "
+                                       f"{prior.status} as '{prior.name}'")})
+            continue
+        proposal = DemoProposal(
+            id=draft["id"], run_id=run.id, content_key=draft["content_key"],
+            name=draft["name"], purpose="", device_ids=draft["members"],
+            roles=draft["roles"], rules=draft["rules"],
+            evidence=draft["evidence"],
+            suggested_owned_keys=draft["suggested_owned_keys"],
+            score=draft["score"], confidence=draft["confidence"],
+            flags=draft["flags"], overlaps=draft["overlaps"],
+            score_breakdown=draft["score_breakdown"], devices=draft["devices"],
+        )
+        proposal_store.supersede_open(proposal.content_key, except_id=proposal.id)
+        written.append(proposal_store.upsert(proposal))
+
+    report = dict(result["report"])
+    report["already_decided"] = already
+    report["written"] = len(written)
+    report["cluster_params"] = result["params"]
+    return {"proposals": written, "report": report}
+
+
+async def infer_demos(ctx: Any, run_store: InferenceRunStore, proposal_store, *,
+                      created_by: str = "", include_acs: bool = True,
+                      include_weak: bool = True) -> Dict[str, Any]:
+    """The whole slice-3 move: collect → cluster → persist, in one fast call.
+
+    A failed collection is a failed *run*, recorded with its reason, never an
+    exception thrown at the caller — the same contract slice 2 established.
+    """
+    run = await run_fast(ctx, run_store, created_by=created_by,
+                         include_acs=include_acs)
+    if run.status == "failed":
+        return {"run": run, "proposals": [], "report": {"error": run.error}}
+    out = persist_proposals(ctx, run, proposal_store, include_weak=include_weak)
+    out["run"] = run
+    return out
+
+
 def describe(graph: Dict[str, Any]) -> str:
     """One line for the run header / the button's result banner."""
     s = (graph or {}).get("summary") or {}
@@ -422,4 +552,4 @@ def summary_only(graph: Dict[str, Any]) -> Dict[str, Any]:
 
 __all__ = ["collect_graph", "read_acs_rules", "run_fast", "run_survey",
            "describe", "summary_only", "CollectionError", "MODE_FAST",
-           "MODE_SURVEY"]
+           "MODE_SURVEY", "collect_firings", "persist_proposals", "infer_demos"]

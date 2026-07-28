@@ -2454,6 +2454,107 @@ class ADMZMCPServer:
             **collect.summary_only(run.graph),
         }
 
+    # ── Demo proposals (#124 slice 3) ────────────────────────────────────────
+
+    async def _infer_demos(self, *, include_weak: bool = True,
+                           include_acs: bool = True) -> Dict[str, Any]:
+        """Collect the evidence graph, cluster it, and return the proposals.
+
+        Inert: reads the registry, the last snapshots and ACS, then writes rows
+        to ``demo_inference_runs`` + ``demo_proposals``. Nothing lands in
+        ``demos`` — that needs an explicit ``confirm_demo_proposal``.
+        """
+        from admz.demos.inference import collect
+
+        out = await collect.infer_demos(
+            self.components, self.components.inference_run_store,
+            self.components.proposal_store, created_by=str(self.principal),
+            include_acs=include_acs, include_weak=include_weak)
+        run = out["run"]
+        if run.status == "failed":
+            return {"success": False, "run_id": run.id, "error": run.error}
+        return {
+            "success": True, "run_id": run.id, "headline": run.message,
+            "acs": {"available": run.acs_available, "reason": run.acs_reason},
+            "report": out["report"],
+            "proposals": [self._proposal_view(p) for p in out["proposals"]],
+            "next_step": ("Show each proposal with its evidence and confidence, "
+                          "then call confirm_demo_proposal or "
+                          "dismiss_demo_proposal once the user has decided. "
+                          "Nothing has been created."),
+        }
+
+    @staticmethod
+    def _proposal_view(proposal, *, full: bool = False) -> Dict[str, Any]:
+        """The agent-facing shape: the verdict plus the *why*, never the raw graph."""
+        base = proposal.summary()
+        base["roles"] = proposal.roles
+        base["rules"] = [
+            {"source": r.get("source"), "device_id": r.get("device_id"),
+             "rule_id": r.get("rule_id"), "name": r.get("rule_name"),
+             "topic": r.get("condition_topic"), "actions": r.get("actions"),
+             "enabled": r.get("enabled"),
+             "observability": (r.get("observability") or {}).get("verdict")}
+            for r in proposal.rules or []
+        ]
+        base["evidence"] = [f"{e.get('kind')}: {e.get('detail')}"
+                            for e in proposal.evidence or []]
+        base["suggested_owned_keys"] = proposal.suggested_owned_keys
+        base["overlaps"] = proposal.overlaps
+        if full:
+            base["score_breakdown"] = proposal.score_breakdown
+            base["devices"] = proposal.devices
+        return base
+
+    def _resolve_proposal(self, ref: str):
+        from admz.demos.inference.confirm import resolve_proposal
+
+        return resolve_proposal(self.components.proposal_store, ref)
+
+    def _list_demo_proposals(self, ref: Optional[str] = None,
+                             status: Optional[str] = None) -> Dict[str, Any]:
+        from admz.demos.actions import DemoActionError
+
+        if ref:
+            try:
+                proposal = self._resolve_proposal(ref)
+            except DemoActionError as exc:
+                return self._demo_err(exc)
+            return {"success": True,
+                    "proposal": self._proposal_view(proposal, full=True)}
+        wanted = None if (status or "").lower() in ("all", "any") else (
+            status or "proposed")
+        rows = self.components.proposal_store.list(status=wanted)
+        return {"success": True, "count": len(rows),
+                "proposals": [self._proposal_view(p) for p in rows]}
+
+    def _confirm_demo_proposal(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Create the real demo. Ungated: writes no fragments, leaves the demo
+        inactive, touches no device — the same bar as ``create_demo``."""
+        from admz.demos.actions import DemoActionError
+        from admz.demos.inference.confirm import confirm_proposal_core
+
+        try:
+            proposal = self._resolve_proposal(args["proposal"])
+            return confirm_proposal_core(
+                self.components, proposal, self.principal,
+                name=args.get("name"), purpose=args.get("purpose"),
+                device_ids=args.get("device_ids"), roles=args.get("roles"),
+                tag=args.get("tag"))
+        except DemoActionError as exc:
+            return self._demo_err(exc)
+
+    def _dismiss_demo_proposal(self, ref: str, reason: str = "") -> Dict[str, Any]:
+        from admz.demos.actions import DemoActionError
+        from admz.demos.inference.confirm import dismiss_proposal_core
+
+        try:
+            proposal = self._resolve_proposal(ref)
+            return dismiss_proposal_core(self.components, proposal,
+                                         self.principal, reason=reason)
+        except DemoActionError as exc:
+            return self._demo_err(exc)
+
     async def _set_event_ingest(self, enabled: bool) -> Dict[str, Any]:
         """Gate turning fleet event capture on/off (ADR-0050 Phase C — prompted,
         never auto). Returns the approval card; the flag flips on approval."""

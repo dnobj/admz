@@ -294,6 +294,15 @@ def attach_rule_to_demo(ctx, demo: Demo, rule: Dict[str, Any]) -> None:
 
     Called best-effort from the rule executor: a bookkeeping failure must NEVER
     falsify the rule creation itself.
+
+    ``source`` (#124 slice 3) records where the rule lives: ``"device"`` (an
+    ADMZ-created device rule, the default and everything before this) or
+    ``"acs"`` (an ACS action rule an inferred demo links to). It is a JSON field
+    inside the existing ``rules_json`` — ``_row_to_demo`` tolerates missing keys,
+    so this is **not** a schema migration. ``wizard._rules_status`` needs it:
+    an ACS rule has no ADMZ device to look for the rule id on, and without the
+    field it would read ``observed: false`` forever — a permanent, false "your
+    rule vanished".
     """
     import time
     from types import SimpleNamespace
@@ -307,7 +316,8 @@ def attach_rule_to_demo(ctx, demo: Demo, rule: Dict[str, Any]) -> None:
     entry = {
         "device_id": did, "rule_id": rid, "rule_name": rule.get("rule_name"),
         "condition_id": rule.get("condition_id"),
-        "condition_topic": rule.get("condition_topic"), "created_at": time.time(),
+        "condition_topic": rule.get("condition_topic"),
+        "source": rule.get("source") or "device", "created_at": time.time(),
     }
     # membership deduped on (device_id, rule_id)
     demo.rules = [r for r in (demo.rules or [])

@@ -354,6 +354,24 @@ async def _survey_demo_evidence(ctx, a):
     return await ctx.server._survey_demo_evidence(a.get("run_id"))
 
 
+async def _infer_demos(ctx, a):
+    return await ctx.server._infer_demos(
+        include_weak=bool(a.get("include_weak", True)),
+        include_acs=bool(a.get("include_acs", True)))
+
+
+async def _list_demo_proposals(ctx, a):
+    return ctx.server._list_demo_proposals(a.get("proposal"), a.get("status"))
+
+
+async def _confirm_demo_proposal(ctx, a):
+    return ctx.server._confirm_demo_proposal(a)
+
+
+async def _dismiss_demo_proposal(ctx, a):
+    return ctx.server._dismiss_demo_proposal(a["proposal"], a.get("reason") or "")
+
+
 async def _set_event_ingest(ctx, a):
     return await ctx.server._set_event_ingest(bool(a.get("enabled")))
 
@@ -434,6 +452,10 @@ TOOL_HANDLERS: Dict[str, ToolHandler] = {
     "deactivate_demo": _deactivate_demo,
     "demo_setup_status": _demo_setup_status,
     "survey_demo_evidence": _survey_demo_evidence,
+    "infer_demos": _infer_demos,
+    "list_demo_proposals": _list_demo_proposals,
+    "confirm_demo_proposal": _confirm_demo_proposal,
+    "dismiss_demo_proposal": _dismiss_demo_proposal,
     "set_event_ingest": _set_event_ingest,
     "prepare_demo": _prepare_demo,
     "end_demo": _end_demo,

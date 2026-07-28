@@ -18,21 +18,30 @@ logger = logging.getLogger(__name__)
 
 def _rules_status(ctx, demo) -> List[Dict[str, Any]]:
     """Each recorded rule + whether it's still observed on the device's last
-    audit (``action_rules`` facet). ``observed`` is None when we can't tell."""
+    audit (``action_rules`` facet). ``observed`` is None when we can't tell.
+
+    A membership entry with ``source != "device"`` (#124 slice 3 — an ACS action
+    rule an inferred demo links to) is **never** looked for on a device: it does
+    not live there. Checking anyway would read ``observed: false`` forever and
+    render as a permanent, false "your rule vanished", so those entries report
+    ``observed: None`` — unknown by construction, which is the truth.
+    """
     out: List[Dict[str, Any]] = []
     for r in demo.rules or []:
         did = r.get("device_id") or ""
         rid = str(r.get("rule_id") or "")
+        source = r.get("source") or "device"
         observed: Any = None
-        try:
-            info = ctx.registry.get_device_info(did) or {}
-            ref = info.get("latest_observed_sha") or info.get("baseline_sha")
-            doc = ctx.git_repo.read_facet(did, "action_rules", ref) if ref else None
-            if doc is not None:
-                observed = rid in str(doc)  # rule id present anywhere in the facet doc
-        except Exception:  # noqa: BLE001 — an unreadable facet leaves it "unknown"
-            observed = None
-        out.append({"device_id": did, "rule_id": rid,
+        if source == "device":
+            try:
+                info = ctx.registry.get_device_info(did) or {}
+                ref = info.get("latest_observed_sha") or info.get("baseline_sha")
+                doc = ctx.git_repo.read_facet(did, "action_rules", ref) if ref else None
+                if doc is not None:
+                    observed = rid in str(doc)  # id present anywhere in the facet
+            except Exception:  # noqa: BLE001 — an unreadable facet leaves it "unknown"
+                observed = None
+        out.append({"device_id": did, "rule_id": rid, "source": source,
                     "rule_name": r.get("rule_name"),
                     "condition_topic": r.get("condition_topic"), "observed": observed})
     return out

@@ -87,6 +87,12 @@ EXPECTED_TOOL_ORDER = [
     "end_demo",
     "demo_setup_status",
     "survey_demo_evidence",
+    # #124 slice 3 — the inference tools sit together, right after the evidence
+    # graph they consume.
+    "infer_demos",
+    "list_demo_proposals",
+    "confirm_demo_proposal",
+    "dismiss_demo_proposal",
     "set_event_ingest",
 ]
 

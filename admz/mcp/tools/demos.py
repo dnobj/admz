@@ -263,6 +263,119 @@ TOOLS: List[Tool] = [
         },
     ),
     Tool(
+        name="infer_demos",
+        description=(
+            "Read the whole site and PROPOSE the demo inventory (#124): builds "
+            "the evidence graph (registry + last snapshots + ACS action rules), "
+            "clusters it, and returns scored CANDIDATE demos — each with a "
+            "deterministic name, its member devices and roles, the rules that "
+            "link them (with firing observability), the exact evidence and "
+            "score breakdown behind it, and the config keys it probably owns. "
+            "Use for 'what demos already exist here?' or on a fresh install. "
+            "Read-only: no device is touched, no ACS write, and NOTHING becomes "
+            "a demo until confirm_demo_proposal. Present each proposal with its "
+            "evidence and confidence and let the user decide — a low-confidence "
+            "proposal is a question, not a finding. Degrades with a reason when "
+            "ACS is not connected."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "include_weak": {
+                    "type": "boolean",
+                    "description": (
+                        "Default true. Keep true on most sites: many fleets have "
+                        "NO cross-device rule topology at all, so every cluster "
+                        "rests on corroborating evidence (shared tag/app/name) "
+                        "and is flagged no_topology + capped at low confidence. "
+                        "Set false for topology-backed proposals only."),
+                },
+                "include_acs": {
+                    "type": "boolean",
+                    "description": "Default true. False skips the ACS read entirely.",
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="list_demo_proposals",
+        description=(
+            "READ-ONLY: the candidate demos a previous infer_demos run produced, "
+            "strongest first. Pass `proposal` (name or id) for ONE proposal's "
+            "full detail — every evidence item with its weight, the score "
+            "breakdown term by term, each linked rule with its observability, "
+            "the suggested owned config keys, and any overlap with another "
+            "proposal. Never runs inference itself."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "proposal": {
+                    "type": "string",
+                    "description": "One proposal's name or id — returns full detail.",
+                },
+                "status": {
+                    "type": "string",
+                    "description": ("proposed (default) | confirmed | dismissed | "
+                                    "superseded | all"),
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="confirm_demo_proposal",
+        description=(
+            "Turn a proposal into a REAL demo (ADR-0046): creates it with the "
+            "member devices, roles, rule membership and auto-derived signals. "
+            "Name, purpose, devices and roles are all overridable — correct them "
+            "here rather than accepting a guess. Writes NO config fragments: the "
+            "demo owns nothing yet, so it changes no drift verdict; the "
+            "suggested keys stay evidence until captured the normal way "
+            "(check_drift + assign_demo_fragment). Touches no device. ONLY call "
+            "after the user has seen the proposal's evidence and said yes."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "proposal": {"type": "string",
+                             "description": "The proposal's name or id."},
+                "name": {"type": "string",
+                         "description": "Override the proposed name."},
+                "purpose": {"type": "string",
+                            "description": ("The demo's narrative — what you say "
+                                            "while showing it.")},
+                "device_ids": {"type": "array", "items": {"type": "string"},
+                               "description": "Override the member device list."},
+                "roles": {"type": "object",
+                          "description": "Override {device_id: role}."},
+                "tag": {"type": "string",
+                        "description": ("Scope the demo by tag instead of the "
+                                        "explicit device list.")},
+            },
+            "required": ["proposal"],
+        },
+    ),
+    Tool(
+        name="dismiss_demo_proposal",
+        description=(
+            "Record that a proposal is NOT a demo. Remembered — re-running "
+            "inference will not propose those devices again. Nothing is deleted "
+            "and no device is touched."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "proposal": {"type": "string",
+                             "description": "The proposal's name or id."},
+                "reason": {"type": "string",
+                           "description": "Why — kept in the audit trail."},
+            },
+            "required": ["proposal"],
+        },
+    ),
+    Tool(
         name="set_event_ingest",
         description=(
             "Turn fleet event capture on or off (needed so a demo's signals are "

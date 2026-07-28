@@ -214,6 +214,9 @@ class TestDispatchWiring:
             "demo_setup_status", "set_event_ingest",
             # #124 slice 2 — the demo-inference evidence graph (read-only)
             "survey_demo_evidence",
+            # #124 slice 3 — clustering the graph into confirmable proposals
+            "infer_demos", "list_demo_proposals", "confirm_demo_proposal",
+            "dismiss_demo_proposal",
         }
         for n in names:
             assert n in TOOL_HANDLERS
