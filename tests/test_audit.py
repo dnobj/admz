@@ -179,13 +179,29 @@ class TestAuditEndpoint:
         monkeypatch.setattr(auth_mod, "_ACTIVE_BACKEND", None)
 
     def test_list_empty(self, tmp_path):
+        """No *actions* have been taken, so nothing attributable is logged.
+
+        GH #132: startup now writes one ``capability.active`` row per active
+        non-production-appropriate advanced capability, and ``conftest.py`` sets
+        two test-suppressors for the whole suite — so booting the app is itself
+        an auditable event. Those boot notices are exactly what the registry is
+        for; they are attributed to ``system`` and are filtered out here rather
+        than being allowed to weaken the real assertion, which is that no
+        operator-attributable row exists yet. (They are written once per
+        process, so this must hold whether or not this test booted first.)
+        """
         from fastapi.testclient import TestClient
         from admz.api.main import app
 
         with TestClient(app) as client:
             r = client.get("/api/audit")
             assert r.status_code == 200
-            assert r.json() == []
+            entries = r.json()
+            assert all(
+                e["action"] == "capability.active" and e["requester"] == "system"
+                for e in entries
+            ), entries
+            assert [e for e in entries if e["action"] != "capability.active"] == []
 
     @staticmethod
     def _install_admin():

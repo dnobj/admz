@@ -86,11 +86,52 @@ def _warn_anonymous_auth_backend() -> None:
     )
 
 
+def _log_active_capabilities() -> None:
+    """Say out loud which advanced capabilities this install is running with.
+
+    GH #132: a log excerpt should answer "what mode was this running in?".
+    Exactly one INFO line when nothing is active; one WARNING per active
+    capability that is not appropriate for production (the dev auto-approver,
+    the test suppressors, direct ACS rule writes). Also writes the
+    once-per-boot ``capability.active`` audit rows — an env-enabled capability
+    has no enable-time actor to attribute, so "it was on at boot" is the only
+    honest audit answer.
+
+    Diagnostics must never break startup, so everything is best-effort.
+    """
+    import logging
+
+    try:
+        from admz import capabilities
+
+        capabilities.log_startup_lines(logging.getLogger("admz.security"))
+        capabilities.record_boot_audit()
+    except Exception:  # noqa: BLE001 — never block startup on diagnostics
+        logging.getLogger(__name__).warning(
+            "advanced-capability startup logging failed", exc_info=True
+        )
+
+
+def _advanced_capability_ids() -> list:
+    """Ids of the active advanced capabilities, for ``/api/health``.
+
+    Ids only — never a value, never a setting name. Never raises: an
+    unreachable settings store must not turn a readiness probe into a 500.
+    """
+    try:
+        from admz import capabilities
+
+        return capabilities.active_ids()
+    except Exception:  # noqa: BLE001
+        return []
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize context + start scheduler on startup; clean up on shutdown."""
     global registry
     _warn_anonymous_auth_backend()
+    _log_active_capabilities()
     registry = create_device_registry()
     ctx = init_context(registry)
 
@@ -331,6 +372,7 @@ async def api_health_check():
                 "version": __version__,
                 "registry": "not_initialized",
                 "error": "Registry has not been initialized (lifespan not run)",
+                "advanced_capabilities": _advanced_capability_ids(),
             },
         )
     try:
@@ -346,6 +388,7 @@ async def api_health_check():
                 "version": __version__,
                 "registry": "error",
                 "error": f"{type(exc).__name__}: {exc}",
+                "advanced_capabilities": _advanced_capability_ids(),
             },
         )
     return {
@@ -353,4 +396,8 @@ async def api_health_check():
         "service": "admz-api",
         "version": __version__,
         "registry": "connected",
+        # GH #132: ids of the active advanced capabilities, so a curl or a
+        # support bundle answers "what mode was this running in?" without auth
+        # games. Ids only — never a value.
+        "advanced_capabilities": _advanced_capability_ids(),
     }
