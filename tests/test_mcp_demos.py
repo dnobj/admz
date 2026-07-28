@@ -212,6 +212,8 @@ class TestDispatchWiring:
             "deactivate_demo", "prepare_demo", "end_demo",
             # ADR-0050 Phase C
             "demo_setup_status", "set_event_ingest",
+            # #124 slice 2 — the demo-inference evidence graph (read-only)
+            "survey_demo_evidence",
         }
         for n in names:
             assert n in TOOL_HANDLERS

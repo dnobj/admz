@@ -46,6 +46,7 @@ from admz.events.evaluator import DetectionEvaluator
 from admz.events.watched import WatchedEventStore
 from admz.events.preview import PreviewManager
 from admz.demos.store import DemoStore
+from admz.demos.inference.runs import InferenceRunStore
 
 
 @dataclass
@@ -83,6 +84,10 @@ class Components:
     # ADR-0046: demos — the experience-center unit of work. A pure store; its
     # readiness is computed on read from the drift/health caches.
     demo_store: DemoStore
+    # #124 slice 2: demo-inference runs (the evidence graph + its provenance).
+    # A separate table on purpose — a run is evidence, never a demo, so nothing
+    # here is enumerated by list_demos or walked by drift attribution.
+    inference_run_store: InferenceRunStore
 
 
 def _default_catalog_path() -> str:
@@ -349,6 +354,7 @@ def build_components(
     # and scenarios, not the event log. Built before the drift detector so
     # drift can attribute differences to active demos' fragments (ADR-0047).
     demo_store = DemoStore()
+    inference_run_store = InferenceRunStore()
     drift_detector = DriftDetector(
         snapshot_engine=snapshot_engine,
         git_repo=git_repo,
@@ -440,4 +446,5 @@ def build_components(
         detection_store=detection_store,
         detection_evaluator=detection_evaluator,
         demo_store=demo_store,
+        inference_run_store=inference_run_store,
     )
