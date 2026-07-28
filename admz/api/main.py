@@ -95,7 +95,8 @@ def _log_active_capabilities() -> None:
     the test suppressors, direct ACS rule writes). Also writes the
     once-per-boot ``capability.active`` audit rows — an env-enabled capability
     has no enable-time actor to attribute, so "it was on at boot" is the only
-    honest audit answer.
+    honest audit answer. Test-suppressors warn but write no row; see
+    ``capabilities._boot_auditable``.
 
     Diagnostics must never break startup, so everything is best-effort.
     """

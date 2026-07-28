@@ -531,14 +531,41 @@ def log_startup_lines(log: Optional[logging.Logger] = None) -> None:
 _BOOT_AUDIT_DONE = False
 
 
+def _boot_auditable(cap: Capability) -> bool:
+    """Whether ``cap`` being active at boot is worth a persistent audit row.
+
+    Loud capabilities are, with one deliberate exception: ``test-suppressor``.
+
+    A suppressor being active is a **test-harness artifact**, not a power an
+    operator granted the installation — it is set by ``tests/conftest.py``
+    before any app exists, and the audit trail exists to record what powers an
+    install is running with, not that a unit-test process booted. The three
+    other loudness channels (the startup WARNING, ``/api/health``, and slice 2's
+    red chip) still cover suppressors in full, so nothing an operator needs is
+    lost; only the persistent row is dropped.
+
+    This also removes a real hazard rather than a cosmetic one. Every store in
+    ADMZ binds its DB path at import, so a test that does not isolate
+    ``ADMZ_HOME`` writes to the operator's real database — the project's
+    standing test-isolation lesson. A boot-time writer that fires under the two
+    suite-wide suppressors would have polluted the real audit log on every
+    pytest run. With suppressors excluded, no test in the suite can reach it.
+
+    Expressed as an *exclusion* rather than an allow-list on purpose: a danger
+    class added later is audited by default, which is the right failure
+    direction for an audit trail.
+    """
+    return not cap.production_appropriate and cap.danger != "test-suppressor"
+
+
 def record_boot_audit() -> None:
     """Write the once-per-boot ``capability.active`` audit rows.
 
     An env-enabled capability **cannot** be audited at enable-time: there is no
     event and no actor. Saying that plainly matters — the audit answer for an
     env capability is "it was on at boot", not "alice turned it on". So each
-    non-production-appropriate active capability gets one row attributed to
-    ``system`` at startup. (Slice 2 adds the attributed
+    active capability that passes :func:`_boot_auditable` gets one row
+    attributed to ``system`` at startup. (Slice 2 adds the attributed
     ``capability.enable``/``capability.disable`` rows for settings toggles.)
 
     Called by the API lifespan only. The MCP pool spawns one subprocess per
@@ -552,7 +579,7 @@ def record_boot_audit() -> None:
         return
     _BOOT_AUDIT_DONE = True
 
-    loud = [a for a in active_capabilities() if not a.capability.production_appropriate]
+    loud = [a for a in active_capabilities() if _boot_auditable(a.capability)]
     if not loud:
         return
     try:

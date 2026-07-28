@@ -458,6 +458,70 @@ class TestBootAudit:
         rows = AuditLog(db_path=str(tmp_path / "admz.db")).list_recent(limit=50)
         assert [r for r in rows if r.action == "capability.active"] == []
 
+    def test_test_suppressors_alone_write_nothing(
+        self, clean_env, isolated_settings, tmp_path, monkeypatch
+    ):
+        """A boot with **only** test-suppressors active writes zero rows.
+
+        This is the state every pytest process is in — ``conftest.py`` sets both
+        suppressors before any app exists. A suppressor is a test-harness
+        artifact, not a power an operator granted, and every store binds its DB
+        path at import: a writer that fired here would pollute the operator's
+        real audit log from any test that forgets to isolate ADMZ_HOME.
+        """
+        monkeypatch.setattr(capabilities, "_BOOT_AUDIT_DONE", False)
+        clean_env.setenv("ADMZ_DISABLE_ONBOARDING_PROBES", "1")
+        clean_env.setenv("ADMZ_DISABLE_GITHUB_APP_PUSH", "1")
+
+        # They are active, and loud enough to warn about...
+        assert capabilities.active_ids() == [
+            "test.no_onboarding_probes", "test.no_github_push",
+        ]
+        assert any(
+            lvl == logging.WARNING for lvl, _ in capabilities.startup_lines()
+        )
+
+        capabilities.record_boot_audit()
+
+        # ...but they leave no persistent trace.
+        from admz.audit import AuditLog
+
+        rows = AuditLog(db_path=str(tmp_path / "admz.db")).list_recent(limit=50)
+        assert rows == []
+
+    def test_a_real_capability_still_writes_alongside_a_suppressor(
+        self, clean_env, isolated_settings, tmp_path, monkeypatch
+    ):
+        """The exclusion is per-capability, not all-or-nothing: a suppressor
+        must never mask a dev-only or dangerous capability's row."""
+        monkeypatch.setattr(capabilities, "_BOOT_AUDIT_DONE", False)
+        clean_env.setenv("ADMZ_DISABLE_ONBOARDING_PROBES", "1")
+        clean_env.setenv("ADMZ_DEV_AUTO_APPROVE", "1")
+        clean_env.setenv("ADMZ_ACS_RULE_WRITE", "1")
+
+        capabilities.record_boot_audit()
+
+        from admz.audit import AuditLog
+
+        rows = AuditLog(db_path=str(tmp_path / "admz.db")).list_recent(limit=50)
+        assert sorted(r.resource for r in rows) == [
+            "capability:acs.rule_write",
+            "capability:dev.auto_approve",
+        ]
+
+    def test_boot_auditable_covers_every_declared_class(self):
+        """Pin the predicate against the whole table, so adding a capability
+        makes the audit decision explicit rather than incidental."""
+        expected = {
+            "dev-only": True,
+            "dangerous": True,
+            "test-suppressor": False,
+            "privileged": False,
+            "internal": False,
+        }
+        for cap in CAPABILITIES:
+            assert capabilities._boot_auditable(cap) is expected[cap.danger], cap.id
+
 
 # ---------------------------------------------------------------------------
 # Test 6 — /api/health
