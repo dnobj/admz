@@ -1,8 +1,13 @@
 # Plan: advanced capability switches — one registry for hidden, dangerous, and privileged-install features
 
 Status: **planned, not implemented** — GH [#132](https://github.com/dnobj/admz/issues/132).
-Five decisions need the owner before slice 2 lands — see
-[Open decisions](#open-decisions-for-the-owner). Everything else is settled here.
+The five open decisions are **RESOLVED** (Master, 2026-07-28) — see
+[Master resolutions](#master-resolutions) at the end, which supersede the
+recommendations in the Open-decisions section. In short: the registry
+**declares, it does not enforce**; `/settings/advanced` is read-only under
+`ADMZ_AUTH_BACKEND=none`; `ADMZ_MCP_NO_SCHEDULER` is class `internal`; this
+ADR takes **0052** (0051 goes to demo-inference, which is further along); and
+`ADMZ_AUTH_BACKEND` appears as read-only context, not a registry row.
 
 ## Goal
 
@@ -602,3 +607,55 @@ It is not a capability (see the inventory) and already warns at startup, but an
 operator reading "what mode is this in?" arguably wants it in the same view.
 **Recommendation: show it on the page as a read-only context line, not as a registry
 entry** — no chip, no `/api/health` entry, no toggle.
+
+---
+
+## Master resolutions
+
+Settled by the Master session 2026-07-28 under the owner's standing instruction to
+proceed without per-decision approval. These supersede the recommendations above.
+
+**1. Declare, do not enforce (dev auto-approval).** The registry records that
+`dev.auto_approve` is active and makes that fact loud; it does **not** make the
+server verify who is approving. Rationale: the issue's non-goals say plainly this
+is *not a security boundary* — anyone who can set environment variables already
+owns the machine. Enforcement would require the approving tool to identify itself,
+which is an authentication mechanism wearing a registry's clothes, and it would
+buy nothing against the only threat model that matters here (accidents, not
+attackers). The door stays open: if a future deployment genuinely needs the server
+to refuse robot approvals, that is its own issue with its own design, not a
+quietly-added parameter here.
+
+*Consequence to state honestly in the docs:* on an install running
+`ADMZ_DEV_AUTO_APPROVE`, a `url_only` gate is still a real gate — it just may be
+satisfied by a script rather than a human. The registry's job is to make sure
+nobody is surprised by that.
+
+**2. `/settings/advanced` under `ADMZ_AUTH_BACKEND=none` → read-only.** The page's
+diagnostic value ("what powers is this box running with?") is highest precisely on
+an unauthenticated dev box, and a hard 403 would hide it exactly where it helps
+most. Toggling still requires the reveal permission, which an anonymous backend
+cannot satisfy — so the page informs and refuses to act.
+
+**3. `ADMZ_MCP_NO_SCHEDULER` → class `internal`.** It is a runtime role marker ADMZ
+sets for its own subprocesses (`mcp_pool.py:116`, `voice.py:223`), not an operator
+choice. Visible in diagnostics so a confusing "why didn't the scheduler run"
+question is answerable; never chipped, never toggleable.
+
+**4. ADR number → 0052.** `docs/plans/demo-inference.md` also claimed 0051 and is
+several slices ahead, so it keeps it. Update this plan's slice-3 reference
+accordingly.
+
+**5. `ADMZ_AUTH_BACKEND` → read-only context, not a registry row.** It already
+warns at startup (`_warn_anonymous_auth_backend`), and registering it would leave
+every development box permanently chipped — which trains operators to ignore the
+chip, defeating its purpose. Showing it as context on the advanced page gives the
+information without the alarm fatigue.
+
+### Also adopted from the plan's findings
+
+**Unify truthiness parsing on `{"1","true","yes","on"}`.** `onboarding.py:65` uses
+bare `if os.getenv(...)`, so `ADMZ_DISABLE_ONBOARDING_PROBES=0` currently means
+**enabled** — a genuine latent footgun found during planning. This is the one
+intentional behaviour change; it ships with its own test, and `conftest.py:25`
+already sets `"1"` so the suite is unaffected.
