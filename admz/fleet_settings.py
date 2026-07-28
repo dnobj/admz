@@ -79,6 +79,14 @@ PROTECTED_SETTING_KEYS = {
     "survey_validation_tier",
     "survey_schedule_seconds",
     "survey_contributor",
+    # Advanced capability switches (GH #132, admz/capabilities.py). Each of
+    # these gates a background loop that contacts devices or reads an
+    # unsupported database; letting the LLM flip one through set_fleet_setting
+    # would be a sneak path around the safety model. Same reasoning as
+    # health_monitor_enabled above. survey_mode_enabled is already listed.
+    "event_ingest_enabled",
+    "acs_event_ingest_enabled",
+    "acs_firebird_enabled",
     # GitHub App config-repo backup (ADR-0045). The private key + client
     # secret are Fernet-encrypted; the whole set is written only by the
     # authenticated Settings "Connect GitHub" flow, never by MCP/anonymous.

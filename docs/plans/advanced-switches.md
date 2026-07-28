@@ -1,6 +1,10 @@
 # Plan: advanced capability switches — one registry for hidden, dangerous, and privileged-install features
 
-Status: **planned, not implemented** — GH [#132](https://github.com/dnobj/admz/issues/132).
+Status: **slice 1 shipped** (PR [#134](https://github.com/dnobj/admz/pull/134));
+slices 2 and 3 planned — GH [#132](https://github.com/dnobj/admz/issues/132).
+Blocks marked *"as shipped"* / *"Correction from slice 1"* record where the
+implementation departed from what is written around them; **they win**, and slice 2
+should be built against them rather than the surrounding prose.
 The five open decisions are **RESOLVED** (Master, 2026-07-28) — see
 [Master resolutions](#master-resolutions) at the end, which supersede the
 recommendations in the Open-decisions section. In short: the registry
@@ -204,15 +208,24 @@ truth.
 
 ```python
 def get(cap_id) -> Optional[Capability]
-def is_enabled(cap_id) -> bool                  # THE read path — env, then setting
-def source_of(cap_id) -> str                    # "" | "env" | "setting"
-def active() -> List[ActiveCapability]          # id + capability + source
-def set_enabled(cap_id, on, principal, *, reason) -> None   # setting-enablable only
-def startup_lines() -> List[Tuple[int, str]]    # (loglevel, message) — no logging here
-def truthy(raw) -> bool                         # ONE parse: {"1","true","yes","on"}
+def is_active(cap_id) -> bool                                # THE read path — env, then setting
+def source_of(cap_id) -> str                                 # "" | "env" | "setting"
+def active_capabilities() -> List[ActiveCapability]          # id + capability + source
+def active_ids() -> List[str]                                # what /api/health reports
+def set_enabled(cap_id, on, principal, *, reason) -> None    # setting-enablable only (slice 2)
+def startup_lines() -> List[Tuple[int, str]]                 # (loglevel, message) — no logging here
+def truthy(raw) -> bool                                      # ONE parse: {"1","true","yes","on"}
 ```
 
-`is_enabled` reads **env first, then setting** — matching `events/config.py:59-64`
+> **Naming, as shipped (slice 1).** The read predicates are `is_active` /
+> `active_capabilities`, not `is_enabled` / `active`. `is_enabled` is already the
+> name of three *existing* module-level predicates that stay
+> (`secrets.is_enabled`, and by analogy `config.event_ingest_enabled`,
+> `firebird.firebird_enabled`), so reusing it for the registry would have made
+> `capabilities.is_enabled` and `secrets.is_enabled` two different things one
+> import apart. There are deliberately **no aliases** — one name per concept.
+
+`is_active` reads **env first, then setting** — matching `events/config.py:59-64`
 exactly (env wins; a setting cannot turn off an env-forced capability). Unknown ids
 return `False` and log once. Every settings read is wrapped in `try/except` and
 degrades to env-only: config must never break a request, the house rule visible at
@@ -264,6 +277,26 @@ Survey mode gains an env alias (`ADMZ_SURVEY_MODE`) it never had, so a locked-do
 privileged install can force it on without a writable settings row. Purely additive;
 the setting stays authoritative when the env var is unset.
 
+> **Correction from slice 1, as shipped.** `survey.contributor` is declared
+> `enable_via=("setting",)` — **not** `("env","setting")` — until slice 2. The env
+> alias above does not exist yet, and slice 1 changes no call site, so declaring
+> `ADMZ_SURVEY_MODE` would have made the registry *lie*: setting it would light the
+> capability in `/api/health`, the startup log, and the chip while
+> `survey/secrets.py` carried on reading only the setting and survey mode stayed
+> off. A registry whose first release reports a switch that does nothing is worth
+> less than no registry. **Slice 2 adds `ADMZ_SURVEY_MODE` and flips the row to
+> `("env","setting")` in the same commit as the call-site delegation**, which is
+> the first moment the declaration becomes true.
+>
+> Consequence for the invariant test (test 12): the privileged half of the
+> asymmetry rule is asserted as **`"setting" in enable_via`**, not
+> `enable_via == ("env","setting")`. That is the operative property anyway —
+> privileged capabilities must stay *runtime-toggleable* so a misbehaving
+> background loop can be stopped without a service restart. The strict half
+> (`dev-only` / `dangerous` / `test-suppressor` / `internal` ⟹ `("env",)`) is
+> asserted exactly, because that is the half that keeps the dangerous switches
+> out of a browser.
+
 ### 3. Hiding — three layers, and a name for what each buys
 
 1. **No link, no nav, ever.** `/settings/advanced` is not referenced from
@@ -309,11 +342,23 @@ separate port (deployment complexity for no gain).
    `capability.active` row with `requester="system"` instead, written from the same
    startup hook. Saying this plainly matters: the audit answer for an env capability is
    "it was on at boot", not "alice turned it on".
+   **Correction from slice 1, as shipped: `test-suppressor` capabilities get no boot
+   row** (`capabilities._boot_auditable`). A suppressor being active is a test-harness
+   artifact — `tests/conftest.py:25,32` sets both before any app exists — not a power
+   an operator granted, and the audit trail exists to record the latter. The other
+   three loudness channels (startup WARNING, `/api/health`, the chip) still cover
+   suppressors in full, so no operator-facing signal is lost. It also removes a real
+   hazard: every store binds its DB path at import, so a boot-time writer firing under
+   the two suite-wide suppressors would have written into the operator's real audit
+   database from any test that forgets to isolate `ADMZ_HOME` — the project's standing
+   test-isolation lesson. The predicate is an *exclusion* (`not
+   production_appropriate and danger != "test-suppressor"`), not an allow-list, so a
+   danger class added later is audited by default.
 3. **Persistent console indicator.** A chip in the topbar of `base.html`
    (`:19-86`, beside the theme/notifications buttons), rendered from a new
    `nav.advanced` key populated in the `templating.py` nav builder. Red for
    `dev-only`/`dangerous`/`test-suppressor`, amber for `privileged`, absent when
-   `active()` is empty (so a normal install sees nothing, ever). Because it lives in
+   `active_capabilities()` is empty (so a normal install sees nothing, ever). Because it lives in
    `base.html` it appears on every page **and** behind the console dock. Clicking it
    goes to `/settings/advanced` — which is how the page gets legitimately discovered
    once something is already on.
@@ -334,13 +379,13 @@ separate port (deployment complexity for no gain).
 | Today | Registered as | Class | `enable_via` | Call-site change |
 |---|---|---|---|---|
 | `ADMZ_DEV_AUTO_APPROVE` | `dev.auto_approve` | dev-only | `("env",)` | none in slice 1–2; `tools/dev_auto_approve.py` keeps its own guard (`:65,79`) |
-| `ADMZ_DISABLE_ONBOARDING_PROBES` | `test.no_onboarding_probes` | test-suppressor | `("env",)` | `onboarding.py:65` → `capabilities.is_enabled(...)` |
-| `ADMZ_DISABLE_GITHUB_APP_PUSH` | `test.no_github_push` | test-suppressor | `("env",)` | `github_app/push.py:28` → `is_enabled(...)` |
-| `ADMZ_MCP_NO_SCHEDULER` | `runtime.no_scheduler` | internal | `("env",)` | `mcp/server.py:4522` → `is_enabled(...)`; setters unchanged ([Open decision 3](#open-decisions-for-the-owner)) |
-| `ADMZ_ACS_FIREBIRD` / `acs_firebird_enabled` | `acs.firebird_read` | privileged | `("env","setting")` | `firebird.py:57-60` body → `is_enabled(...)` |
-| `ADMZ_EVENT_INGEST` / `event_ingest_enabled` | `events.device_ingest` | privileged | `("env","setting")` | `events/config.py:72-79` body → `is_enabled(...)` |
-| `ADMZ_ACS_EVENT_INGEST` / `acs_event_ingest_enabled` | `events.acs_poll` | privileged | `("env","setting")` | `events/config.py:56-64` body → `is_enabled(...)` |
-| `survey_mode_enabled` | `survey.contributor` | privileged | `("env","setting")` | `survey/secrets.py:87-88` body → `is_enabled(...)`; `KEY_ENABLED` re-exported |
+| `ADMZ_DISABLE_ONBOARDING_PROBES` | `test.no_onboarding_probes` | test-suppressor | `("env",)` | `onboarding.py:65` → `capabilities.is_active(...)` |
+| `ADMZ_DISABLE_GITHUB_APP_PUSH` | `test.no_github_push` | test-suppressor | `("env",)` | `github_app/push.py:28` → `is_active(...)` |
+| `ADMZ_MCP_NO_SCHEDULER` | `runtime.no_scheduler` | internal | `("env",)` | `mcp/server.py:4522` → `is_active(...)`; setters unchanged ([Open decision 3](#open-decisions-for-the-owner)) |
+| `ADMZ_ACS_FIREBIRD` / `acs_firebird_enabled` | `acs.firebird_read` | privileged | `("env","setting")` | `firebird.py:57-60` body → `is_active(...)` |
+| `ADMZ_EVENT_INGEST` / `event_ingest_enabled` | `events.device_ingest` | privileged | `("env","setting")` | `events/config.py:72-79` body → `is_active(...)` |
+| `ADMZ_ACS_EVENT_INGEST` / `acs_event_ingest_enabled` | `events.acs_poll` | privileged | `("env","setting")` | `events/config.py:56-64` body → `is_active(...)` |
+| `survey_mode_enabled` | `survey.contributor` | privileged | `("setting",)` in slice 1 → `("env","setting")` in slice 2 (see the correction above) | `survey/secrets.py:87-88` body → `is_active(...)`; `KEY_ENABLED` re-exported |
 | *(#131)* | `acs.rule_write` | **dangerous** | `("env",)` | declared here, built there |
 
 **Backward compatibility is the load-bearing requirement**, and it is achieved by
@@ -399,11 +444,11 @@ the device tools stay a prefix. That is why the tool lands in slice 3, not slice
 
 | Path | Contents |
 |---|---|
-| `admz/capabilities.py` | `Capability`, `CAPABILITIES`, `ORDINARY_CONFIG`, `truthy`, `is_enabled`, `source_of`, `active`, `set_enabled`, `startup_lines`. Stdlib-only imports |
+| `admz/capabilities.py` | `Capability`, `CAPABILITIES`, `ORDINARY_CONFIG`, `truthy`, `is_active`, `source_of`, `active_capabilities`, `set_enabled`, `startup_lines`. Stdlib-only imports |
 | `admz/api/routes/capabilities.py` | `GET /api/capabilities`, `POST /api/capabilities/{id}` |
 | `admz/api/templates/advanced_settings.html` | The hidden page: one row per capability — id, description, danger badge, enabled/source, and a typed-ack toggle for settings-enablable ones only |
 | `admz/mcp/tools/capabilities.py` | `TOOLS` = `[get_advanced_capabilities]` (slice 3) |
-| `tests/test_capabilities.py`, `tests/test_capabilities_migration.py`, `tests/test_advanced_settings_page.py` | See test plan |
+| `tests/test_advanced_capabilities.py`, `tests/test_capabilities_migration.py`, `tests/test_advanced_settings_page.py` | See test plan. **Not** `tests/test_capabilities.py` — that name is already taken by the atlas *device*-capabilities suite (`axis_api_atlas.capabilities`), an entirely different concept |
 | `docs/specification/decisions/00NN-advanced-capability-switches.md` | New ADR (number: see [Open decision 4](#open-decisions-for-the-owner)) |
 
 ### Changed
@@ -414,16 +459,16 @@ the device tools stay a prefix. That is why the tool lands in slice 3, not slice
 | `admz/api/main.py:322-354` | `/api/health` gains `advanced_capabilities` (ids only) |
 | `admz/api/main.py` (router block) | Include the capabilities router |
 | `admz/mcp/server.py` (startup) | Emit the same startup lines to stderr |
-| `admz/mcp/server.py:4522` | `ADMZ_MCP_NO_SCHEDULER` read → `capabilities.is_enabled("runtime.no_scheduler")` |
+| `admz/mcp/server.py:4522` | `ADMZ_MCP_NO_SCHEDULER` read → `capabilities.is_active("runtime.no_scheduler")` |
 | `admz/__main__.py:403` | Print active capabilities under the "Starting ADMZ API server" banner |
-| `admz/onboarding.py:65` | → `capabilities.is_enabled("test.no_onboarding_probes")` (`_DISABLE_ENV` kept as a doc constant) |
-| `admz/github_app/push.py:28` | → `capabilities.is_enabled("test.no_github_push")` |
+| `admz/onboarding.py:65` | → `capabilities.is_active("test.no_onboarding_probes")` (`_DISABLE_ENV` kept as a doc constant) |
+| `admz/github_app/push.py:28` | → `capabilities.is_active("test.no_github_push")` |
 | `admz/events/config.py:56-64, 72-79` | Bodies delegate; `event_ingest_enabled` / `acs_event_ingest_enabled` names and signatures unchanged |
 | `admz/modules/acs_pro/firebird.py:57-60` | Body delegates; `firebird_enabled` unchanged |
-| `admz/survey/secrets.py:87-88` | `is_enabled` delegates; `KEY_ENABLED` unchanged |
+| `admz/survey/secrets.py:87-88` | `is_enabled` delegates to `capabilities.is_active("survey.contributor")`; its own name + `KEY_ENABLED` unchanged. Same commit adds the `ADMZ_SURVEY_MODE` env alias and flips the row to `("env","setting")` |
 | `admz/fleet_settings.py:51-91` | Add the capability setting keys to `PROTECTED_SETTING_KEYS` (they are already there for survey; add the three event/firebird keys) |
 | `admz/api/routes/web.py:596` | `/settings` context unchanged — **no** link added (deliberate) |
-| `admz/api/templating.py` (nav builder) | Populate `nav.advanced` from `capabilities.active()`, inside a `try/except` like the module-nav block at `:324-344` |
+| `admz/api/templating.py` (nav builder) | Populate `nav.advanced` from `capabilities.active_capabilities()`, inside a `try/except` like the module-nav block at `:324-344` |
 | `admz/api/templates/base.html:19-86` | The topbar chip |
 | `admz/chatbot` prompt builder | One-line fragment when a non-production-appropriate capability is active |
 | `admz/mcp/tools/__init__.py:35-60` | Register `capabilities.TOOLS` (slice 3) |
@@ -441,7 +486,7 @@ capability tests pass an explicit `db_path` or monkeypatch the env before touchi
 
 ### Success cases
 
-1. `is_enabled` is True iff the env var is set, for each env-only capability
+1. `is_active` is True iff the env var is set, for each env-only capability
    (monkeypatch on and off).
 2. **Legacy parity — one test per migrated flag.** With only the *old* env var set, the
    *real* call site still behaves as before: onboarding probes skipped
@@ -450,10 +495,10 @@ capability tests pass an explicit `db_path` or monkeypatch the env before touchi
    This is the backward-compatibility guarantee; it must be a test, not a promise.
 2b. `ADMZ_DISABLE_ONBOARDING_PROBES=0` now means **off** — the one recorded behaviour
    change.
-3. `active()` is `[]` on a clean env; returns exactly the enabled set otherwise.
+3. `active_capabilities()` is `[]` on a clean env; returns exactly the enabled set otherwise.
 4. **Env beats setting**: setting `false` + env set → enabled, `source == "env"`
    (matches `events/config.py:59` semantics).
-5. Setting-only path: with no env var, writing the setting flips `is_enabled`;
+5. Setting-only path: with no env var, writing the setting flips `is_active`;
    `source == "setting"`.
 6. `/api/health` lists ids and never leaks a value or a setting name.
 7. `set_enabled` writes exactly one `capability.enable` audit row carrying principal,
@@ -463,21 +508,33 @@ capability tests pass an explicit `db_path` or monkeypatch the env before touchi
 9. `/settings/advanced` returns 200 for a reveal-group principal; the rendered
    `/settings` page contains no `/settings/advanced` string; `nav.sections` contains no
    advanced entry.
-10. The topbar chip renders iff `active()` is non-empty, with the right severity class.
+10. The topbar chip renders iff `active_capabilities()` is non-empty, with the right severity class.
 11. MCP exposes `get_advanced_capabilities` and **no** tool matching `set_.*capabilit`;
     `EXPECTED_TOOL_ORDER` matches the live list.
 12. **Table invariants**: ids unique and dotted; `danger` in the allowed set;
     description non-empty; `"setting" in enable_via` ⟺ `setting_key` non-empty **and**
     present in `PROTECTED_SETTING_KEYS`; `dev-only`/`dangerous` ⟹ `enable_via ==
-    ("env",)` and `production_appropriate is False`.
+    ("env",)` and `production_appropriate is False`. *As shipped:* the strict
+    `enable_via == ("env",)` half is asserted for `dev-only`, `dangerous`,
+    `test-suppressor`, **and** `internal`; the privileged half is asserted as
+    `"setting" in enable_via` (see the `survey.contributor` correction above).
+    `production_appropriate` is pinned to the danger class in both directions —
+    kept as an explicit field rather than a derived property so that adding a
+    class is a decision, not a silent reclassification.
 12b. **Drift guard**: every `ADMZ_*` env read found by scanning `admz/` + `tools/` is
-    either declared in `CAPABILITIES` or listed in `ORDINARY_CONFIG`.
+    either declared in `CAPABILITIES` or listed in `ORDINARY_CONFIG`. *As shipped:*
+    plus a third bucket, `NOT_ENV_VARS`, for the three `ADMZ_*` identifiers that are
+    not env vars at all (an import alias, a module constant, a docstring prefix), so
+    "unclassified" stays distinguishable from "not applicable"; and `admz/capabilities.py`
+    itself is excluded from the scan — it *is* the classification, so naming a planned
+    env var in a docstring would otherwise fail the guard. A companion assertion proves
+    no literal `ADMZ_*` env read can hide in the excluded file.
 
 ### Failure cases
 
-13. Unknown capability id → `is_enabled` returns `False`, logs once, never raises.
+13. Unknown capability id → `is_active` returns `False`, logs once, never raises.
 14. Garbage setting value (`"maybe"`, `""`, `"0"`) → off.
-15. `fleet_settings` raising (patched to throw) → `is_enabled` still answers from env
+15. `fleet_settings` raising (patched to throw) → `is_active` still answers from env
     and does not propagate; a page that renders the chip still renders.
 16. MCP `set_fleet_setting` refuses each capability setting key (protected-keys path).
 17. Anonymous principal: `POST /api/capabilities/{id}` → 403; `GET` of the advanced
@@ -506,17 +563,34 @@ capability tests pass an explicit `db_path` or monkeypatch the env before touchi
 
 ## PR slicing
 
-**Slice 1 — the registry + read-only surfaces.** *(small, zero behavioural risk,
-independently useful — merges alone)*
-`admz/capabilities.py` with the full declaration table, `is_enabled`/`active`/
+**Slice 1 — the registry + read-only surfaces.** ✅ **SHIPPED** (PR
+[#134](https://github.com/dnobj/admz/pull/134)) *(small, zero behavioural risk,
+independently useful — merged alone)*
+`admz/capabilities.py` with the full declaration table, `is_active`/`active_capabilities`/
 `startup_lines`/`truthy`, the startup logging in `api/main.py` + `mcp/server.py` +
-`__main__.py`, the `/api/health` id list, and tests 1, 3, 4, 8, 12, 12b, 13, 14, 15.
+`__main__.py`, the `/api/health` id list, and tests 1, 3, 4, 8, 12, 12b, 13, 14, 15 in
+`tests/test_advanced_capabilities.py`.
 **No call site is changed** — the registry *declares* the flags while the existing code
 still reads them, so nothing can regress. This alone answers the issue's core question
 and gives #131 something to register against.
 
+Three deviations from this plan landed with it, each recorded inline above:
+the read predicates are `is_active` / `active_capabilities`; `survey.contributor`
+is `("setting",)` until slice 2 adds `ADMZ_SURVEY_MODE`; and `test-suppressor`
+capabilities warn but write no boot audit row. One addition beyond the plan:
+the three event/firebird setting keys joined `PROTECTED_SETTING_KEYS` in slice 1
+rather than slice 2, because invariant test 12 cannot pass without them.
+
+**Left for slice 2, still true as written below:** every call site still reads its
+own env var with its own truthiness parse, so `truthy()` is *available* but not yet
+*adopted* — `ADMZ_DISABLE_ONBOARDING_PROBES=0` still means **on** at
+`onboarding.py:65`, and `ADMZ_EVENT_INGEST=true` still means **off** at
+`events/config.py:74`. For the values anyone actually uses (`1` / unset) the
+registry and the call sites agree; the divergence is exotic-values-only and
+disappears with the delegation.
+
 **Slice 2 — call-site migration, audit, and the hidden surface.**
-The nine call sites delegate to `is_enabled`; `set_enabled` + the audit rows;
+The nine call sites delegate to `is_active`; `set_enabled` + the audit rows;
 `PROTECTED_SETTING_KEYS` additions; `GET /api/capabilities` + `POST
 /api/capabilities/{id}`; `/settings/advanced` behind `require_reveal_permission`; the
 topbar chip. Tests 2, 2b, 5, 6, 7, 9, 10, 16, 17, 18, 19. The bulk of the work and all

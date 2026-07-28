@@ -403,6 +403,18 @@ def run_api_server(args):
     print(f"Starting ADMZ API server on {args.host}:{args.port}")
     print(f"API documentation: http://{args.host}:{args.port}/docs")
 
+    # GH #132: name the non-default powers this install is running with, right
+    # under the banner. stderr so it survives a piped stdout. Silent on a
+    # normal install — nothing active means nothing printed.
+    try:
+        from admz import capabilities
+
+        if capabilities.active_capabilities():
+            for _level, _message in capabilities.startup_lines():
+                print(_message, file=sys.stderr)
+    except Exception:  # noqa: BLE001 — a banner must never stop the server
+        pass
+
     uvicorn.run(
         "admz.api.main:app",
         host=args.host,

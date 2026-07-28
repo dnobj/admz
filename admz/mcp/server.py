@@ -4541,8 +4541,27 @@ class ADMZMCPServer:
                 await self.scheduler.stop()
 
 
+def _log_active_capabilities() -> None:
+    """Emit the advanced-capability boot lines (GH #132).
+
+    The MCP server is a *separate process* with its own environment — a pool
+    subprocess can be running with capabilities the uvicorn process is not — so
+    it says so itself. Logging goes to stderr here (stdout is the protocol).
+
+    Deliberately no audit rows: the pool spawns a subprocess per principal, and
+    the API lifespan already writes the once-per-boot rows.
+    """
+    try:
+        from admz import capabilities
+
+        capabilities.log_startup_lines(logging.getLogger("admz.security"))
+    except Exception:  # noqa: BLE001 — never block startup on diagnostics
+        logger.debug("advanced-capability startup logging failed", exc_info=True)
+
+
 async def main():
     """Main entry point for MCP server."""
+    _log_active_capabilities()
     try:
         server = ADMZMCPServer()
         await server.run()
