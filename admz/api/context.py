@@ -115,6 +115,11 @@ class AppContext:
         # #124 slice 2: demo-inference runs (evidence graph + provenance).
         return self._components.inference_run_store
 
+    @property
+    def proposal_store(self):
+        # #124 slice 3: the candidate demos a run clustered into. Never `demos`.
+        return self._components.proposal_store
+
 
 _ctx: Optional[AppContext] = None
 

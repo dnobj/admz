@@ -66,7 +66,7 @@ class FragmentEntry(BaseModel):
 
 
 class InferenceRunRequest(BaseModel):
-    """Start a demo-inference run (#124 slice 2 — evidence only, no proposals)."""
+    """Start a demo-inference run (#124) — collect, cluster and propose."""
 
     # "fast": registry + last snapshots + one live ACS read (seconds, works with
     # the fleet offline). "survey": discover → onboard → snapshot → infer, run
@@ -78,6 +78,28 @@ class InferenceRunRequest(BaseModel):
     register_new: bool = True
     subnet: Optional[str] = None
     timeout: float = 5.0
+    # Defaults TRUE on purpose. On the reference fleet every ACS rule triggers
+    # and acts on the SAME device, so there is no cross-device rule topology at
+    # all and every cluster is corroborating-evidence-only; defaulting this
+    # False would return an empty inventory on a site that demonstrably has
+    # demos. Weak clusters are surfaced flagged `no_topology` and capped at
+    # `low` confidence instead of being hidden — see cluster.py's module
+    # docstring. Pass false for topology-backed proposals only.
+    include_weak: bool = True
+
+
+class ProposalConfirmRequest(BaseModel):
+    """Everything a proposal guessed is overridable at the moment of confirming."""
+
+    name: Optional[str] = None
+    purpose: Optional[str] = None
+    device_ids: Optional[List[str]] = None
+    roles: Optional[Dict[str, str]] = None
+    tag: Optional[str] = None
+
+
+class ProposalDismissRequest(BaseModel):
+    reason: str = ""
 
 
 class FragmentRemoveRequest(BaseModel):
@@ -114,6 +136,76 @@ async def list_demos(ctx: AppContext = Depends(get_context)):
         "demos": service.demo_views(
             ctx.demo_store.list(), ctx.registry, ctx.event_store),
     }
+
+
+# ── Proposals (#124 slice 3) ─────────────────────────────────────────────────
+#
+# Read/dismiss are inert. CONFIRM creates a demo and attaches rule membership —
+# still inert by the ADR-0046 bar (metadata; `active` stays False, so drift
+# attribution sees nothing new) because, per resolved DECISION b, it writes NO
+# fragments. The gate in `demos/gated.py` exists for the drift-affecting writes
+# (assign_demo_fragment, adopt_demo); confirm is neither, touches no device and
+# issues no ACS write, and deleting a demo is free. Hence ungated, same bar as
+# POST /api/demos.
+
+def _proposal(ctx: AppContext, ref: str):
+    from admz.demos.inference.confirm import resolve_proposal
+
+    try:
+        return resolve_proposal(ctx.proposal_store, ref)
+    except DemoActionError as e:
+        raise _http(e)
+
+
+@router.get("/api/demos/proposals")
+async def list_demo_proposals(status: Optional[str] = "proposed",
+                              run_id: Optional[str] = None,
+                              ctx: AppContext = Depends(get_context)):
+    """Candidate demos, strongest first. ``status=all`` returns every status."""
+    wanted = None if (status or "").lower() in ("", "all", "any") else status
+    rows = ctx.proposal_store.list(status=wanted, run_id=run_id)
+    return {"success": True, "count": len(rows),
+            "proposals": [p.to_dict() for p in rows]}
+
+
+@router.get("/api/demos/proposals/{proposal_id}")
+async def get_demo_proposal(proposal_id: str,
+                            ctx: AppContext = Depends(get_context)):
+    """One proposal: full evidence, score breakdown, rules with observability,
+    and the suggested owned keys."""
+    return {"success": True, "proposal": _proposal(ctx, proposal_id).to_dict()}
+
+
+@router.post("/api/demos/proposals/{proposal_id}/confirm")
+async def confirm_demo_proposal(proposal_id: str, req: ProposalConfirmRequest,
+                                request: Request,
+                                ctx: AppContext = Depends(get_context)):
+    """Create the real demo. Writes no fragments — the demo owns nothing yet."""
+    from admz.demos.inference.confirm import confirm_proposal_core
+
+    principal = await _principal(request)
+    proposal = _proposal(ctx, proposal_id)
+    try:
+        return confirm_proposal_core(
+            ctx, proposal, principal, name=req.name, purpose=req.purpose,
+            device_ids=req.device_ids, roles=req.roles, tag=req.tag)
+    except DemoActionError as e:
+        raise _http(e)
+
+
+@router.post("/api/demos/proposals/{proposal_id}/dismiss")
+async def dismiss_demo_proposal(proposal_id: str, req: ProposalDismissRequest,
+                                request: Request,
+                                ctx: AppContext = Depends(get_context)):
+    """Record that this is not a demo — remembered, so re-inference respects it."""
+    from admz.demos.inference.confirm import dismiss_proposal_core
+
+    principal = await _principal(request)
+    proposal = _proposal(ctx, proposal_id)
+    try:
+        return dismiss_proposal_core(ctx, proposal, principal, reason=req.reason)
+    except DemoActionError as e:
+        raise _http(e)
 
 
 @router.get("/api/demos/{demo_id}")
@@ -314,13 +406,18 @@ async def start_inference_run(req: InferenceRunRequest, request: Request,
     store = ctx.inference_run_store
 
     if mode == MODE_FAST:
-        run = await collect.run_fast(ctx, store, created_by=str(principal),
-                                     include_acs=req.include_acs)
+        out = await collect.infer_demos(
+            ctx, store, ctx.proposal_store, created_by=str(principal),
+            include_acs=req.include_acs, include_weak=req.include_weak)
+        run = out["run"]
         record_event(principal, "demo.inference_run", resource="demos:inference",
                      success=run.status != "failed",
                      details={"mode": mode, "run": run.id,
-                              "devices": run.device_count, "rules": run.rule_count})
-        return {"success": True, "run": run.to_dict()}
+                              "devices": run.device_count, "rules": run.rule_count,
+                              "proposals": len(out["proposals"])})
+        return {"success": True, "run": run.to_dict(),
+                "proposals": [p.to_dict() for p in out["proposals"]],
+                "report": out["report"]}
 
     # A deep survey rewrites the registry and every snapshot — one at a time.
     # A row abandoned by a dead process ages out, so a crash can't wedge this.
@@ -334,7 +431,8 @@ async def start_inference_run(req: InferenceRunRequest, request: Request,
     # minutes-long task can otherwise be garbage-collected mid-run.
     task = asyncio.create_task(collect.run_survey(
         ctx, store, run.id, register_new=req.register_new,
-        timeout=req.timeout, subnet=req.subnet))
+        timeout=req.timeout, subnet=req.subnet,
+        proposal_store=ctx.proposal_store, include_weak=req.include_weak))
     _BACKGROUND_RUNS.add(task)
     task.add_done_callback(_BACKGROUND_RUNS.discard)
     record_event(principal, "demo.inference_run", resource="demos:inference",
@@ -355,11 +453,14 @@ async def list_inference_runs(limit: int = 25,
 
 @router.get("/api/demos/inference/runs/{run_id}")
 async def get_inference_run(run_id: str, ctx: AppContext = Depends(get_context)):
-    """One run: status/progress plus the full evidence graph once complete."""
+    """One run: status/progress, the full evidence graph, and the proposals it
+    produced (the audit trail and the verdict, together)."""
     run = ctx.inference_run_store.get(run_id)
     if run is None:
         raise HTTPException(404, "inference run not found")
-    return {"success": True, "run": run.to_dict()}
+    proposals = ctx.proposal_store.list(status=None, run_id=run_id)
+    return {"success": True, "run": run.to_dict(),
+            "proposals": [p.to_dict() for p in proposals]}
 
 
 # ── Web ──────────────────────────────────────────────────────────────────────

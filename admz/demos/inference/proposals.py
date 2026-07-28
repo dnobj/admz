@@ -1,0 +1,368 @@
+"""The ``demo_proposals`` table (#124, slice 3) — one candidate demo.
+
+Sits beside :mod:`admz.demos.inference.runs` and mirrors ``demos/store.py`` the
+same way: a table, a dataclass, a thin store with **per-call connections** and an
+explicit ``db_path`` constructor argument (the singleton binds lazily on first
+use, so importing this module never touches the DB and a test can bind its own
+path without polluting the real one).
+
+**A proposal must not live in the ``demos`` table.** Anything in ``demos`` is
+enumerated by ``list_demos``, rendered on ``/demos``, rolled into readiness and —
+critically — walked by ``fragments.attribution_maps`` on *every* drift check.
+A half-believed guess must never participate in drift attribution. Hence a
+separate table, and a demo only ever comes into existence through an explicit
+confirm.
+
+Two identifiers, on purpose
+---------------------------
+``id`` is ``sha1(run_id + sorted member ids)[:12]`` — the plan's formula. It is
+content-derived, so a given run always mints the same id for the same member
+set, and two runs never collide on the primary key while both stay on the
+record.
+
+``content_key`` is ``sha1(sorted member ids)`` — **stable across runs**. It is
+what "re-running over an unchanged environment reproduces the same proposals"
+actually means once every run keeps its own row: the previous run's proposal for
+the same devices is marked ``superseded``, and a member set the operator already
+**dismissed** or **confirmed** is not proposed again.
+
+Status lifecycle: ``proposed → confirmed | dismissed``, plus ``superseded`` when
+a newer run re-proposes the same member set.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import sqlite3
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+STATUS_PROPOSED = "proposed"
+STATUS_CONFIRMED = "confirmed"
+STATUS_DISMISSED = "dismissed"
+STATUS_SUPERSEDED = "superseded"
+
+#: Statuses that record an operator decision — never re-proposed by a later run.
+DECIDED_STATUSES = (STATUS_CONFIRMED, STATUS_DISMISSED)
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS demo_proposals (
+    id                        TEXT PRIMARY KEY,
+    run_id                    TEXT NOT NULL DEFAULT '',
+    name                      TEXT NOT NULL DEFAULT '',
+    purpose                   TEXT NOT NULL DEFAULT '',
+    device_ids_json           TEXT NOT NULL DEFAULT '[]',
+    roles_json                TEXT NOT NULL DEFAULT '{}',
+    rules_json                TEXT NOT NULL DEFAULT '[]',
+    evidence_json             TEXT NOT NULL DEFAULT '[]',
+    suggested_owned_keys_json TEXT NOT NULL DEFAULT '[]',
+    score                     REAL NOT NULL DEFAULT 0,
+    confidence                TEXT NOT NULL DEFAULT 'low',
+    flags_json                TEXT NOT NULL DEFAULT '[]',
+    overlaps_json             TEXT NOT NULL DEFAULT '[]',
+    status                    TEXT NOT NULL DEFAULT 'proposed',
+    demo_id                   TEXT NOT NULL DEFAULT '',
+    created_at                REAL NOT NULL DEFAULT 0,
+    decided_at                REAL NOT NULL DEFAULT 0,
+    decided_by                TEXT NOT NULL DEFAULT ''
+);
+"""
+
+#: Columns beyond the plan's documented schema, added the house way — an
+#: idempotent try-ALTER per column (``demos/store.py:124-137``), so a DB created
+#: from the plan's exact schema upgrades in place with no backfill.
+_ADDED_COLUMNS = (
+    ("content_key", "TEXT NOT NULL DEFAULT ''"),
+    ("score_breakdown_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("devices_json", "TEXT NOT NULL DEFAULT '[]'"),
+)
+
+_COLS = ("id, run_id, name, purpose, device_ids_json, roles_json, rules_json, "
+         "evidence_json, suggested_owned_keys_json, score, confidence, "
+         "flags_json, overlaps_json, status, demo_id, created_at, decided_at, "
+         "decided_by, content_key, score_breakdown_json, devices_json")
+
+_N_COLS = len(_COLS.split(","))
+
+
+def _default_db_path() -> Path:
+    from admz.paths import db_path
+    return db_path()
+
+
+@dataclass
+class DemoProposal:
+    """One candidate demo — evidence plus a verdict, never a demo."""
+
+    id: str = ""
+    run_id: str = ""
+    content_key: str = ""
+    name: str = ""
+    #: Narrative guess. Agent-written (slice 4) and may stay empty forever — the
+    #: deterministic ``name`` is what makes the feature work with no LLM at all.
+    purpose: str = ""
+    device_ids: List[str] = field(default_factory=list)
+    roles: Dict[str, str] = field(default_factory=dict)
+    rules: List[Dict[str, Any]] = field(default_factory=list)
+    evidence: List[Dict[str, Any]] = field(default_factory=list)
+    #: READ-ONLY evidence (resolved DECISION b) — confirm never writes these as
+    #: fragments; the demo is created with an empty fragment set.
+    suggested_owned_keys: List[Dict[str, Any]] = field(default_factory=list)
+    score: float = 0.0
+    confidence: str = "low"
+    flags: List[str] = field(default_factory=list)
+    overlaps: List[Dict[str, Any]] = field(default_factory=list)
+    score_breakdown: Dict[str, Any] = field(default_factory=dict)
+    devices: List[Dict[str, Any]] = field(default_factory=list)
+    status: str = STATUS_PROPOSED
+    demo_id: str = ""
+    created_at: float = 0.0
+    decided_at: float = 0.0
+    decided_by: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id, "run_id": self.run_id, "content_key": self.content_key,
+            "name": self.name, "purpose": self.purpose,
+            "device_ids": self.device_ids, "roles": self.roles,
+            "rules": self.rules, "evidence": self.evidence,
+            "suggested_owned_keys": self.suggested_owned_keys,
+            "score": self.score, "confidence": self.confidence,
+            "flags": self.flags, "overlaps": self.overlaps,
+            "score_breakdown": self.score_breakdown, "devices": self.devices,
+            "status": self.status, "demo_id": self.demo_id,
+            "created_at": self.created_at, "decided_at": self.decided_at,
+            "decided_by": self.decided_by,
+        }
+
+    def summary(self) -> Dict[str, Any]:
+        """The list-view shape: the verdict without the full evidence dump."""
+        return {
+            "id": self.id, "run_id": self.run_id, "name": self.name,
+            "purpose": self.purpose, "score": self.score,
+            "confidence": self.confidence, "flags": self.flags,
+            "status": self.status, "demo_id": self.demo_id,
+            "device_ids": self.device_ids,
+            "device_names": [d.get("name") or d.get("device_id")
+                             for d in self.devices] or self.device_ids,
+            "rule_count": len(self.rules),
+            "suggested_key_count": len(self.suggested_owned_keys),
+            "overlap_count": len(self.overlaps),
+        }
+
+
+def _row(r) -> DemoProposal:
+    """One DB row → a proposal. Corrupt stored JSON degrades that field to its
+    default and is logged — a proposal is a suggestion, so a damaged evidence
+    blob must not make the whole list unreadable."""
+    def _j(raw, default, name):
+        if not raw:
+            return default
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            logger.warning("demo proposal %s: stored %s is corrupt (%s)",
+                           r[0], name, exc)
+            return default
+
+    return DemoProposal(
+        id=r[0], run_id=r[1] or "", name=r[2] or "", purpose=r[3] or "",
+        device_ids=_j(r[4], [], "device_ids_json"),
+        roles=_j(r[5], {}, "roles_json"),
+        rules=_j(r[6], [], "rules_json"),
+        evidence=_j(r[7], [], "evidence_json"),
+        suggested_owned_keys=_j(r[8], [], "suggested_owned_keys_json"),
+        score=float(r[9] or 0.0), confidence=r[10] or "low",
+        flags=_j(r[11], [], "flags_json"),
+        overlaps=_j(r[12], [], "overlaps_json"),
+        status=r[13] or STATUS_PROPOSED, demo_id=r[14] or "",
+        created_at=float(r[15] or 0.0), decided_at=float(r[16] or 0.0),
+        decided_by=r[17] or "", content_key=r[18] or "",
+        score_breakdown=_j(r[19], {}, "score_breakdown_json"),
+        devices=_j(r[20], [], "devices_json"),
+    )
+
+
+class ProposalStore:
+    """Thin SQLite store. Per-call connections (the app is multi-threaded)."""
+
+    def __init__(self, db_path: Optional[str] = None):
+        self._db_path = str(db_path or _default_db_path())
+        self._ensure_table()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
+
+    def _ensure_table(self) -> None:
+        conn = self._connect()
+        try:
+            conn.executescript(_SCHEMA)
+            for name, decl in _ADDED_COLUMNS:
+                try:
+                    conn.execute(
+                        f"ALTER TABLE demo_proposals ADD COLUMN {name} {decl}")
+                except sqlite3.OperationalError as exc:
+                    # Only "already there" is expected. A locked DB or a damaged
+                    # schema would otherwise be swallowed here and reappear as an
+                    # inexplicable missing column later.
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
+            conn.commit()
+        finally:
+            conn.close()
+
+    # ── writes ──────────────────────────────────────────────────────────────
+
+    def upsert(self, proposal: DemoProposal) -> DemoProposal:
+        proposal.created_at = proposal.created_at or time.time()
+        conn = self._connect()
+        try:
+            conn.execute(
+                f"INSERT OR REPLACE INTO demo_proposals ({_COLS}) VALUES ("
+                + ",".join("?" * _N_COLS) + ")",
+                (proposal.id, proposal.run_id, proposal.name, proposal.purpose,
+                 json.dumps(proposal.device_ids), json.dumps(proposal.roles),
+                 json.dumps(proposal.rules, default=str),
+                 json.dumps(proposal.evidence, default=str),
+                 json.dumps(proposal.suggested_owned_keys, default=str),
+                 float(proposal.score), proposal.confidence,
+                 json.dumps(proposal.flags), json.dumps(proposal.overlaps),
+                 proposal.status, proposal.demo_id, proposal.created_at,
+                 proposal.decided_at, proposal.decided_by, proposal.content_key,
+                 json.dumps(proposal.score_breakdown, default=str),
+                 json.dumps(proposal.devices, default=str)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return proposal
+
+    def decide(self, proposal_id: str, status: str, *, decided_by: str = "",
+               demo_id: str = "", name: Optional[str] = None,
+               purpose: Optional[str] = None) -> Optional[DemoProposal]:
+        """Record a terminal decision (or a supersede) on one proposal."""
+        sets = ["status = ?", "decided_at = ?", "decided_by = ?"]
+        vals: List[Any] = [status, time.time(), decided_by]
+        if demo_id:
+            sets.append("demo_id = ?")
+            vals.append(demo_id)
+        if name is not None:
+            sets.append("name = ?")
+            vals.append(name)
+        if purpose is not None:
+            sets.append("purpose = ?")
+            vals.append(purpose)
+        vals.append(proposal_id)
+        conn = self._connect()
+        try:
+            conn.execute(
+                f"UPDATE demo_proposals SET {', '.join(sets)} WHERE id = ?", vals)
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get(proposal_id)
+
+    def supersede_open(self, content_key: str, *, except_id: str = "") -> int:
+        """Mark still-open proposals for the same member set as ``superseded``.
+
+        Only ``proposed`` rows move: a confirmed or dismissed proposal is an
+        operator decision and stays exactly as decided.
+        """
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                "UPDATE demo_proposals SET status = ? WHERE content_key = ? "
+                "AND status = ? AND id <> ?",
+                (STATUS_SUPERSEDED, content_key, STATUS_PROPOSED, except_id))
+            conn.commit()
+            return cur.rowcount
+        finally:
+            conn.close()
+
+    def delete(self, proposal_id: str) -> bool:
+        conn = self._connect()
+        try:
+            cur = conn.execute("DELETE FROM demo_proposals WHERE id = ?",
+                               (proposal_id,))
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    # ── reads ───────────────────────────────────────────────────────────────
+
+    def get(self, proposal_id: str) -> Optional[DemoProposal]:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                f"SELECT {_COLS} FROM demo_proposals WHERE id = ?",
+                (proposal_id,)).fetchone()
+        finally:
+            conn.close()
+        return _row(row) if row else None
+
+    def list(self, *, status: Optional[str] = STATUS_PROPOSED,
+             run_id: Optional[str] = None, limit: int = 200) -> List[DemoProposal]:
+        """Proposals, strongest first. ``status=None`` returns every status."""
+        sql = f"SELECT {_COLS} FROM demo_proposals"
+        where: List[str] = []
+        args: List[Any] = []
+        if status:
+            where.append("status = ?")
+            args.append(status)
+        if run_id:
+            where.append("run_id = ?")
+            args.append(run_id)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY score DESC, name COLLATE NOCASE LIMIT ?"
+        args.append(int(limit))
+        conn = self._connect()
+        try:
+            rows = conn.execute(sql, args).fetchall()
+        finally:
+            conn.close()
+        return [_row(r) for r in rows]
+
+    def by_content_key(self, content_key: str) -> List[DemoProposal]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                f"SELECT {_COLS} FROM demo_proposals WHERE content_key = ? "
+                "ORDER BY created_at DESC", (content_key,)).fetchall()
+        finally:
+            conn.close()
+        return [_row(r) for r in rows]
+
+    def decided_content_keys(self) -> Dict[str, DemoProposal]:
+        """``{content_key: the decision}`` for every confirmed/dismissed member
+        set — the memory that stops a re-run re-proposing what a human already
+        answered."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                f"SELECT {_COLS} FROM demo_proposals WHERE status IN (?, ?) "
+                "AND content_key <> '' ORDER BY decided_at ASC",
+                DECIDED_STATUSES).fetchall()
+        finally:
+            conn.close()
+        return {r[18]: _row(r) for r in rows}
+
+
+proposal_store = ProposalStore.__new__(ProposalStore)  # lazy singleton
+
+
+def get_proposal_store() -> ProposalStore:
+    """Module singleton, initialized on first use so importing this module never
+    touches the DB (the leaf-light import contract ``demos/store.py`` keeps)."""
+    global proposal_store
+    if not hasattr(proposal_store, "_db_path"):
+        proposal_store = ProposalStore()
+    return proposal_store

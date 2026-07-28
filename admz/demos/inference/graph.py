@@ -162,6 +162,11 @@ def _tokens(text: Any) -> Set[str]:
     return out
 
 
+#: Public alias — slice 3's clustering scores name cohesion over exactly the
+#: tokens E5 draws its edges from, and they must not be allowed to drift apart.
+name_tokens = _tokens
+
+
 def build_nodes(devices: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """One node per ADMZ registry device, with its ACAPs marked for rarity.
 

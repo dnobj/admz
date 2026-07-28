@@ -46,6 +46,7 @@ from admz.events.evaluator import DetectionEvaluator
 from admz.events.watched import WatchedEventStore
 from admz.events.preview import PreviewManager
 from admz.demos.store import DemoStore
+from admz.demos.inference.proposals import ProposalStore
 from admz.demos.inference.runs import InferenceRunStore
 
 
@@ -88,6 +89,10 @@ class Components:
     # A separate table on purpose — a run is evidence, never a demo, so nothing
     # here is enumerated by list_demos or walked by drift attribution.
     inference_run_store: InferenceRunStore
+    # #124 slice 3: the candidate demos a run's graph clustered into. Also a
+    # separate table — a proposal is a guess, and a guess must never be walked
+    # by fragments.attribution_maps on a drift check.
+    proposal_store: ProposalStore
 
 
 def _default_catalog_path() -> str:
@@ -355,6 +360,7 @@ def build_components(
     # drift can attribute differences to active demos' fragments (ADR-0047).
     demo_store = DemoStore()
     inference_run_store = InferenceRunStore()
+    proposal_store = ProposalStore()
     drift_detector = DriftDetector(
         snapshot_engine=snapshot_engine,
         git_repo=git_repo,
@@ -447,4 +453,5 @@ def build_components(
         detection_evaluator=detection_evaluator,
         demo_store=demo_store,
         inference_run_store=inference_run_store,
+        proposal_store=proposal_store,
     )

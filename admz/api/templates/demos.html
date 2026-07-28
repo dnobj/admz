@@ -19,10 +19,9 @@
   <span>Readiness is read from the last known config + health — it never touches a device. Run <a href="/devices">Check drift</a> for a live answer.</span>
 </div>
 
-<!-- ── Inference (#124) — the evidence behind demos that already exist ──
-     Slice 2 renders the raw evidence summary; slice 3 replaces the body of
-     renderRun() with named proposals. Everything below the buttons is behind
-     that one function on purpose — the seam stays clean. -->
+<!-- ── Inference (#124) — the demos that already exist, proposed ──
+     Slice 3 renders named proposal cards from the same run. Everything below
+     the buttons sits behind renderRun() on purpose — the seam stays clean. -->
 <div class="card" id="infer-card" style="margin-bottom:16px">
   <div class="card-header" style="justify-content:space-between">
     <span class="title"><i data-lucide="sparkles"></i> Already running demos? Let ADMZ look around</span>
@@ -30,9 +29,9 @@
   </div>
   <div class="card-body">
     <p class="page-sub" style="margin:0 0 12px">
-      ADMZ reads the registry, each device's last snapshot and ACS's action rules, then shows the
-      evidence that links your devices — which rule triggers on one and acts on another, what shares
-      a tag, an unusual analytics app, or a name. Read-only: no device is touched and no demo is created.
+      ADMZ reads the registry, each device's last snapshot and ACS's action rules, works out which
+      devices belong together, and proposes the demos it thinks are already here — each with the exact
+      evidence behind it. Read-only: no device is touched, and nothing becomes a demo until you say so.
     </p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <button class="btn primary" type="button" id="infer-fast"><i data-lucide="sparkles"></i> Infer demos</button>
@@ -275,91 +274,223 @@
     busy(false, '');
   }
 
-  // The rendering seam. Slice 3 swaps this body for named proposal cards;
-  // everything above it (buttons, polling, error handling) stays put.
-  function renderRun(run) {
+  const CONF_SEM = { high: 'green', medium: 'amber', low: 'grey' };
+
+  // What each flag means, said plainly — a flag the operator can't read is noise.
+  const FLAG_LABEL = {
+    no_topology: 'no rule links these devices — grouped on shared tag/app/name alone',
+    name_only: 'only a shared name links them',
+    acap_only: 'only a shared analytics app links them',
+    tag_only: 'only a shared tag links them',
+    single_device: 'one device, with its own rule',
+    acs_absent: 'ACS not connected — no cross-device rule topology to read',
+    split_from_larger_component: 'split out of a bigger, looser group',
+    overlaps_another_proposal: 'shares a device with another proposal',
+    firing_unknown: 'no firing history — that score term is 0, not zero-activity',
+    names_only_rules: 'some rules are name-only (AXIS OS < 12)',
+    blind_rules: 'some rules have no observable firing channel',
+  };
+
+  function scoreBar(p) {
+    const terms = ((p.score_breakdown || {}).terms) || [];
+    return '<table class="data-table" style="margin-top:8px"><thead><tr>' +
+      '<th>Score term</th><th style="width:60px">Value</th><th style="width:70px">Adds</th><th>Why</th>' +
+      '</tr></thead><tbody>' +
+      terms.map((t) => '<tr style="cursor:default"><td>' + esc(t.name) +
+        '</td><td class="mono">' + esc(Number(t.value).toFixed(2)) +
+        '</td><td class="mono">' + esc(Number(t.contribution).toFixed(3)) +
+        '</td><td class="page-sub" style="margin:0">' + esc(t.detail) + '</td></tr>').join('') +
+      '</tbody></table>';
+  }
+
+  function proposalCard(p) {
+    const sem = CONF_SEM[p.confidence] || 'grey';
+    const devices = (p.devices && p.devices.length ? p.devices
+      : (p.device_ids || []).map((d) => ({ device_id: d, name: d })));
+    const rules = p.rules || [];
+    const keys = p.suggested_owned_keys || [];
+    const out = [];
+
+    out.push('<div class="card" data-proposal="' + esc(p.id) + '" style="margin-bottom:12px">');
+    out.push('<div class="card-header" style="justify-content:space-between">' +
+      '<span class="title">' + esc(p.name) + '</span>' +
+      '<span style="display:flex;gap:6px;align-items:center">' +
+      '<span class="badge ' + sem + '"><span class="dot sem-' + sem + '"></span>' +
+      esc(p.confidence) + ' confidence</span>' +
+      '<span class="badge grey mono">' + esc(Number(p.score).toFixed(2)) + '</span></span></div>');
+    out.push('<div class="card-body">');
+
+    if (p.purpose) {
+      out.push('<p class="page-sub" style="margin:0 0 10px">' + esc(p.purpose) +
+        ' <span class="badge grey">proposed narrative</span></p>');
+    }
+    out.push('<div class="page-sub" style="margin:0 0 10px;font-size:12px">' +
+      'Proposed name — ADMZ worked this out from the evidence below; rename it when you confirm.</div>');
+
+    out.push('<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">' +
+      devices.map((d) => '<span class="tag">' + esc(d.name || d.device_id) +
+        ((p.roles || {})[d.device_id] ? ' · ' + esc(p.roles[d.device_id]) : '') +
+        '</span>').join('') + '</div>');
+
+    if ((p.flags || []).length) {
+      out.push('<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">' +
+        p.flags.map((f) => '<span class="badge ' +
+          (f === 'no_topology' || f === 'acs_absent' ? 'amber' : 'grey') + '">' +
+          esc(FLAG_LABEL[f] || f) + '</span>').join('') + '</div>');
+    }
+
+    if (rules.length) {
+      out.push('<table class="data-table"><thead><tr><th>Rule</th><th style="width:70px">Where</th>' +
+        '<th>Trigger</th><th>Does</th><th>Can ADMZ see it fire?</th></tr></thead><tbody>' +
+        rules.map((r) => '<tr style="cursor:default"><td>' + esc(r.rule_name || r.rule_id) +
+          (r.enabled === false ? ' <span class="badge grey">disabled</span>' : '') +
+          '</td><td><span class="badge ' + (r.source === 'acs' ? 'blue' : 'grey') + '">' +
+          esc(r.source) + '</span></td><td class="page-sub" style="margin:0">' +
+          esc(r.condition_topic || '—') + '</td><td>' + esc((r.actions || []).join(', ') || '—') +
+          '</td><td>' + esc(((r.observability || {}).verdict) || 'unknown') + '</td></tr>').join('') +
+        '</tbody></table>');
+    }
+
+    out.push('<details style="margin-top:10px"><summary class="page-sub" style="cursor:pointer;margin:0">' +
+      'Evidence &amp; score (' + ((p.evidence || []).length) + ' item' +
+      ((p.evidence || []).length === 1 ? '' : 's') + ')</summary>');
+    out.push('<ul style="margin:8px 0 0;padding-left:18px">' +
+      (p.evidence || []).map((e) => '<li class="page-sub" style="margin:0;font-size:12.5px">' +
+        '<span class="badge grey">' + esc(e.kind) + '</span> ' + esc(e.detail) +
+        (e.weight ? ' <span class="mono">(' + esc(Number(e.weight).toFixed(2)) + ')</span>' : '') +
+        '</li>').join('') + '</ul>');
+    out.push(scoreBar(p));
+    if (keys.length) {
+      out.push('<div class="page-sub" style="margin:10px 0 4px">Config this demo probably owns ' +
+        '(evidence only — nothing is captured on confirm):</div><ul style="margin:0;padding-left:18px">' +
+        keys.map((k) => '<li class="page-sub" style="margin:0;font-size:12.5px">' +
+          '<span class="mono">' + esc(k.facet) + '/' + esc(k.path) + '</span> on ' + esc(k.device_id) +
+          ' — ' + esc(k.reason) +
+          (k.not_capturable ? ' <span class="badge grey">not capturable</span>' : '') +
+          '</li>').join('') + '</ul>');
+    }
+    if ((p.overlaps || []).length) {
+      out.push('<div class="page-sub" style="margin:10px 0 0;font-size:12.5px">Shares devices with ' +
+        p.overlaps.map((o) => esc(o.name)).join(', ') +
+        ' — kept in both on purpose; demos can share a device.</div>');
+    }
+    out.push('</details>');
+
+    out.push('<div style="display:flex;gap:8px;margin-top:12px;align-items:center">' +
+      '<button class="btn primary" type="button" data-confirm="' + esc(p.id) + '">' +
+      '<i data-lucide="check"></i> Create this demo</button>' +
+      '<button class="btn ghost" type="button" data-dismiss="' + esc(p.id) + '">' +
+      '<i data-lucide="x"></i> Not a demo</button>' +
+      '<span class="page-sub" style="margin:0;font-size:12px" data-result="' + esc(p.id) + '"></span></div>');
+    out.push('</div></div>');
+    return out.join('');
+  }
+
+  // The rendering seam: proposal cards, with the raw evidence graph folded
+  // away underneath. Buttons, polling and error handling above it stay put.
+  function renderRun(run, proposals, report) {
     const g = run.graph || {};
     const s = g.summary || {};
     const nodes = g.nodes || [];
     const bySrc = s.rules_by_source || {};
-    const byType = s.edges_by_type || {};
     const acs = (s.acs || g.acs || {});
+    const list = proposals || [];
     const parts = [];
 
     parts.push('<div class="stat-strip" style="margin-bottom:14px">' +
+      stat('Proposed demos', list.length, 'presentation') +
       stat('Devices', s.device_count || 0, 'cctv') +
       stat('ACS rules', bySrc.acs || 0, 'layers') +
       stat('Device rules', bySrc.device || 0, 'zap') +
       stat('Links found', s.edge_count || 0, 'git-compare') +
-      stat('Unresolved', s.unresolved_count || 0, 'alert-triangle') +
       '</div>');
 
-    parts.push('<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">' +
+    parts.push('<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">' +
       '<span class="badge ' + (acs.available ? 'green' : 'grey') + '">' +
       '<span class="dot sem-' + (acs.available ? 'green' : 'grey') + '"></span>' +
       (acs.available ? 'ACS connected' : 'ACS unavailable') + '</span>' +
       (acs.reason && acs.reason !== 'ok'
         ? '<span class="page-sub" style="margin:0;font-size:12px">' + esc(acs.reason) + '</span>' : '') +
-      (s.names_only_rules ? '<span class="badge amber">' + s.names_only_rules +
-        ' name-only rule(s) — older firmware</span>' : '') +
-      (s.disabled_rules ? '<span class="badge grey">' + s.disabled_rules +
-        ' disabled rule(s) — history, not evidence</span>' : '') +
-      (s.devices_without_rule_facet ? '<span class="badge grey">' + s.devices_without_rule_facet +
-        ' device(s) with no action-rules facet</span>' : '') +
       '</div>');
 
-    const edgeIds = Object.keys(byType).sort();
-    if (edgeIds.length) {
-      parts.push('<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">' +
-        edgeIds.map((id) => '<span class="badge blue">' + esc(id) + ' × ' + byType[id] +
-          ' · ' + esc(EDGE_LABEL[id] || '') + '</span>').join('') + '</div>');
+    if (report && report.note) {
+      parts.push('<div class="note-band" style="margin-bottom:12px"><i data-lucide="info"></i>' +
+        '<span>' + esc(report.note) + '</span></div>');
     }
 
-    const apps = (s.acaps && s.acaps.distinctive_apps) || [];
-    if (apps.length) {
-      parts.push('<div class="page-sub" style="margin:0 0 12px;font-size:12.5px">' +
-        'Distinctive apps on this fleet: ' +
-        apps.map((a) => '<span class="tag">' + esc(a) + '</span>').join(' ') + '</div>');
-    }
-
-    const edges = (g.edges || []).slice(0, 25);
-    if (edges.length) {
-      parts.push('<table class="data-table"><thead><tr>' +
-        '<th>Device</th><th>Device</th><th style="width:70px">Weight</th><th>Why</th>' +
-        '</tr></thead><tbody>' +
-        edges.map((e) => '<tr style="cursor:default"><td>' + esc(nameOf(nodes, e.a)) +
-          '</td><td>' + esc(nameOf(nodes, e.b)) +
-          '</td><td class="mono">' + esc(e.weight.toFixed(2)) + '</td><td>' +
-          '<span class="badge ' + (e.corroborating ? 'grey' : 'blue') + '">' + esc(e.id) + '</span> ' +
-          esc((e.evidence || []).map((i) => i.detail).join('; ')) + '</td></tr>').join('') +
-        '</tbody></table>');
-      if ((g.edges || []).length > edges.length) {
-        parts.push('<div class="page-sub" style="margin:8px 0 0;font-size:12px">+' +
-          ((g.edges || []).length - edges.length) + ' more link(s) in the full graph.</div>');
-      }
+    if (list.length) {
+      parts.push(list.map(proposalCard).join(''));
     } else {
-      parts.push('<div class="page-sub" style="margin:0">No links between devices yet — ' +
-        'no ACS rule, device rule, shared tag, app or name token connects any two of them.</div>');
+      parts.push('<div class="page-sub" style="margin:0 0 12px">Nothing here looks like a demo yet.</div>');
     }
 
-    const unres = g.unresolved || [];
-    if (unres.length) {
-      parts.push('<div style="margin-top:14px"><div class="page-sub" style="margin:0 0 6px">' +
-        'Unresolved references (surfaced, never dropped):</div><ul style="margin:0;padding-left:18px">' +
-        unres.slice(0, 10).map((u) => '<li class="page-sub" style="margin:0;font-size:12.5px">' +
-          esc(u.rule_name || u.rule_id || u.ref) + ' — ' + esc(u.reason) + '</li>').join('') +
-        '</ul></div>');
+    if ((report && (report.already_decided || []).length)) {
+      parts.push('<div class="page-sub" style="margin:0 0 12px;font-size:12.5px">' +
+        report.already_decided.map((a) => esc(a.reason)).join(' · ') + '</div>');
     }
 
-    parts.push('<div class="page-sub" style="margin:14px 0 0;font-size:12px">' +
+    // The raw graph stays available — it is the audit trail behind every score.
+    const edges = (g.edges || []).slice(0, 25);
+    parts.push('<details style="margin-top:6px"><summary class="page-sub" style="cursor:pointer;margin:0">' +
+      'The evidence graph (' + (s.edge_count || 0) + ' link' + ((s.edge_count === 1) ? '' : 's') +
+      ', ' + (s.rule_count || 0) + ' rule' + ((s.rule_count === 1) ? '' : 's') + ')</summary>' +
+      (edges.length
+        ? '<table class="data-table" style="margin-top:8px"><thead><tr><th>Device</th><th>Device</th>' +
+          '<th style="width:70px">Weight</th><th>Why</th></tr></thead><tbody>' +
+          edges.map((e) => '<tr style="cursor:default"><td>' + esc(nameOf(nodes, e.a)) +
+            '</td><td>' + esc(nameOf(nodes, e.b)) + '</td><td class="mono">' +
+            esc(e.weight.toFixed(2)) + '</td><td><span class="badge ' +
+            (e.corroborating ? 'grey' : 'blue') + '">' + esc(e.id) + '</span> ' +
+            esc(EDGE_LABEL[e.id] || '') + ' — ' +
+            esc((e.evidence || []).map((i) => i.detail).join('; ')) + '</td></tr>').join('') +
+          '</tbody></table>'
+        : '<div class="page-sub" style="margin:8px 0 0">No links between devices at all.</div>') +
+      ((g.unresolved || []).length
+        ? '<div class="page-sub" style="margin:8px 0 0;font-size:12.5px">' +
+          (g.unresolved || []).length + ' unresolved reference(s): ' +
+          (g.unresolved || []).slice(0, 5).map((u) => esc(u.reason)).join(' · ') + '</div>'
+        : '') +
+      '</details>');
+
+    parts.push('<div class="page-sub" style="margin:12px 0 0;font-size:12px">' +
       'Run <span class="mono">' + esc(run.id) + '</span> · ' + esc(run.mode) + ' · ' +
-      'the full graph is at <span class="mono">/api/demos/inference/runs/' + esc(run.id) + '</span>. ' +
-      'Naming these as demos comes next — ask the console about them in the meantime.</div>');
+      'full graph at <span class="mono">/api/demos/inference/runs/' + esc(run.id) + '</span>. ' +
+      'Nothing is created until you confirm — ask the console to talk you through any of these.</div>');
 
     outEl.innerHTML = parts.join('');
     outEl.classList.remove('hidden');
     lastEl.textContent = run.message || '';
+    wireDecisions();
     if (window.lucide) window.lucide.createIcons();
+  }
+
+  function wireDecisions() {
+    outEl.querySelectorAll('[data-confirm]').forEach((btn) => {
+      btn.addEventListener('click', () => decide(btn.dataset.confirm, 'confirm'));
+    });
+    outEl.querySelectorAll('[data-dismiss]').forEach((btn) => {
+      btn.addEventListener('click', () => decide(btn.dataset.dismiss, 'dismiss'));
+    });
+  }
+
+  async function decide(id, action) {
+    const card = outEl.querySelector('[data-proposal="' + id + '"]');
+    const note = outEl.querySelector('[data-result="' + id + '"]');
+    card?.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+    if (note) note.textContent = action === 'confirm' ? 'Creating…' : 'Dismissing…';
+    try {
+      const res = await fetch('/api/demos/proposals/' + encodeURIComponent(id) + '/' + action, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.detail || 'Failed');
+      if (action === 'confirm' && body.demo) { window.location.href = '/demos/' + body.demo.id; return; }
+      if (note) note.textContent = body.message || 'Dismissed.';
+      if (card) card.style.opacity = '0.55';
+    } catch (e) {
+      card?.querySelectorAll('button').forEach((b) => { b.disabled = false; });
+      if (note) note.textContent = e.message;
+    }
   }
 
   async function start(mode) {
@@ -379,18 +510,19 @@
     if (data.run && data.run.status === 'running') { poll(data.run.id); return; }
     if (data.run && data.run.status === 'failed') { fail(data.run.error || 'Inference failed'); return; }
     busy(false, '');
-    renderRun(data.run);
+    renderRun(data.run, data.proposals, data.report);
   }
 
   // Survey mode runs in the background — poll its row until it settles.
   function poll(runId) {
     const tick = async () => {
-      let run;
+      let run, proposals;
       try {
         const res = await fetch('/api/demos/inference/runs/' + encodeURIComponent(runId));
         const body = await res.json();
         if (!res.ok) throw new Error(body.detail || 'Could not read the run');
         run = body.run;
+        proposals = (body.proposals || []).filter((p) => p.status === 'proposed');
       } catch (e) { fail(e.message); return; }
       if (run.status === 'running') {
         busy(true, (run.phase ? run.phase + ' ' : '') + (run.progress || '') +
@@ -400,7 +532,7 @@
       }
       busy(false, '');
       if (run.status === 'failed') { fail(run.error || 'Deep survey failed'); return; }
-      renderRun(run);
+      renderRun(run, proposals, null);
     };
     setTimeout(tick, 1200);
   }
