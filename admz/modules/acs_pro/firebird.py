@@ -55,9 +55,16 @@ def _setting(key: str) -> str:
 
 
 def firebird_enabled() -> bool:
-    if os.getenv("ADMZ_ACS_FIREBIRD") == "1":
-        return True
-    return _setting("acs_firebird_enabled").lower() in ("1", "true", "yes", "on")
+    """True when direct Firebird reads are permitted on this installation.
+
+    Delegates to the advanced-capability registry (GH #132) so the switch is
+    declared, audited and visible alongside the other privileged ones. Same
+    env var (``ADMZ_ACS_FIREBIRD``), same ``acs_firebird_enabled`` setting,
+    same precedence — only the parse is now shared.
+    """
+    from admz import capabilities
+
+    return capabilities.is_active("acs.firebird_read")
 
 
 # ---------------------------------------------------------------------------

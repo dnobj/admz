@@ -22,6 +22,7 @@ from admz.api.routes import (
     api_keys as api_keys_route,
     audit as audit_route,
     auth_web as auth_web_route,
+    capabilities as capabilities_route,
     capture,
     catalog,
     chat as chat_route,
@@ -319,6 +320,9 @@ app.include_router(confirm.router, tags=["confirm"])
 app.include_router(chat_route.router, tags=["chat"])
 app.include_router(voice_route.router, tags=["voice"])
 app.include_router(survey_route.router, tags=["survey"])
+# GH #132: advanced capabilities — /api/capabilities plus the deliberately
+# unlinked /settings/advanced page. Paths are absolute, so no prefix.
+app.include_router(capabilities_route.router, tags=["capabilities"])
 # ADR-0046: demos — both /api/demos and the /demos pages live in one router.
 app.include_router(demos_route.router, tags=["demos"])
 # GitHub App "Connect GitHub" flow — paths already include /api/github.

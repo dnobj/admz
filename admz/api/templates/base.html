@@ -71,6 +71,21 @@
     <button class="btn accent sm" id="console-toggle" type="button" title="Toggle Console dock">
       <i data-lucide="sparkles"></i> Console
     </button>
+    {# GH #132 — advanced-capability indicator. Absent on a normal install; red
+       when a non-production-appropriate capability is active, amber for a
+       privileged install profile. Clicking it is how the deliberately unlinked
+       /settings/advanced page gets legitimately discovered, once something is
+       already on. #}
+    {% if nav.advanced %}
+    <a class="badge {{ nav.advanced.severity }} mono" href="/settings/advanced"
+       id="advanced-capability-chip"
+       data-severity="{{ nav.advanced.severity }}"
+       style="text-decoration:none;gap:5px"
+       title="Advanced capabilities active: {{ nav.advanced.label }} — this installation is running with non-default powers.">
+      <i data-lucide="flask-conical" style="width:13px;height:13px"></i>
+      Advanced · {{ nav.advanced.count }}
+    </a>
+    {% endif %}
     <button class="icon-btn" id="theme-toggle" type="button" title="Toggle theme">
       <i data-lucide="sun" data-theme-icon></i>
     </button>

@@ -17,23 +17,23 @@ security boundary — anyone who can set an environment variable or edit
 and makes **state legible**. It never removes a confirmation gate (ADR-0034); at
 most a capability changes *who may satisfy* a gate, never *whether* one exists.
 
-**Slice 1 declares only.** Every existing call site still reads its own env var
-exactly as it did before, so nothing can regress. Two consequences worth stating
-plainly rather than discovering later:
+**Slice 2 made the declaration load-bearing.** Every migrated call site now
+delegates here — :func:`is_active` is *the* read path, so there is exactly one
+truthiness parse in the codebase and the registry can no longer disagree with
+the code it describes. Two consequences worth stating plainly:
 
-* :func:`truthy` is the *unified* parse (``{"1","true","yes","on"}``), while
-  three different parses still live at the call sites. For the values anyone
-  actually uses (``1`` / unset) the registry and the call site agree. They
-  disagree on exotic values — ``ADMZ_DISABLE_ONBOARDING_PROBES=0`` reads as
-  **off** here and **on** at ``onboarding.py`` (bare ``if os.getenv(...)``),
-  and ``ADMZ_EVENT_INGEST=true`` reads as **on** here and **off** at
-  ``events/config.py`` (``== "1"``). Slice 2 migrates the call sites onto
-  :func:`truthy` and that divergence disappears — the onboarding case is a
-  genuine latent footgun the plan records as an intentional fix.
-* ``survey.contributor`` is declared ``("setting",)`` because that is what
-  exists today (``survey/secrets.py`` reads the setting and nothing else). The
-  planned ``ADMZ_SURVEY_MODE`` env alias lands in slice 2 alongside the
-  call-site delegation, so the registry never claims a switch that does nothing.
+* :func:`truthy` (``{"1","true","yes","on"}``) replaced three different parses.
+  For the values anyone actually uses (``1`` / unset) nothing changes. One
+  exotic value changed meaning on purpose: ``ADMZ_DISABLE_ONBOARDING_PROBES=0``
+  used to mean **on** (``onboarding.py`` tested a bare ``if os.getenv(...)``,
+  so any non-empty string was true) and now means **off**. Nobody sets a
+  disable flag to ``0`` intending to disable; the plan records it as a fix.
+  Symmetrically ``ADMZ_EVENT_INGEST=true`` used to mean **off** (``== "1"``)
+  and now means **on**.
+* ``survey.contributor`` gained its ``ADMZ_SURVEY_MODE`` env alias in the same
+  commit as its call-site delegation — the first moment declaring it stopped
+  being a lie — so it is now ``("env", "setting")`` like the other privileged
+  rows. The setting stays authoritative when the env var is unset.
 
 **Leaf-light by design.** Import time pulls in stdlib only; ``fleet_settings``
 and ``audit`` are imported lazily *inside* functions, the discipline documented
@@ -267,15 +267,17 @@ CAPABILITIES: Tuple[Capability, ...] = (
         ),
         danger="privileged",
         production_appropriate=True,
-        enable_via=("setting",),
+        enable_via=("env", "setting"),
+        env_var="ADMZ_SURVEY_MODE",
         setting_key="survey_mode_enabled",
         since="ADR-0030",
         notes=(
             "A privileged install profile: a background loop that contacts "
-            "devices and pushes to GitHub under a stored PAT. Setting-only "
-            "today; the planned ADMZ_SURVEY_MODE env alias lands in slice 2 "
-            "with the call-site delegation, so it is not declared until it "
-            "actually works."
+            "devices and pushes to GitHub under a stored PAT. The setting is "
+            "the authoritative knob and the one /settings/survey writes; "
+            "ADMZ_SURVEY_MODE is an additive env alias (slice 2) so a "
+            "locked-down privileged install can force it on without a "
+            "writable settings row."
         ),
     ),
     Capability(
@@ -388,6 +390,30 @@ NOT_ENV_VARS: Tuple[str, ...] = (
 
 
 # ---------------------------------------------------------------------------
+# Errors — only :func:`set_enabled` raises; every read path answers False
+# ---------------------------------------------------------------------------
+
+
+class CapabilityError(Exception):
+    """Base class for the two things a capability *write* can refuse."""
+
+
+class UnknownCapability(CapabilityError):
+    """No such capability id. Reads return False for these; writes refuse."""
+
+
+class NotToggleable(CapabilityError):
+    """The capability is ``("env",)`` — env-only, by design.
+
+    ``dev-only``, ``dangerous``, ``test-suppressor`` and ``internal``
+    capabilities are deliberately not runtime-toggleable, so enabling one is an
+    act by somebody with service control on the box rather than a click in a
+    browser. The message names the env var and says a restart is needed,
+    because that is what the operator actually has to do next.
+    """
+
+
+# ---------------------------------------------------------------------------
 # Lookup + read predicates
 # ---------------------------------------------------------------------------
 
@@ -481,6 +507,80 @@ def active_ids() -> List[str]:
     in?" without leaking a setting name or a credential.
     """
     return [a.id for a in active_capabilities()]
+
+
+# ---------------------------------------------------------------------------
+# The write path — privileged capabilities only, always audited
+# ---------------------------------------------------------------------------
+
+
+def is_toggleable(cap_id: str) -> bool:
+    """Whether ``cap_id`` can be flipped at runtime (i.e. has a setting).
+
+    False for every ``dev-only`` / ``dangerous`` / ``test-suppressor`` /
+    ``internal`` capability — those need an env var and a service restart, so
+    the advanced page renders them as read-only facts rather than controls.
+    """
+    cap = _BY_ID.get(cap_id)
+    return bool(cap and "setting" in cap.enable_via and cap.setting_key)
+
+
+def set_enabled(
+    cap_id: str,
+    on: bool,
+    principal: object = None,
+    *,
+    reason: str = "",
+) -> str:
+    """Turn a settings-enablable capability on or off, and audit who did it.
+
+    Returns the capability's :func:`source_of` **after** the write, so a caller
+    can tell the operator the one surprising outcome: disabling the setting on
+    an install where the env var also forces the capability on leaves it
+    active, and the returned source is still ``"env"``.
+
+    Raises :class:`UnknownCapability` for an id that is not declared and
+    :class:`NotToggleable` for an env-only one — the two cases the REST layer
+    turns into 404 and 409 respectively.
+
+    The audit row is written after the store write, not before, so a row can
+    never claim a change that did not land. It is deliberately *not* wrapped in
+    ``try/except``: the read paths must never break a request, but an
+    unauditable privileged toggle should fail loudly rather than happen
+    silently.
+    """
+    cap = _BY_ID.get(cap_id)
+    if cap is None:
+        raise UnknownCapability(f"unknown advanced capability: {cap_id!r}")
+    if "setting" not in cap.enable_via or not cap.setting_key:
+        raise NotToggleable(
+            f"{cap.id} is enabled by environment variable only. Set "
+            f"{cap.env_var}=1 on the ADMZ service and restart it; it is "
+            f"deliberately not toggleable at runtime because it is "
+            f"class '{cap.danger}'."
+        )
+
+    _settings().set(cap.setting_key, "true" if on else "false")
+    source = source_of(cap.id)
+
+    from admz.audit import record_event
+
+    record_event(
+        principal,
+        "capability.enable" if on else "capability.disable",
+        resource=f"capability:{cap.id}",
+        details={
+            "title": cap.title,
+            "danger": cap.danger,
+            "setting_key": cap.setting_key,
+            "reason": reason,
+            # Post-write truth, not what was asked for: an env-forced
+            # capability stays on however the setting is written.
+            "source": source,
+            "active": bool(source),
+        },
+    )
+    return source
 
 
 # ---------------------------------------------------------------------------
