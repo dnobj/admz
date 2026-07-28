@@ -4620,7 +4620,12 @@ class ADMZMCPServer:
         # process already owns the SnapshotScheduler.  Skip starting it here
         # to avoid N+1 schedulers firing duplicate jobs and contending on the
         # git lock.  Standalone `python -m admz mcp` usage is unaffected.
-        _pool_subprocess = os.getenv("ADMZ_MCP_NO_SCHEDULER") == "1"
+        # Declared as the `runtime.no_scheduler` advanced capability (GH #132)
+        # — class `internal`, so it shows in diagnostics (answering "why
+        # didn't my schedule fire?") but never chips and is never toggleable.
+        from admz import capabilities as _capabilities
+
+        _pool_subprocess = _capabilities.is_active("runtime.no_scheduler")
         if not _pool_subprocess:
             await self.scheduler.start()
         cleanup_task = asyncio.create_task(self._temp_credential_cleanup_loop())

@@ -9,7 +9,6 @@ non-blocking guarantee).
 from __future__ import annotations
 
 import logging
-import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -24,8 +23,14 @@ def installation_token_for_push() -> Optional[str]:
     unit test on a developer's connected machine would silently mint a REAL token
     over the network and push differently than on a clean box (same class as
     ``ADMZ_DISABLE_ONBOARDING_PROBES`` — see tests/conftest.py).
+
+    The env var is declared as the ``test.no_github_push`` advanced capability
+    (GH #132) and read through the registry, so it shows up in ``/api/health``
+    and the startup log like every other non-default power.
     """
-    if os.getenv("ADMZ_DISABLE_GITHUB_APP_PUSH") == "1":
+    from admz import capabilities
+
+    if capabilities.is_active("test.no_github_push"):
         return None
     from admz.github_app import secrets as s
 

@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+
+{# The hidden advanced-capability surface (GH #132).
+
+   Deliberately NOT reachable from /settings or the sidebar: you get here by
+   typing the URL, or by clicking the topbar chip that only exists once
+   something is already on. Reveal-gated; read-only under
+   ADMZ_AUTH_BACKEND=none, where there is no identity to attribute a change to.
+#}
+
+{% block title %}Advanced capabilities{% endblock %}
+{% block crumb_tail %}Advanced capabilities{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="pt">
+    <h1 class="page-title">Advanced capabilities</h1>
+    <p class="page-sub">
+      Every non-default power this installation can run with, declared in one
+      place. All are off by default. This page is unlisted on purpose — nothing
+      links to it from Settings or the sidebar.
+    </p>
+  </div>
+</div>
+
+<div class="stack" style="max-width:940px">
+
+  <!-- What is on right now -->
+  <div class="card">
+    <div class="card-header">
+      <i data-lucide="flask-conical"></i>
+      <span class="title">This installation</span>
+      {% if active_count %}
+      <span class="badge {{ 'red' if loud_count else 'amber' }} mono" style="margin-left:8px">
+        {{ active_count }} active
+      </span>
+      {% else %}
+      <span class="badge green mono" style="margin-left:8px">clean</span>
+      {% endif %}
+    </div>
+    <div class="card-body flush">
+      <div class="setting-row">
+        <div class="sr-text">
+          <div class="sr-label">Active capabilities</div>
+          <div class="sr-desc">
+            {% if active_count %}
+              {{ loud_count }} of {{ active_count }} {{ 'is' if loud_count == 1 else 'are' }}
+              not appropriate for a production installation.
+              The same list appears in the startup log and in
+              <span class="mono">GET /api/health</span>.
+            {% else %}
+              Nothing beyond the defaults. No chip is shown anywhere in the UI.
+            {% endif %}
+          </div>
+        </div>
+        <div class="sr-control">
+          <span class="badge {{ 'red' if loud_count else ('amber' if active_count else 'grey') }} mono">
+            {{ active_count }}
+          </span>
+        </div>
+      </div>
+      {# Context, not a registry row (Master resolution 5): the auth backend is
+         deployment posture with its own startup warning. It gets no chip and no
+         /api/health entry, but an operator asking "what mode is this in?"
+         wants it in the same view. #}
+      <div class="setting-row">
+        <div class="sr-text">
+          <div class="sr-label">Authentication backend <span class="page-sub">· context, not a capability</span></div>
+          <div class="sr-desc">
+            {% if auth.anonymous %}
+              <span class="mono">ADMZ_AUTH_BACKEND=none</span> — every caller is
+              the anonymous principal. This page is <strong>read-only</strong>:
+              a change this consequential must be attributable, and there is no
+              identity to attribute it to.
+            {% else %}
+              <span class="mono">ADMZ_AUTH_BACKEND={{ auth.backend }}</span> —
+              toggling requires membership of
+              <span class="mono">{{ auth.reveal_groups|join(', ') }}</span>,
+              the same bar that guards plaintext credentials.
+            {% endif %}
+          </div>
+        </div>
+        <div class="sr-control">
+          <span class="badge {{ 'amber' if auth.anonymous else 'grey' }} mono">{{ auth.backend }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% if success %}
+  <div class="card"><div class="card-body">
+    <span class="badge green mono">saved</span> <span style="margin-left:8px">{{ success }}</span>
+  </div></div>
+  {% endif %}
+  {% if error %}
+  <div class="card"><div class="card-body">
+    <span class="badge red mono">refused</span> <span style="margin-left:8px">{{ error }}</span>
+  </div></div>
+  {% endif %}
+
+  <!-- The table -->
+  {% for row in rows %}
+  <div class="card" id="cap-{{ row.id }}">
+    <div class="card-header">
+      <i data-lucide="{{ 'toggle-right' if row.enabled else 'toggle-left' }}"></i>
+      <span class="title mono">{{ row.id }}</span>
+      <span class="badge {{ row.severity }} mono" style="margin-left:8px">{{ row.danger }}</span>
+      {% if row.enabled %}
+      <span class="badge {{ 'red' if not row.production_appropriate else 'amber' }} mono" style="margin-left:6px">
+        ON · via {{ row.source }}
+      </span>
+      {% else %}
+      <span class="badge grey mono" style="margin-left:6px">off</span>
+      {% endif %}
+    </div>
+    <div class="card-body">
+      <div class="sr-label">{{ row.title }}</div>
+      <p class="page-sub" style="margin:4px 0 8px">{{ row.description }}</p>
+      <p class="page-sub" style="margin:0 0 10px;opacity:.85">{{ row.notes }}</p>
+
+      <div class="page-sub mono" style="font-size:12px;margin-bottom:10px">
+        {% if row.env_var %}env: {{ row.env_var }}{% endif %}
+        {% if row.setting_key %}{% if row.env_var %} · {% endif %}setting: {{ row.setting_key }}{% endif %}
+        {% if row.companion_env %} · companions: {{ row.companion_env|join(', ') }}{% endif %}
+        {% if row.since %} · {{ row.since }}{% endif %}
+      </div>
+
+      {% if not row.toggleable %}
+        {# env-only by design: dev-only / dangerous / test-suppressor / internal.
+           Rendered as a fact, never a control — enabling one should require
+           service control on the box, not a click in a browser. #}
+        <div class="page-sub" style="font-size:12.5px">
+          <i data-lucide="lock" style="width:13px;height:13px;vertical-align:-2px"></i>
+          Environment variable only. Set
+          <span class="mono">{{ row.env_var }}=1</span> on the ADMZ service and
+          restart it. Not toggleable here, by design.
+        </div>
+      {% elif not may_toggle %}
+        <div class="page-sub" style="font-size:12.5px">
+          <i data-lucide="eye" style="width:13px;height:13px;vertical-align:-2px"></i>
+          Read-only for this caller.
+        </div>
+      {% else %}
+        <form method="post" action="/settings/advanced" class="cap-toggle-form"
+              style="display:grid;gap:8px;max-width:560px">
+          <input type="hidden" name="cap_id" value="{{ row.id }}">
+          <input type="hidden" name="enabled" value="{{ '0' if row.enabled else '1' }}">
+          <label class="page-sub" style="display:block">
+            Type <span class="mono">{{ row.id }}</span> to confirm
+            <input name="confirm_id" autocomplete="off" placeholder="{{ row.id }}"
+              style="width:100%;box-sizing:border-box;margin-top:4px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text);font-family:var(--mono)">
+          </label>
+          <label class="page-sub" style="display:block">
+            Reason (recorded in the audit log)
+            <input name="reason" autocomplete="off" placeholder="why this installation needs it"
+              style="width:100%;box-sizing:border-box;margin-top:4px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text)">
+          </label>
+          <div>
+            <button type="submit" class="btn {{ 'ghost' if row.enabled else 'primary' }} sm">
+              <i data-lucide="{{ 'power-off' if row.enabled else 'power' }}"></i>
+              {{ 'Disable' if row.enabled else 'Enable' }} {{ row.id }}
+            </button>
+          </div>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+
+  <div class="card">
+    <div class="card-body">
+      <p class="page-sub" style="margin:0">
+        Capabilities never remove a confirmation gate. At most one changes
+        <em>who</em> may satisfy a gate, or whether a background loop runs —
+        every destructive operation still routes through the approval widget
+        (ADR-0034). This is not a security boundary either: anyone who can set
+        an environment variable on this machine already owns it. The registry
+        exists to prevent accidents and to make state legible.
+      </p>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

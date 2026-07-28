@@ -118,6 +118,46 @@ def _demo_count() -> Optional[int]:
         return None
 
 
+def _advanced_chip() -> Optional[Dict[str, Any]]:
+    """The topbar advanced-capability chip, or None when there is nothing to say.
+
+    This is loudness channel 3 of GH #132: because it lives in ``base.html`` it
+    appears on **every** page and behind the console dock, so a production
+    install running with the dev auto-approver on is impossible to miss.
+
+    Two rules, both deliberate:
+
+    * **Absent when clean.** A normal install never sees it, which is what
+      makes it mean something when it does appear.
+    * ``internal``-class capabilities never chip. ``runtime.no_scheduler`` is a
+      role marker ADMZ sets for its own subprocesses; chipping it would put a
+      permanent badge on boxes where nothing is wrong and train operators to
+      ignore the badge — the exact failure this channel exists to avoid.
+
+    Red when any active capability is not production-appropriate, amber for a
+    purely privileged install profile. Defensive throughout: the nav must
+    render even if the settings store is unreachable.
+    """
+    try:
+        from admz import capabilities
+
+        active = [
+            a for a in capabilities.active_capabilities()
+            if a.capability.danger != "internal"
+        ]
+        if not active:
+            return None
+        loud = [a for a in active if not a.capability.production_appropriate]
+        return {
+            "count": len(active),
+            "severity": "red" if loud else "amber",
+            "ids": [a.id for a in active],
+            "label": ", ".join(f"{a.id} (via {a.source})" for a in active),
+        }
+    except Exception:
+        return None
+
+
 def _initials(name: str) -> str:
     if not name:
         return "AD"
@@ -161,6 +201,8 @@ def _build_nav_data(request) -> Dict[str, Any]:
         "active_tag": request.query_params.get("tag"),
         "principal": {"name": "", "initials": "AD"},
         "hierarchy_enabled": False,
+        # GH #132 — None on a normal install, so base.html renders nothing.
+        "advanced": _advanced_chip(),
     }
 
     # Principal (set by auth middleware on request.state when available).

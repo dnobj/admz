@@ -25,7 +25,6 @@ tools and the REST device-create/onboard routes.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, Optional
 
 from admz.fleet_settings import fleet_settings
@@ -36,7 +35,13 @@ logger = logging.getLogger(__name__)
 # the network (the unit-test suite sets it; the probes would otherwise hit
 # whatever LAN the test box sits on). Callers still get a well-formed
 # credentials_needed outcome.
+#
+# The switch is declared as the ``test.no_onboarding_probes`` advanced
+# capability (GH #132) and read through the registry, which is the only place
+# ADMZ parses truthiness. The constant stays as documentation of the env var's
+# name — it is what the registry declares and what tests/conftest.py sets.
 _DISABLE_ENV = "ADMZ_DISABLE_ONBOARDING_PROBES"
+_DISABLE_CAPABILITY = "test.no_onboarding_probes"
 
 # Statuses (stable API for callers/tests):
 ALREADY_CREDENTIALED = "already_credentialed"
@@ -62,7 +67,13 @@ async def onboard_device_credentials(
     from admz.fleet.systemready import read_systemready
     from admz.provisioning import provision_factory_default, store_provisioned_creds
 
-    if os.getenv(_DISABLE_ENV):
+    # NOTE (GH #132): this used to be a bare ``if os.getenv(...)``, so ANY
+    # non-empty value enabled the suppressor — ``=0`` meant "probes off". The
+    # registry's shared parse accepts {1,true,yes,on} only, so ``=0`` now means
+    # what it reads like. conftest.py sets "1", so the suite is unaffected.
+    from admz import capabilities
+
+    if capabilities.is_active(_DISABLE_CAPABILITY):
         return {"status": CREDENTIALS_NEEDED, "device_id": device_id,
                 "reason": "onboarding probes disabled in this environment"}
 

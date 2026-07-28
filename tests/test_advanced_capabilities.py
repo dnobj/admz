@@ -1,7 +1,9 @@
-"""The advanced-capability registry (GH #132, slice 1).
+"""The advanced-capability registry itself (GH #132).
 
-Slice 1 *declares*; it changes no call site. So these tests are about the
-declaration being true, complete, and legible:
+These tests are about the declaration being true, complete, and legible; the
+*call sites* that now delegate to it are covered by
+``tests/test_capabilities_migration.py`` and the reveal-gated surface by
+``tests/test_advanced_settings_page.py``. Covered here:
 
 * the table's own invariants (ids, danger classes, protected setting keys, and
   the env-only-for-the-dangerous-ones asymmetry),
@@ -226,9 +228,11 @@ class TestResolution:
         clean_env.setenv(cap.env_var, "0")
         assert capabilities.is_active(cap_id) is False
 
-    def test_setting_only_capability_resolves_from_the_setting(
+    def test_survey_contributor_resolves_from_the_setting(
         self, clean_env, isolated_settings
     ):
+        """The setting stays the authoritative knob — it is what
+        ``/settings/survey`` writes and what existed before the env alias."""
         assert capabilities.is_active("survey.contributor") is False
         isolated_settings.set("survey_mode_enabled", "true")
         assert capabilities.is_active("survey.contributor") is True
@@ -256,13 +260,25 @@ class TestResolution:
             isolated_settings.set("event_ingest_enabled", raw)
             assert capabilities.is_active("events.device_ingest") is False, raw
 
-    def test_env_var_is_not_read_for_a_setting_only_capability(
+    def test_survey_contributor_gained_its_env_alias(
         self, clean_env, isolated_settings
     ):
-        """survey.contributor declares no env var in slice 1, so the registry
-        must not invent one — it would report a switch that does nothing."""
-        clean_env.setenv("ADMZ_SURVEY_MODE", "1")
+        """Slice 1 deliberately did **not** declare ``ADMZ_SURVEY_MODE``,
+        because ``survey/secrets.py`` read only the setting and declaring the
+        env var would have made the registry report a switch that did nothing.
+
+        Slice 2 added it in the same commit as the call-site delegation, which
+        is the first moment the declaration became true — so the assertion that
+        matters is not just "the registry sees it" but "the real predicate
+        agrees with the registry".
+        """
+        from admz.survey import secrets
+
         assert capabilities.is_active("survey.contributor") is False
+        clean_env.setenv("ADMZ_SURVEY_MODE", "1")
+        assert capabilities.is_active("survey.contributor") is True
+        assert capabilities.source_of("survey.contributor") == "env"
+        assert secrets.is_enabled() is True
 
     def test_active_capabilities_preserves_declaration_order(
         self, clean_env, isolated_settings
@@ -521,6 +537,129 @@ class TestBootAudit:
         }
         for cap in CAPABILITIES:
             assert capabilities._boot_auditable(cap) is expected[cap.danger], cap.id
+
+
+# ---------------------------------------------------------------------------
+# Tests 7, 19 — the write path
+# ---------------------------------------------------------------------------
+
+
+class _Principal:
+    """The two attributes ``audit.record_event`` reads off a Principal."""
+
+    def __init__(self, name="ADMZ\\alice", source="windows"):
+        self.name = name
+        self.source = source
+
+
+def _audit_rows(tmp_path):
+    from admz.audit import AuditLog
+
+    return AuditLog(db_path=str(tmp_path / "admz.db")).list_recent(limit=50)
+
+
+class TestSetEnabled:
+    """``set_enabled`` is the *only* way a capability changes without a service
+    restart, so every call leaves an attributed row behind."""
+
+    def test_enabling_writes_the_setting_and_one_audit_row(
+        self, clean_env, isolated_settings, tmp_path
+    ):
+        source = capabilities.set_enabled(
+            "events.device_ingest", True, _Principal(),
+            reason="watching the loading bay for a demo",
+        )
+
+        assert source == "setting"
+        assert capabilities.is_active("events.device_ingest") is True
+        assert isolated_settings.get("event_ingest_enabled") == "true"
+
+        rows = [r for r in _audit_rows(tmp_path) if r.action == "capability.enable"]
+        assert len(rows) == 1
+        (row,) = rows
+        assert row.resource == "capability:events.device_ingest"
+        assert row.requester == "ADMZ\\alice"
+        assert row.auth_source == "windows"
+        assert row.details["danger"] == "privileged"
+        assert row.details["source"] == "setting"
+        assert row.details["reason"] == "watching the loading bay for a demo"
+
+    def test_disabling_writes_a_disable_row(
+        self, clean_env, isolated_settings, tmp_path
+    ):
+        capabilities.set_enabled(
+            "events.device_ingest", True, _Principal(), reason="on",
+        )
+        source = capabilities.set_enabled(
+            "events.device_ingest", False, _Principal(), reason="chatty at 2am",
+        )
+
+        assert source == ""
+        assert capabilities.is_active("events.device_ingest") is False
+        actions = [r.action for r in _audit_rows(tmp_path)]
+        assert actions.count("capability.disable") == 1
+        assert actions.count("capability.enable") == 1
+
+    def test_disabling_an_env_forced_capability_reports_it_is_still_on(
+        self, clean_env, isolated_settings, tmp_path
+    ):
+        """The one genuinely surprising outcome, so it is a returned value and
+        an audit detail rather than something an operator discovers later."""
+        clean_env.setenv("ADMZ_EVENT_INGEST", "1")
+
+        source = capabilities.set_enabled(
+            "events.device_ingest", False, _Principal(), reason="trying to stop it",
+        )
+
+        assert source == "env"
+        assert capabilities.is_active("events.device_ingest") is True
+        (row,) = [r for r in _audit_rows(tmp_path) if r.action == "capability.disable"]
+        assert row.details["source"] == "env"
+        assert row.details["active"] is True
+
+    def test_survey_contributor_is_toggleable_now_that_it_has_a_setting_row(
+        self, clean_env, isolated_settings
+    ):
+        from admz.survey import secrets
+
+        capabilities.set_enabled(
+            "survey.contributor", True, _Principal(), reason="privileged install",
+        )
+        assert secrets.is_enabled() is True
+
+    @pytest.mark.parametrize(
+        "cap_id",
+        [c.id for c in CAPABILITIES if "setting" not in c.enable_via],
+    )
+    def test_env_only_capabilities_refuse_to_be_toggled(
+        self, cap_id, clean_env, isolated_settings, tmp_path
+    ):
+        """Test 19. ``dev.auto_approve`` must not be a click, and neither must
+        ``acs.rule_write``, the suppressors, or the internal role marker."""
+        assert capabilities.is_toggleable(cap_id) is False
+        with pytest.raises(capabilities.NotToggleable) as exc:
+            capabilities.set_enabled(cap_id, True, _Principal(), reason="nope")
+
+        cap = capabilities.get(cap_id)
+        assert cap.env_var in str(exc.value)
+        assert "restart" in str(exc.value)
+        # Nothing was written, and nothing was audited.
+        assert capabilities.is_active(cap_id) is False
+        assert _audit_rows(tmp_path) == []
+
+    def test_unknown_id_refuses(self, clean_env, isolated_settings, tmp_path):
+        with pytest.raises(capabilities.UnknownCapability):
+            capabilities.set_enabled("nope.not_a_thing", True, _Principal(), reason="x")
+        assert _audit_rows(tmp_path) == []
+
+    def test_both_refusals_share_a_base_class(self):
+        assert issubclass(capabilities.NotToggleable, capabilities.CapabilityError)
+        assert issubclass(capabilities.UnknownCapability, capabilities.CapabilityError)
+
+    def test_is_toggleable_matches_the_declaration(self):
+        for cap in CAPABILITIES:
+            assert capabilities.is_toggleable(cap.id) is ("setting" in cap.enable_via)
+        assert capabilities.is_toggleable("nope.not_a_thing") is False
 
 
 # ---------------------------------------------------------------------------

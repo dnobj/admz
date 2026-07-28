@@ -155,11 +155,21 @@ def test_firebird_available_reports_missing_driver(monkeypatch):
 
 def test_firebird_enabled_env_override(monkeypatch):
     import admz.modules.acs_pro.firebird as fb
+    from admz import capabilities
+
     monkeypatch.setenv("ADMZ_ACS_FIREBIRD", "1")
     assert fb.firebird_enabled() is True
     monkeypatch.delenv("ADMZ_ACS_FIREBIRD", raising=False)
-    monkeypatch.setattr(fb, "_setting", lambda k: "")
+    # GH #132: the predicate now delegates to the capability registry, so the
+    # setting side is stubbed there rather than on fb._setting. Stubbing it at
+    # all matters — otherwise this reads the operator's REAL fleet-settings DB.
+    monkeypatch.setattr(capabilities, "_settings", lambda: _EmptySettings())
     assert fb.firebird_enabled() is False
+
+
+class _EmptySettings:
+    def get(self, key):
+        return ""
 
 
 # ── poller ───────────────────────────────────────────────────────────────────

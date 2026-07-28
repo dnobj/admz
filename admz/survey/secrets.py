@@ -85,7 +85,18 @@ def has_pat() -> bool:
 
 
 def is_enabled() -> bool:
-    return (fleet_settings.get(KEY_ENABLED) or "").lower() in ("1", "true", "yes", "on")
+    """True when survey/contributor mode is on for this installation.
+
+    Delegates to the advanced-capability registry (GH #132) so survey mode is
+    declared in the same table as every other privileged switch, shows in
+    ``/api/health`` and the topbar chip, and can be stopped from
+    ``/settings/advanced`` without a restart. Name, signature, and the
+    ``survey_mode_enabled`` setting are unchanged — ``ADMZ_SURVEY_MODE`` is an
+    additive env alias that wins when set, matching every other hybrid flag.
+    """
+    from admz import capabilities
+
+    return capabilities.is_active("survey.contributor")
 
 
 def get_repo() -> str:

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import List, Optional, Set
 
 logger = logging.getLogger(__name__)
@@ -55,13 +54,16 @@ ACS_POLL_MAX_EVENTS = 2000
 
 def acs_event_ingest_enabled() -> bool:
     """True only when the operator enabled the ACS action-rule poller. Also
-    requires the ACS Pro module to be connected (checked by the poller)."""
-    if os.getenv("ADMZ_ACS_EVENT_INGEST") == "1":
-        return True
-    try:
-        return str(_settings().get("acs_event_ingest_enabled") or "").lower() in ("1", "true", "yes", "on")
-    except Exception:  # noqa: BLE001
-        return False
+    requires the ACS Pro module to be connected (checked by the poller).
+
+    Delegates to the advanced-capability registry (GH #132): same env var
+    (``ADMZ_ACS_EVENT_INGEST``), same setting (``acs_event_ingest_enabled``),
+    same env-beats-setting precedence, and the same never-raise contract — the
+    registry swallows a settings-store failure and answers from env alone.
+    """
+    from admz import capabilities
+
+    return capabilities.is_active("events.acs_poll")
 
 
 def _settings():
@@ -70,13 +72,15 @@ def _settings():
 
 
 def event_ingest_enabled() -> bool:
-    """True only when the operator has explicitly enabled the subsystem."""
-    if os.getenv("ADMZ_EVENT_INGEST") == "1":
-        return True
-    try:
-        return str(_settings().get("event_ingest_enabled") or "").lower() in ("1", "true", "yes", "on")
-    except Exception:  # noqa: BLE001 — config must never break startup
-        return False
+    """True only when the operator has explicitly enabled the subsystem.
+
+    Delegates to the advanced-capability registry (GH #132) — see
+    :func:`acs_event_ingest_enabled`. Name, signature, env var and setting key
+    are unchanged, so the ~10 callers of this predicate are untouched.
+    """
+    from admz import capabilities
+
+    return capabilities.is_active("events.device_ingest")
 
 
 def topic_filters() -> List[str]:
