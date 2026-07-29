@@ -22,6 +22,13 @@ no-auth mode:
     rely on this so that ~600 existing tests keep working without
     standing up IIS.
 
+A fourth, **test auth**, is not an ``ADMZ_AUTH_BACKEND`` value at all: it
+is the ``dev.test_auth`` advanced capability (GH #140), enabled only by
+``ADMZ_TEST_AUTH=1``, which appends :class:`TestAuth` to whatever chain is
+configured so an unattended agent resolves to a fixed synthetic principal
+instead of a sign-in page. The server refuses to start with it active on a
+non-loopback bind.
+
 The two production methods can be enabled together (``CompositeAuth``)
 so that ``/api/...`` endpoints accept either browser cookies (Windows
 IWA via AJAX) or a Bearer token (a separate agent). Each ``Principal``
@@ -172,6 +179,143 @@ class NoAuth(AuthBackend):
             source="none",
             is_anonymous=True,
         )
+
+
+#: The synthetic identity :class:`TestAuth` hands out. Deliberately not a
+#: shape any real directory produces — a ``test\\`` domain does not exist, so
+#: an audit row or a "Signed in as" badge reading ``test\agent`` is
+#: unmistakable at a glance.
+TEST_AUTH_DEFAULT_NAME = "test\\agent"
+
+#: Default group membership. ``Administrators`` is in the default reveal
+#: groups (:mod:`admz.authz`), so the synthetic principal clears the authz
+#: paths an unattended verification run needs to exercise. Override with
+#: ``ADMZ_TEST_AUTH_GROUPS``; an empty value gives it no groups at all.
+TEST_AUTH_DEFAULT_GROUPS = ("Administrators",)
+
+
+def _is_loopback(host: Optional[str]) -> bool:
+    """True iff ``host`` is a loopback address (or the literal ``localhost``).
+
+    Deliberately stricter than a ``in ("127.0.0.1", "::1")`` membership test:
+    the whole ``127.0.0.0/8`` block is loopback, and an address that does not
+    parse at all is *not* trusted. Shared by the per-request check below and
+    the startup refusal in :mod:`admz.__main__`.
+    """
+    if not host:
+        return False
+    host = host.strip().strip("[]")
+    if host.lower() == "localhost":
+        return True
+    try:
+        import ipaddress
+
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+class TestAuth(AuthBackend):
+    """Authenticates every request as a fixed synthetic principal (GH #140).
+
+    **Registered as the ``dev.test_auth`` advanced capability**, danger class
+    ``dev-only`` and env-only per the registry's asymmetry rule — it can never
+    be flipped from a browser. :func:`build_auth_backend` appends it to the
+    configured chain only while :func:`admz.capabilities.is_active` says so.
+
+    Why it exists: ADMZ deployments authenticate with ``windows-local``
+    (ADR-0035 Negotiate SSO), which a headless client cannot complete, so an
+    agent verifying the UI lands on the sign-in page and stops.
+    ``ADMZ_AUTH_BACKEND=none`` is not a workaround — its principal is
+    ``is_anonymous``, and every :func:`admz.authz.require_authenticated_principal`
+    surface (demo CRUD, the inference endpoints, capability listing) refuses
+    it. This backend yields a **real** :class:`Principal` of exactly the shape
+    :class:`SessionAuth` produces, so those surfaces behave normally.
+
+    What it is not: a security boundary, and not a way around the
+    confirmation gate. ADR-0034 is untouched — a ``url_only`` operation still
+    returns ``blocked: true`` under test auth. This changes *who the principal
+    is*, never *whether approval is required*.
+
+    Two things bound the exposure, and they are the reason this is safe enough
+    to ship:
+
+    * ``admz/__main__.py::_check_test_auth_bind`` **refuses to start** when
+      the capability is active and the bind address is not loopback. No
+      override — unlike ``ADMZ_AUTH_INSECURE_BIND_OK``, there is no legitimate
+      reason to expose a synthetic principal off-box.
+    * :meth:`authenticate` re-checks the *client* address on every request, so
+      the bypass cannot be reached from off-box even if the server was started
+      some other way (a bare ``uvicorn`` invocation, an embedding host). Same
+      reasoning as NFR-AUTH-005 for the trusted-proxies check: a startup check
+      alone goes stale the moment the network does.
+    """
+
+    #: Not a test case. pytest collects any class named ``Test*`` that a test
+    #: module imports; this is the same opt-out Starlette's ``TestClient``
+    #: uses for exactly the same reason.
+    __test__ = False
+
+    def __init__(
+        self,
+        name: str = TEST_AUTH_DEFAULT_NAME,
+        groups: Optional[List[str]] = None,
+    ):
+        self.name = name or TEST_AUTH_DEFAULT_NAME
+        self.groups = (
+            list(TEST_AUTH_DEFAULT_GROUPS) if groups is None else list(groups)
+        )
+
+    @classmethod
+    def from_env(cls) -> "TestAuth":
+        """Read the two companion vars declared on the capability row.
+
+        ``ADMZ_TEST_AUTH_GROUPS`` distinguishes *unset* (defaults apply) from
+        *set-but-empty* (a principal with no groups), because "authenticated
+        but unprivileged" is a case worth being able to test.
+        """
+        name = os.getenv("ADMZ_TEST_AUTH_USER", "").strip() or TEST_AUTH_DEFAULT_NAME
+        raw_groups = os.getenv("ADMZ_TEST_AUTH_GROUPS")
+        if raw_groups is None:
+            groups = list(TEST_AUTH_DEFAULT_GROUPS)
+        else:
+            groups = [g.strip() for g in raw_groups.split(",") if g.strip()]
+        return cls(name=name, groups=groups)
+
+    def principal(self) -> Principal:
+        """The synthetic principal, built the same way a real one is.
+
+        Reuses :func:`parse_windows_identity` for the ``DOMAIN\\user`` split
+        rather than inventing a parallel representation, then overrides
+        ``source`` so the audit log can tell a test principal from a real
+        Windows one at a glance.
+        """
+        try:
+            principal = parse_windows_identity(self.name)
+        except ValueError:  # pragma: no cover — name is never empty
+            principal = Principal(name=TEST_AUTH_DEFAULT_NAME, display_name="agent")
+        principal.groups = list(self.groups)
+        principal.source = "test"
+        principal.is_anonymous = False
+        return principal
+
+    async def authenticate(self, request) -> Principal:
+        client_host = getattr(getattr(request, "client", None), "host", None)
+        if not _is_loopback(client_host):
+            logger.warning(
+                "TestAuth: refusing a non-loopback request from %r. "
+                "dev.test_auth is active but the synthetic principal is only "
+                "ever handed to a caller on this box.",
+                client_host,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "Test auth (dev.test_auth) only authenticates requests "
+                    "originating from loopback."
+                ),
+            )
+        return self.principal()
 
 
 class ReverseProxyAuth(AuthBackend):
@@ -479,6 +623,36 @@ def _resolve_backend_name(env_value: Optional[str] = None) -> str:
     return "none"
 
 
+def _apply_test_auth(backend: AuthBackend) -> AuthBackend:
+    """Append :class:`TestAuth` to ``backend`` when ``dev.test_auth`` is on.
+
+    Off by default and structurally invisible when off: absent the capability
+    this returns the configured backend unchanged, so behaviour is identical
+    to an installation that has never heard of test auth.
+
+    When on, the rule is **last resort, never override**:
+
+    * a real credential still wins — ``TestAuth`` goes at the *end* of the
+      chain, so an API key or a session cookie authenticates as itself and the
+      audit log keeps saying who actually called;
+    * under ``ADMZ_AUTH_BACKEND=none`` it *replaces* :class:`NoAuth` rather
+      than following it. ``NoAuth`` never fails, so appending would be dead
+      code — and the anonymous principal it returns is precisely the thing
+      this capability exists to stop handing out (#140: anonymous mode is not
+      a workaround because it has no principal).
+    """
+    from admz import capabilities
+
+    if not capabilities.is_active("dev.test_auth"):
+        return backend
+    test = TestAuth.from_env()
+    if isinstance(backend, NoAuth):
+        return test
+    if isinstance(backend, CompositeAuth):
+        return CompositeAuth([*backend.backends, test])
+    return CompositeAuth([backend, test])
+
+
 def build_auth_backend(name: Optional[str] = None) -> AuthBackend:
     """Construct the configured backend.
 
@@ -486,7 +660,17 @@ def build_auth_backend(name: Optional[str] = None) -> AuthBackend:
     ``"none"``). The ``windows`` / ``api-key`` / ``composite`` options
     will land in Phases 4B and 4B′; calling them here falls back to
     NoAuth with a warning so partial deploys don't break.
+
+    The ``dev.test_auth`` capability (GH #140) layers on top of whatever is
+    configured — see :func:`_apply_test_auth`. It is deliberately **not** an
+    ``ADMZ_AUTH_BACKEND`` value: a dev-only bypass belongs in the capability
+    registry, where it is loud, audited, and impossible to select by accident.
     """
+    return _apply_test_auth(_build_configured_backend(name))
+
+
+def _build_configured_backend(name: Optional[str] = None) -> AuthBackend:
+    """The backend ``ADMZ_AUTH_BACKEND`` selects, with no capability layering."""
     resolved = _resolve_backend_name(name)
     if resolved == "none":
         return NoAuth()
@@ -627,6 +811,9 @@ __all__ = [
     "ApiKeyAuth",
     "SessionAuth",
     "CompositeAuth",
+    "TestAuth",
+    "TEST_AUTH_DEFAULT_NAME",
+    "TEST_AUTH_DEFAULT_GROUPS",
     "parse_windows_identity",
     "exempt_paths",
     "is_exempt",

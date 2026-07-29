@@ -164,6 +164,35 @@ Failures — unsupporting browser, disabled via `ADMZ_SSO_NEGOTIATE=0`,
 handshake error — fall back to the form with a gentle notice
 (`/login?sso=failed`); nothing else in the auth chain changes.
 
+### FR-AUTH-017 — Test auth mode: a synthetic principal for unattended agents ✅
+`windows-local` (FR-AUTH-013 / FR-AUTH-016) cannot be completed by a
+headless client, so an agent verifying the UI lands on the sign-in page
+and stops; `ADMZ_AUTH_BACKEND=none` is not a substitute because its
+principal is `is_anonymous` and every
+`require_authenticated_principal` surface refuses it. The
+**`dev.test_auth` advanced capability** (GH #140,
+`admz/capabilities.py`) closes that gap: with `ADMZ_TEST_AUTH=1`,
+`admz/auth.py::TestAuth` is appended to the configured chain and
+resolves an otherwise-unauthenticated request to a fixed synthetic
+principal — `test\agent` in the `Administrators` group by default,
+overridable with `ADMZ_TEST_AUTH_USER` / `ADMZ_TEST_AUTH_GROUPS` (an
+empty groups value yields a principal with none).
+
+- **Last resort, never override.** `TestAuth` goes at the *end* of the
+  chain, so a real API key or session cookie still authenticates as
+  itself and the audit log keeps naming the actual caller. Under
+  `ADMZ_AUTH_BACKEND=none` it *replaces* `NoAuth`, whose anonymous
+  principal is the thing the capability exists to stop handing out.
+- **Not an `ADMZ_AUTH_BACKEND` value.** It is a registry capability so
+  that it is declared, class `dev-only`, env-only (never a click in a
+  browser), and loud in all five of the registry's surfaces.
+- **Never softens a gate.** ADR-0034 applies in full — a `url_only`
+  operation still returns `blocked: true`. It changes *who the
+  principal is*, never *whether approval is required*.
+
+**Enforced at:** `admz/auth.py::TestAuth` / `_apply_test_auth`; guarded
+by NFR-AUTH-007.
+
 ## Non-functional requirements
 
 ### NFR-AUTH-001 — Startup refuses unsafe binds ✅
@@ -196,6 +225,25 @@ semantics.
 The reverse-proxy backend re-validates `request.client.host` on every
 authentication call, not just at startup. Prevents misconfigurations
 where a network change makes uvicorn temporarily reachable.
+
+### NFR-AUTH-007 — Test auth is unreachable from off-box ✅
+Two independent checks, because a test-auth bypass reachable from the
+network is the one failure mode of FR-AUTH-017 that actually matters:
+
+1. `admz/__main__.py::_check_test_auth_bind` exits with code 2 when
+   `dev.test_auth` is active and `--host` is not a loopback address,
+   naming the capability and its env var. **There is deliberately no
+   override** — unlike `ADMZ_AUTH_INSECURE_BIND_OK` (NFR-AUTH-001),
+   where a private-NIC deployment is a legitimate case, nothing
+   legitimately needs a synthetic principal exposed off-box.
+2. `TestAuth.authenticate` re-checks `request.client.host` on every
+   request and returns 401 for anything that is not loopback, so the
+   bypass stays unreachable even when the server is started some other
+   way (a bare `uvicorn` invocation, an embedding host). Same reasoning
+   as NFR-AUTH-005: a startup check goes stale the moment the launch
+   path changes. Loopback is `ipaddress.is_loopback` (the whole
+   `127.0.0.0/8` block) plus the literal `localhost`; an address that
+   does not parse is refused.
 
 ### NFR-AUTH-006 — All authenticated endpoints emit principal context to logs 📋
 Currently audit log carries this, but request logs do not. A future
@@ -283,6 +331,8 @@ login.
   [0035](../decisions/0035-negotiate-sso-login.md)
 - Cross-cutting: [security.md](security.md), [configuration.md](configuration.md)
 - Deployment: [`docs/DEPLOYMENT_WINDOWS.md`](../../DEPLOYMENT_WINDOWS.md)
+- Capability registry: [`docs/plans/advanced-switches.md`](../../plans/advanced-switches.md),
+  `admz/capabilities.py` (`dev.test_auth`, GH #140)
 - Code: `admz/auth.py`, `admz/api_keys.py`, `admz/audit.py`,
   `admz/ldap_groups.py`, `admz/win_auth.py`, `admz/win_sspi.py`,
   `admz/session_store.py`, `admz/api/routes/auth_web.py`,
