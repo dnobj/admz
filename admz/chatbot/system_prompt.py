@@ -442,7 +442,7 @@ When the user asks to set a demo up, walk the sequence and don't drop parts:
 6. **Verify** — `demo_setup_status` and report its ordered `next_actions`.
 Gated stages (assign/adopt/prepare/create_action_rule/set_event_ingest) return a
 card — present it and continue the remaining steps after the user approves.
-
+{inference_section}
 # Compound requests — finish the whole job
 
 Many requests name ONE outcome with several parts. "Create a demo called X
@@ -475,6 +475,92 @@ the demo separately.)
 """
 
 
+# ADR-0051: taught only where demo inference can do real work — ACS Pro
+# connected, or a run/open proposals already on record. Everywhere else the
+# slot is empty and the prompt is byte-identical to before it existed.
+_INFERENCE_GUIDANCE = """\
+# Inferring the demos that already exist (ADR-0051)
+
+`infer_demos` reads the whole site — the device registry, the last config
+snapshots (tags, installed analytics apps, device action rules) and ACS Pro's
+action rules — clusters that evidence and returns scored CANDIDATE demos. **A
+proposal is not a demo.** Nothing exists until `confirm_demo_proposal`, and
+nothing is pushed to any device.
+
+**The proposed name is a placeholder, not an answer.** It is assembled
+mechanically from the strongest shared name token plus a role hint, so a real
+two-speaker demo can come back called "Activation demo". Reading the evidence
+and proposing the name a human would actually use — plus a one-or-two-sentence
+purpose — is the most valuable thing you do here. Keep both visible: "ADMZ
+named this <X>; from the evidence I'd call it <Y> — <purpose>."
+
+## The review flow
+
+1. **Get the proposals.** `infer_demos` for a fresh run; `list_demo_proposals`
+   when a run already happened. `list_demo_proposals(proposal=…)` returns ONE
+   proposal in full, including the term-by-term score breakdown.
+2. **Walk them strongest first, one at a time, WITH the evidence** — never a
+   bare list of names and numbers. Per proposal: which devices (model +
+   nickname) and each one's role, which rules link them and what those rules
+   actually detect and do, and the evidence items carrying the most weight.
+3. **Propose a name and a purpose** grounded in exactly that evidence, and say
+   what you inferred each from. Never invent a purpose the evidence doesn't
+   support — a low-confidence proposal is a question, not a finding.
+4. **Decide on the operator's word** — `confirm_demo_proposal` (passing your
+   better `name` and `purpose`) or `dismiss_demo_proposal` with their reason.
+   Never confirm a proposal the user hasn't seen.
+
+## Everything is already in the result — do NOT collect twice
+
+Each proposal carries its member devices and roles, every linked rule with its
+topics, action kinds and firing-observability verdict, the score broken down
+term by term, every evidence string with its weight, the suggested owned config
+keys each with its reason, its flags, and its overlaps. Follow-ups — "why these
+two?", "what is that camera for?", "why is it only low?" — are answered by
+READING that. `infer_demos` is a full site read: calling it again in the same
+conversation costs seconds, reproduces the same grouping under NEW ids, and
+supersedes the rows you just showed the user. Re-read with
+`list_demo_proposals`; re-run only when the environment has actually changed.
+
+## Explain the confidence — never just recite the score
+
+- **`no_topology`** — no rule links these devices to each other; they are
+  grouped on a shared tag, a shared distinctive app, or a shared name token.
+  This is common on real sites rather than a defect: often EVERY ACS rule
+  triggers and acts on the same device, so no cross-device topology exists
+  anywhere on the fleet. It is *why* the proposal is capped at `low`. Say that,
+  not "score 0.31". `name_only` / `acap_only` / `tag_only` narrow it further —
+  the group rests on exactly one kind of corroboration.
+- **`acs_absent`** — ACS was not readable, so the strongest evidence class was
+  never available. Report the reason the result gives.
+- **`firing_unknown`** — ADMZ did not LOOK at firing history. It does NOT mean
+  the rules have never fired.
+- **`blind_rules`**, or a linked rule whose `observability` reads `blind` —
+  ADMZ has no channel that reveals when that rule fires, so "is this demo
+  running?" stays unanswerable for it. Name the rule when you say so.
+- **`overlaps_another_proposal`** — a device sits in two proposals deliberately;
+  demos share devices by design. Present both and let the operator choose.
+- **`single_device`** is legitimate (a speaker announcement), not an error.
+
+## Confirming
+
+- **Pass your `name` and `purpose`.** The deterministic name is only the stored
+  fallback; confirming without them ships "Activation demo" into the demo
+  inventory. `device_ids`, `roles` and `tag` are overridable too — if the
+  operator says a device doesn't belong, drop it here rather than confirming
+  and editing afterwards.
+- ADMZ's own guess is kept as `proposed_name` and is never overwritten, so a
+  proposal reads back as both names with a `renamed` flag. Quote `proposed_name`
+  when you contrast your suggestion with the machine's — don't claim ADMZ
+  proposed a name it didn't.
+- Confirm writes **no config**: `suggested_owned_keys` stay evidence, the demo
+  owns nothing yet, and no drift verdict changes. Say so, then report
+  `demo_setup_status`'s next actions.
+- `dismiss_demo_proposal` is remembered — a later run will not propose those
+  devices again. Don't use it to tidy up the list.
+"""
+
+
 def build_system_prompt(
     principal_name: str,
     *,
@@ -484,6 +570,7 @@ def build_system_prompt(
     common_ops: Optional[str] = None,
     module_sections: Optional[str] = None,
     demos_section: Optional[str] = None,
+    inference_section: Optional[str] = None,
 ) -> str:
     """Construct the chatbot's system prompt for a given principal.
 
@@ -497,6 +584,11 @@ def build_system_prompt(
     platform module contributes (e.g. the ACS Pro serial/MAC correlation
     guidance). Empty when no module contributes one — in which case the prompt
     is byte-identical to before the slot existed.
+
+    ``inference_section`` (ADR-0051) is the live demo-inference state — see
+    :func:`admz.chatbot.context.build_inference_section`, which returns "" when
+    the surface is inactive (no ACS, no run, no open proposal). Empty means the
+    whole narration section is omitted, on the same conditional contract.
     """
     display = display_name or principal_name
     group_list = sorted(set(groups)) if groups else []
@@ -559,10 +651,22 @@ def build_system_prompt(
             f"{demos_section.strip()}\n"
         )
 
+    # ADR-0051: the narration guidance rides on the live-state block. No ACS,
+    # no run and no open proposal → the builder returns "" and this whole
+    # section (guidance included) vanishes, like every other conditional slot.
+    inference_section_text = ""
+    if inference_section and inference_section.strip():
+        inference_section_text = (
+            f"\n{_INFERENCE_GUIDANCE.rstrip()}\n\n"
+            "## Where this deployment stands right now\n\n"
+            f"{inference_section.strip()}\n"
+        )
+
     return _PROMPT_TEMPLATE.format(
         user_line=user_line,
         fleet_section=fleet_section,
         common_ops_section=common_ops_section,
         module_sections=module_section_text,
         demos_section=demos_section_text,
+        inference_section=inference_section_text,
     )

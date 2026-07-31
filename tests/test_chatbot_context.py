@@ -180,6 +180,116 @@ class TestCommonOpsReference:
 
 
 # --------------------------------------------------------------------------
+# demo-inference live state (ADR-0051) — the switch the narration section
+# rides on: "" here means the whole prompt section vanishes.
+# --------------------------------------------------------------------------
+
+class _FakeProposalStore:
+    def __init__(self, rows=()):
+        self._rows = list(rows)
+
+    def list(self, status=None, limit=200):
+        return self._rows[:limit]
+
+
+class _FakeRunStore:
+    def __init__(self, run=None):
+        self._run = run
+
+    def latest(self):
+        return self._run
+
+
+class _FakeCtx:
+    def __init__(self, proposals=(), run=None):
+        self.proposal_store = _FakeProposalStore(proposals)
+        self.inference_run_store = _FakeRunStore(run)
+
+
+def _prop(pid="ab12", name="Activation demo", devices=("d1", "d2"),
+          confidence="low", flags=("no_topology", "acap_only")):
+    from admz.demos.inference.proposals import DemoProposal
+
+    return DemoProposal(id=pid, name=name, device_ids=list(devices),
+                        confidence=confidence, flags=list(flags))
+
+
+def _run(run_id="r1", **kw):
+    from admz.demos.inference.runs import InferenceRun
+
+    return InferenceRun(id=run_id, mode="fast", status="complete",
+                        device_count=11, rule_count=26, edge_count=10,
+                        started_at=kw.pop("started_at", 0.0), **kw)
+
+
+@pytest.fixture
+def _wire(monkeypatch):
+    """Point build_inference_section at fakes for the app ctx + the ACS flag."""
+    def _apply(*, proposals=(), run=None, acs=False):
+        import admz.api.context as api_ctx
+        import admz.modules.acs_pro.config as acs_config
+
+        monkeypatch.setattr(api_ctx, "get_context",
+                            lambda: _FakeCtx(proposals, run))
+        monkeypatch.setattr(acs_config, "acs_enabled", lambda: acs)
+    return _apply
+
+
+class TestInferenceSection:
+    def test_inactive_surface_returns_empty(self, _wire):
+        """No ACS, no run, no proposal -> the section (and the narration
+        guidance riding on it) is absent entirely."""
+        _wire(acs=False)
+        assert ctx.build_inference_section() == ""
+
+    def test_acs_connected_activates_it_before_any_run(self, _wire):
+        _wire(acs=True)
+        out = ctx.build_inference_section()
+        assert "ACS Pro is connected" in out
+        assert "No inference run has happened yet" in out
+        assert "infer_demos" in out
+
+    def test_a_past_run_activates_it_without_acs(self, _wire):
+        _wire(acs=False, run=_run())
+        out = ctx.build_inference_section()
+        # The degradation must be named, not silently implied.
+        assert "ACS Pro is NOT connected" in out and "acs_absent" in out
+        assert "`r1`" in out and "11 device(s)" in out and "10 edge(s)" in out
+
+    def test_open_proposals_are_listed_with_confidence_and_flags(self, _wire):
+        _wire(acs=True, run=_run(), proposals=[_prop()])
+        out = ctx.build_inference_section()
+        assert "1 proposal(s) awaiting a decision" in out
+        assert "Activation demo (ab12) — low" in out
+        assert "flags: no_topology, acap_only" in out
+        # The point of the whole slice: the stored name is a placeholder.
+        assert "DETERMINISTIC placeholder" in out
+        # And re-reading is not re-running.
+        assert "do NOT re-run inference" in out
+
+    def test_proposal_list_is_bounded(self, _wire):
+        rows = [_prop(pid=f"p{i}", name=f"Demo {i}") for i in range(12)]
+        _wire(acs=True, run=_run(), proposals=rows)
+        out = ctx.build_inference_section()
+        assert out.count("\n- ") == ctx._MAX_INFERENCE_PROPOSALS + 1  # +1 = the "…and more" line
+        assert "…and more" in out
+        assert "8+ proposal(s)" in out
+
+    def test_no_open_proposals_says_so(self, _wire):
+        _wire(acs=True, run=_run())
+        assert "No proposal is open" in ctx.build_inference_section()
+
+    def test_store_failure_degrades_to_empty(self, monkeypatch):
+        import admz.api.context as api_ctx
+
+        def _boom():
+            raise RuntimeError("db locked")
+
+        monkeypatch.setattr(api_ctx, "get_context", _boom)
+        assert ctx.build_inference_section() == ""
+
+
+# --------------------------------------------------------------------------
 # smart result capping (client.py)
 # --------------------------------------------------------------------------
 

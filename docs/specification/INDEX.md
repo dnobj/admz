@@ -31,7 +31,7 @@ Workflows the system must support. Grouped by area.
 - [LLM-driven configuration](user-stories/llm-driven-configuration.md) — catalog query → execute → confirm
 - [Chatbot-driven workflows](user-stories/chatbot-driven-workflows.md) ✅ — what the bundled chat client delivers
 - [Network discovery](user-stories/network-discovery.md) — finding devices on the local network
-- [Demo workflows](user-stories/demo-workflows.md) — Experience Center-specific demo/tag/restore patterns
+- [Demo workflows](user-stories/demo-workflows.md) — Experience Center-specific demo/tag/restore patterns, plus inferring the demos a site already runs (US-DW-013)
 - [Drift and monitoring](user-stories/drift-and-monitoring.md) — configuration audits (just-in-time + scheduled), detecting and reconciling unauthorized changes
 - [Fleet monitoring](user-stories/fleet-monitoring.md) ✅ — "which devices are online right now?" from a maintained status table
 - [Device recovery](user-stories/device-recovery.md) ✅ — "is it back up yet?" after an approved reboot (#49)
@@ -136,6 +136,7 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 - [0028 — Demo / activity tracking as a bounded module on ADMZ's shared substrate](decisions/0028-demo-activity-tracking-shared-substrate.md) 📋 — AEC demo-session detection and reporting; reuses ACS layer, inventory, and UI chrome; runs as a separate, independently-deployable module
 - [0046 — Demos (the experience-center unit of work)](decisions/0046-demos.md) ✅ — the demo as a first-class object composing Scenario (config) + detections (signal); readiness as a pure rollup over the drift/health caches; Prepare/End delegate to a shared gated scenario core. ADR-0041 Layer 4, phase 1 (liveness deferred)
 - [0047 — Demo-owned config fragments (composition + attribution)](decisions/0047-demo-config-fragments.md) ✅ — a demo owns a sparse key-set over each device's base; expected = base ⊕ active demos' keys; every drifted key attributed (set-by-demo / demo-broken / looks-like-demo / unclaimed) — the mechanical answer to "drifted or deliberately changed?". Capture from the drift diff; adopt without pushing; accept-baseline guard. Slices 1–2 shipped (activation pushes staged)
+- [0051 — Infer the demos that already exist: deterministic collection, agent narration](decisions/0051-demo-inference.md) ✅ — read the registry, snapshots and ACS action rules into a weighted evidence graph, cluster it into scored **proposals** in their own tables (never `demos`, which drift attribution walks), and let the agent narrate name + purpose from the evidence; confirm composes the existing demo/rule write cores and writes no fragments. Two live findings drive the constants: zero rule-expressed topology on the reference fleet, and corroborating evidence does not chain (#124)
 
 ### Discovery
 

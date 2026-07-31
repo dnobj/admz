@@ -464,7 +464,8 @@ def persist_proposals(ctx: Any, run, proposal_store, *,
             continue
         proposal = DemoProposal(
             id=draft["id"], run_id=run.id, content_key=draft["content_key"],
-            name=draft["name"], purpose="", device_ids=draft["members"],
+            name=draft["name"], proposed_name=draft["name"], purpose="",
+            device_ids=draft["members"],
             roles=draft["roles"], rules=draft["rules"],
             evidence=draft["evidence"],
             suggested_owned_keys=draft["suggested_owned_keys"],

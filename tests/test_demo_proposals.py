@@ -66,6 +66,45 @@ class TestProposalStore:
         assert [p.id for p in store.list()] == ["b", "a"]
         assert [p.id for p in store.list(status=None)] == ["b", "c", "a"]
 
+    def test_proposed_name_is_backfilled_from_the_name_at_creation(self, store):
+        store.upsert(_proposal(name="Activation demo"))
+        got = store.get("p1")
+        assert got.proposed_name == "Activation demo"
+        assert got.to_dict()["renamed"] is False
+
+    def test_decide_never_touches_proposed_name(self, store):
+        """ADMZ's own guess is the only way to answer "was the deterministic
+        namer any good?" after the fact — a rename must not destroy it."""
+        store.upsert(_proposal(name="Activation demo"))
+        store.decide("p1", STATUS_CONFIRMED, decided_by="alice",
+                     name="Speaker announcement demo")
+        got = store.get("p1")
+        assert got.name == "Speaker announcement demo"
+        assert got.proposed_name == "Activation demo"
+        assert got.summary()["renamed"] is True
+
+    def test_the_proposed_name_column_migrates_idempotently(self, tmp_path):
+        """House try-ALTER pattern: a DB created by an older build gains the
+        column, and re-opening it repeatedly is a no-op that keeps the data."""
+        import sqlite3
+
+        db = str(tmp_path / "admz.db")
+        first = ProposalStore(db_path=db)
+        first.upsert(_proposal(name="Activation demo"))
+
+        # Simulate the pre-column build: drop it and re-open twice.
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute("ALTER TABLE demo_proposals DROP COLUMN proposed_name")
+            conn.commit()
+        finally:
+            conn.close()
+        assert ProposalStore(db_path=db).get("p1").proposed_name == ""
+        again = ProposalStore(db_path=db)
+        assert again.get("p1").proposed_name == ""   # legacy row stays honest
+        assert again.get("p1").name == "Activation demo"
+        assert again.get("p1").to_dict()["renamed"] is False
+
     def test_decide_records_who_and_when(self, store):
         store.upsert(_proposal())
         got = store.decide("p1", STATUS_CONFIRMED, decided_by="alice",
@@ -193,6 +232,113 @@ class TestConfirm:
         demo = ctx.demo_store.get(out["demo"]["id"])
         assert demo.name == "Reception greeting" and demo.narrative == "What we say"
         assert demo.device_ids == ["cam"] and demo.roles == {"cam": "greeter"}
+
+    # ── rename-on-confirm (ADR-0051 — the agent narration surface) ──────────
+    #
+    # The deterministic name is a serviceable PLACEHOLDER, not a good name (the
+    # reference fleet's two-speaker demo comes back "Activation demo"). Slice 4
+    # lets the agent hand a better name + a purpose narrative at confirm time —
+    # and the fallback has to keep working with no LLM in the loop at all.
+
+    def test_the_deterministic_name_survives_when_nothing_is_supplied(self,
+                                                                      tmp_path):
+        """No LLM, no override: the stored name and empty purpose are used
+        verbatim, on both the demo and the proposal row."""
+        from admz.demos.inference.confirm import confirm_proposal_core
+
+        ctx = _Ctx(tmp_path)
+        proposal = ctx.proposal_store.upsert(_proposal(name="Activation demo"))
+        out = confirm_proposal_core(ctx, proposal, "alice")
+
+        demo = ctx.demo_store.get(out["demo"]["id"])
+        assert demo.name == "Activation demo" and demo.narrative == ""
+        row = ctx.proposal_store.get("p1")
+        assert row.name == "Activation demo" and row.purpose == ""
+        assert row.proposed_name == "Activation demo"
+        assert out["proposal"]["renamed"] is False
+
+    def test_a_better_name_and_purpose_are_recorded_on_both_sides(self, tmp_path):
+        """The renamed proposal must not read back as the placeholder — the
+        audit trail is "ADMZ guessed X, the operator confirmed Y"."""
+        from admz.demos.inference.confirm import confirm_proposal_core
+
+        ctx = _Ctx(tmp_path)
+        proposal = ctx.proposal_store.upsert(_proposal(name="Activation demo"))
+        out = confirm_proposal_core(
+            ctx, proposal, "alice", name="Speaker announcement demo",
+            purpose="The C1110-E detects and the C1710 announces.")
+
+        demo = ctx.demo_store.get(out["demo"]["id"])
+        assert demo.name == "Speaker announcement demo"
+        assert demo.narrative == "The C1110-E detects and the C1710 announces."
+        row = ctx.proposal_store.get("p1")
+        assert row.name == "Speaker announcement demo"
+        assert row.purpose == "The C1110-E detects and the C1710 announces."
+        assert out["proposal"]["name"] == "Speaker announcement demo"
+        # …and ADMZ's own guess survives the rename, with both names on the view.
+        assert row.proposed_name == "Activation demo"
+        assert out["proposal"]["proposed_name"] == "Activation demo"
+        assert out["proposal"]["renamed"] is True
+
+    def test_confirming_records_both_names_in_the_audit_event(self, tmp_path,
+                                                              monkeypatch):
+        """The record itself has to tell the story — what ADMZ guessed and what
+        the human accepted — or the naming layer can't be evaluated later."""
+        from admz.demos.inference import confirm as confirm_mod
+
+        import admz.audit as audit
+
+        events = []
+        monkeypatch.setattr(audit, "record_event",
+                            lambda *a, **k: events.append((a, k)))
+        ctx = _Ctx(tmp_path)
+        confirm_mod.confirm_proposal_core(
+            ctx, ctx.proposal_store.upsert(_proposal(name="Activation demo")),
+            "alice", name="Speaker announcement demo")
+
+        details = next(k["details"] for a, k in events
+                       if a[1] == "demo.proposal_confirm")
+        assert details["proposed_name"] == "Activation demo"
+        assert details["name"] == "Speaker announcement demo"
+        assert details["renamed"] is True
+
+    def test_a_purpose_alone_keeps_the_deterministic_name(self, tmp_path):
+        """Narration is per-field: writing only the narrative must not blank or
+        rewrite the fallback name."""
+        from admz.demos.inference.confirm import confirm_proposal_core
+
+        ctx = _Ctx(tmp_path)
+        proposal = ctx.proposal_store.upsert(_proposal(name="Activation demo"))
+        out = confirm_proposal_core(ctx, proposal, "alice",
+                                    purpose="What the presenter says.")
+        demo = ctx.demo_store.get(out["demo"]["id"])
+        assert demo.name == "Activation demo"
+        assert demo.narrative == "What the presenter says."
+
+    def test_a_pre_written_purpose_on_the_proposal_carries_into_the_demo(self,
+                                                                        tmp_path):
+        from admz.demos.inference.confirm import confirm_proposal_core
+
+        ctx = _Ctx(tmp_path)
+        proposal = ctx.proposal_store.upsert(
+            _proposal(purpose="Narrated earlier in the review."))
+        out = confirm_proposal_core(ctx, proposal, "alice")
+        assert ctx.demo_store.get(out["demo"]["id"]).narrative == (
+            "Narrated earlier in the review.")
+
+    def test_a_blank_name_override_is_rejected_not_silently_accepted(self,
+                                                                     tmp_path):
+        """An empty rename would mint an unresolvable demo (every demo tool
+        addresses demos by name)."""
+        from admz.demos.actions import DemoActionError
+        from admz.demos.inference.confirm import confirm_proposal_core
+
+        ctx = _Ctx(tmp_path)
+        proposal = ctx.proposal_store.upsert(_proposal())
+        with pytest.raises(DemoActionError):
+            confirm_proposal_core(ctx, proposal, "alice", name="   ")
+        assert ctx.demo_store.list() == []
+        assert ctx.proposal_store.get("p1").status == STATUS_PROPOSED
 
     def test_devices_deleted_since_the_run_are_skipped_and_reported(self, tmp_path):
         from admz.demos.inference.confirm import confirm_proposal_core
@@ -452,6 +598,21 @@ class TestProposalRoutes:
         assert client.get("/api/demos/proposals/p1").json()[
             "proposal"]["status"] == "confirmed"
 
+    def test_confirm_body_carries_the_narrated_name_and_purpose(self, client, ctx):
+        """The REST twin of the chat rename path (ADR-0051) — same core, so the
+        console and the agent cannot diverge."""
+        _add_device(ctx, "cam")
+        _add_device(ctx, "spk")
+        _seed(ctx)
+        res = client.post("/api/demos/proposals/p1/confirm",
+                          json={"name": "Speaker announcement demo",
+                                "purpose": "Camera detects, speaker announces."})
+        assert res.status_code == 200
+        demo = client.get("/api/demos").json()["demos"][0]
+        assert demo["name"] == "Speaker announcement demo"
+        assert client.get("/api/demos/proposals/p1").json()["proposal"][
+            "purpose"] == "Camera detects, speaker announces."
+
     def test_confirm_is_ungated_no_approval_envelope(self, client, ctx):
         """Inert by the ADR-0046 bar: metadata only, `active` stays False, no
         fragment is written — so it must NOT return a blocked envelope."""
@@ -542,6 +703,17 @@ class TestMcpTools:
         assert detail["proposal"]["score_breakdown"] == {}
         assert detail["proposal"]["suggested_owned_keys"]
 
+    def test_the_agent_view_carries_both_names(self, server):
+        """So the model can contrast its suggestion with ADMZ's guess without
+        having to remember what the guess was."""
+        server.components.proposal_store.upsert(_proposal(name="Activation demo"))
+        server.components.proposal_store.decide(
+            "p1", "proposed", decided_by="", name="Speaker announcement demo")
+        view = server._list_demo_proposals()["proposals"][0]
+        assert view["name"] == "Speaker announcement demo"
+        assert view["proposed_name"] == "Activation demo"
+        assert view["renamed"] is True
+
     def test_confirm_and_dismiss_through_mcp(self, server):
         for did in ("cam", "spk"):
             server.registry.add_device(did, {"host": "192.0.2.1", "nickname": did,
@@ -566,3 +738,44 @@ class TestMcpTools:
         for name in ("infer_demos", "list_demo_proposals",
                      "confirm_demo_proposal", "dismiss_demo_proposal"):
             assert name in TOOL_HANDLERS
+
+    # ── rename-on-confirm reaches the tool surface (ADR-0051) ───────────────
+
+    def test_confirm_schema_takes_an_optional_name_and_purpose(self):
+        """No schema change was needed for slice 4 — but the narration flow
+        depends on both staying optional (the deterministic name is the
+        no-LLM fallback), so pin it."""
+        from admz.mcp.tools.demos import TOOLS
+
+        tool = next(t for t in TOOLS if t.name == "confirm_demo_proposal")
+        props = tool.inputSchema["properties"]
+        assert props["name"]["type"] == "string"
+        assert props["purpose"]["type"] == "string"
+        assert tool.inputSchema["required"] == ["proposal"]
+        # The description has to say the stored name is a placeholder, or the
+        # model happily confirms "Activation demo" forever.
+        assert "PLACEHOLDER" in tool.description
+
+    def test_confirm_through_mcp_carries_the_narrated_name_and_purpose(self,
+                                                                       server):
+        for did in ("cam", "spk"):
+            server.registry.add_device(did, {"host": "192.0.2.1", "nickname": did,
+                                             "model": "AXIS TEST", "tags": []})
+        server.components.proposal_store.upsert(_proposal(name="Activation demo"))
+        out = server._confirm_demo_proposal({
+            "proposal": "Activation demo", "name": "Speaker announcement demo",
+            "purpose": "The camera detects; the speaker announces."})
+        assert out["success"] is True
+        demo = server.components.demo_store.list()[0]
+        assert demo.name == "Speaker announcement demo"
+        assert demo.narrative == "The camera detects; the speaker announces."
+
+    def test_confirm_through_mcp_without_a_name_keeps_the_placeholder(self,
+                                                                      server):
+        for did in ("cam", "spk"):
+            server.registry.add_device(did, {"host": "192.0.2.1", "nickname": did,
+                                             "model": "AXIS TEST", "tags": []})
+        server.components.proposal_store.upsert(_proposal(name="Activation demo"))
+        out = server._confirm_demo_proposal({"proposal": "p1"})
+        assert out["success"] is True
+        assert server.components.demo_store.list()[0].name == "Activation demo"
