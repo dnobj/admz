@@ -287,6 +287,9 @@ const _driftCache = {};
 const HEALTH = {
   online:      { sem: 'green', label: 'Online', bucket: 'online' },
   unreachable: { sem: 'red',   label: 'Unreachable', bucket: 'attention' },
+  // Up, but ADMZ can't speak its API (GH #138) — amber, never the red of an
+  // outage, and it still wants attention: ADMZ cannot manage this device.
+  reachable_no_api: { sem: 'amber', label: 'Reachable, no API', bucket: 'attention' },
   auth_failed: { sem: 'amber', label: 'Auth failed', bucket: 'attention' },
   needs_setup: { sem: 'amber', label: 'Needs setup', bucket: 'attention' },
   unknown:     { sem: 'grey',  label: 'Unknown', bucket: 'unknown' },

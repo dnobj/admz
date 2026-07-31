@@ -107,7 +107,10 @@ Cached reachability status for one device (from the background health
 monitor — no network call fires).
 - **Args:** `device_id`
 - **Returns:** `{success, device_id, status, ...}`
-- **Status values:** `online`, `unreachable`, `auth_failed`, `unknown`
+- **Status values:** `online`, `unreachable` (the host did not answer at
+  all), `reachable_no_api` (the host IS up but doesn't speak usable VAPIX —
+  e.g. a T85 PoE switch; ADMZ can't manage it, but it is *not* offline),
+  `auth_failed`, `needs_setup`, `unknown`
 
 ### `get_fleet_health`
 Cached reachability status for every registered device.

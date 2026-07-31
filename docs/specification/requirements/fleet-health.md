@@ -20,21 +20,44 @@ Full history is the audit log's / a future time-series store's job.
 
 ### FR-HLT-002 — Coarse reachability status ✅
 `DeviceHealthStatus` ∈ `online` | `unreachable` (no TCP connect) |
-`auth_failed` (TCP up, VAPIX rejected creds) | `unknown` (never checked).
-Status reflects the last successful probe; `last_seen_online` advances on
-each `online` result so operators can read "was online 2 minutes ago" for
-flapping devices.
+`reachable_no_api` (host answered, but not with usable VAPIX) |
+`auth_failed` (TCP up, VAPIX rejected creds) | `needs_setup` (reachable but
+factory-defaulted) | `unknown` (never checked).
+Status reflects the last successful probe; `last_seen_online` is the
+**reachability** clock — it advances on every result that proved the host
+answered (`online`, `auth_failed`, `needs_setup`, `reachable_no_api`), so
+operators can read "was online 2 minutes ago" for flapping devices. It says
+the host replied; it asserts nothing about what ADMZ verified.
 
 ### FR-HLT-003 — Two-tier probe ✅
 `probe_device` (`admz/fleet/health.py`):
 1. **Authenticated tier** — if stored credentials + catalog + executor are
    available, call `systemready.cgi:systemReady`. Success → `online` with
    `uptime_seconds`/`bootid`; `401` → `auth_failed`; connect failure →
+   `unreachable`; any other failure → the reachability confirmation of
+   FR-HLT-009.
+2. **TCP tier** — otherwise a bare TCP connect to the device's effective
+   port (`_probe_port`: an explicit `port`, else 443 when the learned scheme
+   is https, else 80). Connect OK → `online` (no uptime info); fail →
    `unreachable`.
-2. **TCP tier** — otherwise a bare TCP connect to `host:80`. Connect OK →
-   `online` (no uptime info); fail → `unreachable`.
 The TCP fallback means a device with no stored creds still yields an
 "the IP is up" signal.
+
+### FR-HLT-009 — Reachability is never inferred from an API failure ✅
+"Is the host up?" and "can ADMZ speak its API?" are separate questions and
+never share a verdict (GH #138). When the authenticated tier fails with
+anything other than a connect-class error — an unparsable body, an unexpected
+content type, an unexpected-but-valid HTTP status — `probe_device` **confirms
+reachability with a TCP connect** rather than reading the error string:
+connect OK → `reachable_no_api`, connect fail → `unreachable`. So
+`unreachable` keeps its documented meaning (the host did not answer), and a
+record can never carry a measured `latency_ms` while claiming the device is
+unreachable. `reachable_no_api` advances `last_seen_online` and does **not**
+accumulate `consecutive_failures` — it is a settled state, not a failing
+probe. The UI renders it amber ("Reachable, no API") in the *needs attention*
+bucket: up, but ADMZ can't manage it. Real-world case: the AXIS T8516 PoE
+switch, which answers HTTP in ~80 ms with an HTML login page and had logged
+10,795 consecutive "failures" while never once reading as reachable.
 
 ### FR-HLT-008 — Auth-aware: a `systemready` 200 is not proof of valid creds ✅
 On some Axis firmware `systemready.cgi:systemReady` answers `200` **without
@@ -74,9 +97,12 @@ Devices the monitor hasn't checked report `status="unknown"` with a note
 pointing at the fleet flag / the sweep endpoint.
 
 ### FR-HLT-007 — Failure-counter continuity across sweeps ✅
-Each sweep preserves the prior `last_seen_online` and increments
-`consecutive_failures` when a probe fails, so a device down for several
-cycles shows a rising failure count rather than resetting each sweep.
+Each sweep carries the prior `last_seen_online` forward **when the new probe
+didn't establish one** (a fresh reachability stamp is never overwritten by a
+stale one) and increments `consecutive_failures` when a probe fails, so a
+device down for several cycles shows a rising failure count rather than
+resetting each sweep. `online` and `reachable_no_api` reset the counter —
+both are settled answers, not failures.
 
 ## Non-functional requirements
 
@@ -103,6 +129,14 @@ the intended owner; pool-spawned MCP subprocesses should not run their own
 (see the scheduler's `ADMZ_MCP_NO_SCHEDULER` pattern — the health monitor is
 gated behind its opt-in fleet flag, which subprocesses inherit but typically
 leave off).
+
+### KL-HLT-004 — `reachable_no_api` is only reachable from the authenticated tier ⚠️
+The status is produced when the *authenticated* probe gets an unusable answer.
+The credential-less TCP tier still reports a bare connect as `online`
+(FR-HLT-003 §2) — "no credentials stored yet" is a different situation from
+"this device doesn't speak VAPIX", and reclassifying it would relabel every
+device awaiting credential capture. Per-device-class probes (a plain `GET /`
+for a T85, say) and per-class credential verification are GH #15.
 
 ### KL-HLT-003 — No push alerting ⚠️
 Health is pull-based current-state. Transition alerting (online→unreachable

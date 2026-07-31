@@ -322,6 +322,8 @@
 <script>
 const HEALTH = {
   online:{sem:'green',label:'Online'}, unreachable:{sem:'red',label:'Unreachable'},
+  // Up, but not speaking VAPIX (GH #138) — amber, not the red of an outage.
+  reachable_no_api:{sem:'amber',label:'Reachable, no API'},
   auth_failed:{sem:'amber',label:'Auth failed'}, needs_setup:{sem:'amber',label:'Needs setup'},
   unknown:{sem:'grey',label:'Unknown'},
 };

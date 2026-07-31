@@ -17,19 +17,30 @@ from typing import Any, Dict, List, Optional
 
 
 # Health → semantic colour key (mirrors tokens.jsx HEALTH map).
+# Keys are the raw ``DeviceHealthStatus`` values (underscored) plus the
+# hyphenated spellings older callers pass. ``reachable_no_api`` is amber, not
+# red (GH #138): the device is demonstrably up — ADMZ just can't speak its
+# API — so it belongs with the other "needs attention" states, never with a
+# network outage.
 HEALTH_SEM = {
     "online": "green",
     "unreachable": "red",
+    "reachable_no_api": "amber",
+    "auth_failed": "amber",
     "auth-failed": "amber",
     "authfail": "amber",
+    "needs_setup": "amber",
     "unknown": "grey",
     None: "grey",
 }
 HEALTH_LABEL = {
     "online": "Online",
     "unreachable": "Unreachable",
+    "reachable_no_api": "Reachable, no API",
+    "auth_failed": "Auth failed",
     "auth-failed": "Auth failed",
     "authfail": "Auth failed",
+    "needs_setup": "Needs setup",
     "unknown": "Unknown",
 }
 
