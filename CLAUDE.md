@@ -4,7 +4,7 @@ Durable facts an assistant session needs before touching this repo. Read this fi
 
 ## Orchestration
 
-This project runs the **[code-teem](https://github.com/pettheory/code-teem) playbook, pinned at `v0.3.0`** — a persistent Master session coordinates Plan / Build / Test / Investigate specialists. The project-specific adaptation lives in [`docs/specification/orchestration.md`](docs/specification/orchestration.md); the spec↔issue workflow is [`docs/specification/process.md`](docs/specification/process.md).
+This project runs the **[code-teem](https://github.com/pettheory/code-teem) playbook, pinned at `v0.4.1`** — a persistent Master session coordinates Plan / Build / Test / Investigate specialists. The project-specific adaptation lives in [`docs/specification/orchestration.md`](docs/specification/orchestration.md); the spec↔issue workflow is [`docs/specification/process.md`](docs/specification/process.md).
 
 Practical consequences:
 
@@ -79,3 +79,5 @@ Load-bearing invariants worth knowing before you start:
 Staging is the place to exercise the web UI. ADMZ authenticates with `windows-local` (Negotiate SSO), which a headless client cannot complete — so by default a browser session needs a human to sign in once, after which an agent can drive that authenticated tab.
 
 For **unattended** verification, staging can run with `ADMZ_TEST_AUTH=1`: the `dev.test_auth` capability resolves an unauthenticated request to a synthetic `test\agent` principal, so an agent can drive the UI with no human step. It is dev-only, loud in all five capability surfaces, and the server **refuses to start** with it active on a non-loopback bind — production must never see it. It changes who the principal is, never whether a confirmation gate fires.
+
+That principal is **authenticated but unprivileged — no group membership by default**. Reveal-gated surfaces (plaintext credentials, `/settings/advanced`) therefore refuse it, which is deliberate: staging carries a copy of real device credentials. Grant membership explicitly with `ADMZ_TEST_AUTH_GROUPS` when a specific authz path has to be exercised, so the privilege stays visible at the point of use.
