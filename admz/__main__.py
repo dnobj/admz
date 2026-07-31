@@ -263,6 +263,48 @@ def _check_bind_safety(host: str) -> None:
     sys.exit(2)
 
 
+def _check_test_auth_bind(host: str) -> None:
+    """Refuse to start with ``dev.test_auth`` active on a non-loopback bind.
+
+    The ``dev.test_auth`` capability (GH #140) resolves any unauthenticated
+    request to a fixed synthetic principal so an agent can drive a staging
+    instance without a human sign-in. Reachable only from this box that is a
+    convenience; reachable from the network it is an open door with a real
+    principal behind it — the one failure mode of this feature that actually
+    matters. The check is cheap and unambiguous, so it is a refusal.
+
+    Modelled on :func:`_check_bind_safety`, with one deliberate difference:
+    **there is no override.** ``ADMZ_AUTH_INSECURE_BIND_OK`` exists because a
+    reverse-proxy deployment can legitimately need a non-loopback bind on a
+    private NIC. Nothing legitimately needs a synthetic test principal exposed
+    off-box; an escape hatch here would only ever be used by mistake. Turn the
+    capability off instead.
+    """
+    from admz import capabilities
+    from admz.auth import _is_loopback
+
+    if not capabilities.is_active("dev.test_auth"):
+        return
+    if _is_loopback(host):
+        return
+    cap = capabilities.get("dev.test_auth")
+    print(
+        f"\nRefusing to start: advanced capability dev.test_auth is active "
+        f"and --host {host} is not a loopback address.\n\n"
+        f"{cap.description}\n\n"
+        "Exposing that principal to the network would let any caller act as "
+        "an authenticated ADMZ user. There is deliberately no override for "
+        "this one.\n\n"
+        "Fix one of:\n"
+        "  1. Bind to 127.0.0.1 (the default); test auth is only ever "
+        "meant for a client on this box.\n"
+        f"  2. Unset {cap.env_var} on the ADMZ service and restart to turn "
+        "the capability off.\n",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def run_api_key(args):
     """Manage API keys from the CLI.
 
@@ -377,6 +419,7 @@ def run_api_server(args):
     configure_logging()
 
     _check_bind_safety(args.host)
+    _check_test_auth_bind(args.host)
 
     # Propagate the live bind address to the MCP subprocess so the
     # capture/confirm URLs the LLM hands the user point at the actual

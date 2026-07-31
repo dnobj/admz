@@ -148,6 +148,36 @@ CAPABILITIES: Tuple[Capability, ...] = (
         ),
     ),
     Capability(
+        id="dev.test_auth",
+        title="Test auth mode",
+        description=(
+            "Resolves any otherwise-unauthenticated request to a fixed "
+            "synthetic principal (test\\agent by default), so an unattended "
+            "agent can drive a staging instance without a human sign-in."
+        ),
+        danger="dev-only",
+        production_appropriate=False,
+        enable_via=("env",),
+        env_var="ADMZ_TEST_AUTH",
+        companion_env=("ADMZ_TEST_AUTH_USER", "ADMZ_TEST_AUTH_GROUPS"),
+        since="#140",
+        notes=(
+            "Exists because windows-local (ADR-0035 Negotiate SSO) cannot be "
+            "completed headlessly, and ADMZ_AUTH_BACKEND=none is not a "
+            "substitute: the anonymous principal is refused by every "
+            "require_authenticated_principal surface. This yields a real "
+            "principal instead. It never softens a confirmation gate — "
+            "ADR-0034 applies in full; it changes WHO the caller is, never "
+            "whether approval is required. The synthetic principal has NO "
+            "group membership by default, so it is refused by reveal-gated "
+            "surfaces and cannot read plaintext device credentials; grant "
+            "groups explicitly via ADMZ_TEST_AUTH_GROUPS when a specific "
+            "authz path must be exercised. Regardless, admz/__main__.py "
+            "refuses to start the server at all when this is active and the "
+            "bind address is not loopback, with no override."
+        ),
+    ),
+    Capability(
         id="test.no_onboarding_probes",
         title="Onboarding probes suppressed",
         description=(
