@@ -187,11 +187,18 @@ class NoAuth(AuthBackend):
 #: unmistakable at a glance.
 TEST_AUTH_DEFAULT_NAME = "test\\agent"
 
-#: Default group membership. ``Administrators`` is in the default reveal
-#: groups (:mod:`admz.authz`), so the synthetic principal clears the authz
-#: paths an unattended verification run needs to exercise. Override with
-#: ``ADMZ_TEST_AUTH_GROUPS``; an empty value gives it no groups at all.
-TEST_AUTH_DEFAULT_GROUPS = ("Administrators",)
+#: Default group membership: **none**, deliberately.
+#:
+#: A principal is all an unattended verification run needs — the surfaces it
+#: exercises require *authentication*, not *administration*. Granting reveal
+#: groups by default would let a synthetic, unauthenticated-by-design caller
+#: read plaintext device credentials, and a staging instance typically carries
+#: a copy of the real ones. Least privilege is the right default precisely
+#: because the cases needing more are not known in advance.
+#:
+#: Grant membership explicitly with ``ADMZ_TEST_AUTH_GROUPS`` when a specific
+#: authz path has to be exercised. See ``test_reveal_denied_by_default``.
+TEST_AUTH_DEFAULT_GROUPS: tuple = ()
 
 
 def _is_loopback(host: Optional[str]) -> bool:

@@ -273,11 +273,38 @@ class TestSyntheticPrincipal:
         require_authenticated_principal(await TestAuth().authenticate(_Request()))
 
     @pytest.mark.asyncio
-    async def test_default_groups_clear_the_authz_paths(self):
-        from admz.authz import principal_can_reveal
+    async def test_reveal_denied_by_default(self):
+        """The synthetic principal is authenticated but UNPRIVILEGED.
+
+        This is the security property of the default, not an accident of it:
+        an unattended verification run needs *a principal*, not an
+        *administrator*. Granting reveal groups by default would let a
+        synthetic, unauthenticated-by-design caller read plaintext device
+        credentials — and a staging instance typically carries a copy of the
+        real ones. If someone ever restores a permissive default, this fails.
+        """
+        from admz.authz import principal_can_reveal, require_reveal_permission
+        from fastapi import HTTPException
 
         principal = await TestAuth().authenticate(_Request())
-        assert principal.groups == list(TEST_AUTH_DEFAULT_GROUPS)
+        assert principal.groups == list(TEST_AUTH_DEFAULT_GROUPS) == []
+
+        allowed, reason = principal_can_reveal(principal)
+        assert allowed is False
+        assert reason == "no-groups"
+
+        with pytest.raises(HTTPException) as exc:
+            require_reveal_permission(principal)
+        assert exc.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_groups_can_be_granted_explicitly_when_needed(self, clean_caps):
+        """The escape hatch works: an authz path that must be exercised gets
+        membership deliberately and visibly, rather than by default."""
+        from admz.authz import principal_can_reveal
+
+        clean_caps.setenv("ADMZ_TEST_AUTH_GROUPS", "Administrators")
+        principal = TestAuth.from_env().principal()
         allowed, _reason = principal_can_reveal(principal)
         assert allowed is True
 
@@ -607,8 +634,29 @@ class TestAgentCanSelfAuthenticate:
             body = c.get("/api/health").json()
         assert CAP_ID in body["advanced_capabilities"]
 
+    def test_the_advanced_page_is_reveal_gated_from_the_test_principal(
+        self, app_env, restore_backend
+    ):
+        """The unprivileged default is refused by the reveal gate, even here.
+
+        /settings/advanced is reveal-gated, so the no-groups default cannot
+        read it. That is correct — and worth pinning, because it means the
+        loudness surface below is only observable when membership has been
+        granted deliberately.
+        """
+        with _client(test_auth=True, app_env=app_env) as c:
+            r = c.get("/settings/advanced")
+        assert r.status_code == 403
+        assert "no-groups" in r.text
+
     def test_the_advanced_page_lists_it_as_active(self, app_env, restore_backend):
-        """Loudness surface 5, at the boundary."""
+        """Loudness surface 5, at the boundary — with reveal granted explicitly.
+
+        Exercising this surface needs membership, which is exactly what
+        ADMZ_TEST_AUTH_GROUPS is for. Granting it here (rather than defaulting
+        it on) keeps the privilege visible at the point of use.
+        """
+        app_env.setenv("ADMZ_TEST_AUTH_GROUPS", "Administrators")
         with _client(test_auth=True, app_env=app_env) as c:
             html = c.get("/settings/advanced").text
         assert CAP_ID in html

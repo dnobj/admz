@@ -168,12 +168,13 @@ CAPABILITIES: Tuple[Capability, ...] = (
             "require_authenticated_principal surface. This yields a real "
             "principal instead. It never softens a confirmation gate — "
             "ADR-0034 applies in full; it changes WHO the caller is, never "
-            "whether approval is required. The synthetic principal is in the "
-            "reveal groups by default (ADMZ_TEST_AUTH_GROUPS overrides, and "
-            "an empty value gives it none), so it can read plaintext device "
-            "credentials — which is why admz/__main__.py refuses to start the "
-            "server at all when this is active and the bind address is not "
-            "loopback, with no override."
+            "whether approval is required. The synthetic principal has NO "
+            "group membership by default, so it is refused by reveal-gated "
+            "surfaces and cannot read plaintext device credentials; grant "
+            "groups explicitly via ADMZ_TEST_AUTH_GROUPS when a specific "
+            "authz path must be exercised. Regardless, admz/__main__.py "
+            "refuses to start the server at all when this is active and the "
+            "bind address is not loopback, with no override."
         ),
     ),
     Capability(
