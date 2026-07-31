@@ -455,8 +455,13 @@ class ADMZMCPServer:
                         "poller that pings each device on an interval) and is "
                         "essentially free — no network call. Status values: "
                         "'online' (the device responded to the last probe), "
-                        "'unreachable' (TCP connect failed), 'auth_failed' "
-                        "(device responded but rejected credentials), 'unknown' "
+                        "'unreachable' (TCP connect failed — the host did not "
+                        "answer at all), 'reachable_no_api' (the host IS up and "
+                        "answered, but not with usable VAPIX — e.g. a T85 PoE "
+                        "switch; ADMZ can't manage it, but never call it "
+                        "offline), 'auth_failed' (device responded but rejected "
+                        "credentials), 'needs_setup' (reachable but "
+                        "factory-defaulted), 'unknown' "
                         "(never checked — monitor likely disabled or just started). "
                         "Use this BEFORE attempting heavy operations (snapshot, "
                         "drift check, multi-step plan) so you don't hang on an "
@@ -1822,7 +1827,10 @@ class ADMZMCPServer:
         all_devices = self.registry.list_devices()
         seen = {r.device_id: r for r in records}
         entries = []
-        counts: Dict[str, int] = {"online": 0, "unreachable": 0, "auth_failed": 0, "unknown": 0}
+        counts: Dict[str, int] = {
+            "online": 0, "unreachable": 0, "reachable_no_api": 0,
+            "auth_failed": 0, "needs_setup": 0, "unknown": 0,
+        }
         for d in all_devices:
             did = d.get("device_id")
             if not did:

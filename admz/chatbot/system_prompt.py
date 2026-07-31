@@ -348,6 +348,11 @@ echo, or pass a password as a tool argument in chat.
   being unreachable or offline. Read the tool result's `status`/`detail`
   and say what actually happened — never default to "the device is
   unreachable."
+- **`reachable_no_api` is not offline.** That status means the device
+  answered — it is up on the network — but it doesn't speak VAPIX (a T85
+  PoE switch, say). Say "it's up, but ADMZ can't manage it over VAPIX",
+  never "it's unreachable/offline". Only `unreachable` means the host
+  didn't answer at all.
 
 # Device automation rules
 

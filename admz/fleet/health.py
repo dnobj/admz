@@ -19,8 +19,15 @@ Design notes:
 - **Two-tier probe.** If we have stored credentials for the
   device, call ``systemready.cgi:systemReady`` via the executor —
   that gives us uptime + bootid + auth proof. If not (or auth
-  fails), fall back to a raw TCP connect against ``device.host:80``
+  fails), fall back to a raw TCP connect against the device's host
   — at least we learn whether the IP is up.
+- **Reachability ≠ API capability** (GH #138). "Is the host up?" and
+  "can ADMZ speak its API?" are different questions and never share a
+  verdict. ``unreachable`` means a genuine connect failure and nothing
+  else; a device that answers but can't be parsed as VAPIX (a T85 PoE
+  switch serving its HTML login page) is ``reachable_no_api``. The
+  classification is always confirmed with a TCP connect rather than
+  inferred from an error string.
 - **Status reflects last successful probe, not running counters.**
   A device that was online 30 seconds ago and is online now has
   ``status=online``. ``last_seen_online`` advances each successful
@@ -119,13 +126,34 @@ def _is_enabled() -> bool:
 
 
 class DeviceHealthStatus(str, Enum):
-    """Coarse-grained reachability state for a device."""
+    """Coarse-grained reachability state for a device.
+
+    **Reachability and API capability are separate questions** (GH #138).
+    ``unreachable`` answers only the first one and means exactly what it says:
+    the host did not answer at all. A device that answers HTTP but doesn't
+    speak VAPIX — a T85 PoE switch serving its HTML login page, say — is
+    ``reachable_no_api``, not ``unreachable``: it is up, ADMZ just can't
+    manage it.
+    """
 
     ONLINE = "online"
     UNREACHABLE = "unreachable"     # no TCP connect
     AUTH_FAILED = "auth_failed"     # TCP up, VAPIX rejected creds
     NEEDS_SETUP = "needs_setup"     # reachable but factory-defaulted (needsetup=yes)
+    # TCP up + the host answered, but the answer wasn't usable VAPIX (unparsable
+    # body, wrong content type, an unexpected-but-valid HTTP status). "Up, but
+    # ADMZ can't manage it" — an attention state, never a network failure.
+    REACHABLE_NO_API = "reachable_no_api"
     UNKNOWN = "unknown"             # never checked
+
+
+# Statuses that are a *settled* answer rather than a failed probe. These reset
+# ``consecutive_failures`` instead of incrementing it: a device that simply
+# doesn't speak VAPIX is in a stable state, and counting each sweep as a
+# failure is what produced the meaningless five-figure counters of GH #138.
+_STABLE_STATUSES = frozenset(
+    {DeviceHealthStatus.ONLINE, DeviceHealthStatus.REACHABLE_NO_API}
+)
 
 
 @dataclass
@@ -349,6 +377,26 @@ device_health_store = DeviceHealthStore()
 # ---------------------------------------------------------------------------
 
 
+def _probe_port(device_info: Dict[str, Any]) -> int:
+    """The port the reachability probe should knock on for this device.
+
+    Mirrors how the VAPIX executor picks its port (``admz/executor/vapix.py``):
+    an explicit ``port`` wins, otherwise the device's learned scheme decides
+    (443 for https, 80 otherwise). Matters because newer Axis firmware is
+    HTTPS-only — knocking on 80 there would call a live device unreachable.
+    Devices ADMZ has never talked to keep the historical default of 80.
+    """
+    port = device_info.get("port")
+    if port:
+        try:
+            return int(port)
+        except (TypeError, ValueError):
+            pass
+    auth_info = device_info.get("auth_info")
+    scheme = auth_info.get("scheme") if isinstance(auth_info, dict) else None
+    return 443 if scheme == "https" else 80
+
+
 async def _tcp_probe(host: str, port: int, timeout: float) -> Optional[int]:
     """Open a TCP connection to ``host:port`` with ``timeout`` seconds.
 
@@ -507,11 +555,15 @@ async def probe_device(
          available, call ``systemready.cgi:systemReady`` via the
          executor. Success → ONLINE with uptime/bootid populated.
          Auth failure (401) → AUTH_FAILED. Connect failure →
-         UNREACHABLE.
+         UNREACHABLE. Any *other* failure (unparsable body, wrong
+         content type, unexpected status) is a statement about the
+         device's API, not its reachability — so it falls through to
+         a TCP connect and becomes REACHABLE_NO_API if the host
+         answers, UNREACHABLE only if it doesn't.
       2. Otherwise (or as a fallback if the catalog isn't loaded),
-         just do a TCP connect probe against the device's host
-         on port 80. Connect OK → ONLINE (without uptime info).
-         Connect fail → UNREACHABLE.
+         just do a TCP connect probe against the device's host on its
+         effective port (see :func:`_probe_port`). Connect OK →
+         ONLINE (without uptime info). Connect fail → UNREACHABLE.
     """
     host = device_info.get("host")
     now = time.time()
@@ -596,14 +648,32 @@ async def probe_device(
                         last_error=err[:200],
                         consecutive_failures=1,
                     )
-                # Other errors — treat as unreachable but record the message.
+                # Anything else — an unparsable body, an unexpected content
+                # type, an unexpected-but-valid HTTP status — says nothing
+                # about reachability, only about ADMZ's ability to speak this
+                # device's API. Don't infer a verdict from the error string:
+                # confirm with a TCP connect and classify on that evidence.
+                tcp_ms = await _tcp_probe(
+                    host, _probe_port(device_info), timeout_seconds
+                )
+                if tcp_ms is None:
+                    return DeviceHealthRecord(
+                        device_id=device_id,
+                        status=DeviceHealthStatus.UNREACHABLE,
+                        last_check=now,
+                        last_error=err[:200],
+                        consecutive_failures=1,
+                    )
                 return DeviceHealthRecord(
                     device_id=device_id,
-                    status=DeviceHealthStatus.UNREACHABLE,
+                    status=DeviceHealthStatus.REACHABLE_NO_API,
                     last_check=now,
+                    # The host answered, so the reachability clock advances —
+                    # this asserts nothing about the device beyond "it is up".
+                    last_seen_online=now,
                     latency_ms=elapsed_ms,
+                    consecutive_failures=0,
                     last_error=err[:200],
-                    consecutive_failures=1,
                 )
 
             # Success — pull uptime/bootid/needsetup from the parsed result.
@@ -688,7 +758,8 @@ async def probe_device(
             )
 
     # ---- Tier 2: TCP connect probe ----
-    elapsed_ms = await _tcp_probe(host, 80, timeout_seconds)
+    port = _probe_port(device_info)
+    elapsed_ms = await _tcp_probe(host, port, timeout_seconds)
     if elapsed_ms is not None:
         return DeviceHealthRecord(
             device_id=device_id,
@@ -704,7 +775,7 @@ async def probe_device(
         device_id=device_id,
         status=DeviceHealthStatus.UNREACHABLE,
         last_check=now,
-        last_error=f"TCP connect to {host}:80 failed within {timeout_seconds}s",
+        last_error=f"TCP connect to {host}:{port} failed within {timeout_seconds}s",
         consecutive_failures=1,
     )
 
@@ -861,11 +932,15 @@ class HealthMonitor:
                 # if this probe failed.
                 prev = self.store.get(device_id)
                 if prev is not None:
-                    if record.status != DeviceHealthStatus.ONLINE:
+                    if record.status not in _STABLE_STATUSES:
                         record.consecutive_failures = prev.consecutive_failures + 1
+                    # ``last_seen_online`` is the REACHABILITY clock: every
+                    # probe that proved the host answered stamps it (online,
+                    # auth_failed, needs_setup, reachable_no_api). Only carry
+                    # the previous value forward when this probe proved
+                    # nothing — never overwrite a fresh stamp with a stale one.
+                    if record.last_seen_online is None:
                         record.last_seen_online = prev.last_seen_online
-                    # Else (ONLINE): consecutive_failures already 0 and
-                    # last_seen_online already set to now.
                     if record.sd_status is None:
                         # SD probe didn't run or failed this sweep — keep the
                         # last known value rather than flapping to unknown.

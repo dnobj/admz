@@ -13,7 +13,7 @@ trouble without checking each device by hand.
 **Acceptance criteria:**
 1. `get_fleet_health()` (MCP) / `GET /api/fleet/health` (REST) return a
    per-device list plus `counts` by status (`online`, `unreachable`,
-   `auth_failed`, `unknown`).
+   `reachable_no_api`, `auth_failed`, `needs_setup`, `unknown`).
 2. Each entry carries `status`, `last_check`, `last_seen_online`,
    `latency_ms`, and `consecutive_failures`; authenticated probes also
    include `uptime_seconds` and `bootid`.
@@ -21,6 +21,27 @@ trouble without checking each device by hand.
    note explaining how to enable the monitor or run a sweep.
 
 **Related requirements:** [fleet-health](../requirements/fleet-health.md), [mcp-server](../requirements/mcp-server.md).
+
+## US-FH-004 — Tell "it's down" apart from "I can't manage it"
+
+**As an** operator with mixed hardware, **I want** a device that ADMZ can't
+talk VAPIX to but that is demonstrably up to read as *up*, **so that** a red
+"unreachable" always means a real outage and I keep trusting the health page.
+
+**Acceptance criteria:**
+1. A device that answers but whose reply isn't usable VAPIX (unparsable body,
+   wrong content type, unexpected status) reads `reachable_no_api`, not
+   `unreachable` — confirmed by a TCP connect, not inferred from the error.
+2. `unreachable` is reserved for a genuine connect failure (timeout, refused,
+   no route). A record can never show a measured `latency_ms` **and**
+   `unreachable`.
+3. The UI shows it amber ("Reachable, no API") in the *needs attention*
+   bucket — distinct from both the green of `online` and the red of an
+   outage.
+4. It doesn't accumulate `consecutive_failures` (it's a stable state, not a
+   failing probe), and it advances `last_seen_online` — the host answered.
+
+**Related requirements:** [fleet-health](../requirements/fleet-health.md).
 
 ## US-FH-002 — Turn monitoring on without a restart
 

@@ -74,7 +74,7 @@ async def get_fleet_health(
     all_devices = registry.list_devices()
 
     counts: Dict[str, int] = {
-        "online": 0, "unreachable": 0,
+        "online": 0, "unreachable": 0, "reachable_no_api": 0,
         "auth_failed": 0, "needs_setup": 0, "unknown": 0,
     }
     entries: List[Dict[str, Any]] = []
