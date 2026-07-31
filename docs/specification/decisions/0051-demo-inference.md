@@ -108,8 +108,18 @@ stored**, so the whole feature works with the model switched off. It is a
 serviceable placeholder and no more: the reference fleet's two-speaker demo
 (linked by a `#speakers` tag, `AudioManagerPro`, and shared rule-name tokens)
 comes back as *"Activation demo"*. `confirm_demo_proposal` therefore takes
-optional `name` and `purpose` (plus `device_ids` / `roles` / `tag`), and the
-chatbot prompt gains a section — gated off exactly like a module's, absent
+optional `name` and `purpose` (plus `device_ids` / `roles` / `tag`).
+
+The machine's own guess is preserved: `proposed_name` is written once at
+creation and **never overwritten**, alongside the `name` the operator may
+rewrite. Without it the heuristic's output would be destroyed by the first
+rename, and nobody could ever answer *"was the deterministic namer any good,
+and by how much did the model improve on it?"* — the evidence for keeping,
+tuning or deleting the naming heuristic. Every other part of this feature is
+auditable after the fact; naming must not be the exception. Both names, and a
+`renamed` flag, appear on every proposal view and in the confirm audit event.
+
+The chatbot prompt gains a section — gated off exactly like a module's, absent
 unless ACS is connected or a run/open proposal exists — teaching the agent to
 narrate from the evidence the proposal already carries: member roles, each
 rule's topics, action kinds and firing-observability verdict, the term-by-term

@@ -80,12 +80,14 @@ _ADDED_COLUMNS = (
     ("content_key", "TEXT NOT NULL DEFAULT ''"),
     ("score_breakdown_json", "TEXT NOT NULL DEFAULT '{}'"),
     ("devices_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("proposed_name", "TEXT NOT NULL DEFAULT ''"),
 )
 
 _COLS = ("id, run_id, name, purpose, device_ids_json, roles_json, rules_json, "
          "evidence_json, suggested_owned_keys_json, score, confidence, "
          "flags_json, overlaps_json, status, demo_id, created_at, decided_at, "
-         "decided_by, content_key, score_breakdown_json, devices_json")
+         "decided_by, content_key, score_breakdown_json, devices_json, "
+         "proposed_name")
 
 _N_COLS = len(_COLS.split(","))
 
@@ -102,7 +104,18 @@ class DemoProposal:
     id: str = ""
     run_id: str = ""
     content_key: str = ""
+    #: The working name — deterministic at creation, overwritten by whatever the
+    #: operator (via the agent) supplies at confirm time.
     name: str = ""
+    #: What the deterministic namer produced, written once at creation and
+    #: **never overwritten**. ``name`` is a moving target the moment slice 4's
+    #: narration lands, and without this the machine's own guess would be gone
+    #: for good — so nobody could ever ask "was the heuristic any good, and by
+    #: how much did the model improve on it?". That question is the evidence for
+    #: keeping, tuning or deleting the naming heuristic, and it is the only part
+    #: of this feature that would otherwise be unauditable after the fact.
+    #: Empty on rows created before this column existed.
+    proposed_name: str = ""
     #: Narrative guess. Agent-written (slice 4) and may stay empty forever — the
     #: deterministic ``name`` is what makes the feature work with no LLM at all.
     purpose: str = ""
@@ -128,7 +141,9 @@ class DemoProposal:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id, "run_id": self.run_id, "content_key": self.content_key,
-            "name": self.name, "purpose": self.purpose,
+            "name": self.name, "proposed_name": self.proposed_name,
+            "renamed": bool(self.proposed_name and self.proposed_name != self.name),
+            "purpose": self.purpose,
             "device_ids": self.device_ids, "roles": self.roles,
             "rules": self.rules, "evidence": self.evidence,
             "suggested_owned_keys": self.suggested_owned_keys,
@@ -144,6 +159,8 @@ class DemoProposal:
         """The list-view shape: the verdict without the full evidence dump."""
         return {
             "id": self.id, "run_id": self.run_id, "name": self.name,
+            "proposed_name": self.proposed_name,
+            "renamed": bool(self.proposed_name and self.proposed_name != self.name),
             "purpose": self.purpose, "score": self.score,
             "confidence": self.confidence, "flags": self.flags,
             "status": self.status, "demo_id": self.demo_id,
@@ -185,6 +202,7 @@ def _row(r) -> DemoProposal:
         decided_by=r[17] or "", content_key=r[18] or "",
         score_breakdown=_j(r[19], {}, "score_breakdown_json"),
         devices=_j(r[20], [], "devices_json"),
+        proposed_name=r[21] or "",
     )
 
 
@@ -222,6 +240,10 @@ class ProposalStore:
 
     def upsert(self, proposal: DemoProposal) -> DemoProposal:
         proposal.created_at = proposal.created_at or time.time()
+        # Written once, at creation. A caller that only sets `name` (every
+        # pre-slice-4 call site, and every test fixture) still gets its
+        # deterministic guess preserved rather than an empty audit trail.
+        proposal.proposed_name = proposal.proposed_name or proposal.name
         conn = self._connect()
         try:
             conn.execute(
@@ -237,7 +259,8 @@ class ProposalStore:
                  proposal.status, proposal.demo_id, proposal.created_at,
                  proposal.decided_at, proposal.decided_by, proposal.content_key,
                  json.dumps(proposal.score_breakdown, default=str),
-                 json.dumps(proposal.devices, default=str)),
+                 json.dumps(proposal.devices, default=str),
+                 proposal.proposed_name),
             )
             conn.commit()
         finally:
@@ -247,7 +270,12 @@ class ProposalStore:
     def decide(self, proposal_id: str, status: str, *, decided_by: str = "",
                demo_id: str = "", name: Optional[str] = None,
                purpose: Optional[str] = None) -> Optional[DemoProposal]:
-        """Record a terminal decision (or a supersede) on one proposal."""
+        """Record a terminal decision (or a supersede) on one proposal.
+
+        ``name`` may be rewritten here (the operator's better name at confirm
+        time); ``proposed_name`` is deliberately NOT in the SET list and must
+        never be added to it — it is the record of what ADMZ itself guessed.
+        """
         sets = ["status = ?", "decided_at = ?", "decided_by = ?"]
         vals: List[Any] = [status, time.time(), decided_by]
         if demo_id:

@@ -159,6 +159,11 @@ def confirm_proposal_core(ctx, proposal, principal, *,
     record_event(principal, "demo.proposal_confirm",
                  resource=f"demo_proposal:{proposal.id}",
                  details={"demo_id": demo.id, "name": demo_name,
+                          # Both names, so the record itself tells the story:
+                          # what ADMZ guessed vs what the human accepted.
+                          "proposed_name": proposal.proposed_name or proposal.name,
+                          "renamed": demo_name != (proposal.proposed_name
+                                                   or proposal.name),
                           "devices": resolved, "rules_attached": attached,
                           "score": proposal.score,
                           "confidence": proposal.confidence,

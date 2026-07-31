@@ -66,6 +66,45 @@ class TestProposalStore:
         assert [p.id for p in store.list()] == ["b", "a"]
         assert [p.id for p in store.list(status=None)] == ["b", "c", "a"]
 
+    def test_proposed_name_is_backfilled_from_the_name_at_creation(self, store):
+        store.upsert(_proposal(name="Activation demo"))
+        got = store.get("p1")
+        assert got.proposed_name == "Activation demo"
+        assert got.to_dict()["renamed"] is False
+
+    def test_decide_never_touches_proposed_name(self, store):
+        """ADMZ's own guess is the only way to answer "was the deterministic
+        namer any good?" after the fact — a rename must not destroy it."""
+        store.upsert(_proposal(name="Activation demo"))
+        store.decide("p1", STATUS_CONFIRMED, decided_by="alice",
+                     name="Speaker announcement demo")
+        got = store.get("p1")
+        assert got.name == "Speaker announcement demo"
+        assert got.proposed_name == "Activation demo"
+        assert got.summary()["renamed"] is True
+
+    def test_the_proposed_name_column_migrates_idempotently(self, tmp_path):
+        """House try-ALTER pattern: a DB created by an older build gains the
+        column, and re-opening it repeatedly is a no-op that keeps the data."""
+        import sqlite3
+
+        db = str(tmp_path / "admz.db")
+        first = ProposalStore(db_path=db)
+        first.upsert(_proposal(name="Activation demo"))
+
+        # Simulate the pre-column build: drop it and re-open twice.
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute("ALTER TABLE demo_proposals DROP COLUMN proposed_name")
+            conn.commit()
+        finally:
+            conn.close()
+        assert ProposalStore(db_path=db).get("p1").proposed_name == ""
+        again = ProposalStore(db_path=db)
+        assert again.get("p1").proposed_name == ""   # legacy row stays honest
+        assert again.get("p1").name == "Activation demo"
+        assert again.get("p1").to_dict()["renamed"] is False
+
     def test_decide_records_who_and_when(self, store):
         store.upsert(_proposal())
         got = store.decide("p1", STATUS_CONFIRMED, decided_by="alice",
@@ -215,6 +254,8 @@ class TestConfirm:
         assert demo.name == "Activation demo" and demo.narrative == ""
         row = ctx.proposal_store.get("p1")
         assert row.name == "Activation demo" and row.purpose == ""
+        assert row.proposed_name == "Activation demo"
+        assert out["proposal"]["renamed"] is False
 
     def test_a_better_name_and_purpose_are_recorded_on_both_sides(self, tmp_path):
         """The renamed proposal must not read back as the placeholder — the
@@ -234,6 +275,32 @@ class TestConfirm:
         assert row.name == "Speaker announcement demo"
         assert row.purpose == "The C1110-E detects and the C1710 announces."
         assert out["proposal"]["name"] == "Speaker announcement demo"
+        # …and ADMZ's own guess survives the rename, with both names on the view.
+        assert row.proposed_name == "Activation demo"
+        assert out["proposal"]["proposed_name"] == "Activation demo"
+        assert out["proposal"]["renamed"] is True
+
+    def test_confirming_records_both_names_in_the_audit_event(self, tmp_path,
+                                                              monkeypatch):
+        """The record itself has to tell the story — what ADMZ guessed and what
+        the human accepted — or the naming layer can't be evaluated later."""
+        from admz.demos.inference import confirm as confirm_mod
+
+        import admz.audit as audit
+
+        events = []
+        monkeypatch.setattr(audit, "record_event",
+                            lambda *a, **k: events.append((a, k)))
+        ctx = _Ctx(tmp_path)
+        confirm_mod.confirm_proposal_core(
+            ctx, ctx.proposal_store.upsert(_proposal(name="Activation demo")),
+            "alice", name="Speaker announcement demo")
+
+        details = next(k["details"] for a, k in events
+                       if a[1] == "demo.proposal_confirm")
+        assert details["proposed_name"] == "Activation demo"
+        assert details["name"] == "Speaker announcement demo"
+        assert details["renamed"] is True
 
     def test_a_purpose_alone_keeps_the_deterministic_name(self, tmp_path):
         """Narration is per-field: writing only the narrative must not blank or
@@ -635,6 +702,17 @@ class TestMcpTools:
         detail = server._list_demo_proposals("Lobby demo")
         assert detail["proposal"]["score_breakdown"] == {}
         assert detail["proposal"]["suggested_owned_keys"]
+
+    def test_the_agent_view_carries_both_names(self, server):
+        """So the model can contrast its suggestion with ADMZ's guess without
+        having to remember what the guess was."""
+        server.components.proposal_store.upsert(_proposal(name="Activation demo"))
+        server.components.proposal_store.decide(
+            "p1", "proposed", decided_by="", name="Speaker announcement demo")
+        view = server._list_demo_proposals()["proposals"][0]
+        assert view["name"] == "Speaker announcement demo"
+        assert view["proposed_name"] == "Activation demo"
+        assert view["renamed"] is True
 
     def test_confirm_and_dismiss_through_mcp(self, server):
         for did in ("cam", "spk"):

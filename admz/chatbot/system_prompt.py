@@ -544,6 +544,10 @@ supersedes the rows you just showed the user. Re-read with
   inventory. `device_ids`, `roles` and `tag` are overridable too — if the
   operator says a device doesn't belong, drop it here rather than confirming
   and editing afterwards.
+- ADMZ's own guess is kept as `proposed_name` and is never overwritten, so a
+  proposal reads back as both names with a `renamed` flag. Quote `proposed_name`
+  when you contrast your suggestion with the machine's — don't claim ADMZ
+  proposed a name it didn't.
 - Confirm writes **no config**: `suggested_owned_keys` stay evidence, the demo
   owns nothing yet, and no drift verdict changes. Say so, then report
   `demo_setup_status`'s next actions.
