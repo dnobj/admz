@@ -2,6 +2,7 @@
 Tests for the multi-level confirmation gate.
 """
 
+import asyncio
 import json
 import time
 import tempfile
@@ -18,7 +19,10 @@ from admz.api.confirm_store import (
     get_confirmation_level,
     PROTECTED_SETTING_KEYS,
     VALID_CONFIRMATION_LEVELS,
+    _DEFAULT_CONFIRMATION_LEVELS,
+    confirm_level_key,
 )
+from admz.fleet_settings import is_protected_setting
 
 
 @pytest.fixture
@@ -337,16 +341,24 @@ class TestConfirmationLevel:
     """Test get_confirmation_level with default and overridden values."""
 
     def test_defaults(self, monkeypatch, tmp_path):
-        """Test built-in defaults when no overrides are set."""
+        """Every risk in the policy table resolves to its declared default.
+
+        Derived from the table, not a hand-written list: the previous version
+        asserted four of the six entries and so said nothing about the ACS Pro
+        ``action`` / ``read`` classes added later (GH #152).
+        """
         from admz.fleet_settings import FleetSettings
         fs = FleetSettings(db_path=str(tmp_path / "test.db"))
         import admz.fleet_settings
         monkeypatch.setattr(admz.fleet_settings, "fleet_settings", fs)
 
-        assert get_confirmation_level("dangerous") == "url_and_password"
-        assert get_confirmation_level("service-affecting") == "url_only"
-        assert get_confirmation_level("normal") == "none"
-        assert get_confirmation_level("read-only") == "none"
+        for risk, expected in _DEFAULT_CONFIRMATION_LEVELS.items():
+            assert get_confirmation_level(risk) == expected, risk
+
+        # Spot-check the two the old test could not see, so a regression names
+        # itself in the failure output rather than showing up as a loop index.
+        assert get_confirmation_level("action") == "url_only"
+        assert get_confirmation_level("read") == "none"
 
     def test_override(self, monkeypatch, tmp_path):
         """Test that fleet_settings overrides work."""
@@ -382,13 +394,107 @@ class TestProtectedKeys:
     """Test that PROTECTED_SETTING_KEYS covers the right keys."""
 
     def test_confirm_level_keys_protected(self):
-        for risk in ("dangerous", "service-affecting", "normal", "read-only"):
-            assert f"confirm_level_{risk}" in PROTECTED_SETTING_KEYS
+        """Every risk class in the policy table has a protected override key.
+
+        Iterates the *real* table. The previous version iterated a hardcoded
+        four-tuple, so when the table grew ``action`` (default ``url_only``,
+        governing 68 live ACS Pro operations) and ``read``, this guard kept
+        passing over the hole it exists to detect (GH #152).
+
+        The transferable rule: a literal is fine as an *expectation*, never as
+        the *iteration source* for a coverage claim — growth in the real source
+        can then only ever be missed.
+        """
+        for risk in _DEFAULT_CONFIRMATION_LEVELS:
+            key = confirm_level_key(risk)
+            assert key in PROTECTED_SETTING_KEYS, key
+            assert is_protected_setting(key), key
+
+    def test_confirm_level_namespace_protected(self):
+        """A risk class absent from the table is protected by the namespace rule.
+
+        ``get_confirmation_level`` interpolates whatever risk string the
+        catalog hands it, so protection is scoped to the ``confirm_level_*``
+        namespace rather than to today's six keys — which is also what the
+        glossary and both personas have always documented.
+        """
+        assert is_protected_setting("confirm_level_totally_new")
+        assert is_protected_setting("confirm_level_action")
+        assert is_protected_setting("confirm_level_read")
+
+        # The rule is a namespace, not a substring match: an unrelated key that
+        # merely mentions the words stays writable.
+        assert not is_protected_setting("default_username")
+        assert not is_protected_setting("my_confirm_level_thing")
 
     def test_password_hash_protected(self):
         assert "confirm_password_hash" in PROTECTED_SETTING_KEYS
+        assert is_protected_setting("confirm_password_hash")
 
     def test_valid_confirmation_levels(self):
+        # Exact equality on a *closed* vocabulary is the correct shape: it
+        # fails loudly if a level is added or removed. Contrast the coverage
+        # guards above, which must derive their iteration source.
         assert VALID_CONFIRMATION_LEVELS == {
             "url_and_password", "url_only", "llm_confirm", "none"
         }
+
+
+class TestMcpCannotRelaxConfirmationGates:
+    """The MCP write path itself must refuse every confirmation-level key.
+
+    This drives ``_set_fleet_setting`` rather than the predicate, because the
+    predicate was never the thing that was broken: ``server.py`` tested
+    ``key in PROTECTED_SETTING_KEYS`` directly, so a fix applied only to
+    ``is_protected_setting`` would have reviewed as correct and changed
+    nothing. This is the test that would have caught GH #152.
+    """
+
+    @pytest.mark.parametrize("risk", sorted(_DEFAULT_CONFIRMATION_LEVELS))
+    def test_refuses_every_confirm_level_key(self, risk):
+        from admz.mcp.server import ADMZMCPServer
+
+        out = asyncio.run(
+            ADMZMCPServer._set_fleet_setting(None, confirm_level_key(risk), "none")
+        )
+        assert out["success"] is False, risk
+        assert "protected" in out["error"].lower()
+
+    def test_refuses_the_key_from_the_report(self):
+        """The exact call from the issue: relax the ACS Pro action gate."""
+        from admz.mcp.server import ADMZMCPServer
+
+        out = asyncio.run(
+            ADMZMCPServer._set_fleet_setting(None, "confirm_level_action", "none")
+        )
+        assert out["success"] is False
+        assert "protected" in out["error"].lower()
+
+    def test_refuses_a_risk_class_not_in_the_table(self):
+        from admz.mcp.server import ADMZMCPServer
+
+        out = asyncio.run(
+            ADMZMCPServer._set_fleet_setting(None, "confirm_level_invented", "none")
+        )
+        assert out["success"] is False
+
+    def test_refusal_is_selective(self, monkeypatch, tmp_path):
+        """Positive control: an ordinary key still writes.
+
+        Without this, a ``_set_fleet_setting`` that refused *everything* would
+        satisfy the assertions above. Uses an isolated FleetSettings bound to
+        tmp_path — nothing here may reach a real database.
+        """
+        from admz.fleet_settings import FleetSettings
+        import admz.mcp.server as mcp_server
+
+        fs = FleetSettings(db_path=str(tmp_path / "test.db"))
+        monkeypatch.setattr(mcp_server, "fleet_settings", fs)
+
+        out = asyncio.run(
+            mcp_server.ADMZMCPServer._set_fleet_setting(
+                None, "default_username", "admin"
+            )
+        )
+        assert out["success"] is True
+        assert fs.get("default_username") == "admin"

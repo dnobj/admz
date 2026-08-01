@@ -43,6 +43,7 @@ from admz.device_registry import DeviceRegistry
 from admz.api.capture import capture_store
 from admz.api.confirm_store import (
     PROTECTED_SETTING_KEYS,
+    is_protected_setting,
 )
 from admz.discovery.credential_probe import probe_credentials, ProbeStatus
 from admz.fleet_settings import fleet_settings
@@ -3586,8 +3587,15 @@ class ADMZMCPServer:
         self, key: str, value: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Set, delete, or capture a fleet-wide setting."""
-        # Block writes to protected keys from MCP
-        if key in PROTECTED_SETTING_KEYS:
+        # Block writes to protected keys from MCP.
+        #
+        # Must go through is_protected_setting() rather than testing membership
+        # of PROTECTED_SETTING_KEYS directly: the predicate also enforces the
+        # confirm_level_* namespace rule, which set membership alone does not
+        # carry. This line *is* the gate the LLM would otherwise walk through
+        # (GH #152) — the set covered four of six confirmation-level keys, so
+        # confirm_level_action could be written to "none" from chat.
+        if is_protected_setting(key):
             return {
                 "success": False,
                 "error": (

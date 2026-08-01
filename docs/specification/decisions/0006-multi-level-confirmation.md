@@ -58,6 +58,12 @@ settings `confirm_level_<risk>`):
 | service-affecting  | `url_only`                |
 | normal             | `none`                    |
 | read-only          | `none`                    |
+| action             | `url_only`                |
+| read               | `none`                    |
+
+`action` and `read` are the ACS Pro (and other server-target family)
+risk vocabulary — see ADR-0034. `action` mutates live server state, so
+it gates like `service-affecting`.
 
 > **Update 2026-06-09.** `service-affecting` now defaults to `url_only` (was
 > `llm_confirm`). Both device-affecting classes therefore require a
@@ -69,9 +75,14 @@ The mapping is per-fleet, not per-operation — operators tighten or
 loosen by risk class, not by clicking through every operation.
 
 The keys controlling this (`confirm_level_*`, `confirm_password_hash`)
-are in [`PROTECTED_SETTING_KEYS`](../../../admz/api/confirm_store.py):
-the MCP `set_fleet_setting` tool refuses to write them. Only the
+are protected by
+[`is_protected_setting`](../../../admz/fleet_settings.py): the MCP
+`set_fleet_setting` tool refuses to write them. Only the
 `/confirm-settings` web UI can change them — see ADR-0020 for why.
+The risk → level table itself lives in
+[`admz/confirm_policy.py`](../../../admz/confirm_policy.py), a leaf
+module, so `fleet_settings` can derive the protected key names from it
+without an import cycle (GH #152).
 
 ## Status
 

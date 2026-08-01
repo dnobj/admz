@@ -17,6 +17,12 @@ import sqlite3
 from pathlib import Path
 from typing import Dict, Optional
 
+from admz.confirm_policy import (
+    _DEFAULT_CONFIRMATION_LEVELS,
+    confirm_level_key,
+    is_confirm_level_key,
+)
+
 
 def is_sensitive_setting_key(key: str) -> bool:
     """Return True if the setting's value should be masked when displayed.
@@ -49,10 +55,18 @@ def is_sensitive_setting_key(key: str) -> bool:
 # (Windows IWA / API-key) are allowed — those callers are accountable
 # via audit log.
 PROTECTED_SETTING_KEYS = {
-    "confirm_level_dangerous",
-    "confirm_level_service-affecting",
-    "confirm_level_normal",
-    "confirm_level_read-only",
+    # Per-risk confirmation-level overrides, *derived* from the policy table
+    # rather than restated, so the two cannot drift apart (GH #152). They did:
+    # the table grew an ACS Pro `action` risk defaulting to url_only, this set
+    # kept only the four original vapix names, and so the MCP set_fleet_setting
+    # tool — callable by the LLM — could write confirm_level_action=none and
+    # remove the confirmation gate from 68 live ACS Pro operations.
+    #
+    # is_protected_setting() below *also* applies a namespace rule covering the
+    # whole confirm_level_* space. These concrete names are still enumerated
+    # into the set because several callers test membership of it directly
+    # rather than going through the predicate.
+    *(confirm_level_key(risk) for risk in _DEFAULT_CONFIRMATION_LEVELS),
     "confirm_password_hash",
     "tool_get_credentials_enabled",
     # Chatbot provider API key. Set only via /settings/chat admin page;
@@ -100,13 +114,22 @@ PROTECTED_SETTING_KEYS = {
 
 
 def is_protected_setting(key: str) -> bool:
-    """Return True if ``key`` is in :data:`PROTECTED_SETTING_KEYS`.
+    """Return True if ``key`` may not be written by a low-privilege caller.
+
+    Two deliberately overlapping rules:
+
+    * anything in the ``confirm_level_*`` namespace
+      (:func:`admz.confirm_policy.is_confirm_level_key`), which covers risk
+      classes that are not in the policy table today;
+    * membership of :data:`PROTECTED_SETTING_KEYS`.
 
     Used by REST handlers and the MCP ``set_fleet_setting`` tool to
     refuse writes to security-sensitive keys from low-privilege
-    callers.
+    callers. Prefer this predicate over testing ``key in
+    PROTECTED_SETTING_KEYS`` directly — the set alone does not carry the
+    namespace rule (GH #152).
     """
-    return key in PROTECTED_SETTING_KEYS
+    return is_confirm_level_key(key) or key in PROTECTED_SETTING_KEYS
 
 
 def mask_setting_value(value: str) -> str:

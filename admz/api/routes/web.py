@@ -22,6 +22,8 @@ from admz.api.confirm_store import (
     get_confirmation_level,
     hash_confirm_password,
     VALID_CONFIRMATION_LEVELS,
+    _DEFAULT_CONFIRMATION_LEVELS,
+    confirm_level_key,
 )
 
 
@@ -602,8 +604,7 @@ async def settings_overview(request: Request):
     to real settings link to the existing forms that persist them.
     """
     levels = {
-        r: get_confirmation_level(r)
-        for r in ["dangerous", "service-affecting", "normal", "read-only"]
+        r: get_confirmation_level(r) for r in _DEFAULT_CONFIRMATION_LEVELS
     }
     has_password = bool(fleet_settings.get("confirm_password_hash"))
     get_creds_enabled = fleet_settings.get("tool_get_credentials_enabled") == "true"
@@ -812,9 +813,14 @@ async def fleet_settings_page(request: Request):
 # ── Confirmation settings ────────────────────────────────────────────────
 
 def _build_confirm_settings_context(request: Request, **extra):
-    """Build the template context for the confirm-settings page."""
-    risk_levels = ["dangerous", "service-affecting", "normal", "read-only"]
-    levels = {r: get_confirmation_level(r) for r in risk_levels}
+    """Build the template context for the confirm-settings page.
+
+    Every risk class in the policy table gets a row — derived, not listed.
+    While this page rendered only the four vapix risks, an operator auditing
+    gate policy could not see that ``confirm_level_action`` had been altered,
+    which is half the severity of GH #152.
+    """
+    levels = {r: get_confirmation_level(r) for r in _DEFAULT_CONFIRMATION_LEVELS}
     has_password = bool(fleet_settings.get("confirm_password_hash"))
     get_creds_enabled = fleet_settings.get("tool_get_credentials_enabled") == "true"
     ctx = {
@@ -841,11 +847,10 @@ async def confirm_settings_page(request: Request):
 async def confirm_settings_save(
     request: Request,
     action: str = Form(...),
-    # Level fields (only present when action=levels)
-    level_dangerous: Optional[str] = Form(None),
-    level_service_affecting: Optional[str] = Form(None, alias="level_service-affecting"),
-    level_normal: Optional[str] = Form(None),
-    level_read_only: Optional[str] = Form(None, alias="level_read-only"),
+    # Level fields (only present when action=levels) are read from the raw
+    # form below, one per risk class in the policy table, rather than declared
+    # here — a declared parameter per risk is exactly the hardcoded list that
+    # let confirm_level_action go unwritable-but-unprotected (GH #152).
     # Password fields (only present when action=password)
     new_password: Optional[str] = Form(None),
     confirm_new_password: Optional[str] = Form(None),
@@ -866,15 +871,11 @@ async def confirm_settings_save(
     require_authenticated_principal(principal)
 
     if action == "levels":
-        mapping = {
-            "dangerous": level_dangerous,
-            "service-affecting": level_service_affecting,
-            "normal": level_normal,
-            "read-only": level_read_only,
-        }
+        form = await request.form()
         applied = {}
-        for risk, level in mapping.items():
-            key = f"confirm_level_{risk}"
+        for risk in _DEFAULT_CONFIRMATION_LEVELS:
+            level = form.get(f"level_{risk}")
+            key = confirm_level_key(risk)
             if level and level in VALID_CONFIRMATION_LEVELS:
                 fleet_settings.set(key, level)
                 applied[key] = level
