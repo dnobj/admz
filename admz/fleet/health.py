@@ -73,6 +73,35 @@ _DEFAULT_CONCURRENCY = 8               # Concurrent probes in flight
 SYSTEMREADY_OP = "systemready.cgi:systemReady"
 AUTH_CHECK_OP = "basicdeviceinfo.cgi:getAllProperties"
 
+# A 401 from ONE op is not proof of bad credentials (GH #149). The AXIS
+# P8815-2 3D People Counter (fw 11.11.205) authenticates ``root``/digest
+# perfectly on ``param.cgi`` and ``usergroup.cgi`` while ``basicdeviceinfo``'s
+# *data* methods 401 — it is not a missing method (an invented method name
+# answers 200 with a JSON error) and not the auth method, scheme, or API
+# version. That device sat at ``auth_failed`` with 18,004 consecutive failures
+# while being fully manageable.
+#
+# So a 401/403 from the auth-check op is corroborated with a second,
+# independent auth-required op before we call the password bad. ``param.cgi``
+# is the natural corroborator: already catalogued, cheap, read-only, and the
+# exact "tiny authenticated read" that snapshot's ``probe_readable()`` already
+# depends on (``admz/snapshot/engine.py``) — which is why drift already
+# considered this device readable while health called it ``auth_failed``.
+CORROBORATION_OP = "param.cgi:list"
+CORROBORATION_PARAMS = {"group": "root.Brand"}
+
+# Device-info key holding what we LEARNED about probing this device, in the
+# same spirit as the executor's scheme/auth self-heal (``_persist_learned_auth``
+# in ``admz/operations.py``). Deliberately a sibling of ``auth`` rather than a
+# field inside it: ``auth`` means *transport auth profile*, this means "which
+# auth-required op actually works here".
+#
+# It selects probe ORDER ONLY — it never skips verification. A marker that
+# meant "trust this device without an auth check" would make a stale password
+# on a marked device invisible, which is #149's own complaint inverted.
+PROBE_MARKER_KEY = "health_probe"
+_MARKER_OP_FIELD = "auth_check_op"
+
 
 def _fs():
     return _fs_module.fleet_settings
@@ -181,6 +210,11 @@ class DeviceHealthRecord:
     # credential-check response (when it ran). Not persisted to the health
     # store — the sweep flushes it to the device registry instead.
     observed_facts: Optional[Dict[str, str]] = None
+    # Transient, same seam as ``observed_facts``: what the credential check
+    # learned about *how* to auth-check this device (GH #149) — i.e. which
+    # auth-required op actually works. ``probe_device`` has no registry
+    # handle, so the sweep is what flushes it to the device record.
+    learned_probe: Optional[Dict[str, str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -423,6 +457,134 @@ async def _tcp_probe(host: str, port: int, timeout: float) -> Optional[int]:
     return elapsed_ms
 
 
+# Sentinels for "the op isn't in the catalog" vs "the call blew up". Callers
+# must tell these apart: a missing op is a config gap (conclusions unchanged
+# from before #149), an errored call is transient (prove nothing, don't flap).
+_OP_MISSING = object()
+_OP_ERRORED = object()
+
+
+def _preferred_auth_op(device_info: Dict[str, Any]) -> str:
+    """Which auth-required op to try FIRST on this device.
+
+    Defaults to :data:`AUTH_CHECK_OP`. A learned marker (GH #149) can promote
+    the corroborator instead, so a device whose ``basicdeviceinfo`` is
+    restricted pays two calls per sweep rather than three. Only the two known
+    op ids are honoured — a marker holding anything else is ignored rather
+    than trusted, so a corrupt device record can't redirect the auth check.
+    """
+    marker = device_info.get(PROBE_MARKER_KEY)
+    if isinstance(marker, dict):
+        op_id = marker.get(_MARKER_OP_FIELD)
+        if op_id in (AUTH_CHECK_OP, CORROBORATION_OP):
+            return str(op_id)
+    return AUTH_CHECK_OP
+
+
+async def _run_auth_op(
+    *,
+    catalog: Any,
+    executor: Any,
+    device_info: Dict[str, Any],
+    device_id: str,
+    credentials: Dict[str, Any],
+    timeout_seconds: float,
+    op_id: str,
+) -> Any:
+    """Execute one auth-required op, returning its result or a sentinel."""
+    try:
+        op = catalog.get_operation("vapix", op_id)
+    except Exception:
+        op = None
+    if op is None:
+        return _OP_MISSING
+    params = dict(CORROBORATION_PARAMS) if op_id == CORROBORATION_OP else {}
+    try:
+        return await asyncio.wait_for(
+            executor.execute(
+                op.to_executor_dict(),
+                {**device_info, "device_id": device_id},
+                credentials,
+                params,
+            ),
+            timeout=timeout_seconds + 2,
+        )
+    except Exception:
+        return _OP_ERRORED
+
+
+def _is_authenticated_2xx(result: Any) -> bool:
+    sc = getattr(result, "status_code", None)
+    return bool(
+        getattr(result, "success", False)
+        and sc is not None
+        and 200 <= int(sc) < 300
+    )
+
+
+def _facts_from(result: Any) -> Dict[str, str]:
+    """Identity facts from a basicdeviceinfo body. Empty on anything else."""
+    try:
+        from admz.device_facts import extract_device_facts
+        return extract_device_facts(getattr(result, "parsed_data", None))
+    except Exception:
+        return {}
+
+
+async def _corroborate_rejection(
+    *,
+    catalog: Any,
+    executor: Any,
+    device_info: Dict[str, Any],
+    device_id: str,
+    credentials: Dict[str, Any],
+    timeout_seconds: float,
+    refused_op: str,
+) -> "tuple[Optional[bool], Dict[str, str], Optional[Dict[str, str]]]":
+    """One auth-required op refused the credentials — ask a second, independent
+    one before declaring the password bad (GH #149).
+
+    Returns the same ``(creds_ok, facts, learned)`` triple as
+    :func:`_confirm_credentials`.
+    """
+    other_op = CORROBORATION_OP if refused_op != CORROBORATION_OP else AUTH_CHECK_OP
+    result = await _run_auth_op(
+        catalog=catalog, executor=executor, device_info=device_info,
+        device_id=device_id, credentials=credentials,
+        timeout_seconds=timeout_seconds, op_id=other_op,
+    )
+
+    if result is _OP_MISSING:
+        # Can't corroborate at all. Keep the pre-#149 verdict: a false alarm is
+        # safer than a missed one — a genuinely stale password must not read as
+        # "online" merely because the corroborator isn't in the catalog.
+        logger.warning(
+            "health: %s refused credentials for %s and the corroborating op %s "
+            "is not in the catalog — falling back to single-op judgement",
+            refused_op, device_id, other_op,
+        )
+        return False, {}, None
+
+    if result is _OP_ERRORED:
+        return None, {}, None  # transient — proves nothing, don't flap
+
+    sc = getattr(result, "status_code", None)
+    if sc in (401, 403):
+        return False, {}, None  # both refused — genuinely bad credentials
+
+    if _is_authenticated_2xx(result):
+        # A real authenticated 2xx from an auth-required op. This deliberately
+        # satisfies ``strict=True`` (onboarding SAVES a password on it): strict
+        # exists because the LENIENT path accepted *non-auth* answers as proof,
+        # and this is not that — it is genuine proof, just from the other op.
+        facts = _facts_from(result) if other_op == AUTH_CHECK_OP else {}
+        return True, facts, {_MARKER_OP_FIELD: other_op}
+
+    # Answered some other way (unparsable body, odd status): proves nothing
+    # either direction, so don't move the status.
+    return None, {}, None
+
+
 async def _confirm_credentials(
     *,
     catalog: Any,
@@ -432,12 +594,14 @@ async def _confirm_credentials(
     credentials: Dict[str, Any],
     timeout_seconds: float,
     strict: bool = False,
-) -> "tuple[Optional[bool], Dict[str, str]]":
+) -> "tuple[Optional[bool], Dict[str, str], Optional[Dict[str, str]]]":
     """Confirm the stored credentials actually authenticate.
 
-    Calls an auth-required op (``basicdeviceinfo``). Returns a
-    ``(creds_ok, facts)`` pair where ``creds_ok`` is:
-      - ``False`` when the device explicitly rejects the credentials (401/403),
+    Calls an auth-required op (``basicdeviceinfo`` by default). Returns a
+    ``(creds_ok, facts, learned)`` triple where ``creds_ok`` is:
+      - ``False`` when the device explicitly rejects the credentials — which
+        since GH #149 means **two independent auth-required ops** refused
+        them, not one,
       - ``True`` when they're accepted (2xx) or — in the default lenient
         mode — the device answers some other way (a non-auth error doesn't
         implicate the password; right for health, which must not flap a
@@ -454,43 +618,68 @@ async def _confirm_credentials(
 
     ``facts`` carries model/serial/firmware lifted from the same response on
     the success path (empty otherwise), so the monitor can self-populate the
-    device record without a second probe.
+    device record without a second probe. It is empty when the corroborating
+    ``param.cgi`` read is what proved the credentials — that body is a
+    parameter dump, not basicdeviceinfo's shape. Empty facts never *erase* a
+    stored value: both flush sites skip falsy entries.
+
+    ``learned`` is a probe marker to persist on the device record (or ``None``)
+    — see :data:`PROBE_MARKER_KEY`. Emitted only when the corroborator is what
+    proved the credentials, so the common path never writes to the registry.
     """
-    op = None
-    try:
-        op = catalog.get_operation("vapix", AUTH_CHECK_OP)
-    except Exception:
-        op = None
-    if op is None:
-        return None, {}
-    try:
-        result = await asyncio.wait_for(
-            executor.execute(
-                op.to_executor_dict(),
-                {**device_info, "device_id": device_id},
-                credentials,
-                {},
-            ),
-            timeout=timeout_seconds + 2,
-        )
-    except Exception:
-        return None, {}  # transient — don't flap the status on a second-call hiccup
+    primary_op = _preferred_auth_op(device_info)
+    result = await _run_auth_op(
+        catalog=catalog, executor=executor, device_info=device_info,
+        device_id=device_id, credentials=credentials,
+        timeout_seconds=timeout_seconds, op_id=primary_op,
+    )
+    if result is _OP_MISSING or result is _OP_ERRORED:
+        return None, {}, None
+
     sc = getattr(result, "status_code", None)
     if sc in (401, 403):
-        return False, {}
-    if strict and not (
-        getattr(result, "success", False)
-        and sc is not None and 200 <= int(sc) < 300
-    ):
-        return None, {}  # didn't prove anything — not good enough to save
+        # Don't believe a single op (GH #149) — corroborate before condemning.
+        return await _corroborate_rejection(
+            catalog=catalog, executor=executor, device_info=device_info,
+            device_id=device_id, credentials=credentials,
+            timeout_seconds=timeout_seconds, refused_op=primary_op,
+        )
+
+    if strict and not _is_authenticated_2xx(result):
+        return None, {}, None  # didn't prove anything — not good enough to save
+
     # Accepted (or non-auth answer): mine the body for identity facts.
-    facts: Dict[str, str] = {}
+    facts = _facts_from(result) if primary_op == AUTH_CHECK_OP else {}
+    return True, facts, None
+
+
+def _persist_probe_marker(
+    registry: Any,
+    device_id: str,
+    device_info: Dict[str, Any],
+    learned: Dict[str, str],
+) -> None:
+    """Merge a learned probe marker into the device record (GH #149).
+
+    Best-effort and delta-only, mirroring ``_persist_learned_auth`` in
+    ``admz/operations.py``: a backend without ``update_device_info`` just
+    keeps re-learning per sweep, which costs one extra CGI and nothing else.
+    """
+    current = device_info.get(PROBE_MARKER_KEY)
+    merged = dict(current) if isinstance(current, dict) else {}
+    merged.update(learned)
+    if merged == current:
+        return
     try:
-        from admz.device_facts import extract_device_facts
-        facts = extract_device_facts(getattr(result, "parsed_data", None))
-    except Exception:
-        facts = {}
-    return True, facts
+        registry.update_device_info(device_id, {PROBE_MARKER_KEY: merged})
+        logger.info(
+            "health: learned auth-check op for %s: %s", device_id, dict(learned)
+        )
+    except Exception:  # noqa: BLE001 - best effort
+        logger.debug(
+            "health: could not persist probe marker for %s", device_id,
+            exc_info=True,
+        )
 
 
 SD_PROBE_OP = "disks-list.cgi:list-disks"
@@ -715,8 +904,9 @@ async def probe_device(
             # some firmware. Confirm with an auth-required call so a wrong/stale
             # password surfaces as auth_failed instead of a misleading "online".
             observed: Dict[str, str] = {}
+            learned_probe: Optional[Dict[str, str]] = None
             if _verify_credentials_enabled():
-                creds_ok, observed = await _confirm_credentials(
+                creds_ok, observed, learned_probe = await _confirm_credentials(
                     catalog=catalog, executor=executor, device_info=device_info,
                     device_id=device_id, credentials=credentials,
                     timeout_seconds=timeout_seconds,
@@ -729,7 +919,13 @@ async def probe_device(
                         last_seen_online=now,  # it IS reachable, just not authable
                         latency_ms=elapsed_ms,
                         consecutive_failures=1,
-                        last_error="credentials rejected (HTTP 401 on basicdeviceinfo)",
+                        # Two independent auth-required ops refused these
+                        # credentials (GH #149) — say so, because "401 on
+                        # basicdeviceinfo" alone was never the proof it claimed.
+                        last_error=(
+                            "credentials rejected — both "
+                            f"{AUTH_CHECK_OP} and {CORROBORATION_OP} refused them"
+                        ),
                         uptime_seconds=uptime_int,
                         bootid=bootid_str,
                     )
@@ -755,6 +951,7 @@ async def probe_device(
                 sd_status=sd_status,
                 sd_total_kb=sd_total_kb,
                 observed_facts=observed or None,
+                learned_probe=learned_probe or None,
             )
 
     # ---- Tier 2: TCP connect probe ----
@@ -966,6 +1163,16 @@ class HealthMonitor:
                                 "health: fact refresh skipped for %s",
                                 device_id, exc_info=True,
                             )
+
+                # Same seam, one level up (GH #149): persist what the credential
+                # check learned about *how* to auth-check this device, so a
+                # model whose basicdeviceinfo is restricted stops paying for a
+                # corroborating call every sweep. probe_device has no registry
+                # handle; the sweep does.
+                if record.learned_probe:
+                    _persist_probe_marker(
+                        self.registry, device_id, device, record.learned_probe
+                    )
 
                 # Fire any pre-authorized deferred actions whose trigger this
                 # device's new state now satisfies (e.g. came back needsetup ->

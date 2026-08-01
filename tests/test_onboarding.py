@@ -74,7 +74,10 @@ def patch_probes(monkeypatch):
 
     async def _confirm(**kwargs):
         state.setdefault("confirm_calls", []).append(kwargs["credentials"])
-        return state["confirm"].pop(0) if state["confirm"] else (None, {})
+        spec = state["confirm"].pop(0) if state["confirm"] else (None, {})
+        # Cases below script 2-tuples for readability; _confirm_credentials
+        # returns (ok, facts, learned) since GH #149.
+        return spec if len(spec) == 3 else (*spec, None)
 
     async def _ready(*a, **k):
         return state["systemready"]
@@ -204,13 +207,13 @@ class TestStrictVerification:
         # request. Lenient mode says True ("not rejected"); strict says
         # unknown, so onboarding won't save a password off it.
         result = MagicMock(success=False, status_code=None, parsed_data=None)
-        assert self._confirm(result, strict=True) == (None, {})
-        ok, _ = self._confirm(result, strict=False)
+        assert self._confirm(result, strict=True) == (None, {}, None)
+        ok, _, _learned = self._confirm(result, strict=False)
         assert ok is True  # health keeps the lenient behavior
 
     def test_non_2xx_answer_is_unknown_in_strict_mode(self):
         result = MagicMock(success=False, status_code=500, parsed_data=None)
-        assert self._confirm(result, strict=True) == (None, {})
+        assert self._confirm(result, strict=True) == (None, {}, None)
 
     def test_explicit_401_is_rejected_in_both_modes(self):
         result = MagicMock(success=False, status_code=401, parsed_data=None)
@@ -220,7 +223,7 @@ class TestStrictVerification:
     def test_authenticated_2xx_is_true_in_strict_mode(self):
         result = MagicMock(success=True, status_code=200,
                            parsed_data={"data": {"propertyList": {}}})
-        ok, _ = self._confirm(result, strict=True)
+        ok, _, _learned = self._confirm(result, strict=True)
         assert ok is True
 
 
