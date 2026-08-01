@@ -290,6 +290,112 @@ class TestInferenceSection:
 
 
 # --------------------------------------------------------------------------
+# advanced capabilities (ADR-0052 / GH #132 slice 3)
+# --------------------------------------------------------------------------
+
+
+class _EmptySettings:
+    """A fleet-settings stand-in where nothing is set."""
+
+    def get(self, key, default=None):
+        return default
+
+
+@pytest.fixture
+def _no_caps(monkeypatch):
+    """Unset every capability env var, and read settings from an empty store.
+
+    ``tests/conftest.py`` sets the two test-suppressors process-wide, and both
+    are ``production_appropriate=False`` — so without this, "an ordinary
+    install sees nothing" would be testing the conftest rather than the code.
+    The settings stub keeps the assertion off the developer's real DB too.
+    """
+    from admz import capabilities
+
+    for cap in capabilities.CAPABILITIES:
+        if cap.env_var:
+            monkeypatch.delenv(cap.env_var, raising=False)
+    monkeypatch.setattr(capabilities, "_settings", _EmptySettings)
+    return monkeypatch
+
+
+class TestCapabilitiesSection:
+
+    def test_ordinary_install_renders_nothing(self, _no_caps):
+        assert ctx.build_capabilities_section() == ""
+
+    def test_a_loud_capability_names_itself_its_class_and_its_knob(self, _no_caps):
+        _no_caps.setenv("ADMZ_DEV_AUTO_APPROVE", "1")
+        out = ctx.build_capabilities_section()
+        assert "`dev.auto_approve` [dev-only]" in out
+        assert "ON via env (ADMZ_DEV_AUTO_APPROVE)" in out
+
+    def test_test_auth_warns_against_the_waiting_for_you_narration(self, _no_caps):
+        """The specific confusion this section exists to prevent: a script may
+        be approving, so "waiting for your approval" is a false statement."""
+        _no_caps.setenv("ADMZ_TEST_AUTH", "1")
+        out = ctx.build_capabilities_section()
+        assert "waiting for your approval" in out
+        assert "may be a SCRIPT" in out
+        # And the unprivileged synthetic principal is explained, not mystifying.
+        assert "no group membership" in out
+
+    def test_auto_approve_says_the_gate_still_fires(self, _no_caps):
+        _no_caps.setenv("ADMZ_DEV_AUTO_APPROVE", "1")
+        out = ctx.build_capabilities_section()
+        assert "The gate still fires" in out
+        assert "WHO may satisfy it" in out
+
+    def test_a_suppressor_explains_the_symptom_it_causes(self, _no_caps):
+        _no_caps.setenv("ADMZ_DISABLE_ONBOARDING_PROBES", "1")
+        out = ctx.build_capabilities_section()
+        assert "`test.no_onboarding_probes` [test-suppressor]" in out
+        assert "credentials_needed" in out
+
+    def test_production_appropriate_capabilities_stay_silent(self, _no_caps):
+        """A survey/ingest install is a legitimate profile. Narrating it every
+        turn is the alarm fatigue the chip rules already avoid."""
+        _no_caps.setenv("ADMZ_EVENT_INGEST", "1")
+        _no_caps.setenv("ADMZ_MCP_NO_SCHEDULER", "1")
+        assert ctx.build_capabilities_section() == ""
+
+    def test_a_loud_capability_wins_over_a_quiet_one(self, _no_caps):
+        _no_caps.setenv("ADMZ_EVENT_INGEST", "1")
+        _no_caps.setenv("ADMZ_DEV_AUTO_APPROVE", "1")
+        out = ctx.build_capabilities_section()
+        assert "dev.auto_approve" in out
+        assert "events.device_ingest" not in out
+
+    def test_every_line_is_one_bullet_per_capability(self, _no_caps):
+        _no_caps.setenv("ADMZ_DEV_AUTO_APPROVE", "1")
+        _no_caps.setenv("ADMZ_TEST_AUTH", "1")
+        out = ctx.build_capabilities_section()
+        assert out.count("\n- ") + 1 == 2  # two capabilities, two bullets
+
+    def test_registry_failure_degrades_to_empty(self, monkeypatch):
+        from admz import capabilities
+
+        monkeypatch.setattr(
+            capabilities, "active_capabilities",
+            lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        assert ctx.build_capabilities_section() == ""
+
+    def test_a_capability_without_a_note_still_renders_its_description(
+        self, _no_caps
+    ):
+        """The fallback is the registry's own sentence, so a capability added
+        later is described rather than silently unexplained."""
+        from admz import capabilities
+
+        _no_caps.setenv("ADMZ_ACS_RULE_WRITE", "1")
+        out = ctx.build_capabilities_section()
+        cap = capabilities.get("acs.rule_write")
+        assert cap.id not in ctx._NARRATION_NOTES
+        assert cap.description in out
+
+
+# --------------------------------------------------------------------------
 # smart result capping (client.py)
 # --------------------------------------------------------------------------
 

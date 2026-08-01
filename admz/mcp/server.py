@@ -3918,6 +3918,26 @@ class ADMZMCPServer:
             })
         return {"success": True, "count": len(out), "events": out}
 
+    def _get_advanced_capabilities(self) -> Dict[str, Any]:
+        """The advanced-capability inventory (GH #132, ADR-0052). Read-only.
+
+        Returns ``capabilities.snapshot()`` verbatim — the same payload
+        ``GET /api/capabilities`` serves, so an agent diagnosing an install in
+        chat and an operator reading the JSON are looking at one shape.
+
+        There is deliberately no ``set_advanced_capability`` counterpart, and
+        adding one later would be a mistake, not an omission being corrected:
+        these switches change how the model's own gates behave, so a write tool
+        would put the LLM one call away from enabling its own approver. See the
+        module docstring of ``admz/mcp/tools/capabilities.py``. The registry's
+        setting keys are also in ``PROTECTED_SETTING_KEYS``, so the generic
+        ``set_fleet_setting`` tool refuses them too — the refusal is enforced
+        twice on purpose.
+        """
+        from admz import capabilities as _capabilities
+
+        return {"success": True, **_capabilities.snapshot()}
+
     async def _provision_device(
         self, arguments: Dict[str, Any]
     ) -> Dict[str, Any]:

@@ -41,7 +41,14 @@ at ``admz/modules/contract.py`` and used at ``admz/modules/acs_pro/config.py``.
 The stdio MCP subprocess, the ``operations`` layer, and the nav builder all have
 to be able to ask "is this on?" without dragging in FastAPI or an executor.
 
-Plan: ``docs/plans/advanced-switches.md``. ADR-0052 (slice 3).
+**Slice 3 added the second reader.** ``describe``/``snapshot`` below shape the
+row for both ``GET /api/capabilities`` and the ``get_advanced_capabilities``
+MCP tool, so the operator's view and the agent's view of the same install are
+the same bytes. There is deliberately **no** write tool on that surface — see
+``admz/mcp/tools/capabilities.py``.
+
+Plan: ``docs/plans/advanced-switches.md``. Decision:
+``docs/specification/decisions/0052-advanced-capability-switches.md``.
 """
 
 from __future__ import annotations
@@ -49,7 +56,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -537,6 +544,101 @@ def active_ids() -> List[str]:
     in?" without leaking a setting name or a credential.
     """
     return [a.id for a in active_capabilities()]
+
+
+# ---------------------------------------------------------------------------
+# The read shape — ONE row shape, every reader
+# ---------------------------------------------------------------------------
+#
+# Slice 3 added a second reader (the ``get_advanced_capabilities`` MCP tool)
+# beside slice 2's ``GET /api/capabilities``. Rather than let the two grow
+# their own dialects of "a capability, described", the shaping moved down here
+# and both surfaces call it: the REST route's ``_row`` is a one-line delegation
+# and the MCP handler returns :func:`snapshot`. An operator diagnosing an
+# install from chat and one reading the JSON therefore see the same fields with
+# the same names, and a field added for one appears in the other for free.
+
+#: Danger class → the severity token the UI colours by. ``internal`` is grey on
+#: purpose: it marks a runtime role ADMZ sets for its own subprocesses, and
+#: colouring it would train operators to ignore the colours that matter.
+DANGER_SEVERITY: Dict[str, str] = {
+    "dev-only": "red",
+    "dangerous": "red",
+    "test-suppressor": "red",
+    "privileged": "amber",
+    "internal": "grey",
+}
+
+
+def describe(cap: Capability) -> Dict[str, Any]:
+    """One capability as every reader sees it: declaration + live state.
+
+    ``env_var`` / ``setting_key`` are the knob *names*, never their values —
+    the same discipline :func:`active_ids` follows for ``/api/health``. A
+    capability's knob name is inventory; what somebody typed into it is not.
+    """
+    source = source_of(cap.id)
+    return {
+        "id": cap.id,
+        "title": cap.title,
+        "description": cap.description,
+        "danger": cap.danger,
+        "severity": DANGER_SEVERITY.get(cap.danger, "grey"),
+        "production_appropriate": cap.production_appropriate,
+        "enable_via": list(cap.enable_via),
+        "env_var": cap.env_var,
+        "setting_key": cap.setting_key,
+        "companion_env": list(cap.companion_env),
+        "since": cap.since,
+        "notes": cap.notes,
+        "enabled": bool(source),
+        "source": source,
+        "toggleable": is_toggleable(cap.id),
+    }
+
+
+def auth_backend_context(
+    reveal_groups: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """``ADMZ_AUTH_BACKEND`` as read-only *context*, not a registry row.
+
+    Master resolution 5: it already emits its own startup WARNING, and
+    registering it would leave every dev box permanently chipped — which trains
+    operators to ignore the chip and defeats its purpose. An operator reading
+    "what mode is this in?" still wants it in the same view, so it travels
+    beside the table as a line rather than as a row.
+
+    ``reveal_groups`` is **passed in** rather than read here: it lives in
+    ``admz.authz``, which imports FastAPI, and this module has to stay
+    importable in the stdio MCP subprocess. The web layer already knows them
+    and supplies them; the MCP surface omits them, which is honest — nothing
+    there can toggle a capability, so who may toggle is not its business.
+    """
+    backend = (os.environ.get("ADMZ_AUTH_BACKEND") or "none").strip() or "none"
+    out: Dict[str, Any] = {
+        "backend": backend,
+        "anonymous": backend.lower() == "none",
+    }
+    if reveal_groups is not None:
+        out["reveal_groups"] = list(reveal_groups)
+    return out
+
+
+def snapshot() -> Dict[str, Any]:
+    """The whole declaration table plus live state — the composed read.
+
+    What ``GET /api/capabilities`` returns and what the
+    ``get_advanced_capabilities`` MCP tool returns, from one place, so the two
+    cannot drift. Includes the *inactive* rows deliberately: "what could this
+    install be running with, and what is it actually running with" is one
+    question, and answering only the second half invites a second tool.
+    """
+    rows = [describe(cap) for cap in CAPABILITIES]
+    return {
+        "capabilities": rows,
+        "active": [r["id"] for r in rows if r["enabled"]],
+        "auth_backend": auth_backend_context(),
+    }
 
 
 # ---------------------------------------------------------------------------

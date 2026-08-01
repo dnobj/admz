@@ -96,6 +96,7 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 - [0006 — Multi-level confirmation by risk class](decisions/0006-multi-level-confirmation.md)
 - [0018 — Risk-aware "expect-timeout" semantics for reboot ops](decisions/0018-expect-timeout-semantics.md)
 - [0020 — Protected fleet settings keys not writable from MCP](decisions/0020-protected-fleet-settings.md)
+- [0052 — Advanced capability switches: one declared registry, five loudness surfaces, zero enforcement](decisions/0052-advanced-capability-switches.md) ✅ — ten dev/dangerous/privileged switches declared in one table (`admz/capabilities.py`) that *is* the read path; enablement asymmetric by danger class (env-only for `dev-only`/`dangerous`/`test-suppressor`/`internal` so they can never be a click in a browser, env-or-setting for `privileged` so a background loop stays stoppable without a restart); loud at startup, in the audit log, on a topbar chip, in `/api/health` + `GET /api/capabilities` + the read-only `get_advanced_capabilities` MCP tool, and in the chat prompt. Explicitly **not** a security boundary, and never softens a confirmation gate (ADR-0034) (#132)
 
 ### Authentication (Phase 4)
 

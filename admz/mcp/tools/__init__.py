@@ -35,6 +35,7 @@ from mcp.types import Tool
 from admz.mcp.tools import (
     activity,
     audit,
+    capabilities,
     demos,
     firmware,
     fleet,
@@ -61,6 +62,10 @@ MIGRATED_TOOLS: List[Tool] = (
     + activity.TOOLS
     + rules.TOOLS
     + demos.TOOLS
+    # Appended last (GH #132 slice 3): the frozen wire order in
+    # tests/test_mcp_tool_order.py is a prefix assertion, so a new domain that
+    # lands at the END costs one line there instead of reshuffling 74 names.
+    + capabilities.TOOLS
 )
 
 __all__ = ["MIGRATED_TOOLS"]

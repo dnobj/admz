@@ -87,6 +87,21 @@ Filtered out of `list_tools()` when
 `tool_get_credentials_enabled != "true"`. The flag is a protected
 fleet-setting key; only the web UI can toggle it.
 
+### FR-MCP-015 — Advanced capabilities are readable, never writable ✅
+`get_advanced_capabilities` returns the advanced-capability registry
+(`admz/capabilities.py`) — every declared switch, its danger class, and
+whether it is active and from where — in the same shape `GET /api/capabilities`
+serves, so an agent diagnosing an install sees exactly what an operator does.
+Read-only, no arguments.
+
+There is deliberately **no** enable/disable tool, and adding one would be a
+defect rather than a feature: these switches decide who may satisfy a
+confirmation gate and who the calling principal is, so a write tool would let
+the model grant itself those powers. Enforced twice — no such tool exists, and
+every capability `setting_key` is a protected fleet-setting key, so
+`set_fleet_setting` refuses it too ([ADR-0020](../decisions/0020-protected-fleet-settings.md)).
+See [ADR-0052](../decisions/0052-advanced-capability-switches.md).
+
 ## Non-functional requirements
 
 ### NFR-MCP-001 — Tool results are structured JSON, not free text ✅

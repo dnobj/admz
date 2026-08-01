@@ -25,7 +25,7 @@ Authenticated user: {user_line}
 You operate through the ADMZ MCP tools (provided as your tool
 surface). Every tool call is audit-logged against the
 authenticated user above.
-{fleet_section}{demos_section}
+{capabilities_section}{fleet_section}{demos_section}
 # Device identification — read this carefully
 
 Every device has TWO names:
@@ -475,6 +475,51 @@ the demo separately.)
 """
 
 
+# ADR-0052 (GH #132): shown ONLY when a capability that is not appropriate for
+# a production install is actually active. On an ordinary install
+# ``context.build_capabilities_section()`` returns "" and this whole block —
+# guidance included — is absent, so the prompt is byte-identical to before the
+# slot existed. Not decoration: without it the model confidently tells the
+# operator "waiting for your approval" while a script is approving it.
+_CAPABILITIES_GUIDANCE = """\
+# This installation is running with ADVANCED CAPABILITIES ON (ADR-0052)
+
+Advanced capabilities are the powerful/dangerous/dev-only switches ADMZ
+declares in one registry. The ones below are ON right now, and each is one a
+production installation should NOT be running with. Read them before you
+narrate anything they touch:
+
+## What a capability can and cannot change
+
+- A capability changes **who the principal is**, **who may satisfy a gate**,
+  or **what runs in the background**. That is the whole of its reach.
+- A capability **NEVER changes whether a confirmation gate fires**. ADR-0034
+  applies in full with every one of these on: destructive work still returns a
+  blocked confirm card, still needs the link (and the password where the risk
+  class says so), and still lands one `confirm.approve` audit row. If a gate
+  did not appear, a capability is not the reason — do not offer one as the
+  explanation, and never imply approval was skipped or waived.
+- You cannot turn any of these on or off. There is no tool for it, deliberately
+  — read the registry with `get_advanced_capabilities`, report it, and stop
+  there. If the operator wants one changed, tell them where it lives: an
+  environment variable on the ADMZ service plus a restart for the dangerous
+  classes, or the reveal-gated `/settings/advanced` page for the privileged
+  ones.
+
+## How to talk about it
+
+- **Say it when it is load-bearing, not every turn.** If the answer depends on
+  the capability — an approval that may not be waiting on the human, an
+  onboarding result that is a suppressor rather than a fault — name the
+  capability and what it changed. Otherwise stay quiet about it.
+- **Never claim a human did something a capability may have done**, and never
+  attribute a script's approval to the operator you are talking to.
+- The operator may not know one of these is on. Being told plainly is the
+  point; being told at length every turn is not.
+
+"""
+
+
 # ADR-0051: taught only where demo inference can do real work — ACS Pro
 # connected, or a run/open proposals already on record. Everywhere else the
 # slot is empty and the prompt is byte-identical to before it existed.
@@ -571,6 +616,7 @@ def build_system_prompt(
     module_sections: Optional[str] = None,
     demos_section: Optional[str] = None,
     inference_section: Optional[str] = None,
+    capabilities_section: Optional[str] = None,
 ) -> str:
     """Construct the chatbot's system prompt for a given principal.
 
@@ -589,6 +635,12 @@ def build_system_prompt(
     :func:`admz.chatbot.context.build_inference_section`, which returns "" when
     the surface is inactive (no ACS, no run, no open proposal). Empty means the
     whole narration section is omitted, on the same conditional contract.
+
+    ``capabilities_section`` (ADR-0052) lists the active advanced capabilities
+    that are not appropriate for a production install — see
+    :func:`admz.chatbot.context.build_capabilities_section`, which returns ""
+    on an ordinary install. Empty means the whole block, guidance included, is
+    absent and the prompt is byte-identical to before the slot existed.
     """
     display = display_name or principal_name
     group_list = sorted(set(groups)) if groups else []
@@ -662,8 +714,20 @@ def build_system_prompt(
             f"{inference_section.strip()}\n"
         )
 
+    # ADR-0052: the guidance rides on the live list, exactly like ADR-0051's
+    # block. Nothing loud active → the builder returns "" and the section
+    # vanishes, so an ordinary install's prompt is unchanged.
+    capabilities_section_text = ""
+    if capabilities_section and capabilities_section.strip():
+        capabilities_section_text = (
+            f"\n{_CAPABILITIES_GUIDANCE.rstrip()}\n\n"
+            "## Active right now\n\n"
+            f"{capabilities_section.strip()}\n"
+        )
+
     return _PROMPT_TEMPLATE.format(
         user_line=user_line,
+        capabilities_section=capabilities_section_text,
         fleet_section=fleet_section,
         common_ops_section=common_ops_section,
         module_sections=module_section_text,

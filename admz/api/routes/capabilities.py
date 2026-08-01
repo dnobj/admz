@@ -57,42 +57,20 @@ except Exception:  # noqa: BLE001
 # Shaping
 # ---------------------------------------------------------------------------
 
-#: Danger class → badge colour on the page. ``internal`` is grey on purpose:
-#: it is a runtime role marker ADMZ sets for its own subprocesses, and
-#: colouring it would train operators to ignore the colours that matter.
-DANGER_SEVERITY: Dict[str, str] = {
-    "dev-only": "red",
-    "dangerous": "red",
-    "test-suppressor": "red",
-    "privileged": "amber",
-    "internal": "grey",
-}
+#: Danger class → badge colour on the page. Declared in the registry (slice 3)
+#: so the MCP read and this one cannot disagree about what "red" means; kept
+#: importable under the old name because the template renders ``row.severity``.
+DANGER_SEVERITY: Dict[str, str] = capabilities.DANGER_SEVERITY
 
 
 def _row(cap: capabilities.Capability) -> Dict[str, Any]:
     """One capability as the API and the page both see it.
 
-    ``env_var``/``setting_key`` are the knob *names*, never their values —
-    the same discipline ``/api/health`` follows.
+    Shaped by :func:`admz.capabilities.describe` — slice 3 added a second
+    reader (the ``get_advanced_capabilities`` MCP tool) and moved the shape
+    into the registry rather than letting the two surfaces drift.
     """
-    source = capabilities.source_of(cap.id)
-    return {
-        "id": cap.id,
-        "title": cap.title,
-        "description": cap.description,
-        "danger": cap.danger,
-        "severity": DANGER_SEVERITY.get(cap.danger, "grey"),
-        "production_appropriate": cap.production_appropriate,
-        "enable_via": list(cap.enable_via),
-        "env_var": cap.env_var,
-        "setting_key": cap.setting_key,
-        "companion_env": list(cap.companion_env),
-        "since": cap.since,
-        "notes": cap.notes,
-        "enabled": bool(source),
-        "source": source,
-        "toggleable": capabilities.is_toggleable(cap.id),
-    }
+    return capabilities.describe(cap)
 
 
 def _auth_backend_context() -> Dict[str, Any]:
@@ -103,15 +81,11 @@ def _auth_backend_context() -> Dict[str, Any]:
     operators to ignore the chip and defeats its purpose. An operator reading
     "what mode is this in?" still wants it in the same view, so it appears here
     as a line, with no chip, no ``/api/health`` entry and no toggle.
-    """
-    import os
 
-    backend = (os.getenv("ADMZ_AUTH_BACKEND") or "none").strip() or "none"
-    return {
-        "backend": backend,
-        "anonymous": backend.lower() == "none",
-        "reveal_groups": list(reveal_groups()),
-    }
+    The reveal groups are supplied from here because ``admz.authz`` imports
+    FastAPI and the registry must stay importable in the MCP subprocess.
+    """
+    return capabilities.auth_backend_context(reveal_groups())
 
 
 # ---------------------------------------------------------------------------

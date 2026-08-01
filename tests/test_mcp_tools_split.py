@@ -75,6 +75,14 @@ class TestPerDomainModules:
             "list_cached_firmware",
         }
 
+    def test_capabilities_module_has_exactly_one_read_only_tool(self):
+        """GH #132 slice 3. The equality — not a superset check — is the point:
+        the advanced-capability domain must stay a domain of ONE. A write tool
+        beside it would let the model enable its own approver."""
+        from admz.mcp.tools import capabilities
+        names = {t.name for t in capabilities.TOOLS}
+        assert names == {"get_advanced_capabilities"}
+
 
 # ---------------------------------------------------------------------------
 # MIGRATED_TOOLS aggregate
@@ -90,8 +98,9 @@ class TestMigratedToolsAggregate:
         # ADR-0050 demo_setup_status/set_event_ingest + #124 slice 2
         # survey_demo_evidence + #124 slice 3 infer_demos /
         # list_demo_proposals / confirm_demo_proposal / dismiss_demo_proposal)
-        # = 39
-        assert len(MIGRATED_TOOLS) == 39
+        # + 1 (capabilities: get_advanced_capabilities, GH #132 slice 3)
+        # = 40
+        assert len(MIGRATED_TOOLS) == 40
 
     def test_migrated_tools_all_named(self):
         from admz.mcp.tools import MIGRATED_TOOLS

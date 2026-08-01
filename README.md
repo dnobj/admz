@@ -260,6 +260,16 @@ it drives the **real** confirmation endpoint (no production bypass), scoped to
 safety model, and a verified live smoke-test recipe. **Never run it against a
 production ADMZ.**
 
+It is one of ADMZ's declared **advanced capabilities** (`dev.auto_approve`) —
+the powerful, dangerous, or privileged-install switches listed in one registry,
+`admz/capabilities.py`, so an operator can answer *"what non-default powers is
+this installation running with?"* from the startup log, `curl /api/health`, the
+topbar chip, or the chat console instead of from the source. See
+**[ADR-0052](docs/specification/decisions/0052-advanced-capability-switches.md)**;
+the hidden, reveal-gated page is `/settings/advanced`. It is deliberately not a
+security boundary — anyone who can set an environment variable already owns the
+box — and no capability ever removes a confirmation gate.
+
 ## Backup
 
 ADMZ stores two files on first run that must be backed up **together**:

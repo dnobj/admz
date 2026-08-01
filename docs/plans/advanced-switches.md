@@ -1,7 +1,13 @@
 # Plan: advanced capability switches — one registry for hidden, dangerous, and privileged-install features
 
-Status: **slice 1 shipped** (PR [#134](https://github.com/dnobj/admz/pull/134));
-slices 2 and 3 planned — GH [#132](https://github.com/dnobj/admz/issues/132).
+Status: **complete — all three slices shipped.** Slice 1 PR
+[#134](https://github.com/dnobj/admz/pull/134), slice 2 PR
+[#136](https://github.com/dnobj/admz/pull/136), slice 3 closes GH
+[#132](https://github.com/dnobj/admz/issues/132). The decision this plan
+produced is recorded as
+[ADR-0052](../specification/decisions/0052-advanced-capability-switches.md);
+where this plan and the ADR differ, **the ADR wins** — it was written from the
+shipped code.
 Blocks marked *"as shipped"* / *"Correction from slice 1"* record where the
 implementation departed from what is written around them; **they win**, and slice 2
 should be built against them rather than the surrounding prose.
@@ -596,9 +602,28 @@ The nine call sites delegate to `is_active`; `set_enabled` + the audit rows;
 topbar chip. Tests 2, 2b, 5, 6, 7, 9, 10, 16, 17, 18, 19. The bulk of the work and all
 of the compatibility risk lives here, behind slice 1's already-merged declarations.
 
-**Slice 3 — chat/MCP surface + docs.**
-`get_advanced_capabilities` (+ `EXPECTED_TOOL_ORDER` in the same commit), the
-system-prompt fragment, the ADR, and the doc cross-references. Test 11.
+**Slice 3 — chat/MCP surface + docs.** ✅ **SHIPPED**
+`get_advanced_capabilities` (+ `EXPECTED_TOOL_ORDER`, the `MIGRATED_TOOLS`
+count, and the per-domain split test in the same commit), the system-prompt
+block, ADR-0052, and the doc cross-references. Test 11.
+
+Two things landed differently from the text above, both deliberate:
+
+* **The read shape is single-sourced, not mirrored by hand.**
+  `capabilities.describe()` / `capabilities.snapshot()` now shape the row, and
+  `routes/capabilities._row` is a one-line delegation to the first. The plan
+  described two readers agreeing; the code has one shaping function with two
+  callers, so they cannot drift. `DANGER_SEVERITY` moved into the registry with
+  it (the route keeps the name importable — the template renders
+  `row.severity`). The MCP payload omits `reveal_groups`, because `admz.authz`
+  imports FastAPI and the registry must stay importable in the stdio
+  subprocess — and because nothing on that surface can toggle anything, so who
+  may toggle is not its business.
+* **The prompt block is gated on `production_appropriate`, not on "any active
+  capability".** A survey/ingest install is a legitimate profile; narrating it
+  every turn is the alarm fatigue the chip rules already avoid. `privileged`
+  and `internal` capabilities therefore stay out of the prompt and remain
+  readable via the tool.
 
 **After:** #131 lands as a *registration* — a row in `CAPABILITIES` plus its
 implementation, with no new bespoke env-var handling. That is the proof the abstraction

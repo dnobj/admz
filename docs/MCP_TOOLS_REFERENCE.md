@@ -1,11 +1,19 @@
 # ADMZ MCP Tools Reference
 
-Complete reference for the **67 tools** the ADMZ MCP server exposes.
+Reference for the **75 tools** the ADMZ MCP server exposes (plus whatever an
+enabled platform module appends — ACS Pro contributes its own once connected).
+The frozen wire order lives in `tests/test_mcp_tool_order.py`.
 
 > Note: a `get_credentials` MCP tool used to exist. It was **removed**
 > (CR-1) because returning plaintext passwords into LLM context violates
 > the project's stated invariant. Use `create_temp_credentials` when the
 > LLM needs to authenticate against a device.
+
+> Known gap, flagged rather than papered over: eight tools shipped without an
+> entry here — `search_activity`, `demo_setup_status`, `survey_demo_evidence`,
+> `infer_demos`, `list_demo_proposals`, `confirm_demo_proposal`,
+> `dismiss_demo_proposal`, and `set_event_ingest`. Their schemas and
+> descriptions are authoritative in `admz/mcp/tools/`.
 
 Group key:
 - 🗂 = registry + accounts
@@ -20,6 +28,7 @@ Group key:
 - ⏰ = scheduled snapshots
 - 🎛 = fleet settings
 - 💾 = firmware
+- 🧯 = advanced capability inventory (read-only)
 
 ---
 
@@ -641,6 +650,43 @@ Stop claiming the demo's keys (direct, no gate — it only reveals drift).
 Load / unload a SIDELINED demo's scenario as ONE gated config-push plan
 (both return the plan's confirm envelope). Refused for baseline demos.
 - **Args:** `demo`
+
+---
+
+## 🧯 Advanced capabilities (ADR-0052)
+
+ADMZ declares its powerful / dangerous / privileged-install switches in one
+registry (`admz/capabilities.py`). This tool is the agent's window onto it —
+the same read `GET /api/capabilities` serves, so both answer *"what non-default
+powers is this installation running with?"* identically.
+
+**There is deliberately no tool to enable or disable a capability, and there
+never should be.** These switches decide who may satisfy a confirmation gate
+(`dev.auto_approve`) and who the calling principal even is (`dev.test_auth`) —
+an LLM that can turn them on is not gated at all. The refusal is enforced
+twice: no tool exists, and every capability's `setting_key` is in
+`PROTECTED_SETTING_KEYS`, so the generic `set_fleet_setting` refuses them too
+(ADR-0020). Enabling one stays an env var + a service restart, or a
+reveal-gated, typed-acknowledged, audited toggle on `/settings/advanced`.
+
+### `get_advanced_capabilities`
+Read the advanced-capability registry: every declared capability, its danger
+class, whether it is on and from where. Read-only, no arguments.
+- **Args:** none
+- **Returns:** `{success, capabilities: [{id, title, description, danger,
+  severity, production_appropriate, enable_via, env_var, setting_key,
+  companion_env, since, notes, enabled, source, toggleable}, ...],
+  active: [id, ...], auth_backend: {backend, anonymous}}`
+- `danger` is one of `dev-only` / `dangerous` / `privileged` /
+  `test-suppressor` / `internal`; `source` is `"env"`, `"setting"`, or `""`
+  when off (env wins — a setting cannot turn off an env-forced capability).
+- `env_var` / `setting_key` are the knob **names**, never their values — the
+  same discipline `/api/health`'s id list follows.
+- `auth_backend` is read-only *context*, not a capability (Master resolution 5):
+  `ADMZ_AUTH_BACKEND` already emits its own startup warning, and registering it
+  would leave every dev box permanently flagged.
+- A capability changes *who* the principal is or *what* runs in the background.
+  It never removes a confirmation gate — ADR-0034 applies in full.
 
 ---
 

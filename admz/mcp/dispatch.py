@@ -376,6 +376,15 @@ async def _set_event_ingest(ctx, a):
     return await ctx.server._set_event_ingest(bool(a.get("enabled")))
 
 
+# --- Advanced capabilities (GH #132, ADR-0052) -------------------------------
+# READ ONLY, and this stays a table of one. See admz/mcp/tools/capabilities.py
+# for why there is no set_advanced_capability beside it: an LLM that can enable
+# its own approver is not gated at all. Every capability setting_key is also in
+# PROTECTED_SETTING_KEYS, so set_fleet_setting refuses them too.
+async def _get_advanced_capabilities(ctx, a):
+    return ctx.server._get_advanced_capabilities()
+
+
 # --- Temporary credentials ---------------------------------------------------
 async def _create_temp_credentials(ctx, a):
     return await ctx.server._create_temp_credentials(a)
@@ -461,4 +470,5 @@ TOOL_HANDLERS: Dict[str, ToolHandler] = {
     "end_demo": _end_demo,
     "create_temp_credentials": _create_temp_credentials,
     "cleanup_temp_credentials": _cleanup_temp_credentials,
+    "get_advanced_capabilities": _get_advanced_capabilities,
 }
