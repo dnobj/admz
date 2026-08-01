@@ -15,6 +15,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote, unquote
 from xml.etree import ElementTree
 
 import httpx
@@ -66,6 +67,108 @@ def _upload_path_allowed(file_path: str) -> bool:
     except (OSError, ValueError):
         return False
     return resolved == root or root in resolved.parents
+
+
+class PathParamRejected(ValueError):
+    """A config-rest path parameter would have changed the request's shape.
+
+    Raised rather than silently stripping or encoding the offending value:
+    the caller (an MCP tool call, a chat turn, a REST body) asked for
+    something that would retarget the request, and should be told so —
+    both for the audit trail and so it doesn't chase a confusing 404.
+    """
+
+
+# Issue #10: config-rest is the ONLY generation that interpolates
+# caller-supplied params into the URL *path* (legacy-cgi puts them in
+# ``params=`` and json-rpc in a JSON body, both of which httpx encodes for
+# us). Those params reach the executor from untrusted surfaces — the same
+# provenance the H-3 note above describes — so a raw substitution is a live
+# injection sink, not a theoretical one.
+#
+# These constructs change the SHAPE of the request rather than its content,
+# and httpx 0.28 actively cooperates with each: it RESOLVES "." / ".."
+# dot-segments client-side before sending (so traversal succeeds), and it
+# honours "?" and "#" as query/fragment starts (config-rest passes
+# ``params=None``, so an injected query survives to the wire).
+_PATH_PARAM_FORBIDDEN: Tuple[Tuple[str, str], ...] = (
+    ("/", "path separator"),
+    ("\\", "path separator"),
+    ("?", "query separator"),
+    ("#", "fragment separator"),
+)
+
+# A value may hide a forbidden construct behind percent-encoding ("%2e%2e")
+# or behind two layers of it ("%252e%252e"). Three rounds is well past any
+# legitimate value while staying bounded.
+_MAX_DECODE_ROUNDS = 3
+
+
+def _reject_shape_changing(name: str, text: str, origin: str = "") -> None:
+    """Raise ``PathParamRejected`` if ``text`` is not a single, inert segment."""
+    via = f" (percent-decoded from {origin!r})" if origin else ""
+
+    for ch, why in _PATH_PARAM_FORBIDDEN:
+        if ch in text:
+            raise PathParamRejected(
+                f"Path parameter {name!r} contains a {why} ({ch!r}){via}: "
+                f"{text!r}. Path parameters name a single resource and may "
+                "not add or retarget URL segments."
+            )
+
+    if text == ".":
+        raise PathParamRejected(
+            f"Path parameter {name!r} is a bare '.' path segment{via}. "
+            "It would be resolved away before the request is sent."
+        )
+
+    if ".." in text:
+        raise PathParamRejected(
+            f"Path parameter {name!r} contains '..'{via}: {text!r}. "
+            "Parent-directory segments are resolved by the HTTP client "
+            "before sending, which would escape the operation's endpoint."
+        )
+
+    for ch in text:
+        if ord(ch) < 0x20 or ord(ch) == 0x7F:
+            raise PathParamRejected(
+                f"Path parameter {name!r} contains a control character "
+                f"({ch!r}){via}: {text!r}."
+            )
+
+
+def _sanitize_path_param(name: str, value: Any) -> str:
+    """Return ``value`` percent-encoded for use as ONE URL path segment.
+
+    Rejects anything that would change the request's shape, then encodes
+    what survives with ``safe=""`` — the default ``safe="/"`` would leave a
+    separator intact and preserve the very exposure this closes.
+
+    Only the *value* is encoded, never the assembled path template: several
+    catalogued operations have literal templates that percent-encoding would
+    break (``param:exportParams`` is ``path: '/$export'``).
+    """
+    text = str(value)
+
+    if not text:
+        raise PathParamRejected(
+            f"Path parameter {name!r} is empty; an empty value collapses a "
+            "URL path segment and would retarget the request."
+        )
+
+    _reject_shape_changing(name, text)
+
+    # Re-run the same check against each decoding layer, so the guard cannot
+    # be bypassed by spelling the construct as "%2f" or "%252e".
+    probe = text
+    for _ in range(_MAX_DECODE_ROUNDS):
+        decoded = unquote(probe)
+        if decoded == probe:
+            break
+        _reject_shape_changing(name, decoded, origin=text)
+        probe = decoded
+
+    return quote(text, safe="")
 
 
 class _BearerAuth(httpx.Auth):
@@ -179,6 +282,22 @@ class VapixExecutor(BaseExecutor):
                 result.learned_auth = learned_auth
             return result
 
+        except PathParamRejected as e:
+            # A deliberate refusal, not a surprise — log it at WARNING with
+            # the operation and device so the attempt is attributable, and
+            # hand the caller the reason verbatim. Must precede the catch-all
+            # below, which would file this under "Unexpected error".
+            elapsed = (time.monotonic() - start) * 1000
+            logger.warning(
+                "Refused %s on %s: %s", op_id, device_id, e
+            )
+            return StepResult(
+                operation_id=op_id,
+                device_id=device_id,
+                success=False,
+                error=str(e),
+                duration_ms=elapsed,
+            )
         except FileNotFoundError:
             elapsed = (time.monotonic() - start) * 1000
             return StepResult(
@@ -644,11 +763,20 @@ class VapixExecutor(BaseExecutor):
         # Substitute path parameters. A param consumed by the path must NOT
         # also ride in the JSON body (PATCH /schedules/{id1} with body
         # {"id1": ..., "data": ...} confuses strict config-rest handlers).
+        #
+        # Every substituted value goes through _sanitize_path_param, which
+        # refuses shape-changing values and percent-encodes the rest. This
+        # applies uniformly to all placeholders — including the ones in a
+        # middle segment (cert:generateCSR is /certificates/{alias}/get_csr)
+        # and the two-placeholder siren-and-light:startFunctionPattern —
+        # because a stray separator there retargets the request entirely.
         body_params = dict(params)
         for k, v in params.items():
             placeholder = "{" + k + "}"
             if placeholder in full_path:
-                full_path = full_path.replace(placeholder, str(v))
+                full_path = full_path.replace(
+                    placeholder, _sanitize_path_param(k, v)
+                )
                 body_params.pop(k, None)
 
         request_spec = operation.get("request", {})

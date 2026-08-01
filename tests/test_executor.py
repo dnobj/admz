@@ -387,6 +387,269 @@ class TestBuildConfigRest:
 
 
 # ------------------------------------------------------------------
+# Issue #10 — config-rest path parameter injection guard
+# ------------------------------------------------------------------
+
+
+class TestSanitizePathParamRejects:
+    """config-rest is the only generation that puts caller params in the URL
+    *path*, and those params arrive from untrusted surfaces (MCP tool call,
+    chat turn, REST body). httpx cooperates with the attacker here: it
+    resolves "."/".." client-side and honours "?"/"#", so a raw substitution
+    lets a caller retarget an authenticated request to any endpoint on the
+    device."""
+
+    @pytest.mark.parametrize(
+        "value,reason",
+        [
+            ("..", "parent-segment"),
+            ("../..", "repeated-parent"),
+            (".", "bare-dot-segment"),
+            ("a/b", "embedded-separator"),
+            ("x/../../y", "middle-segment-traversal"),
+            ("x?y=1", "query-injection"),
+            ("x#f", "fragment-truncation"),
+            ("a\\b", "backslash-separator"),
+            ("%2e", "pre-encoded-dot"),
+            ("%2e%2e", "pre-encoded-parent"),
+            ("%2F", "pre-encoded-separator-upper"),
+            ("%2f", "pre-encoded-separator-lower"),
+            ("..%2f..", "mixed-encoding-traversal"),
+            ("%252e", "double-encoded-dot"),
+            ("%252f", "double-encoded-separator"),
+            ("a%5Cb", "pre-encoded-backslash"),
+            ("", "empty-collapses-segment"),
+            ("a\nb", "control-character"),
+        ],
+    )
+    def test_rejects_shape_changing(self, value, reason):
+        from admz.executor.vapix import PathParamRejected, _sanitize_path_param
+
+        with pytest.raises(PathParamRejected):
+            _sanitize_path_param("id1", value)
+
+    def test_rejection_names_the_parameter(self):
+        """The caller must learn which param was refused and why — a silent
+        strip would just produce a confusing 404 from the device."""
+        from admz.executor.vapix import PathParamRejected, _sanitize_path_param
+
+        with pytest.raises(PathParamRejected) as exc:
+            _sanitize_path_param("alias", "../../axis-cgi/admin/pwdgrp.cgi")
+        assert "alias" in str(exc.value)
+        assert ".." in str(exc.value)
+
+
+class TestSanitizePathParamAccepts:
+    """Paired accept table — the guard must not be satisfied by rejecting
+    everything. These are real catalogued id shapes."""
+
+    @pytest.mark.parametrize(
+        "value,expected,reason",
+        [
+            # event-schedules ids are dotted (facets/event_schedules.py)
+            ("com.axis.schedules.weekends", "com.axis.schedules.weekends", "dotted-id"),
+            # siren-and-light {id1} is a profile NAME, not an opaque id
+            ("SIP", "SIP", "profile-name"),
+            # cert {alias} is an operator-chosen label; spaces are legitimate
+            ("My Cert 2024", "My%20Cert%202024", "alias-with-space"),
+            # event-mqtt-bridge eventFilter/subscription ids are ordinals
+            ("0", "0", "ordinal"),
+            (
+                "550e8400-e29b-41d4-a716-446655440000",
+                "550e8400-e29b-41d4-a716-446655440000",
+                "uuid",
+            ),
+            ("root.Network.eth0", "root.Network.eth0", "dotted-param-path"),
+            ("profile-1_x", "profile-1_x", "hyphen-underscore"),
+            ("Kamera-\xd6", "Kamera-%C3%96", "non-ascii-utf8"),
+        ],
+    )
+    def test_accepts_legitimate_values(self, value, expected, reason):
+        from admz.executor.vapix import _sanitize_path_param
+
+        assert _sanitize_path_param("id1", value) == expected
+
+    def test_unreserved_values_pass_through_byte_identical(self):
+        """Encoding must not change values that already work in production."""
+        from admz.executor.vapix import _sanitize_path_param
+
+        for value in (
+            "com.axis.schedules.office_hours",
+            "com.axis.action.fixed.play.audioclip",
+            "Camera1Profile1",
+        ):
+            assert _sanitize_path_param("id1", value) == value
+
+
+class TestConfigRestPathSubstitution:
+    """The guard applied at the substitution site (_build_config_rest)."""
+
+    def setup_method(self):
+        self.executor = VapixExecutor()
+
+    def test_final_segment_substituted_and_body_stripped(self):
+        req = self.executor._build_config_rest(
+            {
+                "method": "PATCH",
+                "base_path": "/config/rest/event-schedules/v2beta",
+                "path": "/schedules/{id1}",
+            },
+            {"id1": "com.axis.schedules.weekends", "data": {"name": "W"}},
+        )
+        assert req.path == (
+            "/config/rest/event-schedules/v2beta/schedules/"
+            "com.axis.schedules.weekends"
+        )
+        assert req.json_body == {"data": {"name": "W"}}
+
+    def test_middle_segment_placeholder_is_guarded(self):
+        """cert:generateCSR is /certificates/{alias}/get_csr — an unencoded
+        separator here retargets the request rather than 404ing."""
+        from admz.executor.vapix import PathParamRejected
+
+        op = {
+            "method": "POST",
+            "base_path": "/config/rest/cert/v1",
+            "path": "/certificates/{alias}/get_csr",
+        }
+        with pytest.raises(PathParamRejected):
+            self.executor._build_config_rest(op, {"alias": "../../../param/v2beta"})
+
+        ok = self.executor._build_config_rest(op, {"alias": "My Cert"})
+        assert ok.path == "/config/rest/cert/v1/certificates/My%20Cert/get_csr"
+
+    def test_both_placeholders_guarded_in_two_param_op(self):
+        """siren-and-light:startFunctionPattern is the catalog's only
+        two-placeholder path — neither may be left raw."""
+        from admz.executor.vapix import PathParamRejected
+
+        op = {
+            "method": "POST",
+            "base_path": "/config/rest/siren-and-light/v2beta",
+            "path": "/functions/{id1}/patterns/{id2}/start",
+        }
+        assert self.executor._build_config_rest(
+            op, {"id1": "SIP", "id2": "pattern 1"}
+        ).path == (
+            "/config/rest/siren-and-light/v2beta/functions/SIP"
+            "/patterns/pattern%201/start"
+        )
+        for bad in ({"id1": "..", "id2": "p"}, {"id1": "f", "id2": "../.."}):
+            with pytest.raises(PathParamRejected):
+                self.executor._build_config_rest(op, bad)
+
+    def test_literal_template_is_never_encoded(self):
+        """param:exportParams is path: '/$export'. Only the *value* may be
+        encoded — quoting the assembled path would break these ops."""
+        req = self.executor._build_config_rest(
+            {"method": "POST", "base_path": "/config/rest/param/v2beta",
+             "path": "/$export"},
+            {},
+        )
+        assert req.path == "/config/rest/param/v2beta/$export"
+
+    def test_non_placeholder_params_are_untouched(self):
+        """A param that isn't consumed by the path still rides in the body
+        verbatim — the guard is scoped to path interpolation only."""
+        req = self.executor._build_config_rest(
+            {"method": "POST", "base_path": "/config/rest/ssh/v2",
+             "path": "/users"},
+            {"username": "root", "sshKey": "ssh-rsa AAAA+/=="},
+        )
+        assert req.path == "/config/rest/ssh/v2/users"
+        assert req.json_body == {"username": "root", "sshKey": "ssh-rsa AAAA+/=="}
+
+
+class TestConfigRestPathCannotEscapeEndpoint:
+    """End-to-end through build_request on a REAL catalogued operation."""
+
+    OP_ID = "event-schedules:getSchedule"
+
+    def _op(self):
+        import axis_api_atlas
+        from axis_api_atlas.catalog.loader import CatalogLoader
+
+        loader = CatalogLoader(axis_api_atlas.default_data_path())
+        op = loader.get_operation("vapix", self.OP_ID)
+        assert op is not None, f"{self.OP_ID} missing from catalog"
+        return op.to_executor_dict()
+
+    def test_catalogued_op_still_builds_for_a_real_id(self):
+        ex = VapixExecutor.__new__(VapixExecutor)
+        req = ex.build_request(self._op(), {"id1": "com.axis.schedules.weekends"})
+        assert req.path.endswith("/schedules/com.axis.schedules.weekends")
+
+    @pytest.mark.parametrize(
+        "hostile",
+        [
+            "..",
+            "../../../../axis-cgi/admin/pwdgrp.cgi",
+            "x?action=add&grp=root",
+            "x#truncate",
+            "%2e%2e%2f%2e%2e",
+        ],
+    )
+    def test_traversal_never_escapes_the_operations_endpoint(self, hostile):
+        """The invariant: no param value may produce a URL that resolves
+        outside the operation's own base_path. httpx resolves dot-segments
+        itself, so the assertion is made against the normalised URL."""
+        from admz.executor.vapix import PathParamRejected
+
+        op = self._op()
+        base = op["base_path"]
+        ex = VapixExecutor.__new__(VapixExecutor)
+
+        try:
+            req = ex.build_request(op, {"id1": hostile})
+        except PathParamRejected:
+            return  # refused outright — the intended outcome
+
+        # If it ever builds, the normalised wire path must stay under base.
+        resolved = httpx.URL(f"http://device{req.path}")
+        assert resolved.path.startswith(base), (
+            f"{hostile!r} escaped {base} -> {resolved.path}"
+        )
+        assert resolved.query == b""
+
+
+class TestExecuteRefusesRejectedPathParam:
+    """Per the H-3 precedent, the refusal is asserted at the boundary too:
+    execute() must return a failed StepResult naming the reason, and must
+    not issue any HTTP request."""
+
+    def test_execute_returns_failed_step_result_without_sending(self):
+        import asyncio
+
+        sent = []
+
+        def handler(request):  # pragma: no cover - must never be reached
+            sent.append(request.url)
+            return httpx.Response(200, json={})
+
+        ex = VapixExecutor(timeout=2.0, retries=0,
+                           transport=httpx.MockTransport(handler))
+        operation = {
+            "id": "event-schedules:getSchedule",
+            "method": "GET",
+            "_generation": "config-rest",
+            "base_path": "/config/rest/event-schedules/v2beta",
+            "path": "/schedules/{id1}",
+        }
+        result = asyncio.run(
+            ex.execute(
+                operation,
+                {"id": "dev1", "host": "10.0.0.5"},
+                {"username": "u", "password": "p"},
+                {"id1": "../../../../axis-cgi/admin/pwdgrp.cgi"},
+            )
+        )
+
+        assert result.success is False
+        assert "id1" in result.error
+        assert sent == [], "a refused request must never reach the transport"
+
+
+# ------------------------------------------------------------------
 # Binary response parsing
 # ------------------------------------------------------------------
 
