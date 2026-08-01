@@ -63,7 +63,11 @@ async def onboard_device_credentials(
     device-side problems; returns a ``status`` dict (see module docstring).
     Passwords are read from fleet settings / written to the registry only —
     they never appear in the returned dict."""
-    from admz.fleet.health import _confirm_credentials, _tcp_probe
+    from admz.fleet.health import (
+        _confirm_credentials,
+        _persist_probe_marker,
+        _tcp_probe,
+    )
     from admz.fleet.systemready import read_systemready
     from admz.provisioning import provision_factory_default, store_provisioned_creds
 
@@ -109,12 +113,14 @@ async def onboard_device_credentials(
     except Exception:  # noqa: BLE001 - no account yet
         stored = None
     if stored and stored.get("password"):
-        ok, _facts = await _confirm_credentials(
+        ok, _facts, learned = await _confirm_credentials(
             catalog=catalog, executor=executor, device_info=probe_info,
             device_id=device_id, credentials=stored,
             timeout_seconds=timeout_seconds, strict=True,
         )
         if ok is True:
+            if learned:
+                _persist_probe_marker(registry, device_id, device_info, learned)
             return {"status": ALREADY_CREDENTIALED, "device_id": device_id}
         # Rejected or indeterminate: fall through — a stale stored password
         # is exactly what the fleet-pair try below may repair.
@@ -145,7 +151,9 @@ async def onboard_device_credentials(
         fleet_username = fleet_settings.get("default_username") or "root"
         # strict: only an authenticated 2xx proves the pair — saving on a
         # lenient "not rejected" once stored a bad password (P3408, 2026-07-02).
-        ok, facts = await _confirm_credentials(
+        # A 2xx from the corroborating param.cgi read counts (GH #149): strict
+        # rejects *non-auth* answers as proof, and that is real proof.
+        ok, facts, learned = await _confirm_credentials(
             catalog=catalog, executor=executor, device_info=probe_info,
             device_id=device_id,
             credentials={"username": fleet_username, "password": fleet_password},
@@ -156,8 +164,13 @@ async def onboard_device_credentials(
                 registry, device_id, fleet_username, fleet_password,
                 purpose="Fleet default credentials verified at onboarding",
             )
+            if learned:
+                _persist_probe_marker(registry, device_id, device_info, learned)
             # Same opportunistic backfill as the health monitor: the verify
-            # response is basicdeviceinfo, so lift model/serial/firmware.
+            # response is basicdeviceinfo, so lift model/serial/firmware. Empty
+            # on the corroborated path (a param dump, not basicdeviceinfo's
+            # shape) — the ``if facts`` / ``if v`` guards below mean that
+            # never erases an already-stored model/serial.
             if facts:
                 changed = {
                     k: v for k, v in facts.items()
