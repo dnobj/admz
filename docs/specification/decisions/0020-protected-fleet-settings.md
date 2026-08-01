@@ -29,16 +29,43 @@ tool refuses to write them, returning a structured error pointing
 operators at the web UI:
 
 ```python
-# admz/api/confirm_store.py
+# admz/fleet_settings.py
 PROTECTED_SETTING_KEYS = {
-    "confirm_level_dangerous",
-    "confirm_level_service-affecting",
-    "confirm_level_normal",
-    "confirm_level_read-only",
+    # derived from confirm_policy._DEFAULT_CONFIRMATION_LEVELS, never listed
+    *(confirm_level_key(risk) for risk in _DEFAULT_CONFIRMATION_LEVELS),
     "confirm_password_hash",
     "tool_get_credentials_enabled",
+    # … plus the chatbot, health, survey, capability and GitHub App keys
 }
+
+
+def is_protected_setting(key: str) -> bool:
+    return is_confirm_level_key(key) or key in PROTECTED_SETTING_KEYS
 ```
+
+> **Update 2026-08-01 (GH #152).** Two amendments, both from the same
+> defect. The confirmation-level keys were originally written out by
+> hand; when the risk vocabulary grew an ACS Pro `action` class
+> (default `url_only`, governing 68 operations) the protected set was
+> not updated, so the MCP tool could write `confirm_level_action=none`
+> and remove the gate. The guard test iterated its own hardcoded
+> four-tuple and passed throughout.
+>
+> 1. The `confirm_level_*` names are now **derived** from the policy
+>    table, which moved to the leaf module `admz/confirm_policy.py` so
+>    that `fleet_settings` can import it without a cycle
+>    (`confirm_store` already imports `fleet_settings`).
+> 2. Protection is additionally a **namespace** rule —
+>    `is_confirm_level_key` — because `get_confirmation_level`
+>    interpolates a risk string that comes from catalog YAML, not from
+>    the table. This is what the glossary and both personas already
+>    described.
+>
+> **Callers must use `is_protected_setting()`**, not `key in
+> PROTECTED_SETTING_KEYS`; the set alone does not carry the namespace
+> rule. `mcp/server.py::_set_fleet_setting` tested the set directly,
+> which is why a fix applied only to the predicate would have been a
+> no-op.
 
 Reading these is allowed (with masking for password-shaped values per
 ADR-0006). Writing requires the operator to open `/confirm-settings`
@@ -79,4 +106,4 @@ This is fine — that one click is the right friction.
   mechanism)
 - Requirements: [security.md](../requirements/security.md) FR-SEC-012
 - Persona: [security-conscious-operator](../personas/security-conscious-operator.md)
-- Code: `admz/api/confirm_store.py::PROTECTED_SETTING_KEYS`, `admz/mcp/server.py::_set_fleet_setting`
+- Code: `admz/fleet_settings.py::PROTECTED_SETTING_KEYS` / `::is_protected_setting`, `admz/confirm_policy.py::_DEFAULT_CONFIRMATION_LEVELS`, `admz/mcp/server.py::_set_fleet_setting`

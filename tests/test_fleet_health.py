@@ -862,10 +862,26 @@ class TestMonitorOptIn:
 
 class TestProtectedKeys:
     def test_health_keys_protected(self):
+        """Exactly these ``health_*`` keys are protected — no more, no fewer.
+
+        Was a loop over a literal tuple asserting membership, the same shape
+        that let GH #152 through: growth in the real key set could only ever be
+        missed. Recast as an equality lock over the ``health_*`` namespace so
+        adding or dropping a protected health key fails here and forces a
+        conscious update.
+
+        Residual gap, tracked separately: a *new* health setting added to
+        ``admz/fleet/health.py`` and never protected still would not fail this,
+        because that module names its keys as inline string literals with no
+        canonical list to derive from.
+        """
         from admz.api.confirm_store import PROTECTED_SETTING_KEYS
-        for k in (
+
+        protected_health_keys = {
+            k for k in PROTECTED_SETTING_KEYS if k.startswith("health_")
+        }
+        assert protected_health_keys == {
             "health_monitor_enabled",
             "health_check_interval_seconds",
             "health_check_timeout_seconds",
-        ):
-            assert k in PROTECTED_SETTING_KEYS, f"{k} should be protected"
+        }

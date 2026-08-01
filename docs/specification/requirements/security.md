@@ -73,13 +73,15 @@ The FastAPI app's CORS policy is driven by `ADMZ_ALLOWED_ORIGINS` (comma-separat
 
 ### FR-SEC-012 — Protected fleet-setting keys ✅
 The following keys cannot be written via the MCP `set_fleet_setting` tool — only via the `/confirm-settings` web UI:
-- `confirm_level_dangerous`, `confirm_level_service-affecting`, `confirm_level_normal`, `confirm_level_read-only`
+- **every** key in the `confirm_level_*` namespace — one per risk class in the policy table (`dangerous`, `service-affecting`, `normal`, `read-only`, `action`, `read`), plus any risk class added later
 - `confirm_password_hash`
 - `tool_get_credentials_enabled`
 
 The rationale: an LLM that can change its own guardrails has no guardrails.
 
-**Enforced at:** `api/confirm_store.py::PROTECTED_SETTING_KEYS`, `mcp/server.py::_set_fleet_setting`. See [0020](../decisions/0020-protected-fleet-settings.md).
+The `confirm_level_*` keys are **derived** from the policy table rather than listed, and protection is a **namespace** rule rather than membership of a fixed set. Both because they were once listed by hand and drifted: the table grew an ACS Pro `action` risk (default `url_only`, governing 68 operations) and the protected set kept only the four original vapix names, so MCP could write `confirm_level_action=none` and remove the gate (GH #152).
+
+**Enforced at:** `fleet_settings.py::is_protected_setting` (namespace rule + `PROTECTED_SETTING_KEYS`, derived from `confirm_policy.py::_DEFAULT_CONFIRMATION_LEVELS`), `mcp/server.py::_set_fleet_setting`. Callers must use the `is_protected_setting` predicate; testing `key in PROTECTED_SETTING_KEYS` directly misses the namespace rule. See [0020](../decisions/0020-protected-fleet-settings.md).
 
 ## Non-functional requirements
 

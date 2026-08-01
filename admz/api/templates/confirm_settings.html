@@ -41,8 +41,12 @@
           <td style="padding:8px 12px;">
             <span style="
               display:inline-block;padding:2px 10px;border-radius:4px;font-size:13px;font-weight:600;
+              {# Grouped by what the class does, not by name: 'action' is the
+                 ACS Pro mutation class and gates like service-affecting, so it
+                 shares the amber badge. 'read' falls through to grey with
+                 'read-only'. #}
               {% if risk == 'dangerous' %}background:#fecaca;color:#991b1b;
-              {% elif risk == 'service-affecting' %}background:#fde68a;color:#92400e;
+              {% elif risk in ('service-affecting', 'action') %}background:#fde68a;color:#92400e;
               {% elif risk == 'normal' %}background:#dbeafe;color:#1e40af;
               {% else %}background:#e5e7eb;color:#374151;{% endif %}
             ">{{ risk }}</span>

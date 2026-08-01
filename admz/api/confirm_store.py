@@ -20,6 +20,12 @@ Default mapping from risk level → confirmation level:
   service-affecting → url_only
   normal            → none
   read-only         → none
+  action            → url_only   (ACS Pro and other server-target families)
+  read              → none       (ditto)
+
+The table itself lives in :mod:`admz.confirm_policy`, a leaf module, so that
+``fleet_settings`` can derive the protected ``confirm_level_*`` keys from it
+without an import cycle. It is re-exported below under its original name.
 
 Both `dangerous` and `service-affecting` default to a URL/widget flow so that
 consent for any device-affecting operation is a deterministic, human-only step
@@ -42,20 +48,21 @@ from typing import Dict, Optional
 
 # ── Defaults ────────────────────────────────────────────────────────────
 
-_DEFAULT_CONFIRMATION_LEVELS: Dict[str, str] = {
-    "dangerous": "url_and_password",
-    "service-affecting": "url_only",
-    "normal": "none",
-    "read-only": "none",
-    # ACS Pro (and other server-target families) use a simpler read|action
-    # risk vocabulary. Actions mutate live state → widget-gate them (ADR-0034);
-    # reads are unconfirmed. Without these, the .get(risk, "none") fallback
-    # would let an unmapped 'action' risk through ungated.
-    "action": "url_only",
-    "read": "none",
-}
-
-VALID_CONFIRMATION_LEVELS = {"url_and_password", "url_only", "llm_confirm", "none"}
+# The risk → confirmation-level table and the valid-level vocabulary moved to
+# admz/confirm_policy.py, a leaf that imports nothing from admz. This module
+# already imports fleet_settings at module scope (see the re-export below), so
+# fleet_settings cannot import *this* module to derive the protected
+# confirm_level_* keys from the table — that direction is an import cycle. The
+# vocabulary moved down to a shared leaf instead, and is re-exported here under
+# its original name for the callers (and tests) that import it from here.
+# Same pattern, and same reason, as the PROTECTED_SETTING_KEYS re-export.
+from admz.confirm_policy import (  # noqa: E402,F401
+    _DEFAULT_CONFIRMATION_LEVELS,
+    VALID_CONFIRMATION_LEVELS,
+    CONFIRM_LEVEL_KEY_PREFIX,
+    confirm_level_key,
+    is_confirm_level_key,
+)
 
 # Fleet-setting keys that are protected from anonymous / MCP writes.
 # CR-3: relocated to admz/fleet_settings.py so the concept lives next
