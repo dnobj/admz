@@ -351,6 +351,95 @@ def build_inference_section() -> str:
     return "\n".join(lines)
 
 
+#: Per-capability narration notes — what an ACTIVE capability changes about
+#: how the model should *talk*, not about what ADMZ does.
+#:
+#: Only the capabilities whose activity would otherwise make the model say
+#: something false get an entry; every other active capability falls back to
+#: its registry ``description``, which is already one operator-readable
+#: sentence. Keeping these here rather than in ``capabilities.py`` keeps the
+#: registry a declaration of *what is on* and this a statement of *what to say
+#: about it* — and keeps chat-prompt wording out of a module the MCP
+#: subprocess imports.
+_NARRATION_NOTES = {
+    "dev.test_auth": (
+        "the caller may be a SCRIPT, not the person you are addressing: an "
+        "unauthenticated request resolves to a fixed synthetic principal. Do "
+        "not describe a pending action as \"waiting for your approval\" or "
+        "\"waiting for you to click\" — say the gate is open and who or what "
+        "may satisfy it, because an unattended agent may be approving it. The "
+        "synthetic principal has no group membership by default, so "
+        "reveal-gated surfaces (plaintext credentials, the advanced page's "
+        "toggles) refuse it; report that refusal as authorization working, "
+        "not as a bug."
+    ),
+    "dev.auto_approve": (
+        "an unattended approver may complete `url_*` confirmation gates "
+        "without a human. The gate still fires and still has to be satisfied "
+        "— what changed is WHO may satisfy it. Never tell the operator an "
+        "approval is waiting on them as though nothing else could complete "
+        "it; say the card is open and that the dev approver may take it."
+    ),
+    "test.no_onboarding_probes": (
+        "adding a device never probes it, so every add comes back "
+        "`credentials_needed`. Say that is the suppressor, not a device fault "
+        "— do not send the operator hunting for a network problem."
+    ),
+    "test.no_github_push": (
+        "config-repo pushes never reach GitHub. Snapshots still commit "
+        "locally; do not report a backup as offsite."
+    ),
+}
+
+
+def build_capabilities_section() -> str:
+    """Active non-production-appropriate advanced capabilities, or "" (#132).
+
+    Off — and therefore absent from the prompt entirely — unless a capability
+    whose ``production_appropriate`` is False is actually active. An ordinary
+    installation sees **no prompt change at all**, the same conditional
+    contract :func:`build_inference_section` and the ACS Pro module section
+    keep (ADR-0039/0051), and a test pins the rendered prompt byte-identical
+    in that case.
+
+    ``privileged`` and ``internal`` capabilities are deliberately not in scope:
+    survey mode and event ingest are legitimate deployment profiles, and a
+    subprocess role marker is noise. Narrating them every turn on a normal
+    privileged install is exactly the alarm fatigue the registry's chip rules
+    avoid — the model can still read the whole table with
+    `get_advanced_capabilities` when a question actually turns on it.
+
+    Pure registry read (env + one settings lookup); degrades to "" on any
+    failure, so a settings hiccup can never break a chat turn.
+    """
+    try:
+        from admz import capabilities
+
+        loud = [
+            a for a in capabilities.active_capabilities()
+            if not a.capability.production_appropriate
+        ]
+    except Exception:  # noqa: BLE001 - never let context-building break chat
+        logger.debug("[chat] capabilities section unavailable", exc_info=True)
+        return ""
+
+    if not loud:
+        return ""
+
+    lines: List[str] = []
+    for a in loud:
+        cap = a.capability
+        knob = cap.env_var if a.source == "env" else cap.setting_key
+        lines.append(
+            f"- `{cap.id}` [{cap.danger}] — ON via {a.source} ({knob}). "
+            f"{cap.description}"
+        )
+        note = _NARRATION_NOTES.get(cap.id)
+        if note:
+            lines.append(f"  What this changes for you: {note}")
+    return "\n".join(lines)
+
+
 def _resolve_top_op(resolver: Any, device_id: str, device_info: dict, intent: str) -> str:
     """The top catalog operation_id for an intent, or "" (never raises)."""
     try:

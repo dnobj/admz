@@ -41,6 +41,28 @@ Defense in depth — every layer must hold, or it refuses to act:
 5. **Fails closed.** Guard unset → exits without acting → the system behaves
    exactly as production.
 
+## It is a declared advanced capability
+
+`ADMZ_DEV_AUTO_APPROVE` is registered as `dev.auto_approve` in
+`admz/capabilities.py` (class `dev-only`, never production-appropriate) — see
+[ADR-0052](specification/decisions/0052-advanced-capability-switches.md). The
+registration changes nothing about how this tool works; it makes the *state*
+legible. With the variable set on the ADMZ service, the installation says so at
+startup (a WARNING on `admz.security`), in `curl /api/health`, on a red topbar
+chip on every page, in a once-per-boot `capability.active` audit row, on
+`/settings/advanced`, via the `get_advanced_capabilities` MCP tool, and in the
+chatbot's system prompt — which is what stops the assistant telling an operator
+an approval is "waiting for you" while this script is about to take it.
+
+The registry **declares, it does not enforce** (ADR-0052 §6): this tool posts to
+the real confirmation endpoint exactly as a browser does, and the server does
+not try to tell the difference. Registering it is not a bypass and not a
+hardening — it is the guarantee that nobody is surprised.
+
+Note the class is `dev-only` and env-only *by design*: it can never be switched
+on from a browser, only by somebody with service control on the box, plus a
+restart.
+
 ## Passwords
 
 If the dev environment has **no** `confirm_password_hash` fleet setting, ADMZ

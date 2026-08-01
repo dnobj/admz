@@ -54,6 +54,7 @@ from admz.chatbot.events import (
     event_error,
 )
 from admz.chatbot.context import (
+    build_capabilities_section,
     build_common_ops_reference,
     build_demos_section,
     build_device_roster,
@@ -253,6 +254,7 @@ async def chat_submit(
         module_sections=build_module_prompt_sections(),
         demos_section=build_demos_section(),
         inference_section=build_inference_section(),
+        capabilities_section=build_capabilities_section(),
     )
 
     logger.debug(
@@ -579,6 +581,7 @@ async def _run_chat_turn(
         module_sections=build_module_prompt_sections(),
         demos_section=build_demos_section(),
         inference_section=build_inference_section(),
+        capabilities_section=build_capabilities_section(),
     )
 
     logger.debug(

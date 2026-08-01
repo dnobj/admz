@@ -712,6 +712,205 @@ class TestHealthPayload:
 
 
 # ---------------------------------------------------------------------------
+# The read shape — one shaping function, two readers (slice 3)
+# ---------------------------------------------------------------------------
+
+
+class TestReadShape:
+    """``describe``/``snapshot`` are what both surfaces return.
+
+    Slice 3 added the MCP reader beside slice 2's REST one. These pin that the
+    shape is single-sourced rather than duplicated — the failure this prevents
+    is the boring one where a field is added to the REST row and the agent's
+    view of the same install quietly lacks it.
+    """
+
+    def test_describe_carries_declaration_and_live_state(
+        self, clean_env, isolated_settings
+    ):
+        clean_env.setenv("ADMZ_DEV_AUTO_APPROVE", "1")
+        row = capabilities.describe(capabilities.get("dev.auto_approve"))
+        assert row["id"] == "dev.auto_approve"
+        assert row["danger"] == "dev-only"
+        assert row["severity"] == "red"
+        assert row["enabled"] is True
+        assert row["source"] == "env"
+        assert row["toggleable"] is False
+        assert row["production_appropriate"] is False
+
+    def test_the_rest_row_is_the_registry_shape(self):
+        """``routes/capabilities._row`` delegates; if someone re-inlines it,
+        this fails the moment the two disagree about a field."""
+        from admz.api.routes import capabilities as routes_caps
+
+        cap = CAPABILITIES[0]
+        assert routes_caps._row(cap) == capabilities.describe(cap)
+
+    def test_severity_covers_every_danger_class(self):
+        for cls in capabilities.DANGER_CLASSES:
+            assert cls in capabilities.DANGER_SEVERITY
+
+    def test_snapshot_lists_every_capability_and_the_active_ids(
+        self, clean_env, isolated_settings
+    ):
+        clean_env.setenv("ADMZ_DEV_AUTO_APPROVE", "1")
+        snap = capabilities.snapshot()
+        assert [r["id"] for r in snap["capabilities"]] == [c.id for c in CAPABILITIES]
+        assert snap["active"] == ["dev.auto_approve"]
+        assert snap["active"] == capabilities.active_ids()
+
+    def test_snapshot_carries_the_auth_backend_as_context(self, clean_env):
+        clean_env.setenv("ADMZ_AUTH_BACKEND", "none")
+        snap = capabilities.snapshot()
+        assert snap["auth_backend"]["backend"] == "none"
+        assert snap["auth_backend"]["anonymous"] is True
+        # Master resolution 5: context, never a row.
+        assert not any(
+            "AUTH_BACKEND" in (r["env_var"] or "") for r in snap["capabilities"]
+        )
+
+    def test_the_registry_never_reads_the_reveal_groups_itself(self, clean_env):
+        """``admz.authz`` imports FastAPI, so the web layer passes the groups
+        in. Omitting them in the MCP payload is honest: nothing there toggles."""
+        assert "reveal_groups" not in capabilities.auth_backend_context()
+        passed = capabilities.auth_backend_context(["Administrators"])
+        assert passed["reveal_groups"] == ["Administrators"]
+
+    def test_snapshot_never_returns_a_knob_value(self, clean_env, isolated_settings):
+        clean_env.setenv("ADMZ_DEV_AUTO_APPROVE", "hunter2")
+        assert "hunter2" not in repr(capabilities.snapshot())
+
+
+# ---------------------------------------------------------------------------
+# Test 11 — the MCP surface, and the tool that must never exist (slice 3)
+# ---------------------------------------------------------------------------
+
+
+def _live_mcp_tool_names(tmp_path, monkeypatch):
+    """Tool names as the wire sees them, from a real server instance."""
+    monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
+    monkeypatch.setenv("ADMZ_KEY_PATH", str(tmp_path / "admz.key"))
+    monkeypatch.setenv("ADMZ_CONFIG_REPO_PATH", str(tmp_path / "config-repo"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
+
+    import asyncio
+
+    from mcp.types import ListToolsRequest
+
+    from admz.mcp.server import ADMZMCPServer
+
+    server = ADMZMCPServer()
+    handler = server.server.request_handlers.get(ListToolsRequest)
+    assert handler is not None, "list_tools handler not registered"
+    res = asyncio.new_event_loop().run_until_complete(
+        handler(ListToolsRequest(method="tools/list"))
+    )
+    return server, [t.name for t in res.root.tools]
+
+
+def _tool_payload():
+    """What the handler returns, without paying for a whole server instance.
+
+    ``_get_advanced_capabilities`` touches no instance state — it is a pure
+    read of the registry — so calling it unbound exercises the real method
+    while keeping the catalog load out of tests that only care about shape.
+    """
+    from admz.mcp.server import ADMZMCPServer
+
+    return ADMZMCPServer._get_advanced_capabilities(None)
+
+
+class TestMcpSurface:
+
+    def test_the_inventory_tool_is_advertised(self, tmp_path, monkeypatch):
+        _server, names = _live_mcp_tool_names(tmp_path, monkeypatch)
+        assert "get_advanced_capabilities" in names
+
+    def test_no_tool_can_enable_a_capability(self, tmp_path, monkeypatch):
+        """The load-bearing assertion of this slice.
+
+        A write tool would let the model turn on the switches that decide who
+        may satisfy its own confirmation gates. There is none, and this test is
+        what stops one being added "for symmetry" later. The check is on the
+        LIVE advertised list, so a module tool cannot sneak one in either.
+        """
+        _server, names = _live_mcp_tool_names(tmp_path, monkeypatch)
+        offenders = [n for n in names if re.search(r"set_.*capabilit", n)]
+        assert offenders == [], (
+            f"a capability WRITE tool is advertised: {offenders}. "
+            "See admz/mcp/tools/capabilities.py — this is deliberate, not an "
+            "oversight to be corrected."
+        )
+
+    def test_the_capability_domain_holds_exactly_one_tool(self):
+        from admz.mcp.tools import capabilities as cap_tools
+
+        assert [t.name for t in cap_tools.TOOLS] == ["get_advanced_capabilities"]
+
+    def test_the_dispatch_table_has_one_capability_entry(self):
+        from admz.mcp.dispatch import TOOL_HANDLERS
+
+        # `list_rule_capabilities` is a device event-rule tool — an unrelated
+        # sense of the word — so match the registry's own naming.
+        matching = sorted(n for n in TOOL_HANDLERS if "advanced_capabilit" in n)
+        assert matching == ["get_advanced_capabilities"]
+        assert not [n for n in TOOL_HANDLERS if re.search(r"set_.*capabilit", n)]
+
+    def test_every_capability_setting_key_is_refused_by_set_fleet_setting(self):
+        """The second, independent enforcement (ADR-0020): even the generic
+        settings tool refuses these keys, so removing the "no write tool" rule
+        alone would still not open the hole."""
+        from admz.fleet_settings import is_protected_setting
+
+        for cap in CAPABILITIES:
+            if cap.setting_key:
+                assert is_protected_setting(cap.setting_key), cap.id
+
+    def test_the_tool_returns_the_rest_read_shape(
+        self, clean_env, isolated_settings
+    ):
+        clean_env.setenv("ADMZ_DEV_AUTO_APPROVE", "1")
+        payload = _tool_payload()
+
+        assert payload["success"] is True
+        assert set(payload) == {"success", "capabilities", "active", "auth_backend"}
+        assert payload["active"] == ["dev.auto_approve"]
+
+        from admz.api.routes import capabilities as routes_caps
+
+        rest_row = routes_caps._row(capabilities.get("dev.auto_approve"))
+        tool_row = next(
+            r for r in payload["capabilities"] if r["id"] == "dev.auto_approve"
+        )
+        assert tool_row == rest_row
+
+    def test_the_tool_never_returns_a_knob_value(
+        self, clean_env, isolated_settings
+    ):
+        clean_env.setenv("ADMZ_DEV_AUTO_APPROVE", "hunter2")
+        assert "hunter2" not in repr(_tool_payload())
+
+    def test_the_tool_description_says_gates_still_fire(self):
+        """ADR-0034 in the one place the model actually reads (ADR-0025: most
+        guidance rides on the tool descriptions)."""
+        from admz.mcp.tools import capabilities as cap_tools
+
+        desc = cap_tools.TOOLS[0].description
+        assert "ADR-0034" in desc
+        assert "never removes a confirmation gate" in desc
+
+    def test_the_tool_takes_no_arguments(self):
+        from admz.mcp.tools import capabilities as cap_tools
+
+        schema = cap_tools.TOOLS[0].inputSchema
+        assert schema["type"] == "object"
+        assert schema["properties"] == {}
+        assert schema["required"] == []
+
+
+# ---------------------------------------------------------------------------
 # Test 12b — the drift guard
 # ---------------------------------------------------------------------------
 
@@ -728,8 +927,8 @@ class TestDriftGuard:
 
     #: The registry itself is the classification, so scanning it is circular —
     #: naming a *planned* env var in a docstring would fail the guard for
-    #: documenting the future accurately. It reads the environment only through
-    #: ``os.environ.get(cap.env_var)``, never a literal, so nothing hides here.
+    #: documenting the future accurately. What stops it becoming a hiding place
+    #: is the companion assertion below.
     _SELF = "admz/capabilities.py"
 
     def _scanned_names(self):
@@ -744,11 +943,32 @@ class TestDriftGuard:
                     found.setdefault(match.group(0), set()).add(rel)
         return found
 
-    def test_the_registry_never_reads_a_literal_env_var(self):
+    def test_the_registry_hides_no_unclassified_env_read(self):
         """Since the registry file is excluded from the scan above, it must not
-        be a place an unclassified env read could hide."""
+        be a place an unclassified env read could hide.
+
+        Slice 1–2 could assert the strict form — *no* literal read at all —
+        because every read went through ``os.environ.get(cap.env_var)``. Slice
+        3 gave the file one legitimate literal: ``auth_backend_context`` reports
+        ``ADMZ_AUTH_BACKEND`` as read-only context (Master resolution 5), and
+        that name is already classified as ``ORDINARY_CONFIG``. So the
+        assertion became the one the guard was always *for* — every env name
+        read here is classified — and the pattern widened to match: the old one
+        missed the ``os.environ.get("ADMZ_…")`` spelling entirely, which is
+        exactly the read it now has to catch.
+        """
         source = (REPO_ROOT / self._SELF).read_text(encoding="utf-8")
-        assert not re.search(r"os\.(getenv|environ)[.\[(]*\s*[\"']ADMZ_", source)
+        found = set(re.findall(
+            r"os\.(?:getenv|environ)(?:\.get)?[.\[(]*\s*[\"'](ADMZ_[A-Z0-9_]+)",
+            source,
+        ))
+        unclassified = found - self._classified()
+        assert not unclassified, (
+            f"unclassified env read hiding in {self._SELF}: {sorted(unclassified)}"
+        )
+        # And it is the read we expect, not a new bespoke one that happens to
+        # be classified.
+        assert found == {"ADMZ_AUTH_BACKEND"}, sorted(found)
 
     def _classified(self):
         known = set(capabilities.ORDINARY_CONFIG) | set(capabilities.NOT_ENV_VARS)

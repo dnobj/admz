@@ -94,6 +94,11 @@ EXPECTED_TOOL_ORDER = [
     "confirm_demo_proposal",
     "dismiss_demo_proposal",
     "set_event_ingest",
+    # GH #132 slice 3 — the advanced-capability inventory. Appended at the very
+    # end so the frozen prefix above is untouched. Read-only, and deliberately
+    # alone: there is no set_advanced_capability and there never should be
+    # (admz/mcp/tools/capabilities.py explains why).
+    "get_advanced_capabilities",
 ]
 
 

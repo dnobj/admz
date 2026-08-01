@@ -319,3 +319,96 @@ class TestDemoInferenceNarration:
         )
         assert "{inference_section}" not in prompt
         assert "{demos_section}" not in prompt
+
+
+class TestAdvancedCapabilitiesSection:
+    """ADR-0052 / GH #132 slice 3 — the mode banner, shown only when a
+    capability a production install should not have is actually active."""
+
+    _STATE = (
+        "- `dev.test_auth` [dev-only] — ON via env (ADMZ_TEST_AUTH). Resolves "
+        "any otherwise-unauthenticated request to a fixed synthetic principal."
+    )
+
+    def test_absent_on_an_ordinary_install(self):
+        """The whole point, and the reason this is a test rather than a
+        promise: an install running nothing advanced must see NO prompt change
+        at all — not a header, not a blank line, not a stray placeholder."""
+        prompt = build_system_prompt("alice")
+        assert "ADVANCED CAPABILITIES" not in prompt
+        assert "ADR-0052" not in prompt
+        assert "{capabilities_section}" not in prompt
+        # The seam closes cleanly: the intro runs straight into the first
+        # section exactly as it did before the slot existed.
+        assert "authenticated user above.\n\n# Device identification" in prompt
+
+    def test_the_live_builder_leaves_an_ordinary_prompt_byte_identical(
+        self, monkeypatch
+    ):
+        """Not "no header" but *byte* equality, driven by the real builder —
+        so a stray newline in the slot is a failure, not a rounding error."""
+        from admz import capabilities
+        from admz.chatbot import context
+
+        for cap in capabilities.CAPABILITIES:
+            if cap.env_var:
+                monkeypatch.delenv(cap.env_var, raising=False)
+        monkeypatch.setattr(capabilities, "_settings", _EmptyStore)
+
+        assert context.build_capabilities_section() == ""
+        assert build_system_prompt(
+            "alice", capabilities_section=context.build_capabilities_section(),
+        ) == build_system_prompt("alice")
+
+    def test_empty_string_injects_nothing(self):
+        assert "ADVANCED CAPABILITIES" not in build_system_prompt(
+            "alice", capabilities_section="   ",
+        )
+
+    def test_present_when_something_loud_is_on(self):
+        prompt = build_system_prompt("alice", capabilities_section=self._STATE)
+        assert "# This installation is running with ADVANCED CAPABILITIES ON" in prompt
+        assert "## Active right now" in prompt
+        assert "`dev.test_auth` [dev-only]" in prompt
+        # The banner must not displace the rest of the prompt.
+        assert "/confirm/{token}" in prompt
+        assert "# Device identification" in prompt
+        assert "# House style" in prompt
+
+    def test_states_that_gates_are_untouched(self):
+        """ADR-0034 in full. A capability changing *who* must never be read by
+        the model as a capability changing *whether*."""
+        prompt = build_system_prompt("alice", capabilities_section=self._STATE)
+        assert "NEVER changes whether a confirmation gate fires" in prompt
+        assert "ADR-0034" in prompt
+        assert "never imply approval was skipped or waived" in prompt
+
+    def test_says_a_capability_changes_who_or_what_not_whether(self):
+        prompt = build_system_prompt("alice", capabilities_section=self._STATE)
+        assert "who the principal is" in prompt
+        assert "who may satisfy a gate" in prompt
+        assert "what runs in the background" in prompt
+
+    def test_the_model_is_told_it_cannot_toggle_anything(self):
+        prompt = build_system_prompt("alice", capabilities_section=self._STATE)
+        assert "cannot turn any of these on or off" in prompt
+        assert "get_advanced_capabilities" in prompt
+        assert "/settings/advanced" in prompt
+
+    def test_tells_the_model_not_to_recite_it_every_turn(self):
+        """A banner narrated on every turn is a banner nobody reads."""
+        prompt = build_system_prompt("alice", capabilities_section=self._STATE)
+        assert "Say it when it is load-bearing, not every turn" in prompt
+
+    def test_renders_without_stray_placeholders(self):
+        prompt = build_system_prompt("alice", capabilities_section=self._STATE)
+        assert "{capabilities_section}" not in prompt
+        assert "{fleet_section}" not in prompt
+
+
+class _EmptyStore:
+    """A fleet-settings stand-in where nothing is set (keeps the byte-identity
+    assertion off the developer's real database)."""
+
+    def get(self, key, default=None):
+        return default
