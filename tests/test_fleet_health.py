@@ -870,18 +870,26 @@ class TestProtectedKeys:
         adding or dropping a protected health key fails here and forces a
         conscious update.
 
-        Residual gap, tracked separately: a *new* health setting added to
-        ``admz/fleet/health.py`` and never protected still would not fail this,
-        because that module names its keys as inline string literals with no
-        canonical list to derive from.
+        The residual gap this used to record is **closed** (ADR-0053, #212). A
+        new health setting added to ``admz/fleet/health.py`` as an inline
+        literal now fails ``tests/test_setting_policy.py`` until it is
+        declared, and it is protected by default in the meantime. That is also
+        how ``health_verify_credentials`` — #168, absent from this lock until
+        now, and the key whose whole purpose is to stop the credential check
+        being enforced — joined the set.
         """
         from admz.api.confirm_store import PROTECTED_SETTING_KEYS
 
         protected_health_keys = {
             k for k in PROTECTED_SETTING_KEYS if k.startswith("health_")
         }
+        # Exact equality on purpose. Adding or dropping a protected health key
+        # must fail here and force a conscious update; loosening this to a
+        # superset check would make it pass forever, which is the defect #176
+        # found in the test that was supposed to catch #152.
         assert protected_health_keys == {
             "health_monitor_enabled",
             "health_check_interval_seconds",
             "health_check_timeout_seconds",
+            "health_verify_credentials",
         }

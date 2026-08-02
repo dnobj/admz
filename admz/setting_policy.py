@@ -1,0 +1,185 @@
+"""Which fleet settings the chat model may write — the allow-set (ADR-0053).
+
+**Deny by default.** A fleet setting is not writable by the LLM through the
+generic MCP ``set_fleet_setting`` tool unless its key appears in
+:data:`LLM_WRITABLE_SETTING_KEYS` below. This inverts ADR-0020's enumerated
+deny-list, which made a new setting writable the moment it existed and
+protected only if its author remembered — a default that failed four times in
+the same direction (#152, #168, #195, #203).
+
+The argument for inverting rather than patching a fifth time is not the four
+failures; it is that three independent enumerations of what the deny-list
+missed returned **8, 10 and 18 keys**, each missing keys the others found.
+Every enumeration method inherits its author's blind spot: #212's regex
+required ``[A-Z]`` at position 0 and so never saw ``_TOKEN_KEY``
+(``acs_webhook_token``); a literal-grep missed keys read through a
+module-local ``_settings()`` helper. You cannot enumerate your way out of
+this. You can only change which way the default fails.
+
+**Why this is a leaf.** It imports nothing from ``admz``, the same placement
+and the same reason as :mod:`admz.confirm_policy`: ``admz.api.confirm_store``
+already imports ``admz.fleet_settings`` at module scope, so vocabulary that
+``fleet_settings`` needs has to live *below* it. It also keeps the stdio MCP
+subprocess able to answer "may I write this?" without importing FastAPI.
+
+See ADR-0053, ADR-0020, and ``docs/plans/invert-setting-allowlist.md``.
+"""
+
+from typing import FrozenSet
+
+# ---------------------------------------------------------------------------
+# The allow-set — the whole point of this module
+# ---------------------------------------------------------------------------
+
+#: The ONLY fleet-setting keys the chat model may write through the generic
+#: MCP ``set_fleet_setting`` tool. Everything else is refused.
+#:
+#: **Adding a key here grants the LLM write access to it.** That is why the
+#: list is named for what it grants rather than for what it withholds: a
+#: contributor blocked by the guard test in ``tests/test_setting_policy.py``
+#: takes the shortest path out, and "add my key to the not-protected list"
+#: reads as bookkeeping, while "add my key to LLM_WRITABLE_SETTING_KEYS" reads
+#: as a grant and invites a reviewer to ask why.
+#:
+#: These two are not a judgement call — they are what the system already
+#: documents. ``admz/mcp/tools/fleet.py`` advertises exactly one key to the
+#: model (``default_password``); ``default_username`` is its documented other
+#: half, written beside it by the capture form
+#: (``admz/api/routes/capture.py:325-326``) and read beside it during
+#: onboarding (``admz/onboarding.py:149-151``). An exhaustive search of the
+#: demos subsystem, the system prompt, module prompt sections, every MCP tool
+#: module, the user stories and every test found no evidence of the model
+#: writing, or being told to write, any third key.
+LLM_WRITABLE_SETTING_KEYS: FrozenSet[str] = frozenset({
+    "default_password",
+    "default_username",
+})
+
+#: Allow-listed keys whose **value** may still never come from the model.
+#:
+#: ``default_password`` is set through the out-of-band capture URL (ADR-0009):
+#: the model asks for a session, a human types the password into a browser,
+#: and it never enters LLM context. FR-MCP-008 and two user stories already
+#: require this — ``device-onboarding.md:84`` says "never typed into the LLM
+#: chat" — but the code accepted a supplied value anyway. It no longer does.
+#:
+#: A side effect worth naming: with no value in the tool call, no password can
+#: reach the audit row that #217 records in cleartext. That does not fix #217,
+#: which is a general blindness in ``redact_structure`` to every
+#: ``{key, value}``-shaped tool; it removes this tool from its blast radius.
+CAPTURE_ONLY_SETTING_KEYS: FrozenSet[str] = frozenset({
+    "default_password",
+})
+
+
+# ---------------------------------------------------------------------------
+# The inventory — every fleet-setting key that exists, so the guard can check
+# ---------------------------------------------------------------------------
+
+#: Every concrete fleet-setting key the codebase reads or writes.
+#:
+#: This is **documentation with a test attached**, not a security boundary —
+#: the boundary is :func:`is_llm_writable` alone, and a key missing from this
+#: inventory is still refused. Its job is to make adding a setting a
+#: *conscious* act: ``tests/test_setting_policy.py`` walks ``admz/`` with
+#: ``ast``, resolving module-level constants bound to string literals, and
+#: fails until every key it finds appears here. At that point the author has
+#: to decide whether the key belongs in the allow-set above, which is the
+#: one-line reviewed decision #212 asked for.
+#:
+#: The ``confirm_level_*`` keys are deliberately absent: they are generated per
+#: risk class from ``admz.confirm_policy`` and covered by a namespace rule, not
+#: by enumeration. That is also the guard's known limit — a key built at
+#: runtime is invisible to a static scan — and the reason the namespace rule
+#: in :func:`admz.fleet_settings.is_protected_setting` survives the inversion.
+KNOWN_SETTING_KEYS: FrozenSet[str] = frozenset({
+    # --- the fleet credential pair (the allow-set) -------------------------
+    "default_password",
+    "default_username",
+    # --- confirmation / credential gates (ADR-0006, ADR-0020) -------------
+    "confirm_password_hash",
+    "tool_get_credentials_enabled",
+    # --- chatbot (ADR-0025) ------------------------------------------------
+    "gemini_api_key",
+    "gemini_default_model",
+    "chat_daily_token_budget",
+    # --- fleet health ------------------------------------------------------
+    "health_monitor_enabled",
+    "health_check_interval_seconds",
+    "health_check_timeout_seconds",
+    # #168: switching this off makes a stale password report healthy.
+    "health_verify_credentials",
+    # --- survey / contributor mode (ADR-0030) -----------------------------
+    "survey_mode_enabled",
+    "survey_github_pat",
+    "survey_repo",
+    "survey_redaction_profile",
+    "survey_validation_tier",
+    "survey_schedule_seconds",
+    "survey_contributor",
+    # --- advanced capability switches (ADR-0052) --------------------------
+    "event_ingest_enabled",
+    "acs_event_ingest_enabled",
+    "acs_firebird_enabled",
+    # --- event ingest behaviour (admz/events/config.py) -------------------
+    # The switch above was protected; these decide what it actually records,
+    # and were not. Setting retention to 0 discards the event history.
+    "event_topic_filters",
+    "event_store_categories",
+    "event_ingest_tag",
+    "event_store_max_rows",
+    "event_store_retention_days",
+    # --- drift suppression (admz/snapshot/ignore.py) ----------------------
+    # #203: a single '*' pattern makes is_ignored() true for every config key.
+    "config_ignore_patterns",
+    "config_ignore_rules",
+    "config_ignore_seed_version",
+    # --- snapshot GC (admz/snapshot/maintenance.py) -----------------------
+    # Inert today: setters and readers both have zero production callers
+    # (docs/specification/review-2026-06-10.md:221). Listed so they cannot
+    # become live and unprotected at the same time.
+    "snapshot_gc_enabled",
+    "snapshot_gc_aggressive",
+    # --- ACS Pro module (ADR-0040) ----------------------------------------
+    # #195: the master switch and server_url. Its two child flags were
+    # protected; the parent was not.
+    "acs_pro",
+    # Secret guarding the auth-exempt /api/acs/rule-fired endpoint.
+    "acs_webhook_token",
+    # The Firebird reader's switch is protected; these are its inputs —
+    # acs_fb_fbclient becomes the native library the driver loads, once an
+    # operator enables the protected capability. Latent, not live.
+    "acs_fb_fbclient",
+    "acs_fb_install",
+    "acs_fb_data_dir",
+    # --- GitHub App config backup (ADR-0045) ------------------------------
+    "github_app_id",
+    "github_app_slug",
+    "github_app_private_key",
+    "github_app_client_secret",
+    "github_app_installation_id",
+    "github_config_repo",
+})
+
+
+# ---------------------------------------------------------------------------
+# Predicates
+# ---------------------------------------------------------------------------
+
+
+def is_llm_writable(key: str) -> bool:
+    """True iff the chat model may write ``key`` via ``set_fleet_setting``.
+
+    Deny by default: an unknown key — including one added tomorrow and never
+    declared anywhere — returns False.
+    """
+    return key in LLM_WRITABLE_SETTING_KEYS
+
+
+def is_capture_only(key: str) -> bool:
+    """True iff ``key`` is allow-listed but its value may not come from chat.
+
+    Callers must refuse a supplied value and issue an out-of-band capture URL
+    instead. See :data:`CAPTURE_ONLY_SETTING_KEYS`.
+    """
+    return key in CAPTURE_ONLY_SETTING_KEYS

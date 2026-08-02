@@ -52,8 +52,17 @@ The primary workflow tools:
 ### FR-MCP-008 — Out-of-band credential capture tools ✅
 `capture_credentials` returns a URL the user clicks in a browser;
 `check_capture_status` polls. **The password never enters the LLM's
-context.** Same pattern for `set_fleet_setting` with a password key —
-returns a capture URL.
+context.** Same pattern for `set_fleet_setting("default_password")` —
+omitting `value` returns a capture URL.
+
+Supplying a `value` for `default_password` is **refused** (ADR-0053). Until
+then this requirement described the intended flow while the code also accepted
+a password as a tool argument, so "never enters the LLM's context" was a
+convention rather than a control; it is now enforced. A side effect: no
+password can reach the MCP audit row, which records tool arguments (#217).
+
+**Enforced at:** `admz/setting_policy.py::CAPTURE_ONLY_SETTING_KEYS`,
+`admz/mcp/server.py::_set_fleet_setting`. See [0009](../decisions/0009-oob-credential-capture.md), [0053](../decisions/0053-llm-writable-fleet-settings.md).
 
 ### FR-MCP-009 — Provisioning + temp creds ✅
 `provision_device` (probe + auto-create admin user),

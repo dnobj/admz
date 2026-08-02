@@ -42,9 +42,9 @@ from admz import create_device_registry
 from admz.device_registry import DeviceRegistry
 from admz.api.capture import capture_store
 from admz.api.confirm_store import (
-    PROTECTED_SETTING_KEYS,
     is_protected_setting,
 )
+from admz.setting_policy import is_capture_only
 from admz.discovery.credential_probe import probe_credentials, ProbeStatus
 from admz.fleet_settings import fleet_settings
 from axis_api_atlas.catalog.loader import CatalogLoader
@@ -281,6 +281,16 @@ def _tool_resource(name: str, arguments: Any) -> str:
     operation_id = arguments.get("operation_id")
     if operation_id:
         parts.append(f"op:{operation_id}")
+    # ADR-0053: the fleet-settings tools take the key as `key`, and without it
+    # the audit row could not answer "who changed config_ignore_patterns?" —
+    # the key lived only inside details.args, which is not what an auditor
+    # queries. The web rows have always encoded it (`confirm_settings:levels`).
+    # Scoped to the settings tools on purpose: `key` is a generic argument
+    # name and other tools use it for unrelated things.
+    if name in ("set_fleet_setting", "get_fleet_settings"):
+        setting_key = arguments.get("key")
+        if setting_key:
+            parts.append(f"setting:{setting_key}")
     return "/".join(parts)
 
 
@@ -1732,7 +1742,18 @@ class ADMZMCPServer:
                     raise ValueError(f"Unknown tool: {name}")
                 result = await handler(ToolCtx(server=self), arguments)
 
-                audit_success = True
+                # ADR-0053: a handler that *refuses* returns {"success": False}
+                # rather than raising, so audit_success stayed True and a
+                # blocked attempt — precisely the event worth auditing — was
+                # indistinguishable from a completed one. Record the handler's
+                # own verdict instead of assuming "did not raise" means "did".
+                if isinstance(result, dict) and result.get("success") is False:
+                    audit_success = False
+                    audit_error = str(
+                        result.get("error") or "tool reported success=False"
+                    )
+                else:
+                    audit_success = True
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
             except DeviceNotFoundError as e:
@@ -3586,26 +3607,52 @@ class ADMZMCPServer:
     async def _set_fleet_setting(
         self, key: str, value: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Set, delete, or capture a fleet-wide setting."""
-        # Block writes to protected keys from MCP.
-        #
-        # Must go through is_protected_setting() rather than testing membership
-        # of PROTECTED_SETTING_KEYS directly: the predicate also enforces the
-        # confirm_level_* namespace rule, which set membership alone does not
-        # carry. This line *is* the gate the LLM would otherwise walk through
-        # (GH #152) — the set covered four of six confirmation-level keys, so
-        # confirm_level_action could be written to "none" from chat.
+        """Set, delete, or capture a fleet-wide setting.
+
+        **Deny by default (ADR-0053).** Only keys declared in
+        ``admz.setting_policy.LLM_WRITABLE_SETTING_KEYS`` are writable from
+        here; every other key is refused whether or not anyone remembered to
+        list it. This method is the *one* production enforcement point of that
+        rule — there is no generic REST fleet-settings write route — which is
+        why the gate below is the first thing that happens.
+        """
+        # The gate. Must go through is_protected_setting() rather than testing
+        # membership of any set: the predicate carries both the allow-set rule
+        # and the confirm_level_* namespace rule. This call site is the reason
+        # that matters — it once tested `key in PROTECTED_SETTING_KEYS`
+        # directly, so the GH #152 fix would have been a no-op here had it been
+        # applied only to the predicate.
         if is_protected_setting(key):
             return {
                 "success": False,
                 "error": (
-                    f"Setting '{key}' is protected and can only be changed "
-                    "via the web UI at /confirm-settings."
+                    f"Setting '{key}' is protected and cannot be changed from "
+                    f"chat. An operator "
+                    f"can set it with `python -m admz settings set {key} "
+                    f"<value>`, or from the web UI (/confirm-settings for "
+                    f"confirmation levels)."
                 ),
             }
 
-        # No value provided for a password key → generate capture URL
-        if value is None and "password" in key.lower():
+        # Past the gate the key is allow-listed. A capture-only key still never
+        # takes its value from the model: FR-MCP-008 and
+        # user-stories/device-onboarding.md:84 both require the password to
+        # arrive through the out-of-band capture URL and "never typed into the
+        # LLM chat". The code accepted a supplied value anyway; it no longer
+        # does. A refusal here also means no password can reach the audit row
+        # that #217 records in cleartext.
+        if is_capture_only(key):
+            if value is not None:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Setting '{key}' cannot be given a value from chat. "
+                        "Call set_fleet_setting again with the 'value' "
+                        "argument omitted to get a one-time capture URL for "
+                        "the user to type the password into — it never enters "
+                        "the conversation."
+                    ),
+                }
             base_url = os.getenv("ADMZ_BASE_URL", "http://localhost:4242")
             session = capture_store.create_fleet_session(
                 setting_key=key,
@@ -3938,9 +3985,11 @@ class ADMZMCPServer:
         these switches change how the model's own gates behave, so a write tool
         would put the LLM one call away from enabling its own approver. See the
         module docstring of ``admz/mcp/tools/capabilities.py``. The registry's
-        setting keys are also in ``PROTECTED_SETTING_KEYS``, so the generic
-        ``set_fleet_setting`` tool refuses them too — the refusal is enforced
-        twice on purpose.
+        setting keys are refused by the generic ``set_fleet_setting`` tool too
+        — the refusal is enforced twice on purpose. Since ADR-0053 that second
+        refusal needs no per-key upkeep: everything outside the two-key
+        allow-set is denied, so a capability added tomorrow is covered without
+        anyone remembering to list it.
         """
         from admz import capabilities as _capabilities
 

@@ -71,17 +71,45 @@ The FastAPI app's CORS policy is driven by `ADMZ_ALLOWED_ORIGINS` (comma-separat
 
 **Enforced at:** `api/main.py` (CORS middleware config).
 
-### FR-SEC-012 — Protected fleet-setting keys ✅
-The following keys cannot be written via the MCP `set_fleet_setting` tool — only via the `/confirm-settings` web UI:
-- **every** key in the `confirm_level_*` namespace — one per risk class in the policy table (`dangerous`, `service-affecting`, `normal`, `read-only`, `action`, `read`), plus any risk class added later
-- `confirm_password_hash`
-- `tool_get_credentials_enabled`
+### FR-SEC-012 — Fleet settings are deny-by-default for the LLM ✅
+The MCP `set_fleet_setting` tool may write **only** the keys declared in
+`admz/setting_policy.py::LLM_WRITABLE_SETTING_KEYS`. Every other fleet setting
+is refused — including one added tomorrow and never mentioned anywhere.
 
-The rationale: an LLM that can change its own guardrails has no guardrails.
+The allow-set is the fleet credential pair, and nothing else:
+- `default_username`
+- `default_password`, and only via the out-of-band capture URL — a supplied
+  value is refused (FR-MCP-008)
 
-The `confirm_level_*` keys are **derived** from the policy table rather than listed, and protection is a **namespace** rule rather than membership of a fixed set. Both because they were once listed by hand and drifted: the table grew an ACS Pro `action` risk (default `url_only`, governing 68 operations) and the protected set kept only the four original vapix names, so MCP could write `confirm_level_action=none` and remove the gate (GH #152).
+The rationale is unchanged from ADR-0020: an LLM that can change its own
+guardrails has no guardrails. What changed is the **failure direction**. This
+requirement used to enumerate the protected keys, and that enumeration was
+wrong in two ways at once — it listed three keys while the code protected
+thirty, and the code protected thirty while eighteen more were writable. An
+opt-in deny-list failed four times (#152, #168, #195, #203); three independent
+attempts to enumerate what it missed returned 8, 10 and 18 keys, each missing
+keys the others found. A sentence that says "only the allow-set" cannot drift
+the way a list can.
 
-**Enforced at:** `fleet_settings.py::is_protected_setting` (namespace rule + `PROTECTED_SETTING_KEYS`, derived from `confirm_policy.py::_DEFAULT_CONFIRMATION_LEVELS`), `mcp/server.py::_set_fleet_setting`. Callers must use the `is_protected_setting` predicate; testing `key in PROTECTED_SETTING_KEYS` directly misses the namespace rule. See [0020](../decisions/0020-protected-fleet-settings.md).
+Two rules overlap deliberately. The `confirm_level_*` **namespace** rule is
+kept even though it is now redundant: it can only ever refuse more, and it
+covers risk names built at runtime from catalog YAML, which the static guard in
+`tests/test_setting_policy.py` cannot see.
+
+Operators are unaffected: every protected key is writable from the web UI where
+one exists, and from `python -m admz settings set` for the nine that have no
+web route.
+
+**Enforced at:** `setting_policy.py::is_llm_writable`,
+`fleet_settings.py::is_protected_setting` (allow-set + namespace rule),
+`mcp/server.py::_set_fleet_setting` (the one production call site),
+`api/routes/capture.py` (the out-of-band write path). Callers must use the
+`is_protected_setting` predicate rather than testing membership of
+`PROTECTED_SETTING_KEYS`, which since ADR-0053 is derived documentation and
+decides nothing. Guarded by `tests/test_setting_policy.py`, which walks `admz/`
+with `ast` — resolving module-level constants, because every previous
+enumeration matched on names and inherited its author's blind spot. See
+[0020](../decisions/0020-protected-fleet-settings.md), [0053](../decisions/0053-llm-writable-fleet-settings.md).
 
 ## Non-functional requirements
 

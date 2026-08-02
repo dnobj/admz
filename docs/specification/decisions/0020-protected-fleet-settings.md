@@ -1,6 +1,6 @@
 # ADR-0020: Protected fleet-setting keys (MCP cannot write them)
 
-**Status:** Accepted, in production. **The enumerated-deny-list mechanism below is being inverted** — see [ADR-0053](0053-llm-writable-fleet-settings.md) 📋 (#212). The *reasoning* in this ADR stands unchanged; only the mechanism is replaced, because an opt-in deny-list failed four times in the same direction (#152, #168, #195, #203) and three independent enumerations of what it missed returned three different answers.
+**Status:** Accepted, in production. **The enumerated-deny-list mechanism below is being inverted** — see [ADR-0053](0053-llm-writable-fleet-settings.md) ✅ (#212). The *reasoning* in this ADR stands unchanged; only the mechanism is replaced, because an opt-in deny-list failed four times in the same direction (#152, #168, #195, #203) and three independent enumerations of what it missed returned three different answers.
 **Date:** Original design 2026-04; recorded as ADR 2026-05-18.
 
 ## Context

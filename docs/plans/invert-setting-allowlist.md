@@ -611,22 +611,22 @@ blocked by this.
 
 ## Acceptance criteria
 
-- [ ] Every one of the 18 reproduced keys is refused by `set_fleet_setting`.
-- [ ] `default_username` still writes; `default_password` still returns a
+- [x] Every one of the 18 reproduced keys is refused by `set_fleet_setting`.
+- [x] `default_username` still writes; `default_password` still returns a
       capture URL when the value is omitted; `default_password` **with** a value
       is refused.
-- [ ] The capture branch and the capture-submit route both consult the allow-set.
-- [ ] `admz settings set/get/delete/list` works against every protected key, is
+- [x] The capture branch and the capture-submit route both consult the allow-set.
+- [x] `admz settings set/get/delete/list` works against every protected key, is
       audited, and is documented — so none of the nine orphaned controls is lost.
-- [ ] `set_event_ingest` still works, still gated by its approval card, and the
+- [x] `set_event_ingest` still works, still gated by its approval card, and the
       ADR says why it is outside the model.
-- [ ] The scanner resolves module-level constants and finds all three #177 sites.
-- [ ] Audit rows for MCP setting writes carry the key in `resource`; refusals
+- [x] The scanner resolves module-level constants and finds all three #177 sites.
+- [x] Audit rows for MCP setting writes carry the key in `resource`; refusals
       record `success=False`.
-- [ ] `PROTECTED_SETTING_KEYS` still exists with real contents; all nine
+- [x] `PROTECTED_SETTING_KEYS` still exists with real contents; all nine
       existing test sites still assert something true.
-- [ ] FR-SEC-012 no longer enumerates, and its 30-vs-3 drift is noted as fixed.
-- [ ] Full suite green.
+- [x] FR-SEC-012 no longer enumerates, and its 30-vs-3 drift is noted as fixed.
+- [x] Full suite green.
 
 ---
 

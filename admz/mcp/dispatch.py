@@ -379,8 +379,9 @@ async def _set_event_ingest(ctx, a):
 # --- Advanced capabilities (GH #132, ADR-0052) -------------------------------
 # READ ONLY, and this stays a table of one. See admz/mcp/tools/capabilities.py
 # for why there is no set_advanced_capability beside it: an LLM that can enable
-# its own approver is not gated at all. Every capability setting_key is also in
-# PROTECTED_SETTING_KEYS, so set_fleet_setting refuses them too.
+# its own approver is not gated at all. set_fleet_setting refuses every
+# capability setting_key too — since ADR-0053 that needs no per-key upkeep,
+# because it refuses everything outside the two-key allow-set.
 async def _get_advanced_capabilities(ctx, a):
     return ctx.server._get_advanced_capabilities()
 

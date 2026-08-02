@@ -168,9 +168,13 @@ def require_authenticated_principal(principal: Optional[Principal]) -> None:
 
       * ``POST /api/api-keys`` — anonymous shouldn't mint long-lived
         credentials.
-      * Writes to ``PROTECTED_SETTING_KEYS`` — confirm levels,
+      * Writes to protected fleet settings — confirm levels,
         confirm-password hash, credential-access flags, scheduler /
-        health-monitor toggles, the Gemini API key.
+        health-monitor toggles, the Gemini API key. Since ADR-0053 that
+        is *every* key except the fleet credential pair, and the check
+        is :func:`admz.fleet_settings.is_protected_setting`. Note there
+        is no generic REST fleet-settings write route — the enforcement
+        point is the MCP tool and the out-of-band capture path.
       * ``DELETE /api/devices/{id}``,
         ``POST /api/snapshot/restore``,
         ``POST /api/plans/{id}/execute`` — destructive / data-loss.

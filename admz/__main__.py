@@ -200,6 +200,46 @@ def main():
         "--json", action="store_true", help="Output as JSON",
     )
 
+    # Fleet settings (ADR-0053). The operator path to every protected key.
+    #
+    # ADR-0020 listed "no CLI for protected keys" as a known negative
+    # consequence and a small follow-up. Inverting the write model is what
+    # made it load-bearing: nine keys — the event_* filters, the acs_fb_*
+    # paths, health_verify_credentials — have no web route and no environment
+    # variable, so before this command the only way to set them was the MCP
+    # tool the LLM calls. Protecting them without this would have removed nine
+    # operator controls.
+    settings_parser = subparsers.add_parser(
+        "settings",
+        help="Read and write fleet settings, including protected keys",
+    )
+    settings_sub = settings_parser.add_subparsers(
+        dest="settings_command", help="Settings subcommand"
+    )
+    settings_list = settings_sub.add_parser(
+        "list", help="List all fleet settings (secret values masked)"
+    )
+    settings_list.add_argument(
+        "--json", action="store_true", help="Output as JSON"
+    )
+    settings_get = settings_sub.add_parser(
+        "get", help="Print one setting's value (secret values masked)"
+    )
+    settings_get.add_argument("key", help="Setting key")
+    settings_get.add_argument(
+        "--reveal", action="store_true",
+        help="Print a secret value in full instead of masking it",
+    )
+    settings_set = settings_sub.add_parser(
+        "set", help="Set a setting, including keys the LLM may not write"
+    )
+    settings_set.add_argument("key", help="Setting key")
+    settings_set.add_argument("value", help="Setting value")
+    settings_delete = settings_sub.add_parser(
+        "delete", help="Delete a setting, reverting it to its code default"
+    )
+    settings_delete.add_argument("key", help="Setting key")
+
     args = parser.parse_args()
 
     if args.command == "api":
@@ -212,9 +252,102 @@ def main():
         run_discover(args)
     elif args.command == "maintenance":
         run_maintenance(args)
+    elif args.command == "settings":
+        run_settings(args, settings_parser)
     else:
         parser.print_help()
         sys.exit(1)
+
+
+def run_settings(args, settings_parser) -> None:
+    """Read and write fleet settings from the command line (ADR-0053).
+
+    This is the operator's path to the keys the chat model may not write. It
+    deliberately imposes no allow-set of its own: someone with a shell on the
+    ADMZ host already has strictly more authority than a browser session, and
+    ADR-0020's model has always been that an *accountable* caller may write
+    anything — which is why every mutation here lands an audit row.
+
+    Reads mask secret values by default, using the same
+    :func:`admz.redact.is_sensitive_key` rule as the MCP and REST surfaces
+    (FR-SEC-007), so a shoulder-surfed terminal or a pasted transcript does not
+    leak the survey PAT. ``--reveal`` opts out explicitly.
+    """
+    import json
+    from types import SimpleNamespace
+
+    from admz.audit import record_event
+    from admz.fleet_settings import (
+        fleet_settings,
+        is_protected_setting,
+        is_sensitive_setting_key,
+        mask_setting_value,
+        mask_settings_for_display,
+    )
+
+    command = getattr(args, "settings_command", None)
+    if not command:
+        settings_parser.print_help()
+        sys.exit(1)
+
+    principal = SimpleNamespace(name="cli", source="cli")
+
+    if command == "list":
+        values = mask_settings_for_display(fleet_settings.list_all())
+        if getattr(args, "json", False):
+            print(json.dumps(values, indent=2))
+        elif not values:
+            print("No fleet settings are set.")
+        else:
+            width = max(len(k) for k in values)
+            for key in sorted(values):
+                flag = " " if is_protected_setting(key) else "*"
+                print(f"{flag} {key:<{width}}  {values[key]}")
+            print("\n* = writable by the chat model; all others are not.")
+        return
+
+    if command == "get":
+        value = fleet_settings.get(args.key)
+        if value is None:
+            print(f"{args.key} is not set.", file=sys.stderr)
+            sys.exit(1)
+        if is_sensitive_setting_key(args.key) and not args.reveal:
+            print(mask_setting_value(value))
+            print("(secret — pass --reveal to print it)", file=sys.stderr)
+        else:
+            print(value)
+        return
+
+    if command == "set":
+        fleet_settings.set(args.key, args.value)
+        # After the write, not before: an audit row must never claim a change
+        # that did not land. Same ordering as capabilities.set_enabled.
+        record_event(
+            principal, "fleet_setting.write",
+            resource=f"settings:{args.key}",
+            details={
+                "op": "set",
+                "protected": is_protected_setting(args.key),
+                # The key, never the value — the audit log records what was
+                # touched, not the secret that was put in it (cf. #217).
+                "via": "cli",
+            },
+        )
+        print(f"{args.key} set.")
+        return
+
+    if command == "delete":
+        deleted = fleet_settings.delete(args.key)
+        record_event(
+            principal, "fleet_setting.write",
+            resource=f"settings:{args.key}",
+            details={"op": "delete", "existed": deleted, "via": "cli"},
+        )
+        print(f"{args.key} deleted." if deleted else f"{args.key} was not set.")
+        return
+
+    settings_parser.print_help()
+    sys.exit(1)
 
 
 def _check_bind_safety(host: str) -> None:

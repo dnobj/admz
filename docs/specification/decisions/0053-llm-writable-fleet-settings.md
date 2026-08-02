@@ -1,6 +1,6 @@
 # ADR-0053: Fleet settings are deny-by-default for the LLM — writability is declared, not withheld
 
-**Status:** Accepted (planning). Implementation tracked by [#212](https://github.com/dnobj/admz/issues/212).
+**Status:** Accepted, in production. Implemented for [#212](https://github.com/dnobj/admz/issues/212).
 **Date:** 2026-08-02.
 **Amends:** [ADR-0020](0020-protected-fleet-settings.md) — the deny-list model this inverts. ADR-0020's *reasoning* stands unchanged; only its mechanism is replaced.
 **Plan:** [`docs/plans/invert-setting-allowlist.md`](../../plans/invert-setting-allowlist.md).
