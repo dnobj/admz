@@ -26,10 +26,12 @@ enough to open the hole:
    dispatch table has exactly one matching entry
    (``tests/test_advanced_capabilities.py`` asserts no advertised tool name
    matches ``set_.*capabilit``).
-2. **Every ``setting_key`` in the registry is in ``PROTECTED_SETTING_KEYS``.**
-   So even the generic ``set_fleet_setting`` tool refuses them — an LLM that
-   went looking for the back door finds it already shut, by the same mechanism
-   that has protected the survey keys since ADR-0020.
+2. **Every ``setting_key`` in the registry is refused by the generic
+   ``set_fleet_setting`` tool.** An LLM that went looking for the back door
+   finds it already shut. Since ADR-0053 this holds *by construction* rather
+   than by enumeration: fleet settings are deny-by-default, so a capability
+   added later is covered whether or not anyone remembers to protect its key.
+   That is a change of mechanism, not of policy — ADR-0020's rule stands.
 
 Enabling a capability stays what it should be: a deliberate act by a human with
 service control on the box (an env var + a restart), or, for the ``privileged``

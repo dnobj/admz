@@ -22,6 +22,7 @@ from admz.device_registry import DeviceRegistry
 from admz.exceptions import DeviceNotFoundError, BackendError
 from admz.fleet_settings import fleet_settings
 from admz.rate_limit import rate_limiter, client_key_from_request
+from admz.setting_policy import is_llm_writable
 
 
 router = APIRouter()
@@ -316,6 +317,22 @@ async def fleet_capture_submit(
     session = capture_store.get_fleet_session(token)
 
     if session is None or session.effective_status != CaptureStatus.PENDING:
+        return templates.TemplateResponse(
+            "capture_expired.html",
+            {"request": request, "title": "Link Expired"},
+            status_code=410,
+        )
+
+    # ADR-0053: this route is reached with a one-time token minted by the MCP
+    # tool, so the key travelled through a session row rather than through the
+    # gate at ``mcp/server.py::_set_fleet_setting``. Re-check it here: a stale
+    # session created before the allow-set narrowed, or a session row edited
+    # out from under us, must not become a write path for a protected key.
+    # Defence in depth — the mint side is gated too.
+    if not is_llm_writable(session.setting_key):
+        logger.warning(
+            "fleet capture refused: %r is not LLM-writable", session.setting_key
+        )
         return templates.TemplateResponse(
             "capture_expired.html",
             {"request": request, "title": "Link Expired"},

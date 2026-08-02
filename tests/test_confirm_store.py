@@ -21,6 +21,7 @@ from admz.api.confirm_store import (
     VALID_CONFIRMATION_LEVELS,
     _DEFAULT_CONFIRMATION_LEVELS,
     confirm_level_key,
+    is_confirm_level_key,
 )
 from admz.fleet_settings import is_protected_setting
 
@@ -422,10 +423,23 @@ class TestProtectedKeys:
         assert is_protected_setting("confirm_level_action")
         assert is_protected_setting("confirm_level_read")
 
-        # The rule is a namespace, not a substring match: an unrelated key that
-        # merely mentions the words stays writable.
+        # The rule is a namespace, not a substring match: a key that merely
+        # mentions the words is not matched *by this rule*.
+        #
+        # Asserted against is_confirm_level_key rather than
+        # is_protected_setting since ADR-0053. The claim under test is that the
+        # namespace rule is prefix-anchored, and that is still true and still
+        # worth locking. What changed is that being outside the namespace no
+        # longer implies writable: fleet settings are deny-by-default, so
+        # `my_confirm_level_thing` is now protected for the ordinary reason —
+        # nobody declared it writable. Testing the anchoring through the
+        # protection predicate would silently stop testing anchoring at all.
+        assert not is_confirm_level_key("my_confirm_level_thing")
+        assert not is_confirm_level_key("default_username")
+
+        # The allow-set, meanwhile, is exactly the fleet credential pair.
         assert not is_protected_setting("default_username")
-        assert not is_protected_setting("my_confirm_level_thing")
+        assert is_protected_setting("my_confirm_level_thing")
 
     def test_password_hash_protected(self):
         assert "confirm_password_hash" in PROTECTED_SETTING_KEYS

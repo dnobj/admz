@@ -5,11 +5,19 @@ Provides a simple key-value store for configuration that applies
 across all managed devices.  Uses the same database file as the
 device registry and capture store.
 
-Known keys:
+The full key inventory lives in :mod:`admz.setting_policy`, together with the
+allow-set that decides which of them the chat model may write (ADR-0053).
+The two it may write are the fleet credential pair:
+
   - ``default_password``: When set, ``provision_device`` uses this
-    password instead of generating a random one per device.
+    password instead of generating a random one per device. Its *value* never
+    comes from chat — the model requests an out-of-band capture URL and a
+    human types it into a browser (ADR-0009, FR-MCP-008).
   - ``default_username``: Admin username for provisioning (default: "admin").
     Used together with ``default_password`` as the fleet credential pair.
+
+Every other key is refused from MCP; an operator sets it from the web UI or
+with ``python -m admz settings set``.
 """
 
 import os
@@ -21,6 +29,12 @@ from admz.confirm_policy import (
     _DEFAULT_CONFIRMATION_LEVELS,
     confirm_level_key,
     is_confirm_level_key,
+)
+from admz.setting_policy import (  # noqa: F401 — re-exported for callers
+    KNOWN_SETTING_KEYS,
+    LLM_WRITABLE_SETTING_KEYS,
+    is_capture_only,
+    is_llm_writable,
 )
 
 
@@ -44,92 +58,58 @@ def is_sensitive_setting_key(key: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-# Fleet-setting keys that are protected from anonymous / MCP writes.
-# Originally lived in admz/api/confirm_store.py — relocated here so the
-# concept of "this is a sensitive fleet setting" lives next to the rest
-# of fleet-settings policy. The confirm_store module re-exports the set
-# under its original name for backward compatibility.
+# Every known fleet-setting key that the chat model may NOT write.
 #
-# Writes from MCP tools and from unauthenticated REST callers must
-# refuse keys in this set. Writes from an authenticated principal
-# (Windows IWA / API-key) are allowed — those callers are accountable
-# via audit log.
+# **This set no longer decides anything.** :func:`is_protected_setting` does,
+# and it consults :func:`admz.setting_policy.is_llm_writable` — a key absent
+# from every list here is still refused, because ADR-0053 made refusal the
+# default. The set survives, derived, for two reasons:
+#
+#   1. Nine test sites and five specification documents refer to it by name.
+#      Deleting it to make a point would turn nine assertions into assertions
+#      about nothing — the exact vacuity GH #152 slipped through.
+#   2. "Which keys are protected?" is a real question an operator and a
+#      reviewer ask, and it deserves an answer that cannot go stale.
+#
+# Derived, never hand-maintained: the confirm_level_* names come from the
+# policy table (GH #152 — the table grew an ACS Pro `action` risk and this set
+# did not, so the LLM could write confirm_level_action=none and remove the
+# gate from 68 operations), and everything else is the key inventory minus the
+# allow-set. Adding a setting to admz/setting_policy.py updates this for free.
 PROTECTED_SETTING_KEYS = {
-    # Per-risk confirmation-level overrides, *derived* from the policy table
-    # rather than restated, so the two cannot drift apart (GH #152). They did:
-    # the table grew an ACS Pro `action` risk defaulting to url_only, this set
-    # kept only the four original vapix names, and so the MCP set_fleet_setting
-    # tool — callable by the LLM — could write confirm_level_action=none and
-    # remove the confirmation gate from 68 live ACS Pro operations.
-    #
-    # is_protected_setting() below *also* applies a namespace rule covering the
-    # whole confirm_level_* space. These concrete names are still enumerated
-    # into the set because several callers test membership of it directly
-    # rather than going through the predicate.
     *(confirm_level_key(risk) for risk in _DEFAULT_CONFIRMATION_LEVELS),
-    "confirm_password_hash",
-    "tool_get_credentials_enabled",
-    # Chatbot provider API key. Set only via /settings/chat admin page;
-    # MCP set_fleet_setting must never read or change it. See ADR-0025.
-    "gemini_api_key",
-    "gemini_default_model",
-    # Device health monitor: opt-in background poller. Protected
-    # because letting the LLM toggle a background loop that contacts
-    # devices would be a sneak path around the safety gates.
-    "health_monitor_enabled",
-    "health_check_interval_seconds",
-    "health_check_timeout_seconds",
-    # Daily per-principal token budget (Phase 5D). Letting MCP rewrite
-    # the budget through chat-driven tool calls would defeat the
-    # purpose. Set only via the web UI.
-    "chat_daily_token_budget",
-    # Survey / contributor mode (opt-in, default OFF). The PAT is a real
-    # secret stored encrypted; the rest gate a background loop that contacts
-    # devices and opens GitHub PRs. Set only via the web UI, never MCP.
-    "survey_mode_enabled",
-    "survey_github_pat",
-    "survey_repo",
-    "survey_redaction_profile",
-    "survey_validation_tier",
-    "survey_schedule_seconds",
-    "survey_contributor",
-    # Advanced capability switches (GH #132, admz/capabilities.py). Each of
-    # these gates a background loop that contacts devices or reads an
-    # unsupported database; letting the LLM flip one through set_fleet_setting
-    # would be a sneak path around the safety model. Same reasoning as
-    # health_monitor_enabled above. survey_mode_enabled is already listed.
-    "event_ingest_enabled",
-    "acs_event_ingest_enabled",
-    "acs_firebird_enabled",
-    # GitHub App config-repo backup (ADR-0045). The private key + client
-    # secret are Fernet-encrypted; the whole set is written only by the
-    # authenticated Settings "Connect GitHub" flow, never by MCP/anonymous.
-    "github_app_id",
-    "github_app_slug",
-    "github_app_private_key",
-    "github_app_client_secret",
-    "github_app_installation_id",
-    "github_config_repo",
+    *(KNOWN_SETTING_KEYS - LLM_WRITABLE_SETTING_KEYS),
 }
 
 
 def is_protected_setting(key: str) -> bool:
     """Return True if ``key`` may not be written by a low-privilege caller.
 
-    Two deliberately overlapping rules:
+    **Deny by default (ADR-0053).** A key is protected unless it is declared
+    in :data:`admz.setting_policy.LLM_WRITABLE_SETTING_KEYS`. An unknown key —
+    including one added tomorrow and never declared anywhere — is protected,
+    which is the failure direction ADR-0020's enumerated deny-list had
+    backwards.
+
+    Two overlapping rules, the first now redundant and kept anyway:
 
     * anything in the ``confirm_level_*`` namespace
-      (:func:`admz.confirm_policy.is_confirm_level_key`), which covers risk
-      classes that are not in the policy table today;
-    * membership of :data:`PROTECTED_SETTING_KEYS`.
+      (:func:`admz.confirm_policy.is_confirm_level_key`). Redundant under
+      inversion, because those keys are not in the allow-set either. It stays
+      because it costs nothing, it can only ever refuse *more*, and it covers
+      keys built at runtime — which the static guard in
+      ``tests/test_setting_policy.py`` cannot see. A mistaken entry in the
+      allow-set therefore still cannot reopen GH #152.
+    * not being declared LLM-writable.
 
-    Used by REST handlers and the MCP ``set_fleet_setting`` tool to
-    refuse writes to security-sensitive keys from low-privilege
-    callers. Prefer this predicate over testing ``key in
-    PROTECTED_SETTING_KEYS`` directly — the set alone does not carry the
-    namespace rule (GH #152).
+    Used by the MCP ``set_fleet_setting`` tool
+    (``admz/mcp/server.py::_set_fleet_setting``, the one production caller)
+    and by the out-of-band capture write path
+    (``admz/api/routes/capture.py``). Authenticated web writers are unaffected;
+    an operator sets a protected key from the web UI or with
+    ``python -m admz settings set``.
     """
-    return is_confirm_level_key(key) or key in PROTECTED_SETTING_KEYS
+    return is_confirm_level_key(key) or not is_llm_writable(key)
 
 
 def mask_setting_value(value: str) -> str:
