@@ -4,7 +4,7 @@ Durable facts an assistant session needs before touching this repo. Read this fi
 
 ## Orchestration
 
-This project runs the **[code-teem](https://github.com/pettheory/code-teem) playbook, pinned at `v0.4.1`** — a persistent Master session coordinates Plan / Build / Test / Investigate specialists. The project-specific adaptation lives in [`docs/specification/orchestration.md`](docs/specification/orchestration.md); the spec↔issue workflow is [`docs/specification/process.md`](docs/specification/process.md).
+This project runs the **[code-teem](https://github.com/pettheory/code-teem) playbook, pinned at `v0.8.0`** — a persistent Master session coordinates Plan / Decide / Build / Test / Investigate specialists. The project-specific adaptation lives in [`docs/specification/orchestration.md`](docs/specification/orchestration.md); the spec↔issue workflow is [`docs/specification/process.md`](docs/specification/process.md).
 
 Practical consequences:
 
@@ -12,6 +12,18 @@ Practical consequences:
 - **A plan is merged before implementation begins.** `status: planning` → docs-only PR → merge → `status: ready`.
 - **The PR that ships behavior also fixes the docs describing it** (spec status markers `📋 → ✅` flip in the same PR).
 - Every open issue carries exactly one `status:` label — see the playbook's `conventions/status-labels.md`.
+- **Cockpit vs worker** (`patterns/cockpit-and-workers.md`): a session open in a human UI is a **cockpit**, never a delegation target — two live attachments fork its history silently, with no error. Workers are durable headless sessions.
+- **Await or be watched.** Every delegation either blocks on a completion signal or ends its turn with the session on the watchdog list. A master that ends its turn waiting on an unsignaled callback is a *parked* master — this failure cost this project five recoveries on 2026-07-31/08-01, every time as a worker reporting "the suite is running, I'll report back" and then stopping.
+
+## Owner-facing state outside this repo
+
+Two files live in `C:\admz\.claude\` — deliberately **not** in the repo, because they change many times a day and in-repo means commits and PRs:
+
+| File | What it is |
+|---|---|
+| `SESSIONS.md` | Session inventory — every worker, its state, and the reuse policy. Prefer resuming an idle listed session over spawning. |
+| `ATTENTION.md` | **The single owner attention queue** (code-teem `patterns/attention-queue.md`). Every owner-facing decision goes here with a recommended default *and the date it fires* — never into a transcript, where it dies with the session. Ordered by tier then by what is blocked behind it, never by recency. **No credentials in it — location and procedure only.** |
+| `loops/` + `handoffs/` | Autonomous audit-loop contracts, and the durable report-back channel workers write to on completion. |
 
 ## Environments — read this before running anything
 
@@ -74,9 +86,21 @@ Load-bearing invariants worth knowing before you start:
 - **Demo fragments are captured, never authored** (ADR-0047): capture only accepts keys currently *drifted* from baseline.
 - **Advanced capability switches are declared in one registry** (`admz/capabilities.py`) — new dangerous or privileged features register there rather than inventing another env var.
 
+## How workers run
+
+Delegated work runs as **durable headless sessions through the switchyard bridge** (formerly claude-reach / session-bridge), on machine `dnlt`. Engines available: Claude and Codex — Codex is used for **cross-engine adversarial review**, which has previously found defects a same-engine review missed.
+
+- **Trust mode** for this repo is `auto`; `C:\admz` and `C:\admz\admz` are both registered.
+- **Dispatch shape:** short synchronous orientation turn → full brief asynchronously → `await_job`, or end the turn with the session on the watchdog. `create_session` runs its first turn synchronously, so a long first message will block the caller until it finishes.
+- **Report-back is a handoff file** at `C:\admz\.claude\handoffs\<branch>.md`, because a worker cannot message an open cockpit session. GitHub stays the canonical work record.
+- Ask the bridge for `recommendedResultSchema` and pass it as `resultSchema` when a machine-readable completion report is wanted; a malformed report is flagged, never failed.
+- Never hand a worker a credential. Identities are injected per command (see above).
+
 ## Verifying UI work
 
 Staging is the place to exercise the web UI. ADMZ authenticates with `windows-local` (Negotiate SSO), which a headless client cannot complete — so by default a browser session needs a human to sign in once, after which an agent can drive that authenticated tab.
+
+**Which browser surface** (code-teem `patterns/browser-verification.md`): the **embedded browser is cockpit-only** — one pane, one session, unparallelizable in principle, and it is *not* the unattended default. Per-worker driven browsers are. Observed here on 2026-08-02: `get_page_text` and `screenshot` against the embedded browser each hung the full 300s while `tabs_context` still answered, so treat a hang as the expected failure mode rather than a puzzle, and do not build unattended verification on that surface.
 
 For **unattended** verification, staging can run with `ADMZ_TEST_AUTH=1`: the `dev.test_auth` capability resolves an unauthenticated request to a synthetic `test\agent` principal, so an agent can drive the UI with no human step. It is dev-only, loud in all five capability surfaces, and the server **refuses to start** with it active on a non-loopback bind — production must never see it. It changes who the principal is, never whether a confirmation gate fires.
 
