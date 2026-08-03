@@ -182,6 +182,7 @@ async def chat_page(
     last_model = _sessions().last_model(principal.name) or config.default_model
 
     return templates.TemplateResponse(
+        request,
         "chat.html",
         {
             "request": request,
@@ -224,6 +225,7 @@ async def chat_submit(
 
     if not config.configured:
         return templates.TemplateResponse(
+            request,
             "chat.html",
             {
                 "request": request,
@@ -312,6 +314,7 @@ async def chat_submit(
         )
 
     return templates.TemplateResponse(
+        request,
         "chat.html",
         {
             "request": request,
@@ -979,6 +982,7 @@ async def chat_settings_page(
     """Render the chatbot admin page (API key + default model + budget)."""
     config = get_chatbot_config()
     return templates.TemplateResponse(
+        request,
         "chat_settings.html",
         {
             "request": request,
@@ -1045,6 +1049,7 @@ async def chat_settings_save(
 
     config = get_chatbot_config()
     return templates.TemplateResponse(
+        request,
         "chat_settings.html",
         {
             "request": request,

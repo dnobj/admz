@@ -53,12 +53,14 @@ async def rule_capture_form(request: Request, token: str):
     session = _rule_session(token)
     if session is None:
         return templates.TemplateResponse(
+            request,
             "capture_expired.html",
             {"request": request, "title": "Link Expired"},
             status_code=410,
         )
     action = session.action
     return templates.TemplateResponse(
+        request,
         "rule_capture_form.html",
         {
             "request": request,
@@ -83,6 +85,7 @@ async def rule_capture_submit(request: Request, token: str):
     session = _rule_session(token)
     if session is None:
         return templates.TemplateResponse(
+            request,
             "capture_expired.html",
             {"request": request, "title": "Link Expired"},
             status_code=410,
@@ -100,6 +103,7 @@ async def rule_capture_submit(request: Request, token: str):
             values[name] = str(val)
     stash_rule_secrets(token, values)
     return templates.TemplateResponse(
+        request,
         "rule_capture_done.html",
         {
             "request": request,

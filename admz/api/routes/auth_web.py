@@ -130,6 +130,7 @@ async def login_page(request: Request):
             "your username and password instead."
         )
     return templates.TemplateResponse(
+        request,
         "login.html",
         {
             "request": request,
@@ -156,6 +157,7 @@ async def login_submit(
         from admz.win_sspi import sso_available
 
         return templates.TemplateResponse(
+            request,
             "login.html",
             {
                 "request": request,

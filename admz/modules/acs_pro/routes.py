@@ -327,6 +327,7 @@ async def acs_page(request: Request):
     from admz.modules.acs_pro.firebird import firebird_available, firebird_enabled
     fb_available, fb_reason = firebird_available()
     return templates.TemplateResponse(
+        request,
         "acs.html",
         {
             "request": request,

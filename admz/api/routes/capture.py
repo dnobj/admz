@@ -106,6 +106,7 @@ async def capture_form(
 
     if session is None:
         return templates.TemplateResponse(
+            request,
             "capture_expired.html",
             {"request": request, "title": "Link Expired"},
             status_code=410,
@@ -121,10 +122,11 @@ async def capture_form(
         if session.is_batch:
             ctx["device_ids"] = session.all_device_ids
             ctx["is_batch"] = True
-        return templates.TemplateResponse("capture_done.html", ctx)
+        return templates.TemplateResponse(request, "capture_done.html", ctx)
 
     if session.effective_status == CaptureStatus.EXPIRED:
         return templates.TemplateResponse(
+            request,
             "capture_expired.html",
             {"request": request, "title": "Link Expired"},
             status_code=410,
@@ -142,6 +144,7 @@ async def capture_form(
         devices.append(info)
 
     return templates.TemplateResponse(
+        request,
         "capture_form.html",
         {
             "request": request,
@@ -199,6 +202,7 @@ async def capture_submit(
 
     if session is None or session.effective_status != CaptureStatus.PENDING:
         return templates.TemplateResponse(
+            request,
             "capture_expired.html",
             {"request": request, "title": "Link Expired"},
             status_code=410,
@@ -232,6 +236,7 @@ async def capture_submit(
 
     if not saved:
         return templates.TemplateResponse(
+            request,
             "error.html",
             {
                 "request": request,
@@ -260,7 +265,7 @@ async def capture_submit(
         ctx["saved"] = saved
         ctx["errors"] = errors
 
-    return templates.TemplateResponse("capture_done.html", ctx)
+    return templates.TemplateResponse(request, "capture_done.html", ctx)
 
 
 # ── Fleet setting capture (password never touches LLM) ─────────────────
@@ -272,6 +277,7 @@ async def fleet_capture_form(request: Request, token: str):
 
     if session is None:
         return templates.TemplateResponse(
+            request,
             "capture_expired.html",
             {"request": request, "title": "Link Expired"},
             status_code=410,
@@ -279,6 +285,7 @@ async def fleet_capture_form(request: Request, token: str):
 
     if session.effective_status == CaptureStatus.COMPLETED:
         return templates.TemplateResponse(
+            request,
             "capture_fleet_done.html",
             {
                 "request": request,
@@ -290,12 +297,14 @@ async def fleet_capture_form(request: Request, token: str):
 
     if session.effective_status == CaptureStatus.EXPIRED:
         return templates.TemplateResponse(
+            request,
             "capture_expired.html",
             {"request": request, "title": "Link Expired"},
             status_code=410,
         )
 
     return templates.TemplateResponse(
+        request,
         "capture_fleet_form.html",
         {
             "request": request,
@@ -318,6 +327,7 @@ async def fleet_capture_submit(
 
     if session is None or session.effective_status != CaptureStatus.PENDING:
         return templates.TemplateResponse(
+            request,
             "capture_expired.html",
             {"request": request, "title": "Link Expired"},
             status_code=410,
@@ -334,6 +344,7 @@ async def fleet_capture_submit(
             "fleet capture refused: %r is not LLM-writable", session.setting_key
         )
         return templates.TemplateResponse(
+            request,
             "capture_expired.html",
             {"request": request, "title": "Link Expired"},
             status_code=410,
@@ -344,6 +355,7 @@ async def fleet_capture_submit(
     capture_store.complete_fleet_session(token)
 
     return templates.TemplateResponse(
+        request,
         "capture_fleet_done.html",
         {
             "request": request,

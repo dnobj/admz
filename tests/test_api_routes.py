@@ -324,7 +324,9 @@ class TestRoutesAreMounted:
 
     def test_expected_routes(self, client):
         from admz.api.main import app
-        paths = {r.path for r in app.routes if hasattr(r, "path")}
+        from tests.route_inventory import mounted_paths
+        paths = mounted_paths(app)
+        assert paths, "route table introspection returned nothing"
         expected = {
             # Devices
             "/api/devices",
@@ -428,9 +430,13 @@ class TestCredentialsEndpointRemoved:
         )
 
     def test_endpoint_is_not_mounted(self):
+        # assert_not_mounted refuses to pass against an empty/blind route table.
+        # Before #223 this was `{r.path for r in app.routes if hasattr(r, "path")}`,
+        # which under FastAPI >= 0.130 saw almost nothing and made this negative
+        # assertion vacuous. See tests/route_inventory.py.
         from admz.api.main import app
-        paths = {r.path for r in app.routes if hasattr(r, "path")}
-        assert "/api/devices/{device_id}/credentials" not in paths
+        from tests.route_inventory import assert_not_mounted
+        assert_not_mounted(app, "/api/devices/{device_id}/credentials")
 
     def test_endpoint_returns_404_even_with_llm_flag_on(self, client):
         # Even with the LLM creds flag enabled, the web/REST reveal of a
