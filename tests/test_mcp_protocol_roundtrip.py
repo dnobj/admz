@@ -150,3 +150,69 @@ async def test_error_envelope_survives_the_wire(tmp_path, monkeypatch):
                 assert "error" in payload, payload
 
             tg.cancel_scope.cancel()
+
+
+@pytest.mark.asyncio
+async def test_schema_violation_is_rejected_by_admz_not_the_sdk(tmp_path, monkeypatch):
+    """The argument gate the SDK stopped enforcing.
+
+    **mcp 1.x ran ``jsonschema.validate(arguments, tool.inputSchema)`` inside the
+    ``@server.call_tool()`` decorator, before every dispatch. 2.x deleted the
+    decorator and validates nothing.** ``call_tool`` therefore performs that
+    check itself (``server.py``, the ``jsonschema.validate`` block). This is now
+    ADMZ's *only* schema enforcement — hand-rolled validation sitting next to a
+    schema-aware SDK looks redundant, and it is not. Do not delete it.
+
+    This test exists because the pre-existing ``InvalidInput`` coverage cannot
+    catch its removal. ``TestMcpInputValidation`` drives
+    ``{"device_id": "../../../etc/passwd"}`` — a *string*, which satisfies the
+    schema and is rejected by ``_validate_tool_args`` (the CR-5 identifier
+    allow-list), a different control returning the same envelope.
+
+    So the violation here is chosen to be invisible to CR-5: ``_validate_tool_args``
+    inspects only ``device_id``/``account_id``/``facet_name``/``device_ids``/``facets``,
+    while ``set_fleet_setting``'s ``key`` carries ``enum: [default_password,
+    default_username]``. An off-enum ``key`` can *only* be caught by the schema
+    gate — delete the ``jsonschema.validate`` block and this test goes red while
+    every other InvalidInput test stays green.
+    """
+    _isolate(tmp_path, monkeypatch)
+
+    from admz.mcp.server import ADMZMCPServer
+
+    admz_server = ADMZMCPServer()
+
+    async with create_client_server_memory_streams() as (client_streams, server_streams):
+        client_read, client_write = client_streams
+        server_read, server_write = server_streams
+
+        async with anyio.create_task_group() as tg:
+
+            async def _serve():
+                await admz_server.server.run(
+                    server_read,
+                    server_write,
+                    admz_server.server.create_initialization_options(),
+                    raise_exceptions=True,
+                )
+
+            tg.start_soon(_serve)
+
+            async with ClientSession(client_read, client_write) as session:
+                await session.initialize()
+
+                result = await session.call_tool(
+                    "set_fleet_setting",
+                    {"key": "not_a_declared_setting", "value": "x"},
+                )
+                payload = json.loads(result.content[0].text)
+
+                assert payload["success"] is False, payload
+                assert payload["error"] == "InvalidInput", payload
+                # Assert on the message shape, not just the error code: the CR-5
+                # identifier check returns the same code, so a bare
+                # `error == "InvalidInput"` assertion would be satisfied by the
+                # wrong control and leave this gate uncovered.
+                assert "Input validation error" in payload["message"], payload
+
+            tg.cancel_scope.cancel()
