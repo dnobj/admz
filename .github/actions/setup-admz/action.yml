@@ -79,6 +79,53 @@ runs:
         fi
         echo "Deploy key authenticates to mrdnlabs/axis-api-atlas."
 
+    - name: PROBE (temporary — remove before merge)
+      shell: bash
+      run: |
+        URL="ssh://git@github.com/mrdnlabs/axis-api-atlas.git"
+        echo "===== 1. ssh/git env ====="
+        env | grep -iE '^(GIT|SSH|GH_)' | sed 's/\(AUTHORIZATION.*\)/[redacted]/' || echo "(none)"
+        echo "===== 2. ~/.ssh ====="
+        ls -la "$HOME/.ssh/" || true
+        echo "-- key fingerprint (expect SHA256:+OXHKOGaMXorURz/Cts4M5FRyfm9qERHa+hU/bNjiuQ) --"
+        ssh-keygen -l -f "$HOME/.ssh/axis_api_atlas" 2>&1 || true
+        echo "-- first/last line only (never the body) --"
+        head -n1 "$HOME/.ssh/axis_api_atlas"; tail -n1 "$HOME/.ssh/axis_api_atlas"
+        echo "-- byte count / CRLF check --"
+        wc -c < "$HOME/.ssh/axis_api_atlas"; file "$HOME/.ssh/axis_api_atlas"
+        echo "===== 3. git config affecting ssh/url ====="
+        git config --list --show-origin 2>/dev/null | grep -iE 'ssh|insteadof|extraheader|url\.' | sed 's/AUTHORIZATION.*/AUTHORIZATION [redacted]/' || echo "(no ssh/url config)"
+        echo "===== 4. ls-remote INSIDE the repo dir (what the verify step does) ====="
+        ( cd "$GITHUB_WORKSPACE" && git ls-remote "$URL" HEAD ) 2>&1 | tail -3
+        echo "   exit=$?"
+        echo "===== 5. ls-remote OUTSIDE the repo dir (/tmp) ====="
+        ( cd /tmp && git ls-remote "$URL" HEAD ) 2>&1 | tail -3
+        echo "   exit=$?"
+        echo "===== 6. bare git clone, exactly pip's command line, from /tmp ====="
+        rm -rf /tmp/probe-bare
+        ( cd /tmp && git clone --filter=blob:none --quiet "$URL" /tmp/probe-bare ) 2>&1 | tail -3
+        echo "   exit=$?  cloned=$([ -d /tmp/probe-bare/.git ] && echo yes || echo no)"
+        echo "===== 7. same clone from a python subprocess (pip's shape) ====="
+        python - <<'PY' 2>&1 | tail -5
+        import os, subprocess, shutil
+        shutil.rmtree("/tmp/probe-py", ignore_errors=True)
+        print("GIT_SSH_COMMAND seen by python:", repr(os.environ.get("GIT_SSH_COMMAND")))
+        r = subprocess.run(
+            ["git", "clone", "--filter=blob:none", "--quiet",
+             "ssh://git@github.com/mrdnlabs/axis-api-atlas.git", "/tmp/probe-py"],
+            capture_output=True, text=True)
+        print("rc:", r.returncode, "| stderr:", r.stderr.strip()[:300])
+        PY
+        echo "===== 8. pip's own VCS path, isolated ====="
+        rm -rf /tmp/probe-pip; mkdir -p /tmp/probe-pip
+        python -m pip download --no-deps --no-binary :all: \
+          "axis-api-atlas @ git+ssh://git@github.com/mrdnlabs/axis-api-atlas.git@main" \
+          -d /tmp/probe-pip 2>&1 | tail -8
+        echo "===== 9. ssh -v auth trace ====="
+        ssh -v -o IdentitiesOnly=yes -i "$HOME/.ssh/axis_api_atlas" -T git@github.com 2>&1 \
+          | grep -iE 'Offering|Authentications that can continue|Server accepts|Authenticated to|denied|Hi |identity file' | head -12
+        echo "===== PROBE END ====="
+
     - name: Install dependencies
       shell: bash
       run: |
