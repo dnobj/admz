@@ -30,6 +30,7 @@ import pytest
 
 from admz import capabilities
 from admz.capabilities import CAPABILITIES, Capability
+from tests import mcp_harness
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -797,17 +798,13 @@ def _live_mcp_tool_names(tmp_path, monkeypatch):
 
     import asyncio
 
-    from mcp.types import ListToolsRequest
-
     from admz.mcp.server import ADMZMCPServer
 
     server = ADMZMCPServer()
-    handler = server.server.request_handlers.get(ListToolsRequest)
-    assert handler is not None, "list_tools handler not registered"
-    res = asyncio.new_event_loop().run_until_complete(
-        handler(ListToolsRequest(method="tools/list"))
+    names = asyncio.new_event_loop().run_until_complete(
+        mcp_harness.tool_names(server)
     )
-    return server, [t.name for t in res.root.tools]
+    return server, names
 
 
 def _tool_payload():
@@ -904,7 +901,7 @@ class TestMcpSurface:
     def test_the_tool_takes_no_arguments(self):
         from admz.mcp.tools import capabilities as cap_tools
 
-        schema = cap_tools.TOOLS[0].inputSchema
+        schema = cap_tools.TOOLS[0].input_schema
         assert schema["type"] == "object"
         assert schema["properties"] == {}
         assert schema["required"] == []

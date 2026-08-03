@@ -19,18 +19,36 @@ cryptography>=41.0.0
 #   correctly resolves 0.141+. The `<1` cap is the lesson of #222 kept rather
 #   than discarded — bounded at the next major boundary, not unbounded again.
 #
-#   mcp is STILL PINNED — that half of #223 is a separate PR, because it
-#   collides with #217 inside the same `call_tool` function in
-#   admz/mcp/server.py and mcp 2.x removes the exception -> is_error
-#   conversion that #217's error envelopes depend on.
-#   -> `Server.list_tools` and `Tool.inputSchema` are gone in 2.0; 85 errors +
-#      13 failures. Do not raise this bound outside that PR.
+# mcp: RESOLVED (#223, mcp half). The 1.x low-level decorators
+#   `@server.list_tools()` / `@server.call_tool()` are gone; handlers are now
+#   registered with `add_request_handler(method, params_type, handler)`, take
+#   `(ctx, params)`, and return `ListToolsResult` / `CallToolResult`.
+#   `Tool.inputSchema` is now `Tool.input_schema` — camelCase survives only as
+#   the pydantic serialization *alias*, so `Tool(inputSchema=...)` still
+#   constructs (all 35 inline tool definitions were untouched) but attribute
+#   reads had to move.
+#
+#   The floor is 2.0 rather than something lower: `mcp.types` is a shim over the
+#   split-out `mcp-types` package from 2.0 onward, and the handler-registration
+#   API this code now calls does not exist in 1.x. Unlike fastapi above, there is
+#   no signature that satisfies both majors, so this one really is a floor. The
+#   `<3` cap keeps #222's lesson rather than discarding it.
+#
+#   Note for whoever raises this next: 2.0 also dropped the SDK-side
+#   `jsonschema.validate(arguments, tool.inputSchema)` that 1.x ran before every
+#   tool dispatch. admz/mcp/server.py now performs that check itself — do not
+#   delete it assuming the SDK still does it.
 fastapi>=0.104.0,<1
 uvicorn[standard]>=0.24.0
 jinja2>=3.1.2
 python-multipart>=0.0.6
-mcp>=1.26,<2
+mcp>=2.0,<3
 pyyaml>=6.0
+
+# Tool-argument JSON-Schema validation in admz/mcp/server.py. Already present
+# transitively via mcp, but pinned explicitly because admz imports it directly
+# — same rule as `websockets` below.
+jsonschema>=4.20.0
 
 # Axis API knowledge base — the executable catalog + intent resolver +
 # (model,firmware) capability matrix, now the single source of truth

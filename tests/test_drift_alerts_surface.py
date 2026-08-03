@@ -20,6 +20,7 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
+from tests import mcp_harness
 
 
 # ---------------------------------------------------------------------------
@@ -269,22 +270,7 @@ def mcp_server(tmp_path, monkeypatch):
 
 
 async def _call_tool(server, name: str, arguments: dict):
-    from mcp.types import CallToolRequest, CallToolRequestParams
-
-    handler = None
-    for req_type, h in server.server.request_handlers.items():
-        if req_type.__name__ == "CallToolRequest":
-            handler = h
-            break
-    assert handler is not None
-
-    req = CallToolRequest(
-        method="tools/call",
-        params=CallToolRequestParams(name=name, arguments=arguments),
-    )
-    result = await handler(req)
-    text = result.root.content[0].text
-    return json.loads(text)
+    return await mcp_harness.call_tool(server, name, arguments)
 
 
 class TestMcpGetDriftAlerts:
@@ -334,32 +320,53 @@ class TestMcpGetDriftAlerts:
 
     @pytest.mark.asyncio
     async def test_invalid_transition_rejected(self, mcp_server):
-        """The inputSchema's ``enum`` for transitions is enforced by the
-        MCP SDK BEFORE our handler runs — that's the right layer for
-        schema-level validation. The SDK returns a plain-text error
-        rather than a JSON envelope; tests just need to verify the
-        unknown value is in the response and our handler never ran
-        (no row was added to the audit log)."""
-        server, _ = mcp_server
-        from mcp.types import CallToolRequest, CallToolRequestParams
+        """The inputSchema's ``enum`` for transitions is enforced before the
+        tool handler runs.
 
-        handler = None
-        for req_type, h in server.server.request_handlers.items():
-            if req_type.__name__ == "CallToolRequest":
-                handler = h
-                break
-        req = CallToolRequest(
-            method="tools/call",
-            params=CallToolRequestParams(
-                name="get_drift_alerts",
-                arguments={"transitions": ["exploded"]},
-            ),
+        This used to say "enforced by the MCP SDK". That was true under mcp 1.x,
+        whose ``@server.call_tool()`` decorator ran
+        ``jsonschema.validate(arguments, tool.inputSchema)`` before dispatch.
+        mcp 2.x deleted that decorator and validates nothing, so ``call_tool``
+        in ``admz/mcp/server.py`` now performs the same check itself rather than
+        letting the port drop the gate. The enforcement layer moved; the
+        contract asserted here did not.
+
+        The refusal shape did change, deliberately: the SDK emitted bare text,
+        ADMZ emits its standard JSON envelope (the chatbot json.loads tool
+        output, so plain text was a latent client-side parse failure).
+
+        Scope note, so this is not mistaken for more than it is: ``enum`` is
+        *doubly* covered — ``_get_drift_alerts`` validates transitions itself —
+        so this test still passes if the schema gate is removed. It pins the
+        user-visible contract, not the gate.
+        ``test_wrong_type_rejected_before_the_handler`` below is the one that
+        fails when the gate goes.
+        """
+        server, _ = mcp_server
+        result = await _call_tool(
+            server, "get_drift_alerts", {"transitions": ["exploded"]},
         )
-        result = await handler(req)
-        text = result.root.content[0].text
-        # SDK validation rejected the call.
-        assert "exploded" in text
-        assert "appeared" in text  # the allowed values are surfaced
+        assert result["error"] == "InvalidInput"
+        assert "exploded" in result["message"]
+        assert "appeared" in result["message"]  # the allowed values are surfaced
+
+    @pytest.mark.asyncio
+    async def test_wrong_type_rejected_before_the_handler(self, mcp_server):
+        """A string where the schema demands an array is refused, not iterated.
+
+        Regression guard for what the mcp 2.x port nearly let through. The
+        handler's own transition check iterates whatever it is given, so a bare
+        string degrades into its characters — passing ``"cleared"`` yielded
+        "Unknown transition(s): ['c', 'l', 'e', ...]". Under 1.x the SDK's
+        schema validation meant the handler never saw a non-array; nothing but
+        this schema gate stands between the two now.
+        """
+        server, _ = mcp_server
+        result = await _call_tool(
+            server, "get_drift_alerts", {"transitions": "cleared"},
+        )
+        assert result["error"] == "InvalidInput"
+        assert "array" in result["message"]
 
     @pytest.mark.asyncio
     async def test_invalid_since_returns_invalid_input(self, mcp_server):

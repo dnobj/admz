@@ -13,6 +13,7 @@ them back via ``MIGRATED_TOOLS``. These tests verify:
 """
 
 import pytest
+from tests import mcp_harness
 
 
 # ---------------------------------------------------------------------------
@@ -107,8 +108,8 @@ class TestMigratedToolsAggregate:
         for tool in MIGRATED_TOOLS:
             assert tool.name, "tool has no name"
             assert tool.description, f"tool {tool.name} has no description"
-            assert isinstance(tool.inputSchema, dict)
-            assert tool.inputSchema.get("type") == "object"
+            assert isinstance(tool.input_schema, dict)
+            assert tool.input_schema.get("type") == "object"
 
     def test_no_duplicate_names(self):
         from admz.mcp.tools import MIGRATED_TOOLS
@@ -138,22 +139,11 @@ async def test_mcp_server_list_tools_includes_migrated_names(tmp_path, monkeypat
 
     server = ADMZMCPServer()
 
-    # The Server library doesn't expose the registered handlers
-    # directly via a public attribute, but it does store them. We
-    # grab the list_tools handler the same way the MCP runtime
-    # does, by calling Server.request_handlers[...] — but that's
-    # an implementation detail. Easier: round-trip through the
-    # public list_tools() handler.
-    #
-    # The mcp.server.Server stores the @server.list_tools()
-    # callback in request_handlers under the ListToolsRequest
-    # type. We invoke it directly here.
-    from mcp.types import ListToolsRequest
-    handler = server.server.request_handlers.get(ListToolsRequest)
-    assert handler is not None, "list_tools handler not registered"
-
-    result = await handler(ListToolsRequest(method="tools/list"))
-    tool_names = {t.name for t in result.root.tools}
+    # mcp 2.x exposes registered handlers through the public
+    # Server.get_request_handler(method); tests/mcp_harness.py wraps that,
+    # deriving the method string from the SDK's own request model so this
+    # lookup cannot drift from what the runtime dispatches on.
+    tool_names = set(await mcp_harness.tool_names(server))
 
     # Spot-check: every migrated tool name is present.
     must_be_present = {
@@ -214,14 +204,11 @@ async def test_execute_operation_params_accept_native_types(tmp_path, monkeypatc
     monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
 
     from admz.mcp.server import ADMZMCPServer
-    from mcp.types import ListToolsRequest
 
     server = ADMZMCPServer()
-    handler = server.server.request_handlers.get(ListToolsRequest)
-    result = await handler(ListToolsRequest(method="tools/list"))
-    tool = next(t for t in result.root.tools if t.name == "execute_operation")
+    tool = await mcp_harness.find_tool(server, "execute_operation")
 
-    params = tool.inputSchema["properties"]["params"]
+    params = tool.input_schema["properties"]["params"]
     ap = params.get("additionalProperties")
     assert ap is not None, "execute_operation params should declare value types"
     # Must NOT be the string-only schema that caused the bug.

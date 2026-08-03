@@ -34,9 +34,20 @@ import secrets
 import time
 from typing import Any, Dict, List, Optional
 
+import jsonschema
+
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import (
+    CallToolRequest,
+    CallToolRequestParams,
+    CallToolResult,
+    ListToolsRequest,
+    ListToolsResult,
+    PaginatedRequestParams,
+    TextContent,
+    Tool,
+)
 
 from admz import create_device_registry
 from admz.device_registry import DeviceRegistry
@@ -294,6 +305,17 @@ def _tool_resource(name: str, arguments: Any) -> str:
     return "/".join(parts)
 
 
+# mcp 2.x dispatches requests on the JSON-RPC method *string* rather than on
+# the request class, so handler registration now names the method explicitly.
+# These are read off the SDK's own request models instead of being written out
+# as literals: a hard-coded "tools/list" here would still match a test that
+# hard-codes the same typo, and the mismatch would only ever surface against a
+# real client. Deriving both sides from the SDK makes that class of drift
+# unrepresentable.
+_LIST_TOOLS_METHOD: str = ListToolsRequest.model_fields["method"].default
+_CALL_TOOL_METHOD: str = CallToolRequest.model_fields["method"].default
+
+
 class ADMZMCPServer:
     """
     MCP server for ADMZ device management.
@@ -319,6 +341,10 @@ class ADMZMCPServer:
                 If None, uses ADMZ_CATALOG_PATH env var or ./catalog.
         """
         self.server = Server("admz")
+        # name -> advertised inputSchema, for the argument validation that mcp
+        # 1.x did inside its @server.call_tool() decorator. Populated lazily and
+        # refreshed on a miss; see `_tool_schema` in _register_handlers.
+        self._tool_schemas: Dict[str, Any] = {}
         self.registry = registry or create_device_registry()
 
         # Shared component stack — same builder the FastAPI AppContext uses.
@@ -417,10 +443,26 @@ class ADMZMCPServer:
         )
 
     def _register_handlers(self):
-        """Register MCP tool handlers."""
+        """Register MCP tool handlers.
 
-        @self.server.list_tools()
-        async def list_tools() -> List[Tool]:
+        mcp 2.x removed the ``@server.list_tools()`` / ``@server.call_tool()``
+        decorators in favour of explicit
+        ``add_request_handler(method, params_type, handler)`` registration.
+        Handlers now take ``(ctx, params)`` and return the protocol result
+        object rather than a bare list, and the SDK no longer wraps them: an
+        exception escaping a handler becomes a JSON-RPC error rather than a
+        ``CallToolResult(isError=True)``. ADMZ never relied on that conversion
+        — ``call_tool`` below catches broadly and returns its own JSON error
+        envelope as ordinary content — so the observable tool surface is
+        unchanged by the port.
+
+        ``ctx`` (``ServerRequestContext``) is accepted and deliberately unused:
+        every handler reaches shared state through ``self``.
+        """
+
+        async def list_tools(
+            ctx: Any, params: Optional[PaginatedRequestParams] = None
+        ) -> ListToolsResult:
             """List available ADMZ tools."""
             tools = [
                 Tool(
@@ -1632,10 +1674,25 @@ class ADMZMCPServer:
             tools.extend(
                 spec.tool for spec in self.module_registry.tool_specs_all()
             )
-            return tools
+            return ListToolsResult(tools=tools)
 
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: Any) -> List[TextContent]:
+        async def _tool_schema(tool_name: str) -> Optional[Dict[str, Any]]:
+            """The advertised ``inputSchema`` for ``tool_name``.
+
+            Mirrors mcp 1.x's ``_get_cached_tool_definition``: a cache miss
+            re-lists (so a platform module enabled since the last call is picked
+            up, per ADR-0039/0040), and a tool that is still not advertised
+            returns ``None`` and is left unvalidated — ``call_tool``'s dispatch
+            owns the unknown-tool error, exactly as it did under 1.x.
+            """
+            if tool_name not in self._tool_schemas:
+                listed = await list_tools(None, None)
+                self._tool_schemas = {t.name: t.input_schema for t in listed.tools}
+            return self._tool_schemas.get(tool_name)
+
+        async def call_tool(
+            ctx: Any, params: CallToolRequestParams
+        ) -> CallToolResult:
             """Handle tool calls.
 
             CR-4: every dispatch produces exactly one audit-log row.
@@ -1652,9 +1709,67 @@ class ADMZMCPServer:
             allow-list so a malicious value can't slip through to
             filesystem-touching code (git_repo.device_path etc.).
             """
+            # mcp 2.x hands the handler the validated request params object
+            # instead of the (name, arguments) pair 1.x unpacked for us.
+            # `arguments` is optional on the wire; normalise the absent case to
+            # {} so every downstream consumer (_sanitize_tool_args,
+            # _validate_tool_args, _tool_resource, the handlers) keeps seeing a
+            # dict exactly as it did under 1.x.
+            name = params.name
+            arguments = params.arguments if params.arguments is not None else {}
+
             args_sanitized = _sanitize_tool_args(arguments)
             audit_success = False
             audit_error = ""
+
+            # mcp 1.x validated `arguments` against the tool's own inputSchema
+            # inside the @server.call_tool() decorator, before ADMZ's handler
+            # ever ran (mcp/server/lowlevel/server.py:530 in 1.26). 2.x deleted
+            # that decorator and registers handlers raw, so nothing in the SDK
+            # validates tool arguments any more. Porting without this would have
+            # silently un-enforced every `enum`, every type and every `required`
+            # across all ~35 tool schemas — a gate removed as a side effect of a
+            # dependency bump, which is exactly the kind of quiet regression the
+            # upper bounds in requirements.txt exist to catch. So ADMZ does it
+            # itself now.
+            #
+            # Two deliberate differences from the SDK's version, both of which
+            # are improvements rather than drift:
+            #   * The refusal is ADMZ's standard JSON envelope, not the SDK's
+            #     bare `Input validation error: ...` text. The chatbot decodes
+            #     tool output with json.loads, so the old plain-text shape was a
+            #     latent parse failure on the client side.
+            #   * It produces an audit row. Under 1.x a schema-invalid call was
+            #     rejected before reaching ADMZ and left no trace whatsoever;
+            #     a malformed call against a destructive tool is precisely the
+            #     event an auditor wants to see (CR-4).
+            schema = await _tool_schema(name)
+            if schema is not None:
+                try:
+                    jsonschema.validate(instance=arguments, schema=schema)
+                except jsonschema.ValidationError as exc:
+                    audit_error = f"InvalidInput: {exc.message}"
+                    err_envelope = {
+                        "success": False,
+                        "error": "InvalidInput",
+                        "message": f"Input validation error: {exc.message}",
+                    }
+                    try:
+                        return CallToolResult(content=[TextContent(
+                            type="text",
+                            text=json.dumps(err_envelope, indent=2),
+                        )])
+                    finally:
+                        from admz.audit import audit_log
+                        audit_log.record(
+                            requester=self.principal.name,
+                            auth_source=self.principal.source,
+                            action=f"mcp.{name}",
+                            resource=_tool_resource(name, arguments),
+                            details={"args": args_sanitized},
+                            success=False,
+                            error_message=audit_error,
+                        )
 
             # CR-5: validate identifier-shaped args before dispatch.
             validation_error = _validate_tool_args(name, arguments)
@@ -1665,10 +1780,10 @@ class ADMZMCPServer:
                     "message": validation_error,
                 }
                 try:
-                    return [TextContent(
+                    return CallToolResult(content=[TextContent(
                         type="text",
                         text=json.dumps(err_envelope, indent=2),
-                    )]
+                    )])
                 finally:
                     from admz.audit import audit_log
                     audit_log.record(
@@ -1708,10 +1823,10 @@ class ADMZMCPServer:
                     ),
                 }
                 try:
-                    return [TextContent(
+                    return CallToolResult(content=[TextContent(
                         type="text",
                         text=json.dumps(err_envelope, indent=2),
-                    )]
+                    )])
                 finally:
                     from admz.audit import audit_log
                     audit_log.record(
@@ -1754,37 +1869,69 @@ class ADMZMCPServer:
                     )
                 else:
                     audit_success = True
-                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+                return CallToolResult(
+                    content=[
+                        TextContent(type="text", text=json.dumps(result, indent=2))
+                    ]
+                )
 
             except DeviceNotFoundError as e:
                 audit_error = f"DeviceNotFound: {e}"
                 error = {"error": "DeviceNotFound", "message": str(e)}
-                return [TextContent(type="text", text=json.dumps(error, indent=2))]
+                return CallToolResult(
+                    content=[
+                        TextContent(type="text", text=json.dumps(error, indent=2))
+                    ]
+                )
             except AccountNotFoundError as e:
                 audit_error = f"AccountNotFound: {e}"
                 error = {"error": "AccountNotFound", "message": str(e)}
-                return [TextContent(type="text", text=json.dumps(error, indent=2))]
+                return CallToolResult(
+                    content=[
+                        TextContent(type="text", text=json.dumps(error, indent=2))
+                    ]
+                )
             except PermissionDeniedError as e:
                 audit_error = f"PermissionDenied: {e}"
                 error = {"error": "PermissionDenied", "message": str(e)}
-                return [TextContent(type="text", text=json.dumps(error, indent=2))]
+                return CallToolResult(
+                    content=[
+                        TextContent(type="text", text=json.dumps(error, indent=2))
+                    ]
+                )
             except NotImplementedError as e:
                 audit_error = f"NotImplemented: {e}"
                 error = {"error": "NotImplemented", "message": str(e)}
-                return [TextContent(type="text", text=json.dumps(error, indent=2))]
+                return CallToolResult(
+                    content=[
+                        TextContent(type="text", text=json.dumps(error, indent=2))
+                    ]
+                )
             except BackendError as e:
                 audit_error = f"BackendError: {e}"
                 error = {"error": "BackendError", "message": str(e)}
-                return [TextContent(type="text", text=json.dumps(error, indent=2))]
+                return CallToolResult(
+                    content=[
+                        TextContent(type="text", text=json.dumps(error, indent=2))
+                    ]
+                )
             except ADMZError as e:
                 audit_error = f"ADMZError: {e}"
                 error = {"error": "ADMZError", "message": str(e)}
-                return [TextContent(type="text", text=json.dumps(error, indent=2))]
+                return CallToolResult(
+                    content=[
+                        TextContent(type="text", text=json.dumps(error, indent=2))
+                    ]
+                )
             except Exception as e:
                 audit_error = f"InternalError: {e}"
                 logger.exception(f"Unexpected error in {name}")
                 error = {"error": "InternalError", "message": str(e)}
-                return [TextContent(type="text", text=json.dumps(error, indent=2))]
+                return CallToolResult(
+                    content=[
+                        TextContent(type="text", text=json.dumps(error, indent=2))
+                    ]
+                )
             finally:
                 # CR-4: single point of audit for every MCP tool call.
                 # `audit_log.record` is best-effort and swallows DB
@@ -1800,6 +1947,13 @@ class ADMZMCPServer:
                     success=audit_success,
                     error_message=audit_error,
                 )
+
+        self.server.add_request_handler(
+            _LIST_TOOLS_METHOD, PaginatedRequestParams, list_tools
+        )
+        self.server.add_request_handler(
+            _CALL_TOOL_METHOD, CallToolRequestParams, call_tool
+        )
 
     async def _list_devices(self) -> Dict[str, Any]:
         """List all devices."""

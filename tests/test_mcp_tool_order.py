@@ -12,6 +12,7 @@ import asyncio
 import pytest
 
 from admz.mcp.server import ADMZMCPServer
+from tests import mcp_harness
 
 
 # The canonical core-tool order. Baseline was the 52 tools shipped on master @
@@ -104,19 +105,9 @@ EXPECTED_TOOL_ORDER = [
 
 def _live_tool_order():
     srv = ADMZMCPServer()
-    handler = None
-    for req_type, h in srv.server.request_handlers.items():
-        if req_type.__name__ == "ListToolsRequest":
-            handler = h
-            break
-    assert handler is not None, "list_tools handler not registered"
-
-    from mcp.types import ListToolsRequest
-
-    res = asyncio.new_event_loop().run_until_complete(
-        handler(ListToolsRequest(method="tools/list"))
+    return asyncio.new_event_loop().run_until_complete(
+        mcp_harness.tool_names(srv)
     )
-    return [t.name for t in res.root.tools]
 
 
 def test_device_tool_order_is_frozen():

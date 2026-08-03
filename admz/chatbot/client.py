@@ -959,16 +959,37 @@ async def _mcp_declarations(mcp_session: Any, types: Any) -> list:
     """Build explicit Gemini tool declarations from the MCP server's list_tools.
 
     Decouples the manual loop from the SDK's experimental MCP-session-as-tool
-    auto-execution. The MCP inputSchema (JSON Schema) is passed through via
+    auto-execution. The MCP input schema (JSON Schema) is passed through via
     ``parameters_json_schema`` — verified accepted by 2.5-flash and 3.5-flash.
     """
     listed = await mcp_session.list_tools()
     tools = getattr(listed, "tools", listed) or []
     decls = []
     for t in tools:
-        schema = getattr(t, "inputSchema", None)
+        # GH #225. mcp 2.x renamed ``Tool.inputSchema`` to ``Tool.input_schema``;
+        # the camelCase spelling survives only as the pydantic serialization
+        # alias, so it is still accepted by the *constructor* (which is why the
+        # 35 inline Tool(...) definitions needed no edits) but is no longer a
+        # readable attribute.
+        #
+        # This site used to read the camelCase name through
+        # ``getattr(t, "inputSchema", None)`` and fall back to an empty
+        # ``{"type": "object", "properties": {}}``. Under 2.x that fallback
+        # fires for *every* tool: each one is advertised to Gemini with no
+        # parameters at all, no exception is raised and nothing fails, and the
+        # model simply calls every ADMZ tool with empty arguments. Silent, total,
+        # and invisible to the suite — so the empty-schema fallback is gone.
+        # A tool that genuinely takes no arguments still carries a real dict
+        # ({"type": "object", "properties": {}, "required": []}); a non-dict here
+        # means the SDK shape moved again, which must be loud.
+        schema = getattr(t, "input_schema", None)
         if not isinstance(schema, dict):
-            schema = {"type": "object", "properties": {}}
+            raise TypeError(
+                f"MCP tool {getattr(t, 'name', '?')!r} exposed no readable "
+                f"input_schema (got {type(schema).__name__}). Refusing to "
+                "advertise it to the model with an empty parameter list — "
+                "that silently strips every tool's arguments (GH #225)."
+            )
         decls.append(
             types.FunctionDeclaration(
                 name=t.name,

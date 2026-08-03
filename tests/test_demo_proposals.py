@@ -748,10 +748,10 @@ class TestMcpTools:
         from admz.mcp.tools.demos import TOOLS
 
         tool = next(t for t in TOOLS if t.name == "confirm_demo_proposal")
-        props = tool.inputSchema["properties"]
+        props = tool.input_schema["properties"]
         assert props["name"]["type"] == "string"
         assert props["purpose"]["type"] == "string"
-        assert tool.inputSchema["required"] == ["proposal"]
+        assert tool.input_schema["required"] == ["proposal"]
         # The description has to say the stored name is a placeholder, or the
         # model happily confirms "Activation demo" forever.
         assert "PLACEHOLDER" in tool.description

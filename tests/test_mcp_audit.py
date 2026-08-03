@@ -31,6 +31,7 @@ import pytest
 
 from admz.auth import Principal
 from admz.chatbot.mcp_pool import _principal_to_env, _principal_key
+from tests import mcp_harness
 
 
 # ---------------------------------------------------------------------------
@@ -217,23 +218,7 @@ def mcp_server(tmp_path, monkeypatch):
 async def _call_tool(server, name: str, arguments: dict):
     """Dispatch one tool call through the server's registered
     call_tool handler. Returns the parsed JSON result."""
-    from mcp.types import CallToolRequest, CallToolRequestParams
-
-    handler = None
-    for req_type, h in server.server.request_handlers.items():
-        if req_type.__name__ == "CallToolRequest":
-            handler = h
-            break
-    assert handler is not None, "call_tool handler not registered"
-
-    req = CallToolRequest(
-        method="tools/call",
-        params=CallToolRequestParams(name=name, arguments=arguments),
-    )
-    result = await handler(req)
-    # ServerResult wraps a CallToolResult; .content is a list of TextContent.
-    text = result.root.content[0].text
-    return json.loads(text)
+    return await mcp_harness.call_tool(server, name, arguments)
 
 
 class TestCallToolAuditing:

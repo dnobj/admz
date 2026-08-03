@@ -14,6 +14,7 @@ import json
 import pytest
 
 from admz.rules import capabilities, capture
+from tests import mcp_harness
 
 
 # ---------------------------------------------------------------------------
@@ -52,18 +53,7 @@ def server(tmp_path, monkeypatch):
 
 
 async def _call_tool(server, name, arguments):
-    from mcp.types import CallToolRequest, CallToolRequestParams
-    handler = None
-    for req_type, h in server.server.request_handlers.items():
-        if req_type.__name__ == "CallToolRequest":
-            handler = h
-            break
-    assert handler is not None
-    req = CallToolRequest(
-        method="tools/call",
-        params=CallToolRequestParams(name=name, arguments=arguments))
-    result = await handler(req)
-    return json.loads(result.root.content[0].text)
+    return await mcp_harness.call_tool(server, name, arguments)
 
 
 async def _approve(session_token, registry):

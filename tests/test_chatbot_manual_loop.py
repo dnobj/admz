@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from mcp.types import Tool
 
 import admz.chatbot.client as client
 from admz.chatbot.events import ChatEventType
@@ -77,14 +78,22 @@ class _CallResult:
         self.content = [_ToolText(json.dumps(payload))]
 
 
-class _FakeTool:
-    name = "execute_operation"
-    description = "Execute a VAPIX op."
-    inputSchema = {"type": "object", "properties": {"device_id": {"type": "string"}}}
+# GH #225: this was a hand-rolled duck-type carrying an ``inputSchema``
+# attribute. That is precisely why the mcp 2.x rename was invisible — the fake
+# kept answering to the *old* spelling, so the declaration builder kept finding
+# a schema here while against a real ``mcp.types.Tool`` it found nothing and
+# silently advertised every tool with no parameters. Use the SDK's own model so
+# the test is exercising the same attribute surface production does.
+def _fake_tool():
+    return Tool(
+        name="execute_operation",
+        description="Execute a VAPIX op.",
+        inputSchema={"type": "object", "properties": {"device_id": {"type": "string"}}},
+    )
 
 
 class _Listed:
-    tools = [_FakeTool()]
+    tools = [_fake_tool()]
 
 
 class _FakeSession:
@@ -374,3 +383,89 @@ def test_translate_function_call_chunk_carries_args_and_call_id():
     assert ev.type == ChatEventType.TOOL_CALL
     assert ev.payload["call_id"] == "3"
     assert ev.payload["args"] == {"device_id": "Q35"}
+
+
+# ---------------------------------------------------------------------------
+# GH #225 — the tool schemas the model actually receives
+# ---------------------------------------------------------------------------
+
+
+class TestMcpDeclarationsCarryTheRealSchema:
+    """Regression coverage for the silent half of the mcp 2.x port.
+
+    ``_mcp_declarations`` used to read ``getattr(t, "inputSchema", None)`` and
+    fall back to an empty ``{"type": "object", "properties": {}}``. mcp 2.x
+    renamed the field to ``input_schema`` (camelCase survives only as the
+    pydantic serialization alias, so ``Tool(inputSchema=...)`` still constructs
+    but ``t.inputSchema`` no longer reads), which meant the fallback fired for
+    *every* tool: ADMZ advertised its whole tool surface to Gemini with no
+    parameters at all. No exception, no failing test — the model would simply
+    call every tool with empty arguments and every call would fail downstream.
+
+    Nothing in the suite caught it because the only fake here hand-rolled an
+    ``inputSchema`` attribute, so it answered to the old spelling forever. These
+    tests build real ``mcp.types.Tool`` objects instead.
+    """
+
+    @pytest.mark.asyncio
+    async def test_declared_parameters_are_the_tools_real_schema(self):
+        from google.genai import types as genai_types
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "device_id": {"type": "string"},
+                "operation_id": {"type": "string"},
+            },
+            "required": ["device_id", "operation_id"],
+        }
+        tool = Tool(
+            name="execute_operation",
+            description="Execute a VAPIX op.",
+            inputSchema=schema,
+        )
+
+        class _Session:
+            async def list_tools(self):
+                class _R:
+                    tools = [tool]
+
+                return _R()
+
+        out = await client._mcp_declarations(_Session(), genai_types)
+
+        assert len(out) == 1
+        decls = out[0].function_declarations
+        assert len(decls) == 1
+        params = decls[0].parameters_json_schema
+
+        # The precise assertion that fails on the old getattr("inputSchema")
+        # read: an empty-properties schema is what the bug produced, and it is
+        # indistinguishable from success unless the properties are checked.
+        assert params == schema
+        assert set(params["properties"]) == {"device_id", "operation_id"}
+        assert params["required"] == ["device_id", "operation_id"]
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_schema_is_loud_rather_than_empty(self):
+        """The failure mode that made #225 invisible must not come back.
+
+        If the SDK shape moves again, the declaration builder has to fail
+        rather than quietly hand Gemini a parameterless tool.
+        """
+        from google.genai import types as genai_types
+
+        class _LegacyShapedTool:
+            name = "execute_operation"
+            description = "Execute a VAPIX op."
+            inputSchema = {"type": "object", "properties": {"device_id": {}}}
+
+        class _Session:
+            async def list_tools(self):
+                class _R:
+                    tools = [_LegacyShapedTool()]
+
+                return _R()
+
+        with pytest.raises(TypeError, match="input_schema"):
+            await client._mcp_declarations(_Session(), genai_types)

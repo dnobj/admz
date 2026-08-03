@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from tests import mcp_harness
 
 
 # ---------------------------------------------------------------------------
@@ -33,20 +34,7 @@ def _make_server(tmp_path, monkeypatch):
 
 
 async def _call_tool(server, name: str, arguments: dict):
-    from mcp.types import CallToolRequest, CallToolRequestParams
-
-    handler = None
-    for req_type, h in server.server.request_handlers.items():
-        if req_type.__name__ == "CallToolRequest":
-            handler = h
-            break
-    assert handler is not None
-    req = CallToolRequest(
-        method="tools/call",
-        params=CallToolRequestParams(name=name, arguments=arguments),
-    )
-    result = await handler(req)
-    return json.loads(result.root.content[0].text)
+    return await mcp_harness.call_tool(server, name, arguments)
 
 
 @pytest.fixture
@@ -57,14 +45,7 @@ def server(tmp_path, monkeypatch):
 class TestUpdateDeviceTags:
     @pytest.mark.asyncio
     async def test_tool_is_registered(self, server):
-        from mcp.types import ListToolsRequest
-        handler = None
-        for req_type, h in server.server.request_handlers.items():
-            if req_type.__name__ == "ListToolsRequest":
-                handler = h
-                break
-        res = await handler(ListToolsRequest(method="tools/list"))
-        names = {t.name for t in res.root.tools}
+        names = set(await mcp_harness.tool_names(server))
         assert "update_device_tags" in names
         assert "delete_device" in names  # the widget-gated one already exists
 
