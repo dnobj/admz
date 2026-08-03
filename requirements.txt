@@ -1,10 +1,29 @@
 hvac>=2.0.0
 cryptography>=41.0.0
-fastapi>=0.104.0
+
+# UPPER BOUNDS ARE LOAD-BEARING. These two were lower-bound-only until CI
+# first ran a clean install (2026-08-03) and immediately failed 182 tests on
+# both Linux and Windows. A clean `pip install -r requirements.txt` resolved
+# majors far ahead of what dev and production actually run, and ADMZ does not
+# work on them:
+#
+#   fastapi  ran 0.129.0, clean install got 0.141.1 (starlette 0.52 -> 1.x)
+#            -> Starlette 1.x dropped the old TemplateResponse(name, context)
+#               signature. ADMZ has 70 call sites still using it, so every
+#               HTML route 500s with `TypeError: unhashable type: 'dict'`.
+#               82 test failures. Also `_IncludedRouter` lost `.path`.
+#   mcp      ran 1.26.0, clean install got 2.0.0
+#            -> `Server.list_tools` and `Tool.inputSchema` are gone.
+#               85 errors + 13 failures.
+#
+# Pinned to the majors ADMZ is developed and deployed against, so CI tests
+# what ships. Migrating to Starlette 1.x / mcp 2.x is real work with its own
+# issue — do that deliberately, then raise these bounds in the same PR.
+fastapi>=0.104.0,<0.130
 uvicorn[standard]>=0.24.0
 jinja2>=3.1.2
 python-multipart>=0.0.6
-mcp>=0.9.0
+mcp>=1.26,<2
 pyyaml>=6.0
 
 # Axis API knowledge base — the executable catalog + intent resolver +

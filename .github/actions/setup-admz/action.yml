@@ -68,7 +68,48 @@ runs:
         # Pin github.com's host keys rather than accepting on first use.
         ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null
         chmod 600 "$HOME/.ssh/known_hosts"
-        echo "GIT_SSH_COMMAND=ssh -i $HOME/.ssh/axis_api_atlas -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" >> "$GITHUB_ENV"
+
+        # Windows OpenSSH wants a native path here, not an MSYS /c/... one.
+        KEY="$HOME/.ssh/axis_api_atlas"
+        KNOWN="$HOME/.ssh/known_hosts"
+        if command -v cygpath >/dev/null 2>&1; then
+          KEY="$(cygpath -m "$KEY")"
+          KNOWN="$(cygpath -m "$KNOWN")"
+        fi
+
+        # Bind the key to github.com in ~/.ssh/config — NOT via GIT_SSH_COMMAND
+        # and NOT via git's core.sshCommand.
+        #
+        # pip OVERWRITES GIT_SSH_COMMAND with `ssh -oBatchMode=yes` before
+        # running `git clone` for a VCS requirement, so that git can never
+        # block on an interactive prompt. That wipes out any `-i <keyfile>` we
+        # put there, and because the environment variable takes precedence over
+        # core.sshCommand, setting the git config does not rescue it either.
+        #
+        # Proven on the runner (run 30832229627) by shimming ssh and logging
+        # its argv. Our own git calls:
+        #   -i /home/runner/.ssh/axis_api_atlas -o IdentitiesOnly=yes ... git@github.com
+        # pip's git call, seconds later, same job:
+        #   -oBatchMode=yes -o SendEnv=GIT_PROTOCOL git@github.com
+        # No identity, hence `Permission denied (publickey)`. HOME was correct
+        # (/home/runner) throughout, and the key's fingerprint on the runner
+        # matched the registered deploy key exactly.
+        #
+        # ~/.ssh/config is immune: ssh reads it regardless of the command line
+        # it was invoked with, so pip's stripped-down invocation still picks up
+        # the identity. It is also the mechanism actually designed for
+        # "which key for which host", rather than a git-specific override.
+        umask 077
+        cat > "$HOME/.ssh/config" <<SSHCONF
+        Host github.com
+          HostName github.com
+          User git
+          IdentityFile $KEY
+          IdentitiesOnly yes
+          StrictHostKeyChecking yes
+          UserKnownHostsFile $KNOWN
+        SSHCONF
+        chmod 600 "$HOME/.ssh/config"
 
     - name: Verify the deploy key can reach axis-api-atlas
       shell: bash
