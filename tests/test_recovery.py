@@ -12,6 +12,7 @@ import pytest
 from admz.exceptions import DeviceNotFoundError, OperationNotFoundError
 from admz.executor.models import StepResult
 from admz.recovery import await_device_recovery
+from tests import mcp_harness
 
 
 # --- fakes -----------------------------------------------------------------
@@ -315,17 +316,13 @@ async def test_tool_in_list_tools_schema(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
 
-    from mcp.types import ListToolsRequest
-
     from admz.mcp.server import ADMZMCPServer
 
     server = ADMZMCPServer()
-    handler = server.server.request_handlers.get(ListToolsRequest)
-    result = await handler(ListToolsRequest(method="tools/list"))
-    tools = {t.name: t for t in result.root.tools}
+    tools = {t.name: t for t in await mcp_harness.list_tools(server)}
 
     assert "await_device_recovery" in tools
-    schema = tools["await_device_recovery"].inputSchema
+    schema = tools["await_device_recovery"].input_schema
     assert schema["required"] == ["device_id"]
     props = schema["properties"]
     assert props["timeout_s"]["default"] == 90

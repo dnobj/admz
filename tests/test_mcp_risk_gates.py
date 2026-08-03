@@ -20,6 +20,7 @@ Covers:
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from tests import mcp_harness
 
 
 @pytest.fixture
@@ -374,14 +375,11 @@ class TestExecuteOperationSchema:
         monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
 
         from admz.mcp.server import ADMZMCPServer
-        from mcp.types import ListToolsRequest
 
         server = ADMZMCPServer()
-        handler = server.server.request_handlers.get(ListToolsRequest)
-        result = await handler(ListToolsRequest(method="tools/list"))
-        tool = next(t for t in result.root.tools if t.name == "execute_operation")
+        tool = await mcp_harness.find_tool(server, "execute_operation")
 
-        required = tool.inputSchema.get("required", [])
+        required = tool.input_schema.get("required", [])
         assert "params" not in required, (
             "execute_operation should not require 'params' — many ops take "
             f"no params. required={required}"

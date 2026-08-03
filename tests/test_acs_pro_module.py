@@ -10,6 +10,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from tests import mcp_harness
 
 
 class _FakeSettings:
@@ -272,12 +273,7 @@ class TestMcpSurface:
         from tests.test_mcp_tool_order import EXPECTED_TOOL_ORDER
 
         srv = ADMZMCPServer()
-        handler = next(
-            h for rt, h in srv.server.request_handlers.items()
-            if rt.__name__ == "ListToolsRequest"
-        )
-        res = _run(handler(ListToolsRequest(method="tools/list")))
-        names = [t.name for t in res.root.tools]
+        names = _run(mcp_harness.tool_names(srv))
 
         from admz.modules.acs_pro.tools import tool_specs as acs_tool_specs
 

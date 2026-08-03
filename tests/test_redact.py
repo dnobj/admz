@@ -16,6 +16,7 @@ from admz.redact import (
     redact_structure,
     sibling_masked_fields,
 )
+from tests import mcp_harness
 
 SECRET = "hunter2_SECRET_do_not_log"
 
@@ -219,22 +220,9 @@ def audited_server(tmp_path, monkeypatch):
 
 
 async def _drive_call_tool(server, name: str, arguments: dict):
-    """Invoke the registered CallToolRequest handler — the real dispatcher,
+    """Invoke the registered call_tool handler — the real dispatcher,
     including its audit sites."""
-    from mcp.types import CallToolRequest, CallToolRequestParams
-
-    handler = None
-    for req_type, h in server.server.request_handlers.items():
-        if req_type.__name__ == "CallToolRequest":
-            handler = h
-            break
-    assert handler is not None
-    req = CallToolRequest(
-        method="tools/call",
-        params=CallToolRequestParams(name=name, arguments=arguments),
-    )
-    result = await handler(req)
-    return json.loads(result.root.content[0].text)
+    return await mcp_harness.call_tool(server, name, arguments)
 
 
 def _assert_clean(rows, *, expect_key="default_password"):

@@ -25,6 +25,7 @@ import json
 import pytest
 
 from admz.mcp.server import _DESTRUCTIVE_MCP_TOOLS
+from tests import mcp_harness
 
 
 class TestDestructiveToolSet:
@@ -89,22 +90,7 @@ def anon_mcp_server(tmp_path, monkeypatch):
 
 
 async def _call_tool(server, name: str, arguments: dict):
-    from mcp.types import CallToolRequest, CallToolRequestParams
-
-    handler = None
-    for req_type, h in server.server.request_handlers.items():
-        if req_type.__name__ == "CallToolRequest":
-            handler = h
-            break
-    assert handler is not None
-
-    req = CallToolRequest(
-        method="tools/call",
-        params=CallToolRequestParams(name=name, arguments=arguments),
-    )
-    result = await handler(req)
-    text = result.root.content[0].text
-    return json.loads(text)
+    return await mcp_harness.call_tool(server, name, arguments)
 
 
 def _commit_facet(server, device_id, facet, data, message):

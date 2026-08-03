@@ -65,13 +65,17 @@ setup(
         "Topic :: Security",
         "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
     ],
-    python_requires=">=3.8",
+    # mcp 2.0 declares Requires-Python >=3.10, so 3.8 and 3.9 became
+    # uninstallable the moment the bound below was raised. The metadata said
+    # >=3.8 with 3.8/3.9 classifiers, which on those interpreters produces a
+    # dependency-resolution failure rather than the clean "requires a different
+    # Python" message pip gives when the floor is declared honestly.
+    python_requires=">=3.10",
     install_requires=_read_requirements("requirements.txt"),
     extras_require={
         "dev": [
