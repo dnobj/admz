@@ -104,17 +104,42 @@ runs:
         fi
         echo "Deploy key authenticates to mrdnlabs/axis-api-atlas."
 
-    - name: PROBE2 (temporary — remove before merge)
+    - name: PROBE3 (temporary — remove before merge)
       shell: bash
       run: |
-        echo "-- effective core.sshCommand --"
-        git config --global --get core.sshCommand || echo "(unset)"
-        echo "-- pip's VCS path, isolated (this is what failed before) --"
+        set +e
+        echo "===== shim: log what ssh actually receives ====="
+        mkdir -p /tmp/shim
+        cat > /tmp/shim/ssh <<'EOF'
+        #!/usr/bin/env bash
+        {
+          echo "--- ssh invoked ---"
+          echo "argv           : $*"
+          echo "HOME           : ${HOME:-<UNSET>}"
+          echo "GIT_SSH_COMMAND: ${GIT_SSH_COMMAND:-<UNSET>}"
+          echo "PWD            : $PWD"
+        } >> /tmp/ssh-shim.log 2>&1
+        exec /usr/bin/ssh "$@"
+        EOF
+        chmod +x /tmp/shim/ssh
+        export PATH=/tmp/shim:$PATH
+        rm -f /tmp/ssh-shim.log
+
+        echo "===== A. bare git clone through the shim (control) ====="
+        rm -rf /tmp/probe-bare
+        git clone --filter=blob:none --quiet 'ssh://git@github.com/mrdnlabs/axis-api-atlas.git' /tmp/probe-bare 2>&1 | tail -3
+        echo "   rc=$?"
+
+        echo "===== B. pip, verbose, full output ====="
         rm -rf /tmp/probe-pip; mkdir -p /tmp/probe-pip
-        python -m pip download --no-deps \
+        python -m pip download --no-deps -v \
           "axis-api-atlas @ git+ssh://git@github.com/mrdnlabs/axis-api-atlas.git@main" \
-          -d /tmp/probe-pip 2>&1 | tail -4
-        echo "-- PROBE2 END --"
+          -d /tmp/probe-pip 2>&1 | tail -30
+        echo "   rc=$?"
+
+        echo "===== C. what ssh saw (empty = ssh was never even invoked) ====="
+        cat /tmp/ssh-shim.log 2>&1 || echo "(no shim log — ssh never ran)"
+        echo "===== PROBE3 END ====="
 
     - name: Install dependencies
       shell: bash
