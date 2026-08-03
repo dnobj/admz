@@ -1,0 +1,9 @@
+# Shell scripts must keep LF line endings in the working copy.
+#
+# CI runs .github/scripts/*.sh under bash on BOTH ubuntu-latest and
+# windows-latest. Git for Windows defaults to core.autocrlf=true, which would
+# check these out with CRLF; bash then fails on every line with
+# `$'\r': command not found`. Scoped to *.sh deliberately — a repo-wide
+# `* text=auto` would renormalise every file in the tree and collide with every
+# in-flight branch.
+*.sh text eol=lf

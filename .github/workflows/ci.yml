@@ -1,0 +1,153 @@
+name: CI
+
+# ADMZ had no CI at all before this workflow. See .github/workflows/README.md
+# for the design notes, the deploy-key setup procedure, and the list of things
+# this deliberately does NOT do.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_INPUT: "1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Fails in ~5s with an actionable message when the owner has not yet created
+  # the deploy key, instead of letting three jobs each fail two minutes in with
+  # the same root cause.
+  # ---------------------------------------------------------------------------
+  preflight:
+    name: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require AXIS_API_ATLAS_DEPLOY_KEY
+        env:
+          DEPLOY_KEY: ${{ secrets.AXIS_API_ATLAS_DEPLOY_KEY }}
+        run: |
+          if [ -z "${DEPLOY_KEY}" ]; then
+            echo "::error title=Missing secret AXIS_API_ATLAS_DEPLOY_KEY::CI cannot install the private axis-api-atlas dependency, and must not fall back to PyPI (issue #179). Setup procedure: .github/workflows/README.md"
+            {
+              echo "## Waiting on \`AXIS_API_ATLAS_DEPLOY_KEY\`"
+              echo
+              echo "This is expected until the repository owner creates the deploy key."
+              echo "CI **fails closed** rather than resolving \`axis-api-atlas\` from a"
+              echo "package index, which is the dependency-confusion hazard of issue #179."
+              echo
+              echo "Setup procedure: [\`.github/workflows/README.md\`](.github/workflows/README.md)"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "Deploy key secret is present."
+
+  # ---------------------------------------------------------------------------
+  # The fast gate. `--collect-only` imports all 161 test modules and the whole
+  # admz package, so it catches every syntax error, bad import, missing
+  # dependency and --strict-markers violation. Measured at 5-7s locally, so a
+  # typo costs a couple of minutes rather than the full suite's ~15.
+  # ---------------------------------------------------------------------------
+  quick:
+    name: quick (import + collect)
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-admz
+        with:
+          deploy-key: ${{ secrets.AXIS_API_ATLAS_DEPLOY_KEY }}
+
+      - name: Refuse to run against live hardware
+        shell: bash
+        run: bash .github/scripts/refuse_live_targets.sh
+
+      - name: Collect every test
+        shell: bash
+        env:
+          # ADMZ_HOME must exist BEFORE pytest starts: admz/fleet_settings.py:219
+          # constructs its singleton at import and, unlike the other 16
+          # import-time stores, does not mkdir its parent (fleet_settings.py:160
+          # goes straight to sqlite3.connect). Today it free-rides on whichever
+          # other store created the directory first; that is an import-order
+          # accident, not a guarantee.
+          ADMZ_HOME: ${{ runner.temp }}/admz-home
+        run: |
+          set -euo pipefail
+          mkdir -p "$ADMZ_HOME"
+          python -m pytest --collect-only -q --no-cov -p no:cacheprovider \
+            --ignore=tests/e2e \
+            --ignore=tests/test_chat_action_live.py
+
+  # ---------------------------------------------------------------------------
+  # The real suite, on both target platforms. Both legs block: Windows is the
+  # deployment target and the only place the SSPI branch runs; Linux is the only
+  # place the `skipif(sys.platform == "win32")` branches ever run, and those had
+  # never executed anywhere before this workflow.
+  # ---------------------------------------------------------------------------
+  suite:
+    name: suite (${{ matrix.os }})
+    needs: [quick]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-admz
+        with:
+          deploy-key: ${{ secrets.AXIS_API_ATLAS_DEPLOY_KEY }}
+
+      - name: Refuse to run against live hardware
+        shell: bash
+        run: bash .github/scripts/refuse_live_targets.sh
+
+      - name: Configure a git identity
+        shell: bash
+        # ~27 test files shell out to git and ~10 run `git init`/`git commit`
+        # in a tmp dir. Nothing calls shutil.which("git") to skip, and a fresh
+        # runner has no global user.name/user.email — so without this, tests
+        # that pass on a developer box fail here for an unrelated reason.
+        run: |
+          git config --global user.email "ci@admz.invalid"
+          git config --global user.name "ADMZ CI"
+          git config --global init.defaultBranch main
+
+      - name: Run the test suite
+        shell: bash
+        env:
+          ADMZ_HOME: ${{ runner.temp }}/admz-home
+        run: |
+          set -euo pipefail
+          mkdir -p "$ADMZ_HOME"
+          # --no-cov overrides the --cov=admz/--cov-report=html in pytest.ini's
+          # addopts, which are wanted locally but are pure cost here.
+          #
+          # Two paths are excluded at the PATH level so their modules are never
+          # even imported:
+          #   tests/e2e/                      -> defaults to http://127.0.0.1:4242,
+          #                                      the PRODUCTION instance (issue #180).
+          #   tests/test_chat_action_live.py  -> drives REAL CAMERAS over the
+          #                                      network with verify=False and
+          #                                      8/16/24s retries.
+          # The second is only dormant because ADMZ_LIVE_CHAT_TESTS happens to be
+          # unset; that is safety by accident, so it is excluded explicitly.
+          # Setting ADMZ_LIVE_CHAT_TESTS or ADMZ_E2E_* in this workflow would
+          # point CI at live hardware and a live fleet. Do not.
+          python -m pytest -q --no-cov -p no:cacheprovider \
+            --ignore=tests/e2e \
+            --ignore=tests/test_chat_action_live.py \
+            --durations=25

@@ -9,11 +9,22 @@ pyyaml>=6.0
 
 # Axis API knowledge base — the executable catalog + intent resolver +
 # (model,firmware) capability matrix, now the single source of truth
-# (ADR-0029). Canonical source:
-#   axis-api-atlas @ git+https://github.com/mrdnlabs/axis-api-atlas.git
-# For local dev, install the sibling clone editable:
-#   pip install -e ../axis-api-atlas
-axis-api-atlas>=0.1.0
+# (ADR-0029).
+#
+# This MUST stay a PEP 508 direct reference, never a bare name. The package is
+# private (mrdnlabs/axis-api-atlas) and the name is UNREGISTERED on PyPI, so a
+# bare `axis-api-atlas>=0.1.0` resolves against PyPI and anyone who registers
+# the name there gets code execution inside this venv — which the admz Windows
+# service then runs as LocalSystem. That was issue #179.
+#
+# A direct reference never consults an index: with no credential the git clone
+# fails loudly instead of silently installing a stranger's package.
+#
+# Access: read-only deploy key. CI reads it from the repo secret
+# AXIS_API_ATLAS_DEPLOY_KEY (see .github/workflows/ci.yml).
+# Local dev: `pip install -e ../axis-api-atlas` takes precedence over this line
+# and needs no credential — see README "Installation".
+axis-api-atlas @ git+ssh://git@github.com/mrdnlabs/axis-api-atlas.git@main
 
 # LDAP (optional — only used when ADMZ_LDAP_ENABLED=true for Windows
 # IWA group enrichment). Pure-Python so no native deps.
