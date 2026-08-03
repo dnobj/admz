@@ -111,6 +111,32 @@ with `ast` — resolving module-level constants, because every previous
 enumeration matched on names and inherited its author's blind spot. See
 [0020](../decisions/0020-protected-fleet-settings.md), [0053](../decisions/0053-llm-writable-fleet-settings.md).
 
+### FR-SEC-014 — Sibling-declared secrets are masked in audit rows and chat cards ✅
+Redaction masks by field *name*, which is structurally blind to the
+`{key: <name>, value: <secret>}` argument shape — the sensitivity of `value` is
+declared by its sibling, and neither field's own name looks sensitive (`key` is
+deliberately exempt because it carries a setting name, not a secret). `set_fleet_setting`
+is exactly that shape, so its value reached the audit log in cleartext (#217).
+
+Within a single mapping, a name-carrying field (`key`, `name`, `setting`, …)
+holding a sensitive-looking string now masks its sibling value field (`value`,
+`new_value`, …). The setting *name* is deliberately preserved — an auditor must
+still be able to answer "which setting was written?". The rule is fail-safe: it
+fires only when both a name field and a value field are present, and in that
+narrow case prefers over-masking to a leak.
+
+This is not specific to one tool. `call_tool` has **three** audit sites (invalid
+input, anonymous-destructive, and the `finally`), all recording the same
+pre-dispatch sanitized arguments, and the chat args card ran a display-side twin
+of the same loop. One rule, consulted by all of them.
+
+**Enforced at:** `admz/redact.py::sibling_masked_fields`, consulted by
+`redact_structure` and `chatbot/client.py::_redact_for_display`. Tested in
+`tests/test_redact.py` — including end-to-end coverage driving the real
+dispatcher for each of the three audit sites, since a test against the redactor
+alone would stay green if the wiring changed. Related: `rules/runner.py::redact_soap_body`
+solves the same shape for SOAP `<Parameter Name=… Value=…>` rows.
+
 ## Non-functional requirements
 
 ### NFR-SEC-001 — Confirmation password is PBKDF2-hashed ✅

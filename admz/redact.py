@@ -11,6 +11,13 @@ Deliberately a leaf module (stdlib only) so anything can import it.
 Security invariant (project-wide): device passwords must NEVER appear in
 event payloads, audit rows, or chat cards. Key *names* may pass through —
 they tell the operator what was present; only values are masked.
+
+GH #217: name-based masking is structurally blind to the ``{key: <name>,
+value: <secret>}`` argument shape, where the sensitivity of one field is
+declared by a *sibling* rather than by its own name. ``set_fleet_setting``
+is that shape: ``key`` is exempt (it names a setting) and ``value`` never
+looks sensitive, so the secret was the one field no rule inspected. See
+:func:`sibling_masked_fields`.
 """
 
 from __future__ import annotations
@@ -51,19 +58,64 @@ def is_sensitive_key(key: Any) -> bool:
     return bool(_PAT_TOKEN_RE.search(k))
 
 
+#: Fields that carry a *name* qualifying a sibling value field. ``key`` and
+#: ``name`` are the shapes that actually occur (``set_fleet_setting``'s
+#: arguments; SOAP ``<Parameter Name=… Value=…>``, which
+#: ``rules/runner.py::redact_soap_body`` already solves the same way); the
+#: rest are cheap insurance against the next tool to adopt the shape.
+_NAME_FIELDS = (
+    "key",
+    "name",
+    "setting",
+    "setting_key",
+    "param",
+    "parameter",
+    "field",
+)
+
+#: Fields whose sensitivity a sibling name field may declare.
+_VALUE_FIELDS = ("value", "val", "new_value", "setting_value")
+
+
+def sibling_masked_fields(mapping: Any) -> frozenset:
+    """Value-carrying field names in ``mapping`` that a *sibling* name field
+    declares sensitive.
+
+    ``{"key": "default_password", "value": "hunter2"}`` → ``{"value"}``;
+    ``{"key": "default_username", "value": "root"}`` → empty.
+
+    Deliberately fail-safe: it triggers only when a mapping holds BOTH a name
+    field and a value field, and in that narrow case it would rather mask an
+    innocent value than let a credential through. ``is_sensitive_key`` matches
+    ``key`` as a substring, so a name field holding e.g. ``"monkey"`` will
+    over-mask its sibling — an acceptable trade against the invariant above.
+    """
+    if not isinstance(mapping, Mapping):
+        return frozenset()
+    declares_secret = any(
+        isinstance(mapping.get(nf), str) and is_sensitive_key(mapping[nf])
+        for nf in _NAME_FIELDS
+    )
+    if not declares_secret:
+        return frozenset()
+    return frozenset(vf for vf in _VALUE_FIELDS if vf in mapping)
+
+
 def redact_structure(obj: Any, *, _depth: int = 0, max_depth: int = 10) -> Any:
     """Return a copy of ``obj`` with every value under a sensitive key masked.
 
     Recurses into BOTH mappings and lists/tuples (the audit sanitizer's
     list-recursion hole was the concrete leak this module exists to close).
+    Also masks sibling-declared values (#217, :func:`sibling_masked_fields`).
     Non-container leaves pass through unchanged; no truncation — display
     concerns (string/list caps) stay with the chat layer.
     """
     if _depth > max_depth:
         return MASK
     if isinstance(obj, Mapping):
+        sibling = sibling_masked_fields(obj)
         return {
-            k: (MASK if is_sensitive_key(k)
+            k: (MASK if (is_sensitive_key(k) or k in sibling)
                 else redact_structure(v, _depth=_depth + 1, max_depth=max_depth))
             for k, v in obj.items()
         }

@@ -1217,14 +1217,19 @@ def _redact_for_display(obj: Any, depth: int = 0) -> Any:
     and lists, and depth-guards. Device/operation IDs pass through (they help
     the operator read the card). Never sends a raw secret to the browser.
     """
-    from admz.redact import MASK, is_sensitive_key
+    from admz.redact import MASK, is_sensitive_key, sibling_masked_fields
 
     if depth > 6:
         return "…"
     if isinstance(obj, dict):
+        # #217: this loop is a display-side twin of redact_structure and had
+        # the same sibling blindness, so the args card rendered
+        # set_fleet_setting's password in cleartext to the browser. Both now
+        # consult the one rule.
+        sibling = sibling_masked_fields(obj)
         out = {}
         for k, v in obj.items():
-            if is_sensitive_key(k):
+            if is_sensitive_key(k) or k in sibling:
                 out[k] = MASK
             else:
                 out[k] = _redact_for_display(v, depth + 1)
