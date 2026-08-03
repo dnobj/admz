@@ -92,7 +92,7 @@ async def survey_settings_page(
     request: Request,
     principal: Principal = Depends(get_current_principal),
 ):
-    return templates.TemplateResponse("survey_settings.html",
+    return templates.TemplateResponse(request, "survey_settings.html",
                                       _page_context(request, principal))
 
 
@@ -165,6 +165,7 @@ async def survey_settings_action(
         error = f"{type(exc).__name__}: {exc}"
 
     return templates.TemplateResponse(
+        request,
         "survey_settings.html",
         _page_context(request, principal, success=success, error=error,
                       preview=preview, run_report=run_report))

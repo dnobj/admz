@@ -93,8 +93,8 @@ def test_scheduler_registers_survey_handler():
 
 def test_app_includes_survey_routes():
     from admz.api.main import app
-    paths = {r.path for r in app.routes}
-    assert "/settings/survey" in paths
+    from tests.route_inventory import assert_mounted
+    assert_mounted(app, "/settings/survey")
 
 
 class _FakeScheduler:

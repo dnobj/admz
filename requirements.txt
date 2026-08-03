@@ -1,25 +1,31 @@
 hvac>=2.0.0
 cryptography>=41.0.0
 
-# UPPER BOUNDS ARE LOAD-BEARING. These two were lower-bound-only until CI
+# UPPER BOUNDS ARE LOAD-BEARING. fastapi and mcp were lower-bound-only until CI
 # first ran a clean install (2026-08-03) and immediately failed 182 tests on
 # both Linux and Windows. A clean `pip install -r requirements.txt` resolved
-# majors far ahead of what dev and production actually run, and ADMZ does not
-# work on them:
+# majors far ahead of what dev and production actually ran, and ADMZ did not
+# work on them. PR #222 pinned both; #223 is removing the pins one at a time.
 #
-#   fastapi  ran 0.129.0, clean install got 0.141.1 (starlette 0.52 -> 1.x)
-#            -> Starlette 1.x dropped the old TemplateResponse(name, context)
-#               signature. ADMZ has 70 call sites still using it, so every
-#               HTML route 500s with `TypeError: unhashable type: 'dict'`.
-#               82 test failures. Also `_IncludedRouter` lost `.path`.
-#   mcp      ran 1.26.0, clean install got 2.0.0
-#            -> `Server.list_tools` and `Tool.inputSchema` are gone.
-#               85 errors + 13 failures.
+# fastapi: RESOLVED (#223, Starlette half). ADMZ's 70 `TemplateResponse(name,
+#   context)` call sites were migrated to the Starlette 1.x
+#   `TemplateResponse(request, name, context)` signature, and the
+#   route-inventory tests were ported off the flat-`app.routes` assumption that
+#   FastAPI >= 0.130 broke (see tests/route_inventory.py).
 #
-# Pinned to the majors ADMZ is developed and deployed against, so CI tests
-# what ships. Migrating to Starlette 1.x / mcp 2.x is real work with its own
-# issue — do that deliberately, then raise these bounds in the same PR.
-fastapi>=0.104.0,<0.130
+#   The floor deliberately stays low: both the migrated call signature and the
+#   route-inventory helper work on the old AND new router layouts, so
+#   production's existing 0.129 venv stays in spec while a clean install now
+#   correctly resolves 0.141+. The `<1` cap is the lesson of #222 kept rather
+#   than discarded — bounded at the next major boundary, not unbounded again.
+#
+#   mcp is STILL PINNED — that half of #223 is a separate PR, because it
+#   collides with #217 inside the same `call_tool` function in
+#   admz/mcp/server.py and mcp 2.x removes the exception -> is_error
+#   conversion that #217's error envelopes depend on.
+#   -> `Server.list_tools` and `Tool.inputSchema` are gone in 2.0; 85 errors +
+#      13 failures. Do not raise this bound outside that PR.
+fastapi>=0.104.0,<1
 uvicorn[standard]>=0.24.0
 jinja2>=3.1.2
 python-multipart>=0.0.6

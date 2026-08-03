@@ -117,9 +117,13 @@ def client(tmp_path, monkeypatch):
 
 class TestDeviceCredentialRevealRemoved:
     def test_endpoint_not_mounted(self):
+        # assert_not_mounted refuses to pass against an empty/blind route table.
+        # Before #223 this was `{r.path for r in app.routes if hasattr(r, "path")}`,
+        # which under FastAPI >= 0.130 saw almost nothing and made this negative
+        # assertion vacuous. See tests/route_inventory.py.
         from admz.api.main import app
-        paths = {r.path for r in app.routes if hasattr(r, "path")}
-        assert "/api/devices/{device_id}/credentials" not in paths
+        from tests.route_inventory import assert_not_mounted
+        assert_not_mounted(app, "/api/devices/{device_id}/credentials")
 
     def test_endpoint_404_even_with_llm_flag(self, client):
         from admz.fleet_settings import fleet_settings

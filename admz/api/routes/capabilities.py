@@ -275,6 +275,7 @@ async def advanced_settings_page(
 ):
     may_toggle, _reason = _reveal_decision(principal)
     return templates.TemplateResponse(
+        request,
         "advanced_settings.html",
         _page_context(request, principal, may_toggle=may_toggle),
     )
@@ -307,6 +308,7 @@ async def advanced_settings_action(
         error = str(exc.detail)
 
     return templates.TemplateResponse(
+        request,
         "advanced_settings.html",
         _page_context(
             request, principal,

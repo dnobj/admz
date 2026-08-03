@@ -253,6 +253,7 @@ async def confirm_form(request: Request, token: str):
 
     if session is None:
         return templates.TemplateResponse(
+            request,
             "capture_expired.html",
             {"request": request, "title": "Link Expired"},
             status_code=410,
@@ -260,6 +261,7 @@ async def confirm_form(request: Request, token: str):
 
     if session.effective_status == ConfirmStatus.COMPLETED:
         return templates.TemplateResponse(
+            request,
             "confirm_done.html",
             {
                 "request": request,
@@ -273,6 +275,7 @@ async def confirm_form(request: Request, token: str):
     if session.effective_status in (ConfirmStatus.EXPIRED, ConfirmStatus.DENIED):
         # Denied is terminal: never re-render an armed form for it.
         return templates.TemplateResponse(
+            request,
             "capture_expired.html",
             {
                 "request": request,
@@ -294,6 +297,7 @@ async def confirm_form(request: Request, token: str):
     plan_summary = session.plan_summary if is_plan else None
 
     return templates.TemplateResponse(
+        request,
         "confirm_form.html",
         {
             "request": request,
@@ -325,6 +329,7 @@ async def confirm_submit(
 
     if result.status == "expired":
         return templates.TemplateResponse(
+            request,
             "capture_expired.html",
             {"request": request, "title": "Link Expired"},
             status_code=410,
@@ -341,6 +346,7 @@ async def confirm_submit(
             else "Incorrect confirmation password."
         )
         return templates.TemplateResponse(
+            request,
             "confirm_form.html",
             {
                 "request": request,
@@ -356,6 +362,7 @@ async def confirm_submit(
         )
 
     return templates.TemplateResponse(
+        request,
         "confirm_done.html",
         {
             "request": request,

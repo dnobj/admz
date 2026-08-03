@@ -485,6 +485,7 @@ async def demos_page(request: Request, ctx: AppContext = Depends(get_context)):
     except Exception:  # noqa: BLE001
         devices, tags = [], []
     return templates.TemplateResponse(
+        request,
         "demos.html",
         {"request": request, "title": "Demos", "demos": demos, "tags": tags,
          "all_devices": devices},
@@ -525,6 +526,7 @@ async def demo_detail_page(demo_id: str, request: Request,
     }
 
     return templates.TemplateResponse(
+        request,
         "demo_detail.html",
         {"request": request, "title": view["name"] or "Demo", "demo": view,
          "holders": holders, "all_devices": devices, "tags": tags,

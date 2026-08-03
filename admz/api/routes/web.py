@@ -88,6 +88,7 @@ async def activity_page(request: Request, ctx: AppContext = Depends(get_context)
     except Exception:  # noqa: BLE001 — the feed must render without a registry
         sources = []
     return templates.TemplateResponse(
+        request,
         "activity.html",
         {"request": request, "title": "Activity",
          "status": ctx.event_supervisor.status(),
@@ -171,6 +172,7 @@ async def devices_page(
         filter_drift = request.query_params.get("filter") == "drifted"
 
         return templates.TemplateResponse(
+            request,
             "index.html",
             {
                 "request": request,
@@ -184,6 +186,7 @@ async def devices_page(
 
     except Exception as e:
         return templates.TemplateResponse(
+            request,
             "error.html",
             {
                 "request": request,
@@ -236,6 +239,7 @@ async def device_detail(
         drift = drift_status_for(device, sig)
 
         return templates.TemplateResponse(
+            request,
             "device_detail.html",
             {
                 "request": request,
@@ -250,6 +254,7 @@ async def device_detail(
 
     except DeviceNotFoundError:
         return templates.TemplateResponse(
+            request,
             "error.html",
             {
                 "request": request,
@@ -261,6 +266,7 @@ async def device_detail(
         )
     except Exception as e:
         return templates.TemplateResponse(
+            request,
             "error.html",
             {
                 "request": request,
@@ -300,6 +306,7 @@ async def account_detail(
             )
 
         return templates.TemplateResponse(
+            request,
             "account_detail.html",
             {
                 "request": request,
@@ -311,6 +318,7 @@ async def account_detail(
 
     except DeviceNotFoundError:
         return templates.TemplateResponse(
+            request,
             "error.html",
             {
                 "request": request,
@@ -322,6 +330,7 @@ async def account_detail(
         )
     except AccountNotFoundError as e:
         return templates.TemplateResponse(
+            request,
             "error.html",
             {
                 "request": request,
@@ -333,6 +342,7 @@ async def account_detail(
         )
     except Exception as e:
         return templates.TemplateResponse(
+            request,
             "error.html",
             {
                 "request": request,
@@ -380,6 +390,7 @@ async def rotate_account_password(
     # the capture session would dead-end on completion).
     if not registry.account_exists(device_id, account_id):
         return templates.TemplateResponse(
+            request,
             "error.html",
             {
                 "request": request,
@@ -421,6 +432,7 @@ async def add_device_form(
     Add device form page.
     """
     return templates.TemplateResponse(
+        request,
         "add_device.html",
         {
             "request": request,
@@ -453,6 +465,7 @@ async def edit_device_form(
             current_site_id = None
 
         return templates.TemplateResponse(
+            request,
             "edit_device.html",
             {
                 "request": request,
@@ -465,6 +478,7 @@ async def edit_device_form(
 
     except DeviceNotFoundError:
         return templates.TemplateResponse(
+            request,
             "error.html",
             {
                 "request": request,
@@ -476,6 +490,7 @@ async def edit_device_form(
         )
     except Exception as e:
         return templates.TemplateResponse(
+            request,
             "error.html",
             {
                 "request": request,
@@ -500,6 +515,7 @@ async def add_account_form(
         device = registry.get_device_info(device_id)
 
         return templates.TemplateResponse(
+            request,
             "add_account.html",
             {
                 "request": request,
@@ -510,6 +526,7 @@ async def add_account_form(
 
     except DeviceNotFoundError:
         return templates.TemplateResponse(
+            request,
             "error.html",
             {
                 "request": request,
@@ -521,6 +538,7 @@ async def add_account_form(
         )
     except Exception as e:
         return templates.TemplateResponse(
+            request,
             "error.html",
             {
                 "request": request,
@@ -573,6 +591,7 @@ async def search_devices(
         devices.sort(key=lambda d: d.get("device_id", ""))
 
         return templates.TemplateResponse(
+            request,
             "search.html",
             {
                 "request": request,
@@ -584,6 +603,7 @@ async def search_devices(
 
     except Exception as e:
         return templates.TemplateResponse(
+            request,
             "error.html",
             {
                 "request": request,
@@ -618,6 +638,7 @@ async def settings_overview(request: Request):
     except Exception:  # noqa: BLE001 - the card just shows "not connected"
         github_status = {"connected": False}
     return templates.TemplateResponse(
+        request,
         "settings.html",
         {
             "request": request,
@@ -722,6 +743,7 @@ async def audit_log_page(request: Request):
         days[-1][1].append(r)
 
     return templates.TemplateResponse(
+        request,
         "audit_log.html",
         {"request": request, "title": "Audit log", "days": days, "counts": counts,
          "total": len(rows)},
@@ -733,6 +755,7 @@ async def tasks_page(request: Request):
     """Tasks — unified scheduled (recurring) + triggered (detection) work.
     The page fetches /api/tasks client-side."""
     return templates.TemplateResponse(
+        request,
         "tasks.html", {"request": request, "title": "Tasks"},
     )
 
@@ -801,6 +824,7 @@ async def fleet_settings_page(request: Request):
             display[k] = v
 
     return templates.TemplateResponse(
+        request,
         "fleet_settings.html",
         {
             "request": request,
@@ -838,6 +862,7 @@ def _build_confirm_settings_context(request: Request, **extra):
 async def confirm_settings_page(request: Request):
     """Confirmation settings page — configure confirmation levels and password."""
     return templates.TemplateResponse(
+        request,
         "confirm_settings.html",
         _build_confirm_settings_context(request),
     )
@@ -886,6 +911,7 @@ async def confirm_settings_save(
             details={"applied": applied},
         )
         return templates.TemplateResponse(
+            request,
             "confirm_settings.html",
             _build_confirm_settings_context(
                 request, success="Confirmation levels saved."
@@ -902,6 +928,7 @@ async def confirm_settings_save(
                 details={"op": "remove"},
             )
             return templates.TemplateResponse(
+                request,
                 "confirm_settings.html",
                 _build_confirm_settings_context(
                     request, success="Confirmation password removed."
@@ -915,6 +942,7 @@ async def confirm_settings_save(
                 success=False, error_message="passwords-do-not-match",
             )
             return templates.TemplateResponse(
+                request,
                 "confirm_settings.html",
                 _build_confirm_settings_context(
                     request, error="Passwords do not match."
@@ -929,6 +957,7 @@ async def confirm_settings_save(
             details={"op": "set"},
         )
         return templates.TemplateResponse(
+            request,
             "confirm_settings.html",
             _build_confirm_settings_context(
                 request, success="Confirmation password updated."
@@ -948,6 +977,7 @@ async def confirm_settings_save(
             details={"llm_enabled": llm_enabled},
         )
         return templates.TemplateResponse(
+            request,
             "confirm_settings.html",
             _build_confirm_settings_context(
                 request, success="Plaintext credential access settings saved."
@@ -960,6 +990,7 @@ async def confirm_settings_save(
         success=False, error_message=f"unknown-action:{action}",
     )
     return templates.TemplateResponse(
+        request,
         "confirm_settings.html",
         _build_confirm_settings_context(request, error="Unknown action."),
     )
