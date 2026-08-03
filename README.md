@@ -35,16 +35,27 @@ conversationally.
 
 ADMZ depends on the [axis-api-atlas](https://github.com/mrdnlabs/axis-api-atlas)
 package (the executable operation catalog + knowledge + capability matrix —
-ADR-0029). It is listed in `requirements.txt`, but is not yet on PyPI, so for
-local development install the sibling clone editable alongside ADMZ:
+ADR-0029). It is **private and not on PyPI**, so `requirements.txt` declares it
+as a direct git reference rather than a bare package name — a bare name would
+resolve against PyPI, where the name is unregistered and anyone could claim it
+(issue #179). Install the sibling clone editable **first**; it satisfies the
+requirement locally and needs no credential:
 
 ```bash
 git clone <admz-repo-url> admz
 git clone https://github.com/mrdnlabs/axis-api-atlas.git
 cd admz
-pip install -e ../axis-api-atlas   # the catalog dependency (required)
+pip install -e ../axis-api-atlas   # the catalog dependency (required, FIRST)
 pip install -e .                   # ADMZ itself
 ```
+
+Order matters. `pip install -r requirements.txt` on a machine that does **not**
+already have the atlas installed will try to clone
+`git@github.com:mrdnlabs/axis-api-atlas.git` over SSH and fail with
+`Permission denied (publickey)` unless you have access to that private
+repository. That failure is deliberate — it is what stops a clean install from
+silently fetching an impostor package from PyPI. CI resolves it with a
+read-only deploy key; see [`.github/workflows/README.md`](.github/workflows/README.md).
 
 The core install already includes the network-discovery stack (zeroconf,
 WSDiscovery, scapy, pysnmp), the Vault client (hvac), the chatbot LLM client

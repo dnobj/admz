@@ -1,0 +1,91 @@
+name: Set up ADMZ
+description: >
+  Install Python and the ADMZ dependency set, sourcing the private
+  axis-api-atlas package from git with a read-only deploy key. Fails loudly and
+  immediately when the key is absent — it must never fall back to a package
+  index (issue #179).
+
+inputs:
+  python-version:
+    description: Python version to install.
+    required: false
+    default: "3.12"
+  deploy-key:
+    description: >
+      Private half of the read-only deploy key registered on
+      mrdnlabs/axis-api-atlas. Pass secrets.AXIS_API_ATLAS_DEPLOY_KEY.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python ${{ inputs.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: pip
+        # Both files: requirements-dev.txt only carries `-r requirements.txt`,
+        # so keying on it alone would serve a stale cache whenever the real
+        # dependency list changes.
+        cache-dependency-path: |
+          requirements.txt
+          requirements-dev.txt
+
+    - name: Require the axis-api-atlas deploy key
+      shell: bash
+      env:
+        DEPLOY_KEY: ${{ inputs.deploy-key }}
+      run: |
+        if [ -z "${DEPLOY_KEY}" ]; then
+          echo "::error title=Missing secret AXIS_API_ATLAS_DEPLOY_KEY::ADMZ depends on the private repo mrdnlabs/axis-api-atlas. Without a read-only deploy key CI cannot install it, and it must NOT be resolved from PyPI (issue #179). See .github/workflows/README.md for the setup procedure."
+          {
+            echo "## CI cannot run: \`AXIS_API_ATLAS_DEPLOY_KEY\` is not set"
+            echo
+            echo "ADMZ depends on **\`axis-api-atlas\`**, a private package in"
+            echo "\`mrdnlabs/axis-api-atlas\`. It is installed from git, never from a"
+            echo "package index — the name is unregistered on PyPI and resolving it"
+            echo "there is the dependency-confusion hazard of issue #179."
+            echo
+            echo "This job fails closed on purpose. **Do not \"fix\" it by relaxing"
+            echo "\`requirements.txt\` back to a bare \`axis-api-atlas>=0.1.0\`.**"
+            echo
+            echo "The repository owner must add the secret. Procedure:"
+            echo "\`.github/workflows/README.md\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+        echo "Deploy key secret is present."
+
+    - name: Configure SSH access to axis-api-atlas
+      shell: bash
+      env:
+        DEPLOY_KEY: ${{ inputs.deploy-key }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$HOME/.ssh"
+        printf '%s\n' "${DEPLOY_KEY}" > "$HOME/.ssh/axis_api_atlas"
+        chmod 600 "$HOME/.ssh/axis_api_atlas"
+        # Pin github.com's host keys rather than accepting on first use.
+        ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null
+        chmod 600 "$HOME/.ssh/known_hosts"
+        echo "GIT_SSH_COMMAND=ssh -i $HOME/.ssh/axis_api_atlas -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" >> "$GITHUB_ENV"
+
+    - name: Verify the deploy key can reach axis-api-atlas
+      shell: bash
+      run: |
+        if ! git ls-remote ssh://git@github.com/mrdnlabs/axis-api-atlas.git HEAD >/dev/null 2>&1; then
+          echo "::error title=Deploy key rejected::AXIS_API_ATLAS_DEPLOY_KEY is set but cannot read mrdnlabs/axis-api-atlas. Check that the PUBLIC half is registered as a deploy key on that repo and that the secret holds the PRIVATE half verbatim (including the BEGIN/END lines and trailing newline)."
+          exit 1
+        fi
+        echo "Deploy key authenticates to mrdnlabs/axis-api-atlas."
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        python -m pip install --upgrade pip
+        python -m pip install -r requirements-dev.txt
+
+    - name: Assert axis-api-atlas provenance (guards #179)
+      shell: bash
+      run: python .github/scripts/assert_atlas_provenance.py
