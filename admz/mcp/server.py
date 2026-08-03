@@ -3639,8 +3639,15 @@ class ADMZMCPServer:
         # user-stories/device-onboarding.md:84 both require the password to
         # arrive through the out-of-band capture URL and "never typed into the
         # LLM chat". The code accepted a supplied value anyway; it no longer
-        # does. A refusal here also means no password can reach the audit row
-        # that #217 records in cleartext.
+        # does.
+        #
+        # This refusal does NOT keep the password out of the audit row — an
+        # earlier version of this comment claimed it did, and that was wrong
+        # (#217). ``args_sanitized`` is computed from the raw arguments before
+        # dispatch, and all three audit sites record it whatever the handler
+        # decides, so a refused call still carried the plaintext. What masks it
+        # is the sibling rule in ``admz.redact.sibling_masked_fields``; this
+        # gate only stops the value being *stored*.
         if is_capture_only(key):
             if value is not None:
                 return {

@@ -6,9 +6,18 @@ sanitizer didn't recurse into lists, so a password inside a list of
 dicts reached the audit log in plaintext.
 """
 
+import json
+
 import pytest
 
-from admz.redact import MASK, is_sensitive_key, redact_structure
+from admz.redact import (
+    MASK,
+    is_sensitive_key,
+    redact_structure,
+    sibling_masked_fields,
+)
+
+SECRET = "hunter2_SECRET_do_not_log"
 
 
 class TestIsSensitiveKey:
@@ -71,6 +80,58 @@ class TestRedactStructure:
         assert out["a"]["b"]["c"] == {"d": MASK}
 
 
+class TestSiblingMaskedFields:
+    """#217: sensitivity declared by a sibling, not by the field's own name."""
+
+    def test_sensitive_sibling_selects_value(self):
+        assert sibling_masked_fields(
+            {"key": "default_password", "value": SECRET}
+        ) == frozenset({"value"})
+
+    def test_innocent_sibling_selects_nothing(self):
+        assert sibling_masked_fields(
+            {"key": "default_username", "value": "root"}
+        ) == frozenset()
+
+    def test_name_field_also_qualifies(self):
+        """SOAP-style Name/Value, the shape redact_soap_body already handles."""
+        assert sibling_masked_fields(
+            {"name": "Password", "value": SECRET}
+        ) == frozenset({"value"})
+
+    def test_no_value_field_means_nothing_to_mask(self):
+        assert sibling_masked_fields({"key": "default_password"}) == frozenset()
+
+    def test_non_mapping_and_non_string_name_are_safe(self):
+        assert sibling_masked_fields(None) == frozenset()
+        assert sibling_masked_fields(["key", "value"]) == frozenset()
+        assert sibling_masked_fields({"key": 42, "value": "x"}) == frozenset()
+
+
+class TestRedactStructureSiblings:
+    def test_the_issue_217_reproduction_now_masks(self):
+        """The exact call from #217, which previously passed through intact."""
+        out = redact_structure({"key": "default_password", "value": SECRET})
+        assert out == {"key": "default_password", "value": MASK}
+
+    def test_key_name_still_visible(self):
+        """The `key` exemption is deliberate and preserved: an auditor must
+        still be able to answer "which setting was written?"."""
+        out = redact_structure({"key": "default_password", "value": SECRET})
+        assert out["key"] == "default_password"
+
+    def test_innocent_setting_value_survives(self):
+        out = redact_structure({"key": "default_username", "value": "root"})
+        assert out == {"key": "default_username", "value": "root"}
+
+    def test_applies_inside_lists_and_nesting(self):
+        out = redact_structure(
+            {"writes": [{"key": "survey_github_pat", "value": SECRET}]}
+        )
+        assert out["writes"][0]["value"] == MASK
+        assert out["writes"][0]["key"] == "survey_github_pat"
+
+
 class TestCrossSurfaceDelegation:
     """The three surfaces must apply the same rules."""
 
@@ -106,3 +167,155 @@ class TestCrossSurfaceDelegation:
         assert out["password"] == MASK
         assert out["accounts"][0]["password"] == MASK
         assert out["accounts"][0]["username"] == "u"
+
+    def test_chat_display_masks_sibling_declared_value(self):
+        """#217: the args card is a display-side twin of redact_structure and
+        had the same blindness — it rendered the password to the browser."""
+        from admz.chatbot import client
+        out = client._redact_for_display(
+            {"key": "default_password", "value": SECRET}
+        )
+        assert out["value"] == MASK
+        assert out["key"] == "default_password"
+
+
+# ---------------------------------------------------------------------------
+# #217 end-to-end: the real audit path, not just the redactor
+#
+# call_tool has THREE audit sites, all recording the same pre-dispatch
+# `args_sanitized` (server.py ~1674 invalid-input, ~1717 anonymous-destructive,
+# ~1794 finally). A test against redact_structure alone would stay green if a
+# wiring change reopened any of them, so each is driven for real here.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def audited_server(tmp_path, monkeypatch):
+    """A real ADMZMCPServer with every DB path inside tmp_path, plus a capture
+    list of the audit rows it writes.
+
+    ADMZ_HOME is pinned too: several stores bind their path at import, and a
+    writer that escapes tmp_path would write the operator's real database.
+    """
+    monkeypatch.setenv("ADMZ_HOME", str(tmp_path))
+    monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
+    monkeypatch.setenv("ADMZ_KEY_PATH", str(tmp_path / "admz.key"))
+    monkeypatch.setenv("ADMZ_CONFIG_REPO_PATH", str(tmp_path / "config-repo"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
+    monkeypatch.setenv("ADMZ_PRINCIPAL_NAME", "HOMELAB\\alice")
+    monkeypatch.setenv("ADMZ_PRINCIPAL_SOURCE", "windows-local")
+    monkeypatch.setenv("ADMZ_PRINCIPAL_GROUPS", "Administrators")
+
+    from admz.audit import audit_log
+    from admz.mcp.server import ADMZMCPServer
+
+    rows = []
+    monkeypatch.setattr(
+        audit_log, "record", lambda **kw: rows.append(kw), raising=True
+    )
+    return ADMZMCPServer(), rows
+
+
+async def _drive_call_tool(server, name: str, arguments: dict):
+    """Invoke the registered CallToolRequest handler — the real dispatcher,
+    including its audit sites."""
+    from mcp.types import CallToolRequest, CallToolRequestParams
+
+    handler = None
+    for req_type, h in server.server.request_handlers.items():
+        if req_type.__name__ == "CallToolRequest":
+            handler = h
+            break
+    assert handler is not None
+    req = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name=name, arguments=arguments),
+    )
+    result = await handler(req)
+    return json.loads(result.root.content[0].text)
+
+
+def _assert_clean(rows, *, expect_key="default_password"):
+    assert len(rows) == 1, f"expected exactly one audit row, got {len(rows)}"
+    row = rows[0]
+    blob = json.dumps(row, default=str)
+    assert SECRET not in blob, f"plaintext secret reached the audit row: {blob}"
+    args = row["details"]["args"]
+    assert args["value"] == MASK
+    # The setting name must survive — that is what makes the row useful.
+    assert args["key"] == expect_key
+    return row
+
+
+class TestAuditPathNeverRecordsTheValue:
+    @pytest.mark.asyncio
+    async def test_finally_site(self, audited_server):
+        """The main path: capture-only refusal (#219) still audits the args."""
+        server, rows = audited_server
+        out = await _drive_call_tool(
+            server, "set_fleet_setting",
+            {"key": "default_password", "value": SECRET},
+        )
+        # #219's gate refuses the write...
+        assert out["success"] is False
+        # ...and #217's rule keeps the refused value out of the durable row.
+        row = _assert_clean(rows)
+        assert row["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_invalid_input_early_return_site(self, audited_server):
+        """server.py ~1674 — returns before dispatch, audits independently."""
+        server, rows = audited_server
+        out = await _drive_call_tool(
+            server, "set_fleet_setting",
+            {
+                "device_id": "../etc/passwd",
+                "key": "default_password",
+                "value": SECRET,
+            },
+        )
+        assert out["error"] == "InvalidInput"
+        _assert_clean(rows)
+
+    @pytest.mark.asyncio
+    async def test_anonymous_destructive_early_return_site(
+        self, audited_server, monkeypatch
+    ):
+        """server.py ~1717 — the other pre-dispatch return.
+
+        ``_DESTRUCTIVE_MCP_TOOLS`` is ``frozenset()`` today: ADR-0034 replaced
+        the flat anonymous refusal with widget approval, and the mechanism is
+        retained empty "in case a future tool is truly unsuitable for widget
+        approval" (server.py:216-226). So this site is currently unreachable —
+        which is precisely why it is worth pinning. Re-populating that set
+        would silently re-open a third audit site, and this test fails if the
+        value is not masked when that happens.
+        """
+        from admz.mcp import server as mcp_server
+
+        server, rows = audited_server
+        monkeypatch.setattr(
+            mcp_server, "_DESTRUCTIVE_MCP_TOOLS", frozenset({"set_fleet_setting"})
+        )
+        server.principal.is_anonymous = True
+        out = await _drive_call_tool(
+            server, "set_fleet_setting",
+            {"key": "default_password", "value": SECRET},
+        )
+        assert out["error"] == "PermissionDenied"
+        _assert_clean(rows)
+
+    @pytest.mark.asyncio
+    async def test_innocent_setting_still_readable_in_audit(self, audited_server):
+        """The fix must not blind the audit log to ordinary settings."""
+        server, rows = audited_server
+        await _drive_call_tool(
+            server, "set_fleet_setting",
+            {"key": "default_username", "value": "root"},
+        )
+        assert len(rows) == 1
+        assert rows[0]["details"]["args"] == {
+            "key": "default_username", "value": "root",
+        }
