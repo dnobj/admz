@@ -37,6 +37,11 @@ non-persisting preview** — never a standing firehose.
   tag). Resolved by a new `WatchGate` (`events/subscriptions.py`), version-cached
   off the watched-event + detection stores. No watch ⇒ no stream. Enabling
   capture with zero watched events opens **zero** streams and stores nothing.
+  The cache invariant: a store read that fails is **swallowed** (the gate is the
+  stream's unguarded `event_filter`, so raising would break the WS read loop) but
+  the version cursor is **not** advanced, and a partial read publishes nothing —
+  so the next call retries. Advancing past a failed read would be permanent, not
+  transient, because the cursor check then short-circuits forever (GH #209).
 - **Persistence gate** = a live event is stored only if it **matches** a
   watched-event / detection spec (`WatchGate.matches`, sharing one matcher —
   `events/matching.py::record_matches` — with the detection evaluator so they can

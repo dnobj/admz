@@ -41,6 +41,7 @@ class WatchGate:
         self._w_version: Any = object()          # force first refresh
         self._d_version: Any = object()
         self._tags_cache: Dict[str, list] = {}
+        self._refresh_failing = False            # log-once-per-failure-streak latch
 
     # ----- spec cache -----
     def version(self) -> tuple:
@@ -52,19 +53,39 @@ class WatchGate:
         dv = getattr(self.detection_store, "version", 0)
         if wv == self._w_version and dv == self._d_version:
             return
+        # BOTH reads must succeed before the cursor moves (GH #209). Advancing it
+        # after a swallowed failure is permanent, not transient: the early return
+        # above then sees cursor == store version and never retries, so the gate
+        # keeps a partial spec list for the life of the process — silently
+        # dropping every event those specs would have captured. Build into a
+        # local and publish atomically, so a partial read publishes nothing and
+        # moves neither cursor (a half-advanced pair is worse than a fully stale
+        # one: the next refresh would skip the half that just succeeded).
         specs: List[Dict[str, Any]] = []
         try:
             for w in self.watched_store.list():
                 specs.append({"source": w.source, "device_id": w.device_id,
                               "tag": w.tag, "match": w.match})
-        except Exception:  # noqa: BLE001 — a store hiccup must not wedge ingest
-            logger.debug("WatchGate: watched_store.list() failed", exc_info=True)
-        try:
             for d in self.detection_store.list(enabled_only=True):
                 specs.append({"source": d.source, "device_id": d.device_id,
                               "tag": d.tag, "match": d.match})
-        except Exception:  # noqa: BLE001
-            logger.debug("WatchGate: detection_store.list() failed", exc_info=True)
+        except Exception:  # noqa: BLE001 — a store hiccup must not wedge ingest
+            # The swallow is load-bearing: matches() is the stream's event_filter
+            # and wsstream._handle calls it UNGUARDED, so a raise here would break
+            # the read loop. Keep the previous specs, leave the cursor alone, and
+            # let the next call retry. Warn once per failure streak — _refresh runs
+            # per event on the matches() path, so an unconditional warning would
+            # turn a store outage into a log flood.
+            if not self._refresh_failing:
+                self._refresh_failing = True
+                logger.warning("WatchGate refresh failed; keeping previous specs and "
+                               "retrying on the next call", exc_info=True)
+            else:
+                logger.debug("WatchGate refresh still failing", exc_info=True)
+            return
+        if self._refresh_failing:
+            self._refresh_failing = False
+            logger.warning("WatchGate refresh recovered (%d spec(s)).", len(specs))
         self._specs = specs
         self._w_version, self._d_version = wv, dv
         self._tags_cache.clear()

@@ -10,6 +10,7 @@ Covers the four pillars of the redesign:
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import time
 from types import SimpleNamespace
 
@@ -79,20 +80,36 @@ def _wev(**kw):
 
 
 class _WStore:
-    def __init__(self, items):
+    """``fail_times`` makes the first N ``list()`` calls raise the way a real
+    ``WatchedEventStore.list`` does — it wraps in try/*finally* with no except, so
+    a locked/erroring sqlite propagates straight to the caller."""
+
+    def __init__(self, items, fail_times=0):
         self._items = items
         self.version = 1
+        self.fail_times = fail_times
+        self.calls = 0
 
     def list(self):
+        self.calls += 1
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise sqlite3.OperationalError("database is locked")
         return self._items
 
 
 class _DStore:
-    def __init__(self, items):
+    def __init__(self, items, fail_times=0):
         self._items = items
         self.version = 1
+        self.fail_times = fail_times
+        self.calls = 0
 
     def list(self, enabled_only=True):
+        self.calls += 1
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise sqlite3.OperationalError("database is locked")
         return self._items
 
 
@@ -152,6 +169,71 @@ class TestWatchGate:
         ws._items.append(_wev(device_id="z"))
         ws.version = 2                                   # bump → gate must re-read
         assert gate.device_ids() == ["a", "z"]
+
+
+class TestWatchGateRefreshFailure:
+    """GH #209 — a swallowed store-read failure must not advance the version cursor.
+
+    ``_refresh`` early-returns when its cursor equals the store version, so a
+    cursor advanced past a *failed* read is permanent for the life of the process:
+    the gate never re-reads, ``device_ids()`` opens no stream and ``matches()``
+    drops every event, while the watched event still shows in the UI and
+    ``/api/events/status`` reports ``streams: 0`` — indistinguishable from a quiet
+    camera. Recovery would need an unrelated config mutation or a service restart.
+    """
+
+    def test_failed_read_is_retried_on_the_next_call(self):
+        from admz.events.subscriptions import WatchGate
+        ws = _WStore([_wev(device_id="a")], fail_times=1)
+        gate = WatchGate(registry=_Reg([{"device_id": "a"}]),
+                         watched_store=ws, detection_store=_DStore([]))
+
+        # First call: the store raises. It is swallowed by design (see below) —
+        # so no exception escapes, and the gate simply has nothing yet.
+        assert gate.device_ids() == []
+        assert ws.calls == 1
+
+        # ...but the cursor must NOT have advanced, so this call re-reads and
+        # recovers. Against the pre-fix code this returns [] forever.
+        assert gate.device_ids() == ["a"]
+        assert ws.calls == 2                     # proves the store was retried
+
+    def test_partial_failure_advances_neither_cursor(self):
+        from admz.events.subscriptions import WatchGate
+        ws = _WStore([_wev(device_id="a")])                   # succeeds
+        ds = _DStore([_wev(device_id="b")], fail_times=1)     # raises first time
+        gate = WatchGate(registry=_Reg([{"device_id": "a"}, {"device_id": "b"}]),
+                         watched_store=ws, detection_store=ds)
+
+        # The watched half read cleanly, the detection half did not. Publish
+        # NOTHING and move NEITHER cursor: a half-advanced pair is worse than a
+        # fully stale one, because the next refresh would then skip the half that
+        # just succeeded and the watched specs would be lost permanently instead.
+        assert gate.device_ids() == []
+        assert gate._w_version != ws.version     # watched cursor did not move
+        assert gate._d_version != ds.version     # detection cursor did not move
+
+        # Next call re-reads BOTH halves — the successful one was not skipped.
+        assert gate.device_ids() == ["a", "b"]
+        assert ws.calls == 2 and ds.calls == 2
+        assert gate._w_version == ws.version and gate._d_version == ds.version
+
+    def test_matches_still_swallows_rather_than_raising(self):
+        """The swallow itself is load-bearing and must survive the fix.
+
+        ``matches`` is the stream's ``event_filter``, and ``wsstream._handle``
+        calls it UNGUARDED (``if self.event_filter is not None and not
+        self.event_filter(rec)``), so a raise out of ``_refresh`` would break the
+        WS read loop. The bug was never the swallow — only the cursor advance.
+        """
+        from admz.events.subscriptions import WatchGate
+        ws = _WStore([_wev(device_id="a", match={"category": "io"})], fail_times=1)
+        gate = WatchGate(registry=_Reg([{"device_id": "a"}]),
+                         watched_store=ws, detection_store=_DStore([]))
+
+        rec = _rec(device_id="a", category="io")
+        assert gate.matches(rec) is False        # swallowed, not raised
+        assert gate.matches(rec) is True         # retried and recovered
 
 
 # ---------------------------------------------------------------------------
