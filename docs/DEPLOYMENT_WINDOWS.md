@@ -350,7 +350,16 @@ overrides (`ADMZ_DB_PATH`, `ADMZ_KEY_PATH`, `ADMZ_CONFIG_REPO_PATH`,
 
 **Security:** on a shared server, ACL `ADMZ_HOME` to SYSTEM + Administrators
 only — it holds the Fernet key and API keys, and `C:\ProgramData` grants all
-Users read by default. `setup-admz-service.ps1` does this.
+Users read by default. `setup-admz-service.ps1` does this, and **the
+application code deliberately does not** (#250, ADR-0042): it cannot know the
+operator account to grant, and a non-elevated administrator's UAC-filtered
+token does not carry `BUILTIN\Administrators`, so a code-authored ACL would
+lock the operator out of their own data directory. Running ADMZ on Windows
+without that script leaves `ADMZ_HOME` readable by all local users.
+
+The `admz.key` file *is* hardened by the code, on creation, regardless of who
+creates it (#207, ADR-0010) — so the highest-value secret is protected even on
+a host where the setup script was never run.
 
 **Service deployment (Shawl):** `setup-admz-service.ps1` migrates an existing
 `~/.admz` to `C:\ProgramData\admz`, fixes git ownership for SYSTEM
