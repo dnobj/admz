@@ -61,11 +61,17 @@ async def _approve(session_token, registry):
     from admz import operations
     import admz.api.confirm_store as cs_module
     store = cs_module.confirm_store
-    assert store.get_session(session_token) is not None
+    # Fetch BEFORE completing and execute from that object — which is what the
+    # route actually does (routes/confirm.py: get_session :203 ->
+    # complete_session :274 -> execute_approved_session(session) :284). This
+    # helper used to re-fetch *after* completing, which the route never does;
+    # #266 strips the payload on completion, so the re-fetch handed the executor
+    # an empty action and it fell through to the operation branch.
+    session = store.get_session(session_token)
+    assert session is not None
     store.complete_session(session_token, confirmed_by="test-approver")
     return await operations.execute_approved_session(
-        store.get_session(session_token),
-        catalog=None, registry=registry, executors={})
+        session, catalog=None, registry=registry, executors={})
 
 
 class _FakeResult:

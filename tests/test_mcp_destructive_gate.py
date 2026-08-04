@@ -121,7 +121,12 @@ async def _approve(session_token):
     # Action sessions only need the registry.
     from admz.factory import create_device_registry
     return await operations.execute_approved_session(
-        store.get_session(session_token),
+        # Execute the session fetched ABOVE, before completion — which is the
+        # ordering the route actually uses (routes/confirm.py: get_session :203
+        # -> complete_session :274 -> execute_approved_session(session) :284).
+        # This re-fetched instead, and #266 strips the payload on completion, so
+        # the second read handed the executor an empty action.
+        session,
         catalog=None,
         registry=create_device_registry(),
         executors={},
