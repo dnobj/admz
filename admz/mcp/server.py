@@ -3627,17 +3627,19 @@ class ADMZMCPServer:
             "device_type": arguments.get("device_type", "unknown"),
             "tags": arguments.get("tags", []),
         }
-        self.registry.add_device(device_id, device_info)
-        onboarding = await self._onboard_device(device_id)
-        return {
-            "success": True,
-            "message": (
-                f"Device '{device_id}' registered. "
-                + str(onboarding.get("message", ""))
-            ).strip(),
-            "device_id": device_id,
-            "onboarding": onboarding,
-        }
+        # #199: this is the second discovery-driven path into provisioning —
+        # `discover_network_devices` then this, two tool calls, and a
+        # factory-defaulted unit gets a root account. Same gate as the REST
+        # survey (discovery/gated.py), so neither route is the loose one.
+        # `_register_device` stays ungated: there the caller named the device.
+        from admz.discovery.gated import (ACTION_REGISTER_DISCOVERED,
+                                          gate_scan_write)
+        return gate_scan_write(
+            ACTION_REGISTER_DISCOVERED, device_id,
+            {"device_id": device_id, "device_info": device_info},
+            f"Register discovered device '{device_id}' at "
+            f"{arguments['ip_address']} and onboard it — if it is "
+            f"factory-defaulted this creates an admin account on it.")
 
     async def _reconcile_device_addresses(
         self, arguments: Dict[str, Any]

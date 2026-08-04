@@ -41,7 +41,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from admz.demos.inference import graph as graph_mod
 from admz.demos.inference.runs import (MODE_FAST, MODE_SURVEY, SURVEY_PHASES,
-                                       InferenceRun, InferenceRunStore)
+                                       SURVEY_STALE_SECONDS, InferenceRun,
+                                       InferenceRunStore)
 
 logger = logging.getLogger(__name__)
 
@@ -637,6 +638,61 @@ def summary_only(graph: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+#: Strong refs to in-flight survey tasks. The event loop keeps only a weak one,
+#: so a minutes-long task can otherwise be garbage-collected mid-run. Lives here
+#: rather than in the route because the confirm-widget executor starts surveys
+#: too (#199) and both starters must hold the same refs.
+_BACKGROUND_RUNS: set = set()
+
+
+def survey_in_flight(store: InferenceRunStore):
+    """The in-flight survey run, or None.
+
+    Read by the route *before* it raises an approval widget and again by
+    ``start_survey_core`` at the moment of starting. Both need the same answer,
+    and asking early stops an operator approving a survey that is only going to
+    409 — minutes can pass between the widget and the click, so the late check
+    is the authoritative one and this is the courtesy.
+    """
+    rows = store.running(mode=MODE_SURVEY, max_age=SURVEY_STALE_SECONDS)
+    return rows[0] if rows else None
+
+
+class SurveyAlreadyRunningError(RuntimeError):
+    """A deep survey is already in flight (one at a time — it rewrites the
+    registry and every snapshot)."""
+
+
+def start_survey_core(ctx: Any, store: InferenceRunStore, *,
+                      register_new: bool = True, timeout: float = 5.0,
+                      subnet: Optional[str] = None, proposal_store: Any = None,
+                      include_weak: bool = True, principal: Any = None):
+    """Start a deep survey in the background and return its run row.
+
+    The one implementation shared by ``POST /api/demos/inference/runs`` and the
+    ADR-0034 approval executor that runs an operator-approved survey (#199) —
+    so an approved survey is byte-for-byte the same operation as an unapproved
+    one, rather than a second code path that can drift from it.
+
+    Raises :class:`SurveyAlreadyRunningError` when one is already in flight; the
+    route maps that to 409.
+    """
+    already = survey_in_flight(store)
+    if already is not None:
+        raise SurveyAlreadyRunningError(
+            f"a deep survey is already running (run {already.id})")
+    run = store.start(mode=MODE_SURVEY, created_by=str(principal),
+                      message="Starting deep survey…")
+    task = asyncio.create_task(run_survey(
+        ctx, store, run.id, register_new=register_new, timeout=timeout,
+        subnet=subnet, proposal_store=proposal_store,
+        include_weak=include_weak, principal=principal))
+    _BACKGROUND_RUNS.add(task)
+    task.add_done_callback(_BACKGROUND_RUNS.discard)
+    return run
+
+
 __all__ = ["collect_graph", "read_acs_rules", "run_fast", "run_survey",
            "describe", "summary_only", "CollectionError", "MODE_FAST",
-           "MODE_SURVEY", "collect_firings", "persist_proposals", "infer_demos"]
+           "MODE_SURVEY", "collect_firings", "persist_proposals", "infer_demos",
+           "start_survey_core", "SurveyAlreadyRunningError", "survey_in_flight"]

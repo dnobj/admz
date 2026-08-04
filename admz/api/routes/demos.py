@@ -392,14 +392,18 @@ async def end_demo(demo_id: str, request: Request,
 # InferenceRunRequest above already acknowledged the write. The file disagreed
 # with itself; this is the half that was wrong (#199).
 #
-# Whether that write should be gated, and at which ADR-0034 level, is an OPEN
-# operator decision tracked in #199 — deliberately NOT made here. What did
-# change is that a survey now records what it wrote (`collect._survey_audit_fields`),
-# so the decision can be taken against evidence instead of without it.
-
-#: Strong refs to in-flight survey tasks (the loop holds only weak ones).
-_BACKGROUND_RUNS: set = set()
-
+# That decision was taken on 2026-08-04 (#199): the write is held for the
+# ADR-0034 approval widget at `service-affecting`, which resolves to `url_only`
+# by default and is raisable/lowerable in /confirm-settings like any other risk
+# class. The gate is in `discovery/gated.py` and covers BOTH discovery-driven
+# callers — this route and MCP `register_discovered_device`. A survey still
+# records what it wrote (`collect._survey_audit_fields`), which is what made
+# the decision reviewable.
+#
+# Still open on #199, and NOT closed by the gate: no CIDR validation at any hop
+# (the subnet reaches scapy's ARP(pdst=...) untouched), and registration is
+# still coupled to onboarding. A gate makes the scan deliberate; it does not
+# make the input safe.
 
 @router.post("/api/demos/inference/runs")
 async def start_inference_run(req: InferenceRunRequest, request: Request,
@@ -407,12 +411,9 @@ async def start_inference_run(req: InferenceRunRequest, request: Request,
     """Start a run. ``fast`` completes inline; ``survey`` returns immediately
     with a ``running`` row and finishes in the background — poll
     ``GET /api/demos/inference/runs/{id}`` for progress."""
-    import asyncio
-
     from admz.audit import record_event
     from admz.demos.inference import collect
-    from admz.demos.inference.runs import (MODE_FAST, MODE_SURVEY,
-                                           SURVEY_STALE_SECONDS)
+    from admz.demos.inference.runs import MODE_FAST, MODE_SURVEY
 
     principal = await _principal(request)
     mode = (req.mode or MODE_FAST).strip().lower()
@@ -434,26 +435,43 @@ async def start_inference_run(req: InferenceRunRequest, request: Request,
                 "proposals": [p.to_dict() for p in out["proposals"]],
                 "report": out["report"]}
 
+    # #199: a survey that registers what it finds also PROVISIONS what it finds
+    # — an admin account on every factory-defaulted device on the subnet. That
+    # is held for the approval widget, console operator included: the operator
+    # is inside the threat this gate names, so there is no `is_interactive`
+    # exemption here (see discovery/gated.py). `register_new=False` writes to no
+    # device and stays ungated — it scans and reads only.
+    # Asked BEFORE the gate: approving a survey that is only going to 409 is a
+    # waste of the operator's click. `start_survey_core` re-checks at the moment
+    # it actually starts, which is the authoritative one.
+    already = collect.survey_in_flight(store)
+    if already is not None:
+        raise HTTPException(
+            409, f"a deep survey is already running (run {already.id})")
+
+    if req.register_new:
+        from admz.discovery.gated import (ACTION_SURVEY, gate_scan_write,
+                                          survey_reason)
+        return gate_scan_write(
+            ACTION_SURVEY, "fleet",
+            {"register_new": True, "timeout": req.timeout,
+             "subnet": req.subnet, "include_weak": req.include_weak},
+            survey_reason(req.subnet, True))
+
     # A deep survey rewrites the registry and every snapshot — one at a time.
     # A row abandoned by a dead process ages out, so a crash can't wedge this.
-    already = store.running(mode=MODE_SURVEY, max_age=SURVEY_STALE_SECONDS)
-    if already:
-        raise HTTPException(
-            409, f"a deep survey is already running (run {already[0].id})")
-    run = store.start(mode=MODE_SURVEY, created_by=str(principal),
-                      message="Starting deep survey…")
-    # Hold a strong reference: the event loop only keeps a weak one, so a
-    # minutes-long task can otherwise be garbage-collected mid-run.
-    task = asyncio.create_task(collect.run_survey(
-        ctx, store, run.id, register_new=req.register_new,
-        timeout=req.timeout, subnet=req.subnet,
-        proposal_store=ctx.proposal_store, include_weak=req.include_weak,
-        # The survey runs in the BACKGROUND, so the row written below records
-        # only that one started. The device writes happen minutes later and are
-        # audited from inside the run — which needs the principal (#199).
-        principal=principal))
-    _BACKGROUND_RUNS.add(task)
-    task.add_done_callback(_BACKGROUND_RUNS.discard)
+    try:
+        run = collect.start_survey_core(
+            ctx, store, register_new=req.register_new, timeout=req.timeout,
+            subnet=req.subnet, proposal_store=ctx.proposal_store,
+            include_weak=req.include_weak,
+            # The survey runs in the BACKGROUND, so the row written below
+            # records only that one started. The device writes happen minutes
+            # later and are audited from inside the run — which needs the
+            # principal (#199).
+            principal=principal)
+    except collect.SurveyAlreadyRunningError as exc:
+        raise HTTPException(409, str(exc))
     record_event(principal, "demo.inference_run", resource="demos:inference",
                  details={"mode": mode, "run": run.id,
                           "register_new": req.register_new})
