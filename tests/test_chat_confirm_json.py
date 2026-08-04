@@ -406,7 +406,16 @@ class TestApproveOutcomeIdentityAudit:
         session = _make_session()
         client.post(f"/api/chat/confirm/{session.token}")
 
-        details = self._audit().list_recent(action="confirm.approve")[0].details
+        details = dict(self._audit().list_recent(action="confirm.approve")[0].details)
+        # GH #270 — the row now also describes WHAT was approved, key-only. The
+        # token is random, so it is checked for presence and removed before the
+        # exact-shape comparison below (which is the point of this test: no
+        # surprise keys, no empty keys).
+        assert details.pop("confirm_token")
+        assert details.pop("operation_id") == "factorydefault.cgi:factory-reset"
+        assert details.pop("device_id") == "cam-01"
+        # `params` was empty, so no `param_keys` — optional by construction,
+        # exactly like outcome_identity_fields.
         assert details == {
             "confirmed_by": "chat",
             # GH #178 — WHY this principal was allowed to approve. Recorded on

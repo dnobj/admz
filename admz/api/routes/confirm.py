@@ -14,7 +14,7 @@ from fastapi import APIRouter, Request, Form, HTTPException, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +97,86 @@ def _session_resource(session) -> str:
     if session.is_plan:
         return f"plan:{session.plan_id}"
     return f"device:{session.device_id}/op:{session.operation_id}"
+
+
+#: Identifier keys copied VERBATIM out of a session's action payload.
+#:
+#: An ALLOW-LIST, and it must stay one — the same discipline as
+#: ``audit.OUTCOME_IDENTITY_KEYS`` (#246: *"Allow-listed identifiers only —
+#: never ``**outcome``"*). Every entry is either the executor name or an
+#: identifier the ADR-0056 drift-attribution join actually consumes
+#: (``attribution.py`` reads ``rule_id``/``ruleId`` and ``rule_name``, nothing
+#: else). Do NOT add a key because it looks harmless: the invariant the tests
+#: enforce is that **no request VALUE reaches the audit log**, because that log
+#: is never pruned (there is no DELETE in ``audit.py``) while the confirm row it
+#: mirrors is about to be stripped (#266). A value added here outlives
+#: everything else in the system.
+_ACTION_IDENTITY_KEYS = ("action", "rule_id", "rule_name")
+
+
+def _approved_work_fields(session) -> Dict[str, Any]:
+    """A **value-free** description of what was approved, for the audit row.
+
+    #270: gated sessions created from the web API (``/catalog/execute``,
+    ``/plans/{id}/execute``, ``/snapshot/revert``, the ``gate_task_write`` and
+    ``gate_demo_write`` routes, ...) never pass through an MCP tool call, so
+    nothing recorded what they asked for — only ``confirm.approve``, which
+    carried identifiers alone. Roughly 13 call sites across 8 route modules.
+
+    Records **keys, counts and identifiers, never values**. Routing the payload
+    through ``redact_structure`` was considered and rejected: it masks by key
+    *name* only (``password``/``token``/``*key*``…), so ``root.RemoteSyslog.Server``,
+    a webhook ``upload_url`` and every plan-step parameter would sail straight
+    into the never-pruned audit log — strictly worse than the confirm row #266
+    deletes. Keys answer *what was touched*; the device (drift/snapshot) remains
+    the source of truth for *what it now is*, which is exactly the split
+    ADR-0056 already relies on.
+
+    ``danger_description`` is deliberately NOT included. It reads as safe —
+    ``capabilities.describe_rule`` builds it from the survey's human labels —
+    but ``tasks/gated.py::describe_create`` interpolates ``tag_filter``,
+    ``interval`` and ``action_type``, i.e. request values. One describer being
+    label-based does not make the field label-based.
+    """
+    fields: Dict[str, Any] = {
+        # Joins this row to the confirm receipt that survives #266's strip.
+        "confirm_token": session.token,
+        "operation_id": session.operation_id,
+        "device_id": session.device_id,
+    }
+    if session.is_plan:
+        # plan.to_summary() carries step/operation/device/risk but NOT step
+        # params, so operation ids and a count are safe; per-step `description`
+        # is skipped because it is free text that may quote a value.
+        steps = (session.plan_summary or {}).get("steps")
+        steps = steps if isinstance(steps, list) else []
+        fields["plan_steps"] = len(steps)
+        ops = sorted({str(s.get("operation")) for s in steps
+                      if isinstance(s, dict) and s.get("operation")})
+        if ops:
+            fields["plan_operations"] = ops
+    elif session.is_action:
+        action = session.action or {}
+        # TOP-LEVEL keys only — no recursion. A nested `action_params` or
+        # `fields` list contributes its own name and nothing from inside it.
+        keys = sorted(str(k) for k in action if k not in _ACTION_IDENTITY_KEYS)
+        if keys:
+            fields["action_keys"] = keys
+        for key in _ACTION_IDENTITY_KEYS:
+            value = action.get(key)
+            # Non-empty scalars only, mirroring outcome_identity_fields: the
+            # audit store serialises with default=str and would happily
+            # stringify a dict it was handed.
+            if isinstance(value, bool) or not isinstance(value, (str, int)):
+                continue
+            text = str(value).strip()
+            if text:
+                fields[key] = text
+    else:
+        params = session.params or {}
+        if params:
+            fields["param_keys"] = sorted(str(k) for k in params)
+    return fields
 
 
 async def _approve_session(
@@ -225,6 +305,13 @@ async def _approve_session(
             "risk_level": session.risk_level,
             "confirmation_level": session.confirmation_level,
             "is_plan": session.is_plan,
+            # #270 — WHAT was approved, key-only. Every approval funnels through
+            # this helper whatever created the session, so web-API origins that
+            # never touched an MCP tool call are covered by construction rather
+            # than by each of ~13 call sites remembering. Spread BEFORE
+            # outcome_identity_fields so a real outcome id always wins over a
+            # requested one.
+            **_approved_work_fields(session),
             # Allow-listed identifiers only — never ``**outcome``, whose shape
             # varies per operation and can carry device payloads. Empty for
             # operations that return none, leaving the row as it was.
