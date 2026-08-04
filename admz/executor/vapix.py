@@ -171,6 +171,62 @@ def _sanitize_path_param(name: str, value: Any) -> str:
     return quote(text, safe="")
 
 
+# Issue #144: soap is the other generation that interpolates caller-supplied
+# params into a *structured* payload without the transport encoding them for
+# us. The four generations differ, and only two ever had a problem:
+#
+#   legacy-cgi   -> query_params -> httpx ``params=``   encoded by the client
+#   json-rpc     -> JSON body                           escaped by serialisation
+#   config-rest  -> URL path                            #10, fixed in PR #146
+#   soap         -> raw XML body                        THIS
+#
+# json-rpc is safe by accident of ``json.dumps``, not by design — the same
+# ``_resolve_template`` helper feeds both. So the escape belongs HERE, in the
+# SOAP builder, and NOT in ``_resolve_template``: that helper is shared with
+# legacy-cgi and json-rpc, where XML-escaping a value would corrupt it
+# (a query param would go on the wire as ``a&amp;b``).
+#
+# ESCAPE, don't reject. Legitimate SOAP values contain nearly every
+# metacharacter a reject-list would want to ban: ``&`` in a recipient query
+# string (``camera=entrance&event=motion``), ``/`` and ``:`` in a topic
+# expression (``tns1:Device/tnsaxis:IO/VirtualInput``), quotes and brackets in
+# an XPath filter, spaces in rule names. Escaping preserves all of them —
+# ``&amp;`` decodes back to ``&`` at the device — where a reject-list would
+# break real operations. That is the #10 lesson applied to a different sink.
+#
+# Ampersand MUST be replaced first: doing it later would re-escape the "&"
+# that the other rows introduce ("<" -> "&lt;" -> "&amp;lt;").
+_XML_ESCAPES: Tuple[Tuple[str, str], ...] = (
+    ("&", "&amp;"),
+    ("<", "&lt;"),
+    (">", "&gt;"),
+    ('"', "&quot;"),
+    ("'", "&apos;"),
+)
+
+
+def _xml_escape_param(value: Any) -> str:
+    """Return ``value`` as XML text that cannot escape its element.
+
+    Every catalogued placeholder sits in element *text*, so ``&``, ``<`` and
+    ``>`` are strictly sufficient today — verified mechanically against all 30
+    ``ws/`` op templates at the pinned atlas SHA. The two quote forms are
+    escaped anyway so that a future template which puts a placeholder inside an
+    *attribute* is correct on arrival rather than silently under-escaped; in
+    text content they round-trip identically, which the accept table asserts.
+
+    Deliberately NOT handled: XML 1.0 forbids most C0 control characters even
+    in escaped form, so a value containing ``\\x00`` yields a body the device's
+    parser rejects outright. That is a malformed request, not an injection —
+    no escaping can express those characters, and rejecting them here would be
+    the reject-list this function exists to avoid. Left alone knowingly.
+    """
+    text = str(value)
+    for ch, replacement in _XML_ESCAPES:
+        text = text.replace(ch, replacement)
+    return text
+
+
 class _BearerAuth(httpx.Auth):
     """Bearer token authentication for httpx."""
 
@@ -801,14 +857,33 @@ class VapixExecutor(BaseExecutor):
         """Build a SOAP request (POST XML to /vapix/services).
 
         Resolves {placeholder} values in the body_xml template using
-        the same _resolve_template logic as other generations.
+        the same _resolve_template logic as other generations, with every
+        caller-supplied value XML-escaped first (#144).
+
+        Escaping the *params* rather than the rendered body is what makes this
+        correct: the template itself is authored catalog content and must stay
+        live XML, and a placeholder's authored default (``{limit=100}``) is
+        equally trusted — neither passes through ``_xml_escape_param``. Only
+        values that came from a caller do.
+
+        No operation is exempt. ``AddActionConfiguration.parameters`` and
+        ``AddRecipientConfiguration.parameters`` are authored as raw-XML
+        fragment slots, so a carve-out was considered and then measured away:
+        the only in-repo consumer of those ops is ``admz.rules.runner``, which
+        supplies a pre-rendered ``body_override`` and forces ``params={}``
+        (runner.py:180-185), so it never reaches this substitution at all. The
+        sole route that *does* reach it is the generic execute surface — MCP
+        ``execute_operation``, ``POST /api/catalog/execute``, plan steps —
+        which is precisely the untrusted caller this escape defends against.
+        An exemption for a caller that does not exist is the worst kind.
         """
         request_spec = operation.get("request", {})
         body_xml = request_spec.get("body_xml", "")
 
         # Resolve placeholders in XML body
         if body_xml and params:
-            resolved = self._resolve_template(body_xml, params)
+            escaped = {k: _xml_escape_param(v) for k, v in params.items()}
+            resolved = self._resolve_template(body_xml, escaped)
             if isinstance(resolved, str):
                 body_xml = resolved
 
