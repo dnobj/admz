@@ -373,6 +373,70 @@ def outcome_identity_fields(outcome: Any) -> Dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+#: Attributes :func:`record_event` reads off a principal. A real
+#: :class:`admz.auth.Principal` declares both; so do the synthetic namespaces
+#: used for events with no human actor (``demos/actions.py``,
+#: ``demos/activation.py``, ``modules/acs_pro/routes.py``). An object carrying
+#: neither is not a principal.
+_PRINCIPAL_ATTRS = ("name", "source")
+
+#: ``(action, type-name)`` pairs already warned about. A wrong call site is a
+#: programming error in one fixed place, so the first warning is the useful one
+#: and the rest are a flood — and a guard that floods gets silenced, which is
+#: the failure mode this whole change exists to avoid. Bounded: the key space is
+#: the set of buggy call sites, which is expected to be empty.
+_GUARD_WARNED: set = set()
+
+
+def _principal_fields(principal: Any, action: str) -> tuple:
+    """``(requester, auth_source)`` for one audit row, guarding the argument.
+
+    ``record_event`` reads ``.name``/``.source`` with ``getattr`` defaults, so
+    before #285 passing the wrong object wrote a *plausible* row —
+    ``requester="unknown"``, indistinguishable from a legitimately unattended
+    event — rather than failing. That is how a ``Request`` survived at a call
+    site (#205/#283) and why finding it took an AST walk over 164 call sites
+    instead of a code review.
+
+    **Keyed on ``is not None``, never on falsiness.** ``principal=None`` is
+    legitimate and deliberate: unattended and system-originated events pass it,
+    and ``"unknown"``/``"none"`` is the correct row for them. A truthiness test
+    would fire on every one of those correct calls and be disabled within a
+    week, which is worse than no guard at all.
+
+    **Warns, never raises** — a decision, not a default, and the evidence is in
+    this file: :meth:`AuditLog.record` already swallows its own DB errors under
+    the stated contract *"an audit-write failure must never break the underlying
+    op"*, and 146 of the 165 ``record_event``/``_audit`` call sites in ``admz/``
+    are bare, with no ``try`` around them. Raising would reverse a documented
+    invariant that 146 request paths structurally depend on, in order to report
+    a logging mistake. The static lint in ``tests/test_audit_principal_guard.py``
+    is what catches this before merge; this is the runtime backstop.
+    """
+    if principal is None:
+        return "unknown", "none"
+
+    missing = [a for a in _PRINCIPAL_ATTRS if not hasattr(principal, a)]
+    if missing:
+        key = (action, type(principal).__name__)
+        if key not in _GUARD_WARNED:
+            _GUARD_WARNED.add(key)
+            logger.warning(
+                "record_event(action=%r) was passed a %s, which is not a "
+                "principal (no %s). Recording requester='unknown'. This is a "
+                "call-site bug: pass the principal, or None for an event with "
+                "no human actor.",
+                action, type(principal).__name__, "/".join(missing),
+            )
+        return "unknown", "none"
+
+    # Unchanged from before the guard: both attributes are known to exist by
+    # here, so these defaults never fire and every legitimate call produces a
+    # byte-identical row.
+    return (getattr(principal, "name", "unknown"),
+            getattr(principal, "source", "none"))
+
+
 def record_event(
     principal,
     action: str,
@@ -391,8 +455,7 @@ def record_event(
     is cheap to construct (just a CREATE TABLE IF NOT EXISTS).
     """
     store = log if log is not None else AuditLog()
-    requester = getattr(principal, "name", "unknown") if principal else "unknown"
-    auth_source = getattr(principal, "source", "none") if principal else "none"
+    requester, auth_source = _principal_fields(principal, action)
     store.record(
         requester=requester,
         auth_source=auth_source,
