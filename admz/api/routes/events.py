@@ -144,7 +144,7 @@ async def events_control(request: Request):
         acs_on = bool(body.get("acs_enabled"))
         fleet_settings.set("acs_event_ingest_enabled", "true" if acs_on else "false")
         if acs_on:
-            await ctx.acs_event_poller.stop()   # reset high-water + restart cleanly
+            await ctx.acs_event_poller.stop()   # re-seed (next poll fires nothing) + restart cleanly
             await ctx.acs_event_poller.start()
         else:
             await ctx.acs_event_poller.stop()

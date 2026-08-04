@@ -52,6 +52,13 @@ class EventStore:
     def __init__(self, db_path: Optional[str] = None):
         self._db_path = str(db_path or _default_db_path())
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+        # Monotonic count of appends lost to a swallowed sqlite error. `append`
+        # returns False for a duplicate AND for a DB failure, so its return value
+        # alone cannot tell a caller which happened. ADR-0057 gates ACS firing on
+        # that return value and needs to report store outages without changing
+        # `append`'s signature (three device-ingest callers depend on it), so the
+        # count is exposed as plain additive state instead.
+        self.append_errors = 0
         self._ensure_table()
 
     def _connect(self) -> sqlite3.Connection:
@@ -99,6 +106,7 @@ class EventStore:
             finally:
                 conn.close()
         except sqlite3.Error as exc:  # pragma: no cover — defensive
+            self.append_errors += 1
             logger.warning("EventStore append failed: %s", exc)
             return False
 
