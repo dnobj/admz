@@ -72,6 +72,35 @@
 
   <hr style="margin:32px 0;border:none;border-top:1px solid #e5e7eb;">
 
+  <!-- Approver groups (GH #178) -->
+  <form method="POST" action="/confirm-settings">
+    <input type="hidden" name="action" value="approver_groups">
+
+    <h2 style="font-size:18px;margin-bottom:8px;">Who may approve</h2>
+    <p style="color:#666;font-size:14px;margin-bottom:16px;">
+      Comma-separated local group names. A signed-in user must be a member of one
+      of these to approve a confirmation. Matching ignores case and any
+      <code>DOMAIN\</code> prefix.
+      {% if approver_groups_configured %}
+        Currently in force: <strong>{{ approver_groups }}</strong>.
+        Clear the box to return to the built-in default.
+      {% else %}
+        No group is configured, so the built-in default is in force:
+        <strong>{{ approver_groups }}</strong>. An empty value never means
+        &ldquo;anyone may approve&rdquo;.
+      {% endif %}
+    </p>
+    <input type="text" name="approver_groups" value="{{ approver_groups }}"
+           style="width:100%;max-width:420px;padding:8px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;margin-bottom:12px;">
+    <br>
+    <button type="submit"
+            style="padding:10px 24px;background:#2563eb;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer;font-weight:600;">
+      Save Approver Groups
+    </button>
+  </form>
+
+  <hr style="margin:32px 0;border:none;border-top:1px solid #e5e7eb;">
+
   <!-- Confirmation Password -->
   <form method="POST" action="/confirm-settings">
     <input type="hidden" name="action" value="password">

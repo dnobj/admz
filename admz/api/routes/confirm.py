@@ -83,12 +83,13 @@ _configure_templates(templates)
 class _Approval:
     """Outcome of an approval attempt; handlers map status → response."""
 
-    __slots__ = ("status", "session", "outcome")
+    __slots__ = ("status", "session", "outcome", "detail")
 
-    def __init__(self, status, session=None, outcome=None):
+    def __init__(self, status, session=None, outcome=None, detail=""):
         self.status = status        # completed | rate_limited | expired |
-        self.session = session      #   locked | wrong_password
+        self.session = session      #   locked | wrong_password | not_authorized
         self.outcome = outcome      # execution result when completed
+        self.detail = detail        # operator-facing text for not_authorized
 
 
 def _session_resource(session) -> str:
@@ -125,6 +126,49 @@ async def _approve_session(
 
     if _is_locked(token):
         return _Approval("locked", session=session)
+
+    # GH #178 — AUTHORIZATION. Until now this path made no authorization
+    # decision at all: the principal above was resolved only to write audit
+    # rows, so any authenticated user could approve anything, while *reading* a
+    # credential required group membership. The gate guarding device writes was
+    # weaker than the one guarding credential reads.
+    #
+    # Both approve entry points (the web form and the chat twin) funnel through
+    # this helper, so one check covers both. Denial is deliberately NOT gated —
+    # stopping a pending action is safe, and requiring privilege to say "no"
+    # would be the wrong asymmetry.
+    #
+    # ANONYMOUS is handled at the call site, not inside the predicate — the same
+    # split `principal_can_reveal` documents ("caller should consult the fleet
+    # flag to decide"). Under ADMZ_AUTH_BACKEND=none, the default, there is no
+    # identity at all, so group membership is not absent but *undefined*;
+    # refusing would make a fresh install unable to approve anything, which is a
+    # lockout of a different population. #178 scopes this the same way — it
+    # rewrote its own headline because the unauthenticated framing "does not
+    # hold under windows-local". So: allow, but never silently. Unlike the
+    # password fail-open #178 was filed for, which left no trace whatsoever,
+    # this records the decision on every approval and warns in the log.
+    from admz.authz import principal_can_approve, approver_groups
+    may_approve, authz_reason = principal_can_approve(principal)
+    if not may_approve and authz_reason == "anonymous":
+        logger.warning(
+            "Approving with NO identity: ADMZ_AUTH_BACKEND has no authentication "
+            "backend, so the approver group (%s) cannot be evaluated. Possession "
+            "of the token is sufficient on this install.",
+            ", ".join(approver_groups()))
+        may_approve, authz_reason = True, "anonymous-no-identity"
+    if not may_approve:
+        record_event(
+            principal, "confirm.denied_unauthorized",
+            resource=_session_resource(session), success=False,
+            error_message=f"not authorized to approve ({authz_reason})",
+            details={"confirmed_by": confirmed_by, "decision": authz_reason,
+                     "approver_groups": approver_groups()},
+        )
+        return _Approval(
+            "not_authorized", session=session,
+            detail=("Approving requires membership in one of the approver groups "
+                    f"({', '.join(approver_groups())}). Decision: {authz_reason}."))
 
     if session.confirmation_level == "url_and_password":
         password_hash = fleet_settings.get("confirm_password_hash")
@@ -173,6 +217,11 @@ async def _approve_session(
         error_message="" if outcome.get("success") else str(outcome.get("error") or ""),
         details={
             "confirmed_by": confirmed_by,
+            # WHY this principal was allowed to approve (#178) — "group:<name>"
+            # for a real identity, "anonymous-no-identity" when there is no auth
+            # backend to evaluate. Recorded on every approval so the degraded
+            # case is auditable rather than invisible.
+            "authz": authz_reason,
             "risk_level": session.risk_level,
             "confirmation_level": session.confirmation_level,
             "is_plan": session.is_plan,
@@ -343,6 +392,25 @@ async def confirm_submit(
     is_plan = session.is_plan
     plan_summary = session.plan_summary if is_plan else None
 
+    if result.status == "not_authorized":
+        # 403, and the session stays PENDING — a caller who lacks the group must
+        # not consume the token, so the right operator can still approve it.
+        return templates.TemplateResponse(
+            request,
+            "confirm_form.html",
+            {
+                "request": request,
+                "title": "Confirm Plan" if is_plan else "Confirm Operation",
+                "token": token,
+                "session": session,
+                "needs_password": session.confirmation_level == "url_and_password",
+                "error": result.detail,
+                "is_plan": is_plan,
+                "plan_summary": plan_summary,
+            },
+            status_code=403,
+        )
+
     if result.status in ("locked", "wrong_password"):
         error = (
             "Too many failed attempts. This confirmation link is temporarily locked."
@@ -469,6 +537,14 @@ async def chat_confirm_submit(
         return JSONResponse(
             status_code=410,
             content={"status": "expired_or_not_found"},
+        )
+
+    if result.status == "not_authorized":
+        # The token is NOT consumed — the session stays pending so an operator
+        # who is in the group can still approve it (#178).
+        return JSONResponse(
+            status_code=403,
+            content={"status": "not_authorized", "error": result.detail},
         )
 
     if result.status == "locked":
