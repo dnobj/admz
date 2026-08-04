@@ -82,7 +82,9 @@ re-fire set — a real design choice that deserves its own record rather than an
 that this ADR does not make. It is **not a regression**: the mark this replaced had already advanced
 past the firing too. The implementation therefore logs a `on_event` failure at **warning** (once per
 streak) naming it as un-retried, instead of the `debug` line that made it invisible at the default
-level. Tracked as a follow-up.
+level. Tracked as a follow-up (GH #255) — **superseded on this point by ADR-0058**, which found the
+single raise path inside `DetectionEvaluator.evaluate` and fixes it there, closing the gap on all five
+event paths without adding any state to this poller.
 
 It also means **a swallowed store error must not be worked around.** `EventStore.append` returns
 `False` both for a duplicate and for a swallowed `sqlite3.Error`. Treating that as "already fired"
