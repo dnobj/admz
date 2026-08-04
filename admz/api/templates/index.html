@@ -258,6 +258,13 @@
 .grp-chev { width: 13px; height: 13px; vertical-align: -2px; transition: transform .15s; color: var(--text-muted); }
 .drift-group-head.grp-open .grp-chev { transform: rotate(90deg); }
 .grp-name { font-family: monospace; }
+/* #230 — read-only sub-group header (action_rules rows, grouped per rule). */
+.ro-subgroup-head td { background: var(--surface); border-bottom: 1px solid var(--border); }
+.ro-subgroup-cell { color: var(--text); font-weight: 600; font-size: 12px; padding: 6px 6px 6px 22px; }
+/* #230 attribution chip — provenance, not a verdict. Deliberately NOT styled as
+   a "resolved"/success state: the row is still drift. */
+.admz-attr { color: var(--text-muted); border-color: var(--border-strong, var(--border)); cursor: help; }
+.admz-attr svg { width: 11px; height: 11px; vertical-align: -1px; }
 .grp-count { display: inline-block; margin-left: 7px; padding: 0 6px; border-radius: 99px; background: var(--border); color: var(--text-faint); font-size: 11px; font-weight: 600; }
 .ignore-menu { position: absolute; z-index: 60; min-width: 220px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.45); padding: 6px; }
 .ignore-menu .ig-head { font-size: 11px; color: var(--text-faint); padding: 5px 8px 7px; text-transform: uppercase; letter-spacing: .04em; }
@@ -463,7 +470,34 @@ function renderDiff(did, data) {
           const segs = ck.split('.');
           return segs.length >= 2 ? segs.slice(0, 2).join('.') : ck;
         }
+        // #230 — an action_rules doc is keyed by RULE ID, so the leading path
+        // segment of `175.actionConfig.actionParameters` IS the rule. Grouping
+        // on it turns the C1710's "36 changes" back into "3 rules". Nothing is
+        // lost in the flatten: flatten() only joins segments with dots, so the
+        // id survives verbatim in `path` (and in `canonical_key`).
+        if (f.facet === 'action_rules' && f.path) {
+          return 'action_rules/' + String(f.path).split('.')[0];
+        }
         return f.facet || ck.split(/[:.]/)[0] || 'other';
+      };
+      // Rule id -> live name, recovered from the rows themselves. Only a rule
+      // whose `name` actually drifted contributes one — a wholesale add/delete
+      // emits `<rid>.name`, a rule where only `enabled` changed does not. Those
+      // degrade to a bare "Rule 175" on purpose; always recovering the name
+      // means reading the nested doc, which is a backend change (out of scope).
+      const ruleNames = {};
+      fields.forEach(f => {
+        if (f.facet !== 'action_rules') return;
+        const p = String(f.path || ''), i = p.indexOf('.');
+        if (i < 0 || p.slice(i + 1) !== 'name') return;
+        const v = (f.actual && f.actual !== '<missing>') ? f.actual : f.expected;
+        if (v && v !== '<missing>') ruleNames[p.slice(0, i)] = v;
+      });
+      const ridOf = (c) => c.indexOf('action_rules/') === 0 ? c.slice(13) : null;
+      const grpLabel = (c) => {
+        const rid = ridOf(c);
+        if (rid === null) return c;
+        return 'Rule ' + rid + (ruleNames[rid] ? ' — ' + ruleNames[rid] : '');
       };
       const mkRow = (f, hidden, group) => {
         const chip = f.facet ? '<span class="facet-chip">' + esc(f.facet) + '</span>' : '';
@@ -495,6 +529,18 @@ function renderDiff(did, data) {
             + ' title="Matches an inactive demo’s owned config — adopt that demo on its page, or revert.">looks like '
             + esc(f.candidates.map(c => c.name).join(', ')) + '</span>';
         }
+        // #230 attribution — ADMZ's own audited write, when one explains this
+        // row. PROVENANCE, NOT A VERDICT: a matched row keeps its place in the
+        // table, its checkbox and its accept/revert affordances, and still
+        // counts as drift. The server builds the hedged sentence (one place,
+        // testable) — see snapshot/attribution.py.
+        let attrChip = '';
+        if (f.attribution && f.attribution.label) {
+          const a = f.attribution;
+          attrChip = '<span class="ro-tag admz-attr" title="' + esc(a.note || '') + '">'
+            + '<i data-lucide="file-clock"></i> ' + esc(a.label)
+            + (a.when_human ? ' · ' + esc(a.when_human) : '') + '</span>';
+        }
         // ⊘ exclude-from-tracking — available on EVERY row (incl. read-only
         // facet fields like ACAP run-state), since ignore covers any field.
         const ign = '<button type="button" class="row-ignore-btn" title="Exclude this field from tracking"'
@@ -506,7 +552,7 @@ function renderDiff(did, data) {
         const style = hidden ? ' style="display:none"' : '';
         return '<tr class="' + cls + '"' + dg + style + '>'
           + '<td class="col-sel">' + sel + '</td>'
-          + '<td class="col-path">' + chip + esc(f.path) + roTag + demoChip + '</td>'
+          + '<td class="col-path">' + chip + esc(f.path) + roTag + demoChip + attrChip + '</td>'
           + '<td class="col-base">' + esc(f.expected) + '</td>'
           + '<td class="col-live">' + esc(f.actual) + '</td>'
           + '<td class="col-ign">' + ign + '</td></tr>';
@@ -536,16 +582,49 @@ function renderDiff(did, data) {
       // Read-only observed fields (plus demo-owned "set by X" rows, which are
       // deliberate rather than drift): one collapsed block at the bottom.
       if (roFields.length) {
+        // #230 — `action_rules` is a READ-ONLY facet (write_ops == []), so every
+        // rule row lands in THIS block, not in the grouped revertable table
+        // above. That is exactly the flat "36 changes" the operator sees. Group
+        // them per rule here; everything else stays flat as before.
+        const roBuckets = {};
+        const roOrder = [];
+        roFields.forEach(f => {
+          const c = (f.facet === 'action_rules') ? catOf(f) : '';
+          if (!roBuckets[c]) { roBuckets[c] = []; roOrder.push(c); }
+          roBuckets[c].push(f);
+        });
+        roOrder.sort((a, b) => {
+          if (a === b) return 0;
+          if (a === '') return 1;          // ungrouped remainder sinks to the end
+          if (b === '') return -1;
+          const na = Number(ridOf(a)), nb = Number(ridOf(b));
+          if (isFinite(na) && isFinite(nb)) return na - nb;  // 9 before 175
+          return a < b ? -1 : 1;
+        });
+        const nRules = roOrder.filter(c => c !== '').length;
         const nDemo = roFields.filter(f => f.bucket === 'demo_set').length;
-        const label = nDemo
+        let label = nDemo
           ? (nDemo + ' demo-owned (deliberate)' + (roFields.length > nDemo
               ? ' + ' + (roFields.length - nDemo) + ' read-only' : ''))
           : roFields.length + ' read-only observed change' + (roFields.length !== 1 ? 's' : '') + ' (not revertable)';
+        // Say the useful number in the collapsed header: "36 changes" is what
+        // reads as an incident; "across 3 rules" is what it actually is.
+        if (nRules) label += ' · across ' + nRules + ' rule' + (nRules !== 1 ? 's' : '');
         rows += '<tr class="ro-group-head"><td colspan="5" onclick="toggleReadOnly(this)"'
           + ' style="cursor:pointer;color:var(--text-muted);font-size:12px;padding:8px 6px;user-select:none">'
           + '<i data-lucide="chevron-right" class="ro-chev" style="width:13px;height:13px;vertical-align:-2px;transition:transform .15s"></i> '
           + label + '</td></tr>';
-        rows += roFields.map(f => mkRow(f, true, '')).join('');
+        roOrder.forEach(c => {
+          const items = roBuckets[c];
+          if (c) {
+            // ro-collapsed so it opens/closes with its rows (toggleReadOnly).
+            rows += '<tr class="ro-subgroup-head ro-collapsed" style="display:none">'
+              + '<td colspan="5" class="ro-subgroup-cell">'
+              + '<span class="grp-name">' + esc(grpLabel(c)) + '</span>'
+              + '<span class="grp-count">' + items.length + '</span></td></tr>';
+          }
+          rows += items.map(f => mkRow(f, true, '')).join('');
+        });
       }
       const anyRevertable = rvFields.length > 0;
       const headSel = anyRevertable

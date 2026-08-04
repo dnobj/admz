@@ -9,6 +9,7 @@ from pydantic import BaseModel, field_validator
 
 from admz.api.context import AppContext, get_context
 from admz.exceptions import DeviceNotFoundError
+from admz.snapshot.attribution import annotate_attribution
 from admz.validators import validate_git_ref, validate_identifier
 
 logger = logging.getLogger(__name__)
@@ -1099,6 +1100,11 @@ async def check_drift(
             summary["computed_at"] = _t.time()
 
         _annotate_revertable(summary, ctx, device_id)
+        # #230 — mark the rows ADMZ's own audited writes explain. Applied at
+        # READ time (never stored in the cached payload) so a report cached
+        # before its audit row landed still gets attributed on the next read.
+        # Adds keys only: never removes a row, never touches has_drift/bucket.
+        annotate_attribution(summary, device_id=device_id)
         return summary
     reports = await ctx.drift_detector.check_fleet_drift(tag_filter=tag_filter)
     return {

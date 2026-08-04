@@ -88,6 +88,7 @@ from admz.snapshot.engine import SnapshotEngine
 from admz.snapshot.git_repo import GitRepo
 from admz.snapshot.restore import RestoreBuilder
 from admz.snapshot.drift import DriftDetector
+from admz.snapshot.attribution import annotate_attribution
 from admz.snapshot.scheduler import SnapshotScheduler, SnapshotSchedule, parse_interval
 from admz.discovery import discover_devices as run_network_discovery
 from admz.mcp.tools import MIGRATED_TOOLS
@@ -3356,9 +3357,15 @@ class ADMZMCPServer:
             if not self.registry.device_exists(device_id):
                 raise DeviceNotFoundError(f"Device not found: {device_id}")
             report = await self.drift_detector.check_drift(device_id)
+            # #230 — attribution sits BELOW to_summary() so the chat surface
+            # gets it too; the operator most often meets a drift report here.
+            # Annotates only: never suppresses a row (see snapshot/attribution).
+            summary = annotate_attribution(
+                report.to_summary(), device_id=device_id
+            )
             return {
                 "success": True,
-                **report.to_summary(),
+                **summary,
             }
         else:
             reports = await self.drift_detector.check_fleet_drift(
