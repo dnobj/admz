@@ -68,7 +68,8 @@ No `{{ … | safe }}` filter on any user-provided value.
 **Currently absent on capture/confirm form POSTs.** Tokens are
 single-use and 256-bit, so a CSRF defense isn't load-bearing for
 those routes — but a CSRF token in the form would still be
-appropriate. Tracked as KG-SEC-002 in [security.md](security.md).
+appropriate. KG-SEC-002 in [security.md](security.md) — the capture POSTs now
+enforce same-origin (#3); the confirm POST is still outstanding.
 
 ### NFR-UI-003 — No client-side framework dependency ✅
 Server-rendered HTML + small amounts of inline JS. No npm toolchain,

@@ -22,6 +22,7 @@ from fastapi.templating import Jinja2Templates
 logger = logging.getLogger(__name__)
 
 from admz.api.confirm_store import ConfirmStatus, confirm_store
+from admz.csrf import check_same_origin
 from admz.rate_limit import client_key_from_request, rate_limiter
 from admz.rules.capture import stash_rule_secrets
 
@@ -77,6 +78,7 @@ async def rule_capture_form(request: Request, token: str):
 @router.post("/capture/rule/{token}", response_class=HTMLResponse, tags=["capture"])
 async def rule_capture_submit(request: Request, token: str):
     """Hold the submitted recipient secret in memory and show the approval link."""
+    check_same_origin(request)  # CSRF (#3)
     if not rate_limiter.check("capture", client_key_from_request(request)):
         raise HTTPException(
             status_code=429,

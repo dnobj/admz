@@ -21,6 +21,7 @@ from admz.api.capture import capture_store, CaptureStatus
 from admz.device_registry import DeviceRegistry
 from admz.exceptions import DeviceNotFoundError, BackendError
 from admz.fleet_settings import fleet_settings
+from admz.csrf import check_same_origin
 from admz.rate_limit import rate_limiter, client_key_from_request
 from admz.setting_policy import is_llm_writable
 
@@ -189,6 +190,10 @@ async def capture_submit(
     registry: DeviceRegistry = Depends(get_registry),
 ):
     """Process the submitted credentials."""
+    # CSRF (#3). Must precede every side effect, including the rate-limit
+    # counter — a cross-site POST should not be able to consume an operator's
+    # capture budget either.
+    check_same_origin(request)
     # Phase 4 stretch: per-IP rate limit. The token is 256-bit and
     # single-use, so brute force isn't the threat — overwrite races
     # and accidental double-submits are. 10 attempts then 10/minute.
@@ -323,6 +328,7 @@ async def fleet_capture_submit(
     username: str = Form("admin"),
 ):
     """Process the submitted fleet credentials (username + password)."""
+    check_same_origin(request)  # CSRF (#3)
     session = capture_store.get_fleet_session(token)
 
     if session is None or session.effective_status != CaptureStatus.PENDING:
