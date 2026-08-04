@@ -40,6 +40,11 @@ Coupling server state to the launching user's profile broke down twice:
    (https://github.com/mtkennerly/shawl), run-as **LocalSystem** (no stored
    password, starts headless at boot). `setup-admz-service.ps1` performs the
    one-time migration + service registration.
+   **Extended by [ADR-0054](0054-separate-production-tree-and-venv.md)** — this
+   decision settles where production's *data* lives and the service identity
+   that reads it, both unchanged; 0054 settles where its *code and interpreter*
+   live and repoints the service's `--cwd` and interpreter path at a dedicated
+   production clone and venv.
 
 ## Why LocalSystem works (verified in code + live)
 

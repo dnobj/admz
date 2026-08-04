@@ -146,10 +146,16 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 - [0016 — Merge discovery results by MAC](decisions/0016-merge-discovery-by-mac.md)
 - [0017 — Two-phase discovery (broadcast then enrich)](decisions/0017-two-phase-discovery.md)
 
+### Deployment & runtime layout
+
+- [0042 — Machine-level data directory (ADMZ_HOME) + Windows-service deployment](decisions/0042-machine-level-data-directory.md) ✅ — all state under one `ADMZ_HOME` resolved call-time by `admz/paths.py` (specific `ADMZ_*_PATH` overrides still win); on Windows, `C:\ProgramData\admz` with the service supervised by Shawl as LocalSystem, so no user profile and no stored service password
+- [0054 — Production gets its own clone and its own venv: separating what runs from what is being changed](decisions/0054-separate-production-tree-and-venv.md) 📋 — ADR-0042 decided where production's *data* lives; this decides where its *code and interpreter* live, after one tree and one venv serving production, staging and every test run produced a live contradiction: rebuilding the venv for `master` breaks staging (60 commits stale), leaving it crash-loops production on restart (mcp 2.x code, mcp 1.26 venv). Production moves to a dedicated **clone** (not a worktree — worktrees share `.git`) at a deliberate SHA with a venv built from that SHA's `requirements.txt`; the service's `--cwd` and interpreter are repointed and nothing else about it changes. Deployment stops being "someone pulled" and becomes `scripts/deploy-prod.ps1`, whose step 4 — import the new code on the new venv *before* the service is stopped — is the point of the whole record. The host owns what it runs (detached HEAD + `deployed.log`), not a tag. Explicitly does **not** separate `ADMZ_HOME`, git config, gh identities, the fleet, or the machine. Blocked on #235; absorbs #173
+
 ## Plans
 
 Approved implementation plans for staged work (design fixed, build pending — tracked as GitHub issues).
 
+- [Separate the production tree and venv from the dev workspace](plans/dev-prod-split.md) — ADR-0054 slices: build a pinned production clone + its own venv, repoint the Shawl service's two paths, replace the implicit `git pull` deployment with `scripts/deploy-prod.ps1` (six steps, of which step 4's pre-stop smoke check is the one that matters), bring `setup-admz-service.ps1` into the repo and rewrite `DEPLOYMENT_WINDOWS.md` around the deployment that actually runs (#173). Staging's own venv deferred with a stated trigger; blocked on #235
 - [Demo setup wizard](plans/demo-setup-wizard.md) — ADR-0047 slice 3+: fragment activation pushes with state-flip-on-completion (fixes the scenario marker-timing bug), demo-aware rules with auto-attached trigger signals, and the guided chat setup surface (`demo_setup_status` + gated `set_event_ingest`)
 
 ## Reviews
