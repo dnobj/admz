@@ -85,6 +85,13 @@ _SEED_DEFAULT_RULES: tuple = (
     # (observed live: DHCP-mode mirror flips 0.0.0.0 <-> '' across config
     # writes). The DHCP-provided list (NTP.VolatileServer) is seeded above.
     {"key": "root.Time.NTP.Server", "scope": "global"},
+    # The device's own WALL CLOCK — advances every second, so it drifts on
+    # every computation and "accept baseline" can never settle it (#215).
+    # Time *configuration* stays tracked: POSIXTimeZone, DST.*, ObtainFromDHCP
+    # and SyncSource are exactly what drift detection should catch. The match
+    # is exact-or-child, so a sibling like ServerDateFormat stays tracked too.
+    {"key": "root.Time.ServerDate", "scope": "global"},
+    {"key": "root.Time.ServerTime", "scope": "global"},
 )
 
 
