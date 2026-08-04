@@ -2360,6 +2360,35 @@ class ADMZMCPServer:
         action = capabilities.action_for(model, action_token)
         condition = capabilities.condition_for(model, condition_id)
 
+        # #194 — FAIL CLOSED on a secret supplied through chat. `param_choices`
+        # is persisted verbatim into `confirm_sessions.action_json`
+        # (operations.py: json.dumps of the payload, no redaction), and a
+        # *completed* session is never cleaned up (#266), so anything landing
+        # here stays on disk indefinitely, in the same SQLite file as the device
+        # registry. Rejecting rather than stripping is deliberate: the previous
+        # `param_choices.pop(...)` dropped the key silently, which is
+        # indistinguishable to the caller from a key that was never sent — so a
+        # leak that slipped past the (too-narrow) match looked exactly like a
+        # success. Redacting the payload on the way into the store was measured
+        # and REJECTED: `redact_structure` masks `secret_fields` too, and
+        # `rule_capture.py` reads that back to render the capture form, so it
+        # would break the very mechanism this protects.
+        offending = capabilities.secret_choice_keys(action, param_choices) if action else []
+        if offending:
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing to accept {', '.join(sorted(offending))} in param_choices: "
+                    "this is a credential and it would be written to the pending-approval "
+                    "record in cleartext. Recipient login/password are collected from the "
+                    "user on a secure form instead — omit them and call again, and you will "
+                    "be given a capture link. Secondary credentials (proxy_*, pop_*) have no "
+                    "capture form in this version and cannot be supplied by any route: tell "
+                    "the user this rule cannot set them here."
+                ),
+                "rejected_params": sorted(offending),
+            }
+
         # ADR-0050 Phase B: the condition's ONVIF topic (the device publishes it
         # independently of the rule → it IS the demo's correlated signal). Carried
         # in the action payload so the executor records it on approval.
@@ -2398,8 +2427,9 @@ class ADMZMCPServer:
         secret_fields = (
             capabilities.primary_recipient_secret_fields(action) if action else [])
         if secret_fields:
-            for f in secret_fields:                     # never accept secrets from chat
-                param_choices.pop(f["name"], None)
+            # No strip here any more: the fail-closed check above already
+            # refused every sensitive key, by the same matching rule the atlas
+            # resolver uses, so nothing is left to pop (#194).
             session = operations.create_action_session(
                 action="create_action_rule", device_id=device_id,
                 payload={"device_id": device_id, "model": model,
