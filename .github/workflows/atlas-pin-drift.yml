@@ -1,0 +1,213 @@
+name: atlas pin drift
+
+# Is the pinned axis-api-atlas SHA behind that repo's HEAD?
+#
+# WHY THIS EXISTS (#232)
+# -----------------------------------------------------------------------------
+# Pinning atlas to a SHA buys reproducibility — `pip freeze` can tell two builds
+# apart, and `git bisect` can tell an ADMZ regression from an atlas one. But a
+# pin with nothing watching it trades a LOUD failure for a SILENT one:
+#
+#   @main   -> a bad atlas commit breaks CI on the next run. Loud, immediate,
+#              and annoying because it breaks an unrelated PR.
+#   @<sha>  -> ADMZ keeps working perfectly on an old catalog while atlas ships
+#              support for new device models. No error, no red CI. Nobody finds
+#              out until someone asks why a new camera is not recognised.
+#
+# The second is the worse failure shape, and nothing else in this repo would
+# ever notice it: atlas is a separate private repo on a DIFFERENT GitHub account
+# (mrdnlabs), which this repo's default identity cannot see, and Dependabot does
+# not cover a cross-account private VCS ref. So the bump is manual, cross-
+# account, and unwatched. This job is what makes it watched.
+#
+# WHY IT OPENS AN ISSUE RATHER THAN PRINTING A WARNING
+# -----------------------------------------------------------------------------
+# A warning inside a green run is invisible. Building one would be rebuilding
+# the exact silent-stale failure above and calling it a fix. An issue is durable,
+# survives the session that noticed, and lands in the owner's attention queue.
+#
+# It deliberately does NOT go red on drift either: a job that is red every day
+# until someone bumps a dependency gets muted, and a muted signal is the same as
+# no signal. Drift is a thing to look at, not a broken build.
+#
+# WHAT IT DELIBERATELY DOES NOT DO
+# -----------------------------------------------------------------------------
+# It does not clone atlas, run the suite against the new HEAD, or open the bump
+# PR. That variant needs a branch push across the dnobj/mrdnlabs identity split
+# plus a 10-12 minute suite on a schedule, and it only saves typing — the whole
+# stated value of a bump mechanism is that a stale pin becomes visible on a
+# schedule rather than on a coincidence, and `git ls-remote` delivers that for
+# one network round-trip. Revisit if bumps become frequent enough to be a chore.
+#
+# NOTE: scheduled workflows only run from the DEFAULT BRANCH, so this does
+# nothing until it is merged. GitHub also disables schedules after 60 days of
+# repository inactivity.
+
+on:
+  schedule:
+    # Mondays 07:17 UTC. Off the hour on purpose — the top of the hour is the
+    # busiest slot on shared runners and schedules get delayed there.
+    - cron: "17 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: atlas-pin-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    name: is the atlas pin behind HEAD?
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require AXIS_API_ATLAS_DEPLOY_KEY
+        env:
+          DEPLOY_KEY: ${{ secrets.AXIS_API_ATLAS_DEPLOY_KEY }}
+        run: |
+          if [ -z "${DEPLOY_KEY}" ]; then
+            echo "::error title=Missing secret AXIS_API_ATLAS_DEPLOY_KEY::Cannot reach mrdnlabs/axis-api-atlas to check for pin drift. Setup procedure: .github/workflows/README.md"
+            exit 1
+          fi
+
+      - name: Configure SSH access to axis-api-atlas
+        env:
+          DEPLOY_KEY: ${{ secrets.AXIS_API_ATLAS_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          # Same mechanism as .github/actions/setup-admz, minus everything this
+          # job does not need (no Python, no install). Kept inline rather than
+          # reusing that action because the action installs the full dependency
+          # set, which is minutes of work to answer a one-line question.
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "${DEPLOY_KEY}" > "$HOME/.ssh/axis_api_atlas"
+          chmod 600 "$HOME/.ssh/axis_api_atlas"
+          ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null
+          chmod 600 "$HOME/.ssh/known_hosts"
+          umask 077
+          cat > "$HOME/.ssh/config" <<SSHCONF
+          Host github.com
+            HostName github.com
+            User git
+            IdentityFile $HOME/.ssh/axis_api_atlas
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile $HOME/.ssh/known_hosts
+          SSHCONF
+          chmod 600 "$HOME/.ssh/config"
+
+      - name: Compare the pin against atlas HEAD
+        id: compare
+        run: |
+          set -euo pipefail
+
+          # setup.py is the single source of truth for the pin (#232). Parsed,
+          # not imported — same reason setup.py parses its own __version__ out
+          # of admz/__init__.py rather than importing the package.
+          PINNED="$(sed -n 's/^ATLAS_SHA = "\([0-9a-fA-F]\{40\}\)".*/\1/p' setup.py | head -1)"
+          if [ -z "${PINNED}" ]; then
+            echo "::error title=Cannot read ATLAS_SHA::setup.py does not contain a line matching 'ATLAS_SHA = \"<40 hex>\"'. If the pin was renamed or reformatted, update this workflow and .github/scripts/assert_atlas_provenance.py together — both parse that exact shape."
+            exit 1
+          fi
+
+          HEAD_SHA="$(git ls-remote ssh://git@github.com/mrdnlabs/axis-api-atlas.git HEAD | awk '{print $1}')"
+          if [ -z "${HEAD_SHA}" ]; then
+            echo "::error title=Could not reach atlas::git ls-remote returned nothing for mrdnlabs/axis-api-atlas. Check the deploy key is still registered on that repo."
+            exit 1
+          fi
+
+          echo "pinned=${PINNED}" >> "$GITHUB_OUTPUT"
+          echo "head=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+
+          if [ "${PINNED}" = "${HEAD_SHA}" ]; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+            echo "Pin is current: ${PINNED}"
+            echo "### atlas pin is current" >> "$GITHUB_STEP_SUMMARY"
+            echo "\`${PINNED}\` == \`mrdnlabs/axis-api-atlas\` HEAD" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+            echo "Pin ${PINNED} is behind HEAD ${HEAD_SHA}"
+            {
+              echo "### atlas pin has drifted"
+              echo
+              echo "| | commit |"
+              echo "|---|---|"
+              echo "| pinned in \`setup.py\` | \`${PINNED}\` |"
+              echo "| \`mrdnlabs/axis-api-atlas\` HEAD | \`${HEAD_SHA}\` |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Open or refresh the drift issue
+        if: steps.compare.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PINNED: ${{ steps.compare.outputs.pinned }}
+          HEAD_SHA: ${{ steps.compare.outputs.head }}
+          TITLE: "axis-api-atlas pin is behind HEAD"
+        run: |
+          set -euo pipefail
+
+          # Match the issue by EXACT TITLE across open issues rather than via
+          # `gh issue list --search`. GitHub's search index lags behind writes by
+          # up to a few minutes, and a stale index here means a duplicate issue
+          # every single week — which is the noise this design is trying to
+          # avoid. Listing and matching in jq is deterministic.
+          #
+          # `gh issue view` is unusable on this repo (GraphQL classic-Projects
+          # deprecation); `gh issue list`/`create`/`comment`/`edit` and `gh api`
+          # are unaffected. Hence `gh api` for the body read below.
+          NUM="$(gh issue list --state open --limit 200 --json number,title \
+                   --jq "map(select(.title == \"${TITLE}\")) | first | .number // empty")"
+
+          BODY="$(cat <<EOF
+          \`setup.py:ATLAS_SHA\` is behind \`mrdnlabs/axis-api-atlas\` HEAD.
+
+          | | commit |
+          |---|---|
+          | pinned | \`${PINNED}\` |
+          | atlas HEAD | \`${HEAD_SHA}\` |
+
+          ADMZ is running an older catalog than atlas ships. Nothing is broken —
+          that is the point. This fails in the stale direction, silently, which is
+          why it gets an issue rather than a log line (#232).
+
+          **To bump:** edit \`ATLAS_SHA\` in \`setup.py\`, run the suite, and say in
+          the PR why atlas moved — a new device model, a fixed operation, or just
+          routine currency. Close this issue when the pin lands; this job reopens
+          the conversation on the next Monday it is still behind.
+
+          **Not urgent by default.** A stale catalog means new hardware may not be
+          recognised; it does not mean anything already working has stopped.
+
+          <sub>Opened automatically by \`.github/workflows/atlas-pin-drift.yml\`.
+          Last observed atlas HEAD: \`${HEAD_SHA}\`</sub>
+          EOF
+          )"
+          # Strip the heredoc's leading indentation.
+          BODY="$(printf '%s\n' "${BODY}" | sed 's/^          //')"
+
+          if [ -z "${NUM}" ]; then
+            gh issue create --title "${TITLE}" --body "${BODY}"
+            echo "Opened a new drift issue."
+            exit 0
+          fi
+
+          # The issue is already open. Refresh its body so it always reflects
+          # current state, but only COMMENT when atlas has actually moved since
+          # the last observation — otherwise a pin left stale for two months
+          # sends eight identical notifications and gets muted.
+          EXISTING="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${NUM}" --jq '.body // ""')"
+          gh issue edit "${NUM}" --body "${BODY}" >/dev/null
+
+          if printf '%s' "${EXISTING}" | grep -qF "${HEAD_SHA}"; then
+            echo "Issue #${NUM} already reports HEAD ${HEAD_SHA} — refreshed body, no comment."
+          else
+            gh issue comment "${NUM}" --body \
+              "atlas has moved again — HEAD is now \`${HEAD_SHA}\`, pin is still \`${PINNED}\`."
+            echo "Issue #${NUM} updated and commented (atlas HEAD moved)."
+          fi

@@ -27,9 +27,18 @@ runs:
         # Both files: requirements-dev.txt only carries `-r requirements.txt`,
         # so keying on it alone would serve a stale cache whenever the real
         # dependency list changes.
+        #
+        # setup.py joined the list in #232. The atlas pin (ATLAS_SHA) lives
+        # there now, not in requirements.txt, so without this a pin bump would
+        # leave the cache key unchanged and a restored cache could serve a wheel
+        # built from the PREVIOUS atlas commit. That is the exact failure the
+        # revision assertion in assert_atlas_provenance.py exists to catch —
+        # this line is what stops it happening in the first place, and the
+        # assertion is the backstop for when it does anyway.
         cache-dependency-path: |
           requirements.txt
           requirements-dev.txt
+          setup.py
 
     - name: Require the axis-api-atlas deploy key
       shell: bash
@@ -126,6 +135,13 @@ runs:
         set -euo pipefail
         python -m pip install --upgrade pip
         python -m pip install -r requirements-dev.txt
+        # axis-api-atlas is NOT in requirements.txt any more (#235). It lives in
+        # the `atlas` extra, so that off-CI installs — the operator's host, a
+        # fresh developer checkout — stop demanding a deploy key that only this
+        # runner has. CI is the machine that HAS the key, so CI is where the
+        # extra gets installed. Everything above this line now works with no
+        # credential at all.
+        python -m pip install -e ".[atlas]"
 
     - name: Assert axis-api-atlas provenance (guards #179)
       shell: bash

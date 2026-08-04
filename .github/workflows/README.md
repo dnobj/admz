@@ -122,9 +122,10 @@ that the `admz` Windows service runs as LocalSystem. That is issue
 
 Three independent latches now prevent CI from reintroducing it:
 
-1. **`requirements.txt` uses a PEP 508 direct reference.** A direct reference
-   never consults an index. With no credential, the git clone fails; there is
-   nothing to silently fall back to.
+1. **The `atlas` extra in `setup.py` uses a PEP 508 direct reference.** A direct
+   reference never consults an index. With no credential, the git clone fails;
+   there is nothing to silently fall back to. (This lived in `requirements.txt`
+   until #235 — see below.)
 2. **`preflight` requires the secret** before any install runs.
 3. **`.github/scripts/assert_atlas_provenance.py`** inspects the *installed*
    package's PEP 610 `direct_url.json` after install. Index installs have no
@@ -135,8 +136,43 @@ The third latch is the important one: latches 1 and 2 check intent, latch 3
 checks what actually landed on disk.
 
 **If CI fails with a missing-credential error, the fix is to add the
-credential.** Relaxing `requirements.txt` back to a bare name would make CI
-green by recreating the vulnerability.
+credential.** Relaxing the reference to a bare name would make CI green by
+recreating the vulnerability.
+
+### What #235 changed, and why latch 3 now carries more weight
+
+The reference moved out of `requirements.txt` and into the `atlas` extra,
+because `git+ssh://` demanded a deploy key that **only CI has** — so
+`pip install -r requirements.txt` failed on the operator's host and on every
+fresh developer setup, after resolving everything else, i.e. mid-operation.
+
+That fix is right, but it has a cost worth stating plainly: the direct reference
+is no longer sitting in the file most people read and edit. Latch 1 is now
+somewhere less obvious, so **latch 3 is the only thing standing between a
+developer typing `pip install axis-api-atlas` and an index install.** Its step
+in `setup-admz` must not become skippable, and it must not be made
+non-blocking to get a red build green.
+
+Two related notes:
+
+- CI installs atlas with `pip install -e ".[atlas]"`. `requirements.txt` alone
+  no longer brings it in — if the provenance script reports "not installed",
+  that step is missing, not the credential.
+- The provenance script's `dir_info` branch accepts **any** local directory
+  without checking it really is atlas. That is a deliberate, accepted hole — a
+  developer pointing pip at a path they control is not the dependency-confusion
+  threat — but #235 promoted local installs from "how some people work" to "the
+  documented default", so the hole is load-bearing in a way it was not before.
+
+### Keeping the pin from rotting
+
+`setup.py:ATLAS_SHA` pins atlas to a commit (#232) so builds are reproducible
+and `git bisect` can separate an ADMZ regression from an atlas one. A pin with
+nothing watching it fails **silently in the stale direction**, so
+[`atlas-pin-drift.yml`](atlas-pin-drift.yml) runs weekly, compares the pin
+against atlas HEAD, and opens or refreshes a single issue when they differ. It
+does not go red on drift — a job that is red every day until someone bumps a
+dependency gets muted, and a muted signal is no signal.
 
 ---
 
