@@ -274,6 +274,60 @@ audit_log = AuditLog()
 
 
 # ---------------------------------------------------------------------------
+# Identifying fields lifted out of an execution outcome envelope
+# ---------------------------------------------------------------------------
+
+#: Keys copied from an operation's outcome envelope into the audit row that
+#: records its execution, so a later drift row for (say) rule 175 joins to the
+#: approval that created it *by id* rather than by correlating the rule name
+#: across two rows by time adjacency (names are not unique, not stable under
+#: on-device rename, and the ``mcp.*`` row is an intent row written
+#: ``success=0`` because that tool only opens a confirm session).
+#:
+#: This is a strict ALLOW-LIST and must stay one. The outcome envelope is not a
+#: fixed shape across operations, and several handlers build their return value
+#: with ``**out`` / ``**result`` spreads — so a deny-list, or a bare
+#: ``**outcome``, would silently admit any key added downstream. Keys that must
+#: never reach a durable audit row today include ``data`` (the parsed device
+#: response), ``steps`` / ``results`` (SOAP traces carrying device error text),
+#: ``task`` (a scheduled job's arbitrary ``action_params``), and ``added`` /
+#: ``fragments`` / ``demo`` (live device config values). Compare #217: a value
+#: reached an audit row because nothing inspected it. Audit rows are durable.
+#:
+#: Only extend this after confirming the key is a short, non-secret identifier.
+OUTCOME_IDENTITY_KEYS = ("rule_id", "config_id", "removed_rule", "removed_config")
+
+
+def outcome_identity_fields(outcome: Any) -> Dict[str, str]:
+    """Allow-listed identifying fields from an operation's outcome envelope.
+
+    Optional by construction. Operations that return none of
+    :data:`OUTCOME_IDENTITY_KEYS` contribute nothing, so their audit row is
+    byte-identical to the one written before this existed — no empty keys, no
+    exception. That matters because this runs for *every* approved operation,
+    not just rule creation.
+
+    Values are accepted only if they are non-empty scalars. ``rule_id`` is
+    parsed off a SOAP response and is never validated at extraction, so it can
+    legitimately be ``None`` on an otherwise successful create; a non-scalar
+    would mean a downstream shape change, and the audit store serializes with
+    ``json.dumps(..., default=str)``, which would happily stringify whatever it
+    was handed. Both are dropped rather than recorded.
+    """
+    if not isinstance(outcome, dict):
+        return {}
+    fields: Dict[str, str] = {}
+    for key in OUTCOME_IDENTITY_KEYS:
+        value = outcome.get(key)
+        if isinstance(value, bool) or not isinstance(value, (str, int)):
+            continue
+        text = str(value).strip()
+        if text:
+            fields[key] = text
+    return fields
+
+
+# ---------------------------------------------------------------------------
 # Helper for handler code: record from a Principal directly
 # ---------------------------------------------------------------------------
 

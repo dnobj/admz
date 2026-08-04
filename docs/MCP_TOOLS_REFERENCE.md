@@ -200,7 +200,9 @@ Search the who-did-what audit log — every operation, **approval**, schedule ru
 recovery, login, and config change. Answers "who factory-defaulted device X?",
 "who approved the reboot of Y?", "what did `<user>` change today?", "what failed
 in the last day?". Read-only. The definitive "who did the destructive thing" row
-is usually `confirm.approve` (carries the approver + device + operation).
+is usually `confirm.approve` (carries the approver + device + operation, and for
+a rule create/delete the `rule_id`/`config_id` it acted on — so "who created rule
+175?" joins by id, not by matching the rule name across rows).
 - **Args (all optional, AND-ed):** `device_id` (matches resource + details),
   `actor` (requester substring), `action` (substring, e.g. `execute_operation`,
   `confirm.approve`, `recovery`), `query` (free text), `within` (`'24h'`/`'7d'`),
@@ -208,7 +210,7 @@ is usually `confirm.approve` (carries the approver + device + operation).
   max 200). Always pass a time range to keep results relevant.
 - **Returns:** `{success, count, window, entries:[{time, actor, auth_source,
   action, resource, success, summary, error}]}` — `summary` is a curated digest
-  (op / approved_by / risk / …), never the raw args.
+  (op / approved_by / risk / rule_id / …), never the raw args.
 - For **drift over time** use `get_drift_alerts` instead — drift transitions live
   in a separate table, not the audit log.
 
