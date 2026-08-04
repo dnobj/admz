@@ -8,10 +8,53 @@
 | `preflight` | ubuntu | The `axis-api-atlas` deploy key exists | yes |
 | `quick` | ubuntu | Every test module and all of `admz/` imports cleanly (`pytest --collect-only`) | yes |
 | `suite (ubuntu-latest)` | ubuntu | Full suite | yes |
-| `suite (windows-latest)` | windows | Full suite on the deployment platform | yes |
+| `suite (windows-latest)` | windows | Full suite on the deployment platform | yes, on any PR that can merge |
 
 `quick` gates `suite`, so a syntax error or bad import costs ~2 minutes instead
 of two full 15-minute runs.
+
+### Which events run which jobs
+
+Windows is **90% of the bill**: 797s wall against Linux's 135s, *and* billed at
+2x, so it is 1,594 of the ~1,770 billable seconds a full-matrix run costs. The
+free-tier private-repo allowance is 2,000 min/month — about 68 full runs — and
+in August 2026 we spent ~60 in a single day and GitHub started refusing jobs
+outright (11s, no steps, no runner). Hence:
+
+| Event | `preflight` | `quick` | `suite` legs | Billable |
+|---|---|---|---|---|
+| `push` to `master` (post-merge) | yes | yes | **skipped** | **0.7 min** |
+| PR — **draft** | yes | yes | ubuntu only | **3.0 min** |
+| PR — **not draft** | yes | yes | ubuntu + windows | 29.5 min |
+| `ready_for_review` | yes | yes | ubuntu + windows | 29.5 min |
+| `workflow_dispatch` | yes | yes | ubuntu + windows | 29.5 min |
+
+**Windows still gates everything that lands.** GitHub will not merge a draft PR,
+so "not a draft" is exactly the set of PRs that can land, and every one of them
+runs Windows. Marking a draft ready re-runs CI — which is why
+`ready_for_review` is listed in the workflow's `types:`, since it is *not* in
+the default set (`opened`, `synchronize`, `reopened`). Remove that line and a
+PR opened as a draft, then marked ready and merged without a further push,
+would never have run Windows while the checks read green.
+
+**Draft-first iteration is an optional saving, not a requirement.** A non-draft
+PR behaves exactly as it always did. Open a PR as a draft while you iterate
+(~3 min a push instead of ~29.5) and mark it ready when you want the real gate.
+`workflow_dispatch` runs the full matrix on any branch if you want Windows
+without leaving draft.
+
+**The post-merge run is not free insurance, so it was cut back.** It re-tested
+code the PR proved green minutes earlier. `preflight` + `quick` still run on
+`master` (~43s) so a merge that breaks an import is attributed to the merge
+rather than surfacing inside the next unrelated PR; the full suite is not
+re-run. The residual gap is merge skew — a PR is tested against its own head,
+not against `master`'s tip — which the next PR's suite will catch, one merge
+late.
+
+> **This repo has no branch protection** (free-tier private; the API returns
+> 403), so *no* workflow arrangement can enforce that Windows passed before a
+> merge. This one only guarantees the result is present and visible at merge
+> time. A human still has to look.
 
 ---
 
