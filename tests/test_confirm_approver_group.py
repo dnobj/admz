@@ -125,7 +125,10 @@ def approve(monkeypatch):
     session = NS(effective_status=C.ConfirmStatus.PENDING, is_plan=False,
                  plan_id="", device_id="d1", operation_id="param.cgi:update",
                  confirmation_level="url_only", risk_level="service-affecting",
-                 token="t1", is_action=False, confirmed_by="")
+                 token="t1", is_action=False, confirmed_by="",
+                 # #270 — the approve row now describes WHAT was approved, so
+                 # the stub needs the real session's payload accessors.
+                 params={}, action={}, plan_summary={})
     calls = {"completed": 0, "executed": 0}
 
     monkeypatch.setattr(C.confirm_store, "get_session", lambda t: session)
