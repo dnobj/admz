@@ -1,6 +1,7 @@
 # ADR-0057 — ACS firings gate on identity, not on a clock
 
-**Status:** Proposed (2026-08-04). Planned in
+**Status:** Accepted (2026-08-04). Shipped with #210 (identity firing + `_seeded`,
+truncation and skew surfaced). Planned in
 [`plans/acs-poller-watermark.md`](../plans/acs-poller-watermark.md); implements GH #210.
 **Relates to:** ADR-0041 (the event subsystem and its ACS seam), ADR-0034 (the confirmation gate —
 `pre_authorized` bounds the blast radius), GH #209 / #249 (never advance a cursor past data that was
@@ -69,9 +70,19 @@ seen — not by its timestamp beating a mark.**
 ## Consequences
 
 **The lookback window becomes a self-healing retry buffer.** Every poll re-fetches the whole window, so
-a firing that fails to fire once — store hiccup, `on_event` raised, ACS delivered it late — is retried
-on the next poll for up to `ACS_LOOKBACK_HOURS`. This is the #209 lesson (never advance past
-unprocessed data) obtained for free: there is no cursor to advance.
+a firing whose **append** failed — or that ACS delivered late — is retried on the next poll for up to
+`ACS_LOOKBACK_HOURS`. This is the #209 lesson (never advance past unprocessed data) obtained for free:
+there is no cursor to advance.
+
+**Amended during implementation (#210).** The Proposed text listed `on_event` raising among the cases
+the buffer covers. It does not: the row is appended *before* the callback runs, so a later poll sees
+`inserted == False` and that firing is never retried. Fixing it properly means either firing before
+appending (which risks a duplicate action if the process dies between the two) or tracking a bounded
+re-fire set — a real design choice that deserves its own record rather than an improvised addition, and
+that this ADR does not make. It is **not a regression**: the mark this replaced had already advanced
+past the firing too. The implementation therefore logs a `on_event` failure at **warning** (once per
+streak) naming it as un-retried, instead of the `debug` line that made it invisible at the default
+level. Tracked as a follow-up.
 
 It also means **a swallowed store error must not be worked around.** `EventStore.append` returns
 `False` both for a duplicate and for a swallowed `sqlite3.Error`. Treating that as "already fired"
