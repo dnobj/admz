@@ -16,9 +16,63 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _observed_rule_keys(doc: Any):
+    """Identities present in an ``action_rules`` facet, or ``None`` if the facet
+    cannot answer the question at all.
+
+    Replaces a substring test (``rid in str(doc)``) that could essentially never
+    report a deleted rule: ``doc`` is the whole parsed facet, so the haystack
+    contained every rule name, ONVIF topic and profile string, and ``rule_id``
+    is a small AXIS integer. ``"2"`` matched ``Camera1Profile2``. See GH #198.
+
+    Both the id **and** the name of every entry are collected, because
+    ``snapshot/facets/action_rules.py``'s ``serialize`` keys the facet by
+    ``str(rule.get("id") or rule.get("name") or i)`` — so on an entry with no
+    id the key, and therefore the only identity available, is the rule's *name*.
+    Matching on ids alone would report a real rule as vanished on that shape.
+
+    Parsing is delegated to :func:`~admz.demos.inference.graph.normalize_device_rule`
+    rather than reimplemented. It already owns the id-resolution chain
+    (``id`` → ``rule_id`` → key) and the AXIS OS <12 firmware asymmetry, and a
+    second parser for one facet is the drift that produced #255 and #274.
+
+    Returns ``None`` — never an empty set — for a doc that is not a rule map or
+    that contains an entry we cannot parse. That distinction is the point: an
+    empty *set* means "readable, and this rule is gone", while ``None`` means
+    "cannot tell". Collapsing the two would manufacture the permanent, false
+    "your rule vanished" this module's docstring already argues against.
+    """
+    if not isinstance(doc, dict):
+        return None
+    from admz.demos.inference.graph import normalize_device_rule
+
+    keys = set()
+    for key in doc:
+        try:
+            r = normalize_device_rule("_", str(key), doc[key])
+        except Exception:  # noqa: BLE001 — one bad entry means we cannot claim absence
+            return None
+        keys.add(str(r.get("rule_id")))
+        if r.get("name"):
+            keys.add(str(r["name"]))
+    return keys
+
+
 def _rules_status(ctx, demo) -> List[Dict[str, Any]]:
-    """Each recorded rule + whether it's still observed on the device's last
+    """Each recorded rule + whether it's still present in the device's last
     audit (``action_rules`` facet). ``observed`` is None when we can't tell.
+
+    **What is actually compared, and where each side comes from.** The left side
+    is the demo's own recorded ``rule_id`` (ADMZ's DB). The right side is the
+    ``action_rules`` facet read from the **git snapshot repo** at the device's
+    ``latest_observed_sha`` — so this is the last *observation* of the device,
+    not the device. That is deliberate and load-bearing: this module never
+    probes (see the module docstring), because the chat has to answer "is the
+    demo set up?" instantly. The consequence to keep in view is that
+    ``observed`` can only ever be as fresh as the last snapshot — a rule deleted
+    since then still reads ``True`` until the device is re-audited. It reports
+    "present as of the last audit", which is weaker than "present now" and is
+    the strongest claim a no-probe check can make.
 
     A membership entry with ``source != "device"`` (#124 slice 3 — an ACS action
     rule an inferred demo links to) is **never** looked for on a device: it does
@@ -38,7 +92,10 @@ def _rules_status(ctx, demo) -> List[Dict[str, Any]]:
                 ref = info.get("latest_observed_sha") or info.get("baseline_sha")
                 doc = ctx.git_repo.read_facet(did, "action_rules", ref) if ref else None
                 if doc is not None:
-                    observed = rid in str(doc)  # id present anywhere in the facet
+                    keys = _observed_rule_keys(doc)
+                    if keys is not None:
+                        name = str(r.get("rule_name") or "")
+                        observed = rid in keys or bool(name and name in keys)
             except Exception:  # noqa: BLE001 — an unreadable facet leaves it "unknown"
                 observed = None
         out.append({"device_id": did, "rule_id": rid, "source": source,
@@ -124,6 +181,25 @@ def setup_status(ctx, demo) -> Dict[str, Any]:
     if not rules:
         nxt.append("Create the demo's rules: create_action_rule with "
                    f"demo='{demo.name}' — the trigger topic becomes its signal.")
+    # A recorded rule the last audit did not contain. Until #198 this branch
+    # could not exist: `observed` was a substring test that essentially never
+    # returned False. Note the branch above keys off `rules` being EMPTY, so
+    # without this one a demo whose rule has vanished still falls through to
+    # the "Demo looks set up" summary — the checklist would carry `observed:
+    # false` in its rules table while its headline said the opposite, which is
+    # the reading that terminates an operator's investigation.
+    # `is False` on purpose: None means "cannot tell" and must not be reported
+    # as a missing rule.
+    vanished = [r for r in rules if r.get("observed") is False]
+    if vanished:
+        labels = ", ".join(
+            f"'{r.get('rule_name') or r.get('rule_id')}' on {r.get('device_id')}"
+            for r in vanished[:3])
+        nxt.append(
+            f"Re-create {len(vanished)} missing rule(s): {labels} "
+            f"{'is' if len(vanished) == 1 else 'are'} recorded for this demo but "
+            "absent from the device's last audit. Re-run check_drift to confirm "
+            "it is still gone, then create_action_rule to restore it.")
     missing_signal = [s for s in signals if not s.get("seen")]
     if signals and missing_signal:
         labels = ", ".join(s.get("label") or "signal" for s in missing_signal[:3])
