@@ -98,10 +98,16 @@ device implicitly binds it (records its role, pulls it into scope).
 2. **No same-key overlap between active demos, even equal values** (409 at
    adopt, naming the holder). Makes future deactivation trivially "push base";
    key-level exclusivity still beats ADR-0046's whole-device "on loan".
-3. **`set` only for param-writable keys already present in the baseline** —
-   `param.cgi` cannot create or delete keys, so a fragment overrides, never
-   invents. API whole-object facets (NTP/SIP) and snapshot-only facets are
-   `require`-only. Enforced at capture (`expected == "<missing>"` → refused).
+3. **`set` only for param-writable keys already present in the baseline *and*
+   still present on the device** — `param.cgi` cannot create or delete keys, so
+   a fragment overrides, never invents and never removes. API whole-object
+   facets (NTP/SIP) and snapshot-only facets are `require`-only. Enforced at
+   capture, **both directions**: `expected == "<missing>"` → refused
+   `not-in-baseline` (would create), `actual == "<missing>"` → refused
+   `vanished-from-device` (would remove — and, once adopted, would suppress
+   that key's drift forever, since attribution then matches `want ==
+   "<missing>"` exactly while the key stays deleted). Only the first half was
+   implemented until #208; the rationale here always covered both.
 4. **Ignored keys can't be assigned**, and an ignore rule added *after* capture
    makes the key invisible to attribution too (never a false "demo broken").
 5. **Device-local values warn**: fragment values embedding the device's own
