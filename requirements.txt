@@ -1,11 +1,41 @@
-hvac>=2.0.0
-cryptography>=41.0.0
+# THE BOUND RULE (issue #227). Every requirement is `>=F,<C`, where C is the
+# next boundary above the version PRODUCTION CURRENTLY RUNS, on that package's
+# own breaking axis:
+#
+#   version >= 1.0   ->  <major+1
+#   version 0.y.z    ->  <0.(minor+1)     (under 0.x, the minor IS the major)
+#
+# Above INSTALLED, not above LATEST. The purpose of the ceiling is that a clean
+# `pip install -r requirements.txt` in CI resolves the set production actually
+# runs. A ceiling above latest leaves CI green on a set production has never
+# executed — which is exactly what #222 caught, when a clean install resolved
+# majors ahead of dev and prod and failed 182 tests on both Linux and Windows.
+#
+# Floors are raised to the installed major (0.x: installed minor) only where
+# they sat BELOW it. A floor under the installed major lets a resolver backtrack
+# legally install a version this code cannot run.
+#
+# Four packages deviate from the rule; each says why on its own line:
+#   fastapi, mcp (bounds shipped in #223 — unchanged here)
+#   python-multipart (0.0.z scheme), google-genai (private API — minor cap)
+#
+# NOTE: setup.py feeds this file into `install_requires`, so these bounds also
+# become the installed distribution's Requires-Dist. They are not CI-only.
+#
+# Bounding these direct requirements does NOT bound transitives — pydantic,
+# starlette, anyio, cffi, h11 and watchfiles remain unbounded except where an
+# upstream happens to cap them. This shrinks the rolling surface; it does not
+# close it. A constraints file is the proportionate follow-up.
 
-# UPPER BOUNDS ARE LOAD-BEARING. fastapi and mcp were lower-bound-only until CI
-# first ran a clean install (2026-08-03) and immediately failed 182 tests on
-# both Linux and Windows. A clean `pip install -r requirements.txt` resolved
-# majors far ahead of what dev and production actually ran, and ADMZ did not
-# work on them. PR #222 pinned both; #223 is removing the pins one at a time.
+hvac>=2.0.0,<3            # installed 2.4.0 (= latest). Vault client for credential-at-rest.
+cryptography>=46.0.0,<47  # installed 46.0.5; latest 50.0.0 is FOUR majors ahead. Fernet
+                          # credential-at-rest + hazmat in the GitHub App client. Floor
+                          # raised from >=41 (five majors below installed): a backtrack to
+                          # 41 must not be legal on this path. 50 also needs cffi>=2.0.0,
+                          # i.e. a native rebuild on Windows, not just a Python-level major.
+
+# fastapi and mcp: bounds shipped in #222 and resolved in #223. UNCHANGED by
+# #227 — the reasoning below is merged and still current.
 #
 # fastapi: RESOLVED (#223, Starlette half). ADMZ's 70 `TemplateResponse(name,
 #   context)` call sites were migrated to the Starlette 1.x
@@ -18,6 +48,10 @@ cryptography>=41.0.0
 #   production's existing 0.129 venv stays in spec while a clean install now
 #   correctly resolves 0.141+. The `<1` cap is the lesson of #222 kept rather
 #   than discarded — bounded at the next major boundary, not unbounded again.
+#
+#   This is the one package where CI does NOT test what production runs: a
+#   clean install resolves 0.141 while production stays on 0.129. That is
+#   #223's deliberate choice, not an oversight of the rule above.
 #
 # mcp: RESOLVED (#223, mcp half). The 1.x low-level decorators
 #   `@server.list_tools()` / `@server.call_tool()` are gone; handlers are now
@@ -34,21 +68,31 @@ cryptography>=41.0.0
 #   no signature that satisfies both majors, so this one really is a floor. The
 #   `<3` cap keeps #222's lesson rather than discarding it.
 #
+#   mcp 2.0.0 pins `mcp-types==2.0.0` exactly, so `<3` transitively bounds that
+#   too. `mcp-types` is a NEW package that appears in the venv on upgrade.
+#
 #   Note for whoever raises this next: 2.0 also dropped the SDK-side
 #   `jsonschema.validate(arguments, tool.inputSchema)` that 1.x ran before every
 #   tool dispatch. admz/mcp/server.py now performs that check itself — do not
 #   delete it assuming the SDK still does it.
 fastapi>=0.104.0,<1
-uvicorn[standard]>=0.24.0
-jinja2>=3.1.2
-python-multipart>=0.0.6
+uvicorn[standard]>=0.40.0,<0.41  # installed 0.40.0; latest 0.52.1. Pre-1.0, so EVERY minor
+                          # is a permitted breaking change and `<1` would be useless. Floor
+                          # raised from >=0.24 (16 minors below installed). One-minor window
+                          # is deliberate: it needs bumping, but the bump is visible and CI
+                          # proves it. Widen only with CI green on the wider range.
+jinja2>=3.1.2,<4          # installed 3.1.6 (= latest). Template engine for every HTML route.
+python-multipart>=0.0.6,<0.1  # installed 0.0.22; latest 0.0.32. EXCEPTION to the rule: this
+                          # project has never left 0.0.z, so the rule would emit `<0.0.23`.
+                          # `<0.1` is the real next boundary. Form parsing for POST routes.
 mcp>=2.0,<3
-pyyaml>=6.0
+pyyaml>=6.0,<7            # installed 6.0.3 (= latest). Config load/save.
 
 # Tool-argument JSON-Schema validation in admz/mcp/server.py. Already present
 # transitively via mcp, but pinned explicitly because admz imports it directly
-# — same rule as `websockets` below.
-jsonschema>=4.20.0
+# — same rule as `websockets` below. mcp 2.0 dropped its own pre-dispatch
+# validate(), so this is now load-bearing rather than belt-and-braces.
+jsonschema>=4.20.0,<5     # installed 4.26.0 (= latest).
 
 # Axis API knowledge base — the executable catalog + intent resolver +
 # (model,firmware) capability matrix, now the single source of truth
@@ -67,31 +111,54 @@ jsonschema>=4.20.0
 # AXIS_API_ATLAS_DEPLOY_KEY (see .github/workflows/ci.yml).
 # Local dev: `pip install -e ../axis-api-atlas` takes precedence over this line
 # and needs no credential — see README "Installation".
+#
+# #227 proposed pinning `@main` to a SHA. DEFERRED — it needs a bump mechanism
+# to be a net improvement, because an unwatched cross-account SHA fails SILENTLY
+# in the stale direction. Tracked separately; see the follow-up issue. The #179
+# property comes from the direct reference, not from the SHA, so deferring costs
+# nothing security-wise. It does mean a rebuild still pulls whatever atlas HEAD
+# is at the time — use `pip install --dry-run --report` to see the commit first.
 axis-api-atlas @ git+ssh://git@github.com/mrdnlabs/axis-api-atlas.git@main
 
 # LDAP (optional — only used when ADMZ_LDAP_ENABLED=true for Windows
 # IWA group enrichment). Pure-Python so no native deps.
-ldap3>=2.9.1
+ldap3>=2.9.1,<3           # installed 2.9.1 (= latest).
 
 # Network discovery (all optional — discovery degrades gracefully)
-zeroconf>=0.131.0
-WSDiscovery>=2.0.0
-httpx>=0.27.0
-scapy>=2.5.0
-pysnmp>=6.0.0
+zeroconf>=0.148.0,<0.149  # installed 0.148.0; latest 0.150.0. Pre-1.0 minor axis, same as
+                          # uvicorn. Floor raised from >=0.131 (17 minors below installed).
+WSDiscovery>=2.0.0,<3     # installed 2.1.2 (= latest).
+httpx>=0.28.0,<0.29       # installed 0.28.1 (= latest). Pre-1.0 minor axis. Floor raised
+                          # from >=0.27. Every outbound VAPIX call goes through this.
+scapy>=2.5.0,<3           # installed 2.7.0 (= latest).
+pysnmp>=7.0.0,<8          # installed 7.1.22; latest 7.1.28. Floor raised from >=6.0.0,
+                          # which sat a full major BELOW installed — pysnmp 6 and 7 differ
+                          # in the async API this code calls.
 
 # ADR-0041: outbound WebSocket client for the live device-event stream
 # (VAPIX ws-data-stream). Already present transitively via google-genai;
 # pinned explicitly since admz/events/wsstream.py depends on it directly.
-websockets>=13.0
+websockets>=16.0,<17      # installed 16.0. Floor raised from >=13.0 (three majors below).
+                          # NB: 17.0.1 is already unreachable — google-genai requires
+                          # websockets<17.0 in both 2.5.0 and 2.16.0. This cap is a no-op
+                          # today and becomes load-bearing the moment google-genai relaxes.
+                          # `uvicorn[standard]` also pulls websockets, but as a FLOOR
+                          # (>=10.4) — extras raise floors, they do not impose ceilings, so
+                          # there is no conflict between that pull and this cap.
 
 # ADR-0041 (ACS Pro module, optional): read-only reader for ACS Pro's embedded
 # Firebird databases — named action-rule firings without a per-rule edit. Only
 # used when acs_firebird_enabled is on (Windows hosts running ACS); imported
 # lazily inside admz/modules/acs_pro/firebird.py so non-ACS hosts never need it.
-firebird-driver>=1.10; platform_system == "Windows"
+firebird-driver>=2.0,<3; platform_system == "Windows"  # installed 2.0.3 (= latest). Floor
+                          # raised from >=1.10, a full major below installed.
 
 # Chatbot LLM client — Gemini 3.1 + native MCP tool surface.
 # Optional: the /chat route is disabled when no API key is configured,
 # and the package itself is only imported lazily inside admz/chatbot/.
-google-genai>=1.55
+google-genai>=2.5.0,<2.6  # installed 2.5.0; latest 2.16.0. EXCEPTION to the rule: capped at
+                          # the MINOR, not the major. admz/chatbot/client.py:254 imports the
+                          # PRIVATE `_api_client` module, which carries no compatibility
+                          # promise at any boundary — so `<3` would not protect it. Floor
+                          # raised from >=1.55 (a major below installed). Raising this cap
+                          # means re-checking that import, every time.
