@@ -36,6 +36,9 @@ Two latches against it:
 * :func:`test_inventory_is_complete` rediscovers the store modules from source
   and fails if the union of CONVERTED and PENDING does not cover them. Store #18
   cannot appear without being listed, even mid-conversion.
+* :func:`test_importing_the_module_creates_nothing` asserts the import surface
+  was *real* (``LOADED > 5``) before believing the absence, so it cannot pass by
+  importing nothing.
 
 ## Why these are subprocess tests
 
@@ -88,11 +91,24 @@ CONVERTED: dict[str, StoreSpec] = {
             "input_tokens=1, output_tokens=2)"
         ),
     ),
+    # Stage 2 (#258). Highest blast radius — imported at module scope by ~15
+    # modules in admz/ and reached from ~120 sites — so it moves early, to keep
+    # the window where it uses the old idiom and others use the new one short.
+    "admz.fleet_settings": StoreSpec(
+        cls="FleetSettings",
+        exercise="s.set('probe_key', 'probe_value')",
+    ),
+}
+
+#: Modules whose *import* provably creates nothing. Strictly smaller than
+#: CONVERTED: import purity needs a module's whole TRANSITIVE store graph
+#: converted, not just its own store. Stage 1 assumed otherwise; stage 2 is the
+#: first module to actually earn a place here.
+IMPORT_PURE: set[str] = {
+    "admz.fleet_settings",
 }
 
 PENDING: set[str] = {
-    # Stage 2
-    "admz.fleet_settings",
     # Stage 3 — the remaining eager stores
     "admz.api.capture",
     "admz.api.confirm_store",
@@ -170,6 +186,16 @@ class TestInventory:
         so an empty CONVERTED would silently skip the whole file."""
         assert CONVERTED
 
+    def test_import_pure_is_a_subset_of_converted(self):
+        """A module cannot be import-pure while its own store still does I/O.
+        Stops someone promoting a module into IMPORT_PURE ahead of its store."""
+        assert IMPORT_PURE <= set(CONVERTED)
+
+    def test_import_pure_is_not_empty(self):
+        """Anti-vacuity for the import-purity parametrisation, which would
+        collect nothing — and so assert nothing — if IMPORT_PURE emptied."""
+        assert IMPORT_PURE
+
 
 @pytest.mark.parametrize("module", sorted(CONVERTED))
 class TestConvertedStores:
@@ -237,21 +263,55 @@ class TestConvertedStores:
         )
 
 
+@pytest.mark.parametrize("module", sorted(IMPORT_PURE))
+def test_importing_the_module_creates_nothing(module, tmp_path):
+    """The structural guarantee, for modules that have earned it.
+
+    Not merely "the store does no I/O" — *importing the module*, with every
+    transitive import it drags in, must leave the filesystem untouched.
+    """
+    home = tmp_path / "never-created"
+    assert not home.exists(), "the fixture must start with NO ADMZ_HOME"
+    result = _run(
+        f"import os\n"
+        f"from pathlib import Path\n"
+        f"import {module}\n"
+        f"import sys\n"
+        f"loaded = len([m for m in sys.modules if m.startswith('admz')])\n"
+        f"print('LOADED', loaded)\n"
+        f"print('EXISTS', Path(os.environ['ADMZ_HOME']).exists())\n",
+        home,
+    )
+    assert result.returncode == 0, result.stderr
+    # Anti-vacuity: "nothing was created" is trivially true if nothing was
+    # imported. Prove the import surface was real before believing the absence.
+    loaded = int(result.stdout.split("LOADED")[1].split()[0])
+    assert loaded > 5, f"import surface was only {loaded} admz modules"
+    assert "EXISTS False" in result.stdout
+    assert not home.exists()
+
+
 class TestStagingTripwire:
     """Characterisation of what is NOT yet true, so the sequence enforces itself.
 
-    ``admz.chatbot.usage`` imports ``admz.fleet_settings`` at module level, and
-    fleet_settings is stage 2. So *importing* the stage-1 module still creates
-    ADMZ_HOME even though constructing its store does not.
+    Constructing ``TokenUsageStore`` does no I/O (stage 1), and
+    ``admz.fleet_settings`` is now import-pure (stage 2). But *importing*
+    ``admz.chatbot.usage`` still creates ADMZ_HOME, because
+    ``admz/chatbot/__init__.py`` re-exports from the package and pulls in
+    ``admz.chatbot.sessions`` — a **stage 3** store.
 
-    That is the honest state, and it is asserted rather than glossed: module
-    import-purity is only reachable once a module's whole transitive store
-    graph is converted. This test **must be inverted in stage 2** — when
-    fleet_settings lands, importing this module will stop creating anything and
-    this test will fail, which is exactly the reminder the next author needs.
+    Stage 1 asserted this tripwire and named ``fleet_settings`` as the reason.
+    That was measured from ``usage.py``'s own imports and missed the package
+    ``__init__``, so the reason was incomplete — converting fleet_settings did
+    not flip it. The tripwire is what surfaced that, which is the point of
+    having one.
+
+    **Invert this in stage 3**, when ``admz.chatbot.sessions`` converts:
+    importing the module will stop creating anything, this test will fail, and
+    ``admz.chatbot.usage`` moves into :data:`IMPORT_PURE`.
     """
 
-    def test_importing_the_stage1_module_still_creates_admz_home(self, tmp_path):
+    def test_importing_chatbot_usage_still_creates_admz_home(self, tmp_path):
         home = tmp_path / "never-created"
         assert not home.exists()
         result = _run(
@@ -263,12 +323,12 @@ class TestStagingTripwire:
         )
         assert result.returncode == 0, result.stderr
         assert "EXISTS True" in result.stdout, (
-            "importing admz.chatbot.usage no longer creates ADMZ_HOME — "
-            "if admz.fleet_settings has been converted (stage 2), delete this "
-            "tripwire and add a real module-import-purity assertion instead"
+            "importing admz.chatbot.usage no longer creates ADMZ_HOME — if "
+            "admz.chatbot.sessions has been converted (stage 3), delete this "
+            "tripwire and add 'admz.chatbot.usage' to IMPORT_PURE instead"
         )
 
-    def test_the_transitive_dependency_is_named_in_pending(self):
+    def test_the_remaining_transitive_dependency_is_named_in_pending(self):
         """Pins the reason above to the inventory, so the tripwire cannot be
-        deleted without fleet_settings actually having moved."""
-        assert "admz.fleet_settings" in PENDING
+        deleted without the store that actually causes it having moved."""
+        assert "admz.chatbot.sessions" in PENDING
