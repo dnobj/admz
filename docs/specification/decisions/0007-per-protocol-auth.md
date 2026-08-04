@@ -53,6 +53,52 @@ def _resolve_auth(device, credentials, scheme="http"):
 Legacy `auth_method` (a single string) is supported as fallback for
 devices added before the per-protocol probe existed.
 
+### Amendment 2026-08-04 — a profile may not be *learned* down to Basic on a plaintext channel (#171)
+
+The decision above says the stored profile is detected from the device's own
+`WWW-Authenticate` header, and `_send_self_healing` re-detects it on a 401 at
+request time. That header is **attacker-controlled**: anything answering at the
+device's address can offer `Basic realm="x"`, and ADMZ would relearn Basic and
+retry — with `httpx.BasicAuth`, which sends
+`Authorization: Basic base64(user:pass)` **preemptively on the first request**.
+Under Digest the password never crosses the wire at all, so this is a genuine
+escalation rather than a restatement of network access, and it persists.
+
+**The bound:** the executor refuses to **learn** `basic` from a challenge when
+the channel is not TLS. It proceeds without learning and returns the 401; it
+does not raise, because the request genuinely did 401 and every caller already
+handles that.
+
+Three things this deliberately does *not* do, each load-bearing:
+
+1. **It does not refuse to *use* Basic over HTTP.** A device whose stored
+   profile already says `{"http": "basic"}` — because an operator configured it,
+   or the `credential_probe` detected it on first contact — authenticates on the
+   first attempt and never reaches the relearn branch. That is the operator's
+   escape hatch, and it is why the rule can ship without a pin surface.
+2. **It is not a "protection may only increase" ratchet.** Such a rule would
+   strand any camera legitimately reconfigured downward, break the *safe*
+   Digest→Basic-over-HTTPS relearn (the Axis "Recommended" posture this ADR
+   exists to support), and still not prevent the leak — the credential is sent
+   before the learned profile is ever evaluated. It looks stronger and is
+   strictly worse.
+3. **It does not touch Digest→Basic over HTTPS.** That is the Axis default and
+   the plaintext rides inside TLS. With `ADMZ_VERIFY_SSL=false` an on-path
+   attacker can still terminate that TLS and read it; that is a known residual,
+   not something this amendment closes.
+
+The narrowness is affordable precisely *because* of the policy recorded in
+Context above: Axis's "Recommended" policy mandates digest-over-HTTP and
+basic-over-HTTPS, so Basic-over-plaintext is the one combination that is both
+dangerous and abnormal — not a posture a stock Axis device adopts.
+
+Because the credential is spent before persistence, the check sits in
+`_send_self_healing` *before the retry is issued*. Anything acting at
+persistence time is too late; see ADR-0039, which owns that half.
+
+Full reasoning, the measurement, and the residual leaks this does not close:
+[plans/auth-downgrade-defence.md](../plans/auth-downgrade-defence.md).
+
 ## Consequences
 
 **Positive:**

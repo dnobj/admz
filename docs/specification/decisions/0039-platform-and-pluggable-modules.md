@@ -73,6 +73,15 @@ executor's `self_heals()` (default **True** on `BaseExecutor`; a no-op for
 VAPIX, the seam for ACS Pro to return False). A module's `self_heals()` must
 agree with its executor's.
 
+**This gate decides whether a relearned profile is *persisted*; it cannot
+decide whether a credential was *spent*.** By the time `learned_auth` reaches
+`run_execution_tail`, the request that produced it has already been sent. So a
+constraint on *what may be learned* has to live in the executor, before the
+retry is issued — see the #171 amendment in
+[ADR-0007](0007-per-protocol-auth.md), which bounds the challenge-driven relearn
+away from Basic-over-plaintext. Do not attempt to enforce that class of rule
+here: this side of the boundary is structurally too late.
+
 ### MCP dispatch is now table-driven
 
 `call_tool`'s 52-arm `if/elif name ==` chain became a single lookup into

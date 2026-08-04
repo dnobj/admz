@@ -129,6 +129,200 @@ async def test_wrong_password_not_persisted():
     assert learned is None
 
 
+# --- GH #171: refuse to LEARN Basic over a plaintext channel ---------------
+#
+# The property under test is "no `Authorization: Basic` crossed the wire", so
+# every assertion below is made against the requests the transport actually
+# SAW, not against the return value. Asserting on the return value alone would
+# pass just as happily if the executor had never sent anything at all.
+#
+# Each refusal case is therefore paired with a positive assertion that the
+# Digest attempt DID happen. That pairing is the anti-vacuity control: without
+# it, "no Basic on the wire" is trivially true for a test that makes no
+# request, and the rule could be deleted entirely without the test noticing.
+
+
+def _recording_handler(*, accept_basic: bool = True, challenge: str = 'Basic realm="x"'):
+    """A device that 401s with `challenge` until Basic arrives.
+
+    Returns (handler, seen) where `seen` accumulates the Authorization header
+    of every request the transport received, in order — `None` for none.
+    """
+    seen: list = []
+
+    def handler(request):
+        seen.append(request.headers.get("authorization"))
+        if accept_basic and (request.headers.get("authorization") or "").startswith("Basic "):
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(401, headers={"WWW-Authenticate": challenge})
+
+    return handler, seen
+
+
+def _basic_creds_on_wire(seen) -> list:
+    return [a for a in seen if a and a.startswith("Basic ")]
+
+
+@pytest.mark.asyncio
+async def test_basic_challenge_over_plain_http_sends_no_credential():
+    """The #171 harm itself: a Basic challenge on http must not spend the password."""
+    handler, seen = _recording_handler()
+    device = {"auth": {"http": "digest", "scheme": "http"}, "device_id": "DEV"}
+
+    resp, learned = await _heal(_exe(handler), device, scheme="http", port=80)
+
+    # The harm is blocked...
+    assert _basic_creds_on_wire(seen) == [], (
+        "a Basic credential reached the wire over plaintext http")
+    assert learned is None, "a plaintext Basic downgrade was persisted"
+    assert resp.status_code == 401, "the caller must still see the 401"
+
+    # ...and NOT because nothing happened. Exactly one attempt was made, and it
+    # was the Digest one. If this assertion is ever relaxed, the two above stop
+    # proving anything.
+    assert len(seen) == 1, f"expected exactly the digest attempt, saw {seen!r}"
+
+
+@pytest.mark.asyncio
+async def test_basic_challenge_over_https_still_relearns():
+    """The rule must not over-fire: the same challenge on TLS is permitted."""
+    handler, seen = _recording_handler()
+    device = {"auth": {"https": "digest", "scheme": "https"}, "device_id": "DEV"}
+
+    resp, learned = await _heal(_exe(handler), device, scheme="https", port=443)
+
+    assert resp.status_code == 200
+    assert learned == {"scheme": "https", "https": "basic"}
+    # The mirror image of the test above, on the same fixture: here the Basic
+    # credential SHOULD have been sent. This is what makes the pair meaningful.
+    assert len(_basic_creds_on_wire(seen)) == 1
+    assert len(seen) == 2, f"expected digest then basic, saw {seen!r}"
+
+
+@pytest.mark.asyncio
+async def test_digest_challenge_over_plain_http_still_relearns():
+    """Only Basic is refused. Relearning Digest over http is untouched.
+
+    Starts from ``none`` so nothing is sent preemptively and the first request
+    is genuinely unauthenticated — the point is that a plaintext channel does
+    not by itself block a relearn, only a relearn *to Basic* does.
+    """
+    seen: list = []
+
+    def handler(request):
+        auth = request.headers.get("authorization")
+        seen.append(auth)
+        if auth and auth.startswith("Digest "):
+            return httpx.Response(200, json={"ok": True})
+        # httpx.DigestAuth sends nothing until challenged; this 401 is what
+        # triggers its second, authenticated request.
+        return httpx.Response(
+            401, headers={"WWW-Authenticate": 'Digest realm="x", nonce="n"'})
+
+    device = {"auth": {"http": "none", "scheme": "http"}, "device_id": "DEV"}
+    resp, learned = await _heal(_exe(handler), device, scheme="http", port=80)
+
+    assert resp.status_code == 200
+    assert learned == {"scheme": "http", "http": "digest"}
+    assert _basic_creds_on_wire(seen) == [], "no Basic should appear on this path"
+
+
+@pytest.mark.asyncio
+async def test_explicitly_configured_basic_over_http_still_works():
+    """The escape hatch, and the limit of the rule.
+
+    The rule refuses to *learn* Basic over plaintext; it does not refuse to
+    *use* it. A device an operator has deliberately configured as
+    ``{"http": "basic"}`` authenticates on the first attempt, so the relearn
+    branch is never reached. This is what an operator does today when a device
+    genuinely requires Basic over HTTP, and it is why D1 can ship before D2's
+    pin exists.
+    """
+    handler, seen = _recording_handler()
+    device = {"auth": {"http": "basic", "scheme": "http"}, "device_id": "DEV"}
+
+    resp, learned = await _heal(_exe(handler), device, scheme="http", port=80)
+
+    assert resp.status_code == 200
+    assert learned is None, "nothing was learned; the profile was already right"
+    assert len(_basic_creds_on_wire(seen)) == 1, (
+        "an explicitly configured Basic-over-http device must still authenticate")
+
+
+@pytest.mark.asyncio
+async def test_refusal_survives_a_scheme_flip_to_http():
+    """The refusal keys off the channel actually in use, not the starting one.
+
+    https is refused at the TCP level, so the executor flips to http and *then*
+    meets the Basic challenge. `scheme` has been reassigned by that point, and
+    the rule must see the post-flip value. Reading the parameter the function
+    was called with instead would leak the credential on exactly the path #171
+    describes.
+    """
+    handler_inner, seen = _recording_handler()
+
+    def handler(request):
+        if request.url.scheme == "https":
+            raise httpx.ConnectError("refused", request=request)
+        return handler_inner(request)
+
+    device = {"auth": {"http": "digest", "https": "digest", "scheme": "https"},
+              "device_id": "DEV"}
+    resp, learned = await _heal(_exe(handler), device, scheme="https", port=443)
+
+    assert _basic_creds_on_wire(seen) == []
+    assert resp.status_code == 401
+    # The scheme correction is still learned — only the Basic method is refused.
+    assert learned == {"scheme": "http", "http": "digest"}
+
+
+@pytest.mark.asyncio
+async def test_refusal_logs_a_warning_without_the_credential():
+    """The refusal must be loud, and must not itself leak.
+
+    The warning names the device and what was refused; it must never carry the
+    password, and it must not echo the attacker-controlled challenge verbatim.
+    """
+    handler, _ = _recording_handler()
+    device = {"auth": {"http": "digest", "scheme": "http"}, "device_id": "DEV"}
+
+    import logging
+    records: list = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    log = logging.getLogger("admz.executor.vapix")
+    cap = _Capture()
+    log.addHandler(cap)
+    try:
+        await _heal(_exe(handler), device, scheme="http", port=80)
+    finally:
+        log.removeHandler(cap)
+
+    warns = [m for m in records if "Refusing to relearn Basic" in m]
+    assert len(warns) == 1, f"expected exactly one refusal warning, got {records!r}"
+    assert "DEV" in warns[0] and "#171" in warns[0]
+    assert "pw" not in warns[0], "the warning leaked the password"
+    assert "realm" not in warns[0], "the warning echoed the raw challenge header"
+
+
+@pytest.mark.parametrize("scheme,plaintext", [
+    ("http", True),
+    ("https", False),
+    ("HTTPS", False),   # case-folded before comparing
+    (" https ", False),
+    ("HTTP", True),
+    ("", True),         # fail closed: unknown scheme is treated as plaintext
+    (None, True),
+    ("ftp", True),
+])
+def test_is_plaintext_channel(scheme, plaintext):
+    from admz.executor.vapix import _is_plaintext_channel
+    assert _is_plaintext_channel(scheme) is plaintext
+
+
 # --- persistence via run_execution_tail ------------------------------------
 
 

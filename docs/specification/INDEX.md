@@ -113,7 +113,7 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 
 ### Authentication & secrets
 
-- [0007 — Per-protocol auth detection and storage](decisions/0007-per-protocol-auth.md)
+- [0007 — Per-protocol auth detection and storage](decisions/0007-per-protocol-auth.md) — amended 2026-08-04 (#171): the `WWW-Authenticate` header the profile is detected from is attacker-controlled, so the executor refuses to **learn** Basic from a challenge on a non-TLS channel. Narrow on purpose — it does not refuse to *use* a configured Basic-over-HTTP profile (the operator's escape hatch), and is not a downgrade ratchet, which would strand a legitimately reconfigured camera and still leak
 - [0009 — Out-of-band credential capture via one-time URL](decisions/0009-oob-credential-capture.md)
 - [0010 — Fernet at-rest encryption with auto-generated keys](decisions/0010-fernet-encryption.md)
 - [0014 — Configurations in git, credentials never in git](decisions/0014-config-in-git-creds-in-db.md)
