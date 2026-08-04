@@ -69,6 +69,18 @@ def _ctx(tmp_path):
     return SimpleNamespace(watched_event_store=_store(tmp_path))
 
 
+async def _anon_principal(req):
+    """Resolve to the synthetic anonymous principal that
+    ``ADMZ_AUTH_BACKEND=none`` — the documented default — hands every
+    request. This is the exact condition ``require_authenticated_principal``
+    exists to refuse, so tests using it run the REAL gate (never the
+    ``lambda p: None`` stand-in the happy-path tests below install).
+    """
+    from admz.auth import Principal
+    return Principal(name="anonymous", display_name="anonymous",
+                     source="none", is_anonymous=True)
+
+
 def test_route_create_requires_authenticated_principal(tmp_path, monkeypatch):
     from fastapi import HTTPException
     import admz.auth as auth
@@ -81,6 +93,51 @@ def test_route_create_requires_authenticated_principal(tmp_path, monkeypatch):
     with pytest.raises(HTTPException) as ei:
         _run(route.create_watched_event(req, SimpleNamespace(), _ctx(tmp_path)))
     assert ei.value.status_code == 403
+
+
+def test_route_update_requires_authenticated_principal(tmp_path, monkeypatch):
+    """PATCH refuses an anonymous caller with the real gate in place (#211).
+
+    ``test_route_patch_delete_404_on_unknown`` neutralizes
+    ``require_authenticated_principal`` so it can reach the store's 404 path;
+    this is its paired guard. Asserting 403 on an id that does NOT exist is
+    what makes it load-bearing: without the gate the same call returns 404,
+    so the assertion can only pass if line 65 ran first.
+    """
+    from fastapi import HTTPException
+    import admz.auth as auth
+    from admz.api.routes import watched_events as route
+
+    monkeypatch.setattr(auth, "get_current_principal", _anon_principal)
+
+    class _Req:
+        async def json(self):
+            return {"name": "x"}
+
+    with pytest.raises(HTTPException) as ei:
+        _run(route.update_watched_event("nope", _Req(), _ctx(tmp_path)))
+    assert ei.value.status_code == 403
+
+
+def test_route_delete_requires_authenticated_principal(tmp_path, monkeypatch):
+    """DELETE refuses an anonymous caller with the real gate in place (#211).
+
+    Same shape as the PATCH guard above, and the id is deliberately real:
+    without the gate the delete would succeed (200) and destroy the row, so
+    the surviving row is second evidence that line 83 ran.
+    """
+    from fastapi import HTTPException
+    import admz.auth as auth
+    from admz.api.routes import watched_events as route
+
+    ctx = _ctx(tmp_path)
+    wid = ctx.watched_event_store.create(_we(name="keep me"))
+    monkeypatch.setattr(auth, "get_current_principal", _anon_principal)
+
+    with pytest.raises(HTTPException) as ei:
+        _run(route.delete_watched_event(wid, SimpleNamespace(), ctx))
+    assert ei.value.status_code == 403
+    assert ctx.watched_event_store.get(wid) is not None  # not deleted
 
 
 def test_route_create_does_not_enable_ingest(tmp_path, monkeypatch):

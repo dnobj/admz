@@ -28,6 +28,25 @@ def client(monkeypatch):
     gh_client.clear_token_cache()
 
 
+@pytest.fixture
+def anon_client(monkeypatch):
+    """Like ``client`` but with the REAL ``require_authenticated_principal``
+    still installed (#211).
+
+    ``client`` neutralizes the gate so the happy-path tests can run without
+    constructing a principal — which left ``_require_principal`` (github_app.py
+    line 87) unexecuted by every test in this file. Under
+    ``ADMZ_AUTH_BACKEND=none``, the documented default, the middleware resolves
+    each request to the synthetic *anonymous* principal and lets it through, so
+    that in-route gate is the only thing standing between an unauthenticated
+    caller and the fleet's config-push credentials. These requests are
+    therefore the genuine article: real backend, real principal, real gate.
+    """
+    monkeypatch.setenv("ADMZ_AUTH_BACKEND", "none")
+    with TestClient(main_module.app, follow_redirects=False) as c:
+        yield c
+
+
 # ---------------------------------------------------------------------------
 # Signed state (pure)
 # ---------------------------------------------------------------------------
@@ -184,6 +203,41 @@ class TestRefresh:
         j = r.json()
         assert j["ok"] is True and j["repo"] == "o/r" and j["connected"] is True
         assert gh_secrets.get_installation_id() == "7"
+
+
+class TestAnonymousRefused:
+    """One guard per route that goes through ``_require_principal`` (#211).
+
+    Deleting ``require_authenticated_principal(principal)`` from
+    ``_require_principal`` — or dropping the ``await _require_principal(request)``
+    from any single route below — turns the corresponding test red. Before
+    these existed, all of that could be deleted with the suite still green.
+
+    The two OAuth callbacks are deliberately absent: they are on the auth
+    exemption list by design (asserted in ``test_callback_paths_are_auth_exempt``)
+    because GitHub calls them, and they authenticate on signed state / App JWT
+    instead.
+    """
+
+    def test_anonymous_connect_403(self, anon_client):
+        r = anon_client.get("/api/github/connect")
+        assert r.status_code == 403
+        assert "authenticated" in r.json()["detail"].lower()
+
+    def test_anonymous_refresh_403(self, anon_client):
+        # No app is registered, so without the gate this returns 200
+        # {"ok": false} — 403 can only come from the gate.
+        r = anon_client.post("/api/github/refresh")
+        assert r.status_code == 403
+
+    def test_anonymous_test_403(self, anon_client):
+        # Likewise: not connected → 200 {"ok": false} if the gate is gone.
+        r = anon_client.post("/api/github/test")
+        assert r.status_code == 403
+
+    def test_anonymous_disconnect_403(self, anon_client):
+        r = anon_client.post("/api/github/disconnect")
+        assert r.status_code == 403
 
 
 class TestSettingsCard:
