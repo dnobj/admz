@@ -189,7 +189,31 @@ Both flagged risks checked and clear:
   `admz.db` (read-only) for a literal `admzdmz`. **None.** No analogue to ADR-0042's
   `organizations.repo_path` migration is needed.
 
-### Slice 3 — STATUS: BLOCKED on elevation, 2026-08-04
+### Slice 3 — STATUS: DONE, 2026-08-04
+
+Production runs from `C:\admz\admz-prod` on its own venv. Verified independently of the
+script's own report: the service configuration points there, `admz-prod`'s `python.exe` is
+**locked** by a running process while the dev one is **not**, and the fleet poll resumed
+against live devices with `/` returning its usual `401` challenge.
+
+The route there took two failed attempts, both worth recording because each failure was in
+the *tooling*, not the change:
+
+1. **`sc.exe config` returned 1639** (`ERROR_INVALID_COMMAND_LINE`). The binPath is 411
+   characters and contains embedded quotes, which does not survive PowerShell argument
+   marshalling. Use `Invoke-CimMethod -MethodName Change`, which passes the string as a
+   parameter rather than a command line.
+2. **The first elevated script never ran.** It was written UTF-8 without a BOM and
+   contained em-dashes; PowerShell 5.1 reads BOM-less files as ANSI, which mangled them
+   into a parse error. The UAC prompt was approved and the shell exited before executing a
+   line — no log, no change, and nothing to indicate why. **Parse-check a generated script
+   with `[Parser]::ParseFile` before launching it elevated**, and keep such scripts ASCII.
+
+Both attempts left production serving on the original configuration; it was never down.
+
+<details>
+<summary>Original slice 3 text</summary>
+
 
 Attempted and cleanly reverted; production was never left down.
 
@@ -247,6 +271,8 @@ Risks to check explicitly during this slice, both silent if missed:
 - Confirm no absolute path in the DB references `C:\admz\admz`. ADR-0042's
   migration had to rewrite `organizations.repo_path`; a code-tree move *should*
   need no analogue.
+
+</details>
 
 ### Slice 4 — the deploy step, the script, and #173
 
