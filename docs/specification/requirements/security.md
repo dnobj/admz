@@ -71,6 +71,42 @@ The FastAPI app's CORS policy is driven by `ADMZ_ALLOWED_ORIGINS` (comma-separat
 
 **Enforced at:** `api/main.py` (CORS middleware config).
 
+### FR-SEC-011b — No external subresources; CSP enforces it ✅ (#200)
+ADMZ loads **no** script, stylesheet, font or image from another origin. `lucide`
+is vendored under `admz/api/static/vendor/` with provenance in `manifest.json`
+(version, source URL, sha256, SRI hash, licence); the Google Fonts `@import` in
+`admz.css` was dropped, since `--sans`/`--mono` already carry full fallback
+stacks so the UI degrades to the platform font.
+
+Two measurements drove the shape of the fix, and are worth keeping because they
+rule out the obvious alternatives:
+
+- `lucide@latest` resolved with `Cache-Control: max-age=60` — re-resolved about
+  once a minute, so a newly published version reached the operator's browser
+  within roughly a minute. "Unpinned" understated it.
+- The Google Fonts `css2` endpoint serves **UA-dependent** content (24,770 bytes
+  for a Chrome UA vs 470 for a legacy IE UA, different SHA-384), so a single
+  `integrity` attribute cannot cover both browsers. "Pin + SRI" was
+  *structurally incapable* of closing that subresource.
+
+A `Content-Security-Policy` is now emitted on every response
+(`admz/security_headers.py`), together with `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: DENY` and `Referrer-Policy: same-origin` (chosen so capture
+and confirm tokens in the URL path are never sent off-origin).
+
+**The policy is complete against external subresource loads and weak against
+XSS**, deliberately: `script-src` retains `'unsafe-inline'` because the
+templates hold 16 inline `<script>` blocks, 32 inline `on*=` handlers, 11
+`<style>` blocks and 640 inline `style="…"` attributes. `'unsafe-inline'` does
+not weaken the *source* allow-list, so `https://unpkg.com` is still refused —
+which is the threat #200 was about. Tightening to nonces or hashes is tracked
+separately.
+
+**Enforced at:** `admz/security_headers.py`; guarded by
+`tests/test_no_external_subresources.py`, which fails on any new external
+subresource, on a vendored file whose bytes stop matching its recorded hash,
+and on a vendored file with no manifest entry.
+
 ### FR-SEC-012 — Fleet settings are deny-by-default for the LLM ✅
 The MCP `set_fleet_setting` tool may write **only** the keys declared in
 `admz/setting_policy.py::LLM_WRITABLE_SETTING_KEYS`. Every other fleet setting

@@ -8,7 +8,15 @@
    switch is a single attribute flip on <html>.
    ========================================================================= */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+/* Web fonts removed (GH-200). Inter + JetBrains Mono used to load from
+   fonts.googleapis.com. That was the one external subresource SRI could
+   never have covered: the css2 endpoint serves UA-dependent content --
+   measured 24,770 bytes for a Chrome UA vs 470 for a legacy IE UA, with
+   different SHA-384 -- so no single integrity hash covers both browsers.
+   Dropping rather than self-hosting because --sans and --mono below
+   already carry complete fallback stacks, so the UI degrades to the
+   platform font (Segoe UI on the Windows deployment) rather than to
+   nothing, at zero bytes and zero third-party dependency. */
 
 /* ── Dark theme (default / primary) ───────────────────────────────────── */
 :root,
