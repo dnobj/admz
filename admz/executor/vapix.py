@@ -55,6 +55,18 @@ def _auth_method_from_challenge(header: Optional[str]) -> Optional[str]:
     return None
 
 
+def _is_plaintext_channel(scheme: str) -> bool:
+    """True unless this channel is TLS.
+
+    Deliberately expressed as "not https" rather than "== http" so an absent,
+    malformed or unexpected scheme is treated as plaintext. This is a security
+    predicate, and the mistake it must never make is calling a plaintext
+    channel encrypted; over-refusing is recoverable, under-refusing spends a
+    password. See ``_send_self_healing`` and GH #171.
+    """
+    return (scheme or "").strip().lower() != "https"
+
+
 def _upload_path_allowed(file_path: str) -> bool:
     """True if ``file_path`` resolves to inside the firmware cache.
 
@@ -468,7 +480,13 @@ class VapixExecutor(BaseExecutor):
           - on ``httpx.ConnectError`` (e.g. the configured scheme's port is
             refused), retry the *other* scheme on its default port;
           - on a ``401`` whose ``WWW-Authenticate`` names a different auth
-            method than we used, retry with that method.
+            method than we used, retry with that method — *except* Basic on a
+            plaintext channel, which is refused (GH #171; see the comment at
+            the check). The refusal blocks only *learning* Basic over HTTP; a
+            device whose stored profile already says ``{"http": "basic"}``
+            keeps working untouched, because the first attempt then uses Basic
+            directly and no challenge-driven relearn occurs. That is the
+            operator's escape hatch until the pin of D2 lands.
 
         Returns ``(response, learned_auth)`` where ``learned_auth`` is a profile
         fragment like ``{"scheme": "https", "https": "basic"}`` when a
@@ -504,13 +522,59 @@ class VapixExecutor(BaseExecutor):
                 response.headers.get("www-authenticate")
             )
             if offered and offered in ("basic", "digest") and offered != method:
-                retry = await self._open_and_send(
-                    scheme, host, port, request,
-                    self._auth_for_method(offered, credentials), timeout,
-                )
-                if retry.status_code != 401:
-                    response, method = retry, offered
-                    learned = {**(learned or {}), "scheme": scheme, scheme: method}
+                # GH #171. Refuse to LEARN Basic on a plaintext channel.
+                #
+                # `WWW-Authenticate` is attacker-controlled: anything answering
+                # at the device's address can offer `Basic realm="x"` and, but
+                # for this branch, ADMZ would immediately retry with
+                # httpx.BasicAuth — which sends `Authorization: Basic
+                # base64(user:pass)` PREEMPTIVELY on the first request. Under
+                # Digest the password never crosses the wire at all, so this is
+                # a real escalation, not a restatement of network access.
+                #
+                # The check must sit HERE, before the retry is issued. It was
+                # measured that the credential is sent before the
+                # `retry.status_code != 401` test below, so a defence at
+                # persistence time is already too late.
+                #
+                # Narrow ON PURPOSE — this is not a "protection may only
+                # increase" ratchet. Such a rule would strand a camera
+                # legitimately reconfigured downward, break the safe
+                # Digest->Basic-over-HTTPS relearn that
+                # test_method_relearn_digest_to_basic covers, and still not
+                # stop the leak. ADR-0007 records that Axis's "Recommended"
+                # policy mandates digest-over-HTTP and basic-over-HTTPS, so
+                # Basic-over-plaintext is the one combination that is both
+                # dangerous and abnormal.
+                #
+                # Refusal proceeds WITHOUT learning rather than raising: the
+                # request genuinely did 401, which every caller (health
+                # monitor, plan engine, MCP, REST) already handles. Raising
+                # would invent a failure mode in paths that today only expect
+                # ConnectError/TimeoutException.
+                if offered == "basic" and _is_plaintext_channel(scheme):
+                    # `offered` is one of two known constants, never the raw
+                    # header — the challenge is attacker-controlled and does
+                    # not belong in the log verbatim.
+                    logger.warning(
+                        "Refusing to relearn Basic auth over a plaintext %s "
+                        "channel for device %s (%s): the challenge asked for "
+                        "Basic, which would put the stored password on the "
+                        "wire in base64. Keeping %s and returning the 401. "
+                        "If this device genuinely requires Basic over HTTP, "
+                        "set its stored auth profile explicitly. (GH #171)",
+                        scheme, device.get("device_id") or "?", host, method,
+                    )
+                else:
+                    retry = await self._open_and_send(
+                        scheme, host, port, request,
+                        self._auth_for_method(offered, credentials), timeout,
+                    )
+                    if retry.status_code != 401:
+                        response, method = retry, offered
+                        learned = {
+                            **(learned or {}), "scheme": scheme, scheme: method
+                        }
 
         return response, learned
 
