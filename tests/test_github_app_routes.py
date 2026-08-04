@@ -14,6 +14,39 @@ from admz.github_app import client as gh_client
 from admz.github_app import secrets as gh_secrets
 
 
+@pytest.fixture(autouse=True)
+def _isolate_key_file(tmp_path, monkeypatch):
+    """Keep this file off the real ``~/.admz/admz.key`` (#207).
+
+    This module had no path isolation at all — no ``ADMZ_HOME``, no
+    ``ADMZ_KEY_PATH``, no ``tmp_path`` anywhere in it — while reaching the
+    Fernet key file two independent ways: the app lifespan builds a real
+    device registry (``admz/api/main.py``), and the route tests call
+    ``gh_secrets.save_app`` / ``get_private_key``, which go through
+    ``_fernet()`` -> ``_build_fernet``. On a machine with no key yet, that
+    *created* the operator's real key.
+
+    It was survivable while key creation only wrote a file. #207 makes key
+    creation also **rewrite that file's DACL**, so an unisolated test now
+    performs an ACL write against a real home directory on every run — so
+    the isolation ships with that change rather than after it.
+
+    Both ``paths.key_path()`` and ``paths.db_path()`` resolve at call time,
+    so the env vars below are sufficient. ``HOME``/``USERPROFILE`` are
+    pinned too because ``paths.admz_home()`` falls back to ``Path.home()``.
+
+    Deliberately minimal: the ``fleet_settings`` singleton binds its DB
+    path at *import*, so ``gh_secrets.clear()`` still reaches the real
+    settings DB. That is a separate, pre-existing defect and is not in
+    scope here.
+    """
+    monkeypatch.setenv("ADMZ_HOME", str(tmp_path))
+    monkeypatch.setenv("ADMZ_KEY_PATH", str(tmp_path / "admz.key"))
+    monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setenv("ADMZ_AUTH_BACKEND", "none")
