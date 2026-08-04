@@ -100,8 +100,15 @@ import types  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 
-@pytest.fixture
-def scen_client(tmp_path, monkeypatch):
+def _scen_client(tmp_path, monkeypatch, *, neutralize_authz):
+    """Shared wiring for the two fixtures below.
+
+    ``neutralize_authz`` is the ONLY difference between them: the happy-path
+    fixture replaces ``require_authenticated_principal`` with a no-op so the
+    route tests can reach selection / marker logic without constructing a
+    principal, while the guard fixture leaves the real function in place so the
+    three ``scenario/*`` gates are actually executed (#211).
+    """
     monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
     monkeypatch.setenv("ADMZ_KEY_PATH", str(tmp_path / "admz.key"))
     monkeypatch.setenv("ADMZ_CONFIG_REPO_PATH", str(tmp_path / "config-repo"))
@@ -122,7 +129,9 @@ def scen_client(tmp_path, monkeypatch):
     reg.save_named_baseline("cam3", "demo", "e3")
     monkeypatch.setattr(main_module, "registry", reg)
 
-    monkeypatch.setattr("admz.authz.require_authenticated_principal", lambda p: None)
+    if neutralize_authz:
+        monkeypatch.setattr(
+            "admz.authz.require_authenticated_principal", lambda p: None)
 
     async def _fake_gated(engine, plan_id):
         return {"blocked": True, "confirm_url": "/confirm/x", "plan_id": plan_id}
@@ -135,6 +144,19 @@ def scen_client(tmp_path, monkeypatch):
 
     with TestClient(main_module.app, follow_redirects=False) as c:
         yield c, reg, monkeypatch
+
+
+@pytest.fixture
+def scen_client(tmp_path, monkeypatch):
+    """Authz neutralized — for tests about scenario behavior, not authz."""
+    yield from _scen_client(tmp_path, monkeypatch, neutralize_authz=True)
+
+
+@pytest.fixture
+def scen_client_real_authz(tmp_path, monkeypatch):
+    """Identical wiring, real authz gate — for the guards in
+    ``TestScenarioRoutesRefuseAnonymous``."""
+    yield from _scen_client(tmp_path, monkeypatch, neutralize_authz=False)
 
 
 class TestScenarioActivate:
@@ -219,6 +241,50 @@ class TestScenarioSave:
             names = {b["name"] for b in reg.list_named_baselines(did)}
             assert "night" in names
         assert reg.get_device_info("cam1")["baseline_sha"] == "b1"
+
+
+class TestScenarioRoutesRefuseAnonymous:
+    """One guard per gated scenario route (#211).
+
+    This file is the ONLY one in the suite that issues a request to
+    ``scenario/save``, ``scenario/activate`` or ``return-to-baseline``, and its
+    ``scen_client`` fixture neutralizes ``require_authenticated_principal`` —
+    so before these tests, all three gates could be deleted with the suite
+    still green. ``scen_client_real_authz`` is the same wiring with the real
+    function left in place; under ``ADMZ_AUTH_BACKEND=none`` the middleware
+    resolves an *anonymous* principal and passes it through, making the
+    in-route gate the only refusal point.
+
+    Each request below would otherwise return 200 (the fixture's registry has
+    matching devices and the push plan is stubbed empty), so a 403 can only
+    come from the gate.
+    """
+
+    def test_anonymous_save_403(self, scen_client_real_authz):
+        c, reg, _ = scen_client_real_authz
+        r = c.post("/api/snapshot/scenario/save",
+                   json={"name": "night", "tag": "lab"})
+        assert r.status_code == 403
+        assert "authenticated" in r.json()["detail"].lower()
+        # nothing captured
+        assert "night" not in {b["name"] for b in reg.list_named_baselines("cam1")}
+
+    def test_anonymous_activate_403(self, scen_client_real_authz):
+        c, reg, _ = scen_client_real_authz
+        r = c.post("/api/snapshot/scenario/activate",
+                   json={"name": "demo", "tag": "lab"})
+        assert r.status_code == 403
+        # marker not set
+        assert reg.get_device_info("cam1").get("active_scenario") is None
+
+    def test_anonymous_return_to_baseline_403(self, scen_client_real_authz):
+        c, reg, _ = scen_client_real_authz
+        reg.set_active_scenario("cam1", "demo")
+        r = c.post("/api/snapshot/scenario/return-to-baseline",
+                   json={"tag": "lab"})
+        assert r.status_code == 403
+        # marker NOT cleared — the revert never ran
+        assert reg.get_device_info("cam1")["active_scenario"] == "demo"
 
 
 class TestListScenarios:
