@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -210,18 +211,46 @@ class ProposalStore:
     """Thin SQLite store. Per-call connections (the app is multi-threaded)."""
 
     def __init__(self, db_path: Optional[str] = None):
-        self._db_path = str(db_path or _default_db_path())
-        from admz.paths import ensure_parent_dir
-        ensure_parent_dir(self._db_path)
-        self._ensure_table()
+        """No I/O here -- constructing a store must not touch the filesystem
+        (#254/#258)."""
+        self._explicit_db_path = str(db_path) if db_path else None
+        self._ready: set = set()
+        self._ready_lock = threading.Lock()
+
+    @property
+    def _db_path(self) -> str:
+        """Resolved at CALL time, not cached at construction (#258).
+
+        Stays a ``str`` -- tests read this attribute and hand it straight to
+        ``sqlite3.connect()``.
+        """
+        return self._explicit_db_path or str(_default_db_path())
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
+        path = self._db_path
+        if path not in self._ready:  # fast path: no lock once warm
+            with self._ready_lock:
+                if path not in self._ready:  # double-checked
+                    from admz.paths import ensure_parent_dir
+
+                    ensure_parent_dir(path)
+                    self._create_schema(path)
+                    self._ready.add(path)
+        conn = sqlite3.connect(path)
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
-    def _ensure_table(self) -> None:
-        conn = self._connect()
+    def _create_schema(self, path: str) -> None:
+        """Open our own connection -- via ``_connect`` this would recurse.
+
+        ``_ready`` is keyed by path rather than a boolean, so a rebind runs
+        the schema and its migrations against the new file instead of
+        assuming the previous one's columns exist.
+
+        _ADDED_COLUMNS onto demo_proposals. The non-duplicate re-raise is
+        preserved: only 'already there' is swallowed.
+        """
+        conn = sqlite3.connect(path)
         try:
             conn.executescript(_SCHEMA)
             for name, decl in _ADDED_COLUMNS:
@@ -238,8 +267,10 @@ class ProposalStore:
         finally:
             conn.close()
 
-    # ── writes ──────────────────────────────────────────────────────────────
-
+    def _ensure_table(self) -> None:
+        """Retained for callers that reach for it by name; ensuring now
+        happens inside :meth:`_connect`."""
+        self._connect().close()
     def upsert(self, proposal: DemoProposal) -> DemoProposal:
         proposal.created_at = proposal.created_at or time.time()
         # Written once, at creation. A caller that only sets `name` (every
@@ -386,13 +417,26 @@ class ProposalStore:
         return {r[18]: _row(r) for r in rows}
 
 
-proposal_store = ProposalStore.__new__(ProposalStore)  # lazy singleton
+# Plain module-level singleton (#258).
+#
+# This used to be ``ProposalStore.__new__(ProposalStore)`` -- an instance created WITHOUT
+# running __init__ -- plus a ``hasattr(..., "_db_path")`` probe in the accessor
+# to detect "not initialised yet" and construct it for real on first use. That
+# shape existed for one reason: __init__ opened the database, so binding the
+# name at import would have touched the filesystem, breaking the leaf-light
+# import contract.
+#
+# Constructing a store is now free, so nothing needs deferring and the hack is
+# gone. It was also about to become quietly wrong: with ``_db_path`` a property
+# on the class, ``hasattr`` on an uninitialised instance only returns False
+# because the getter raises AttributeError -- correct by accident, not by
+# design.
+#
+# ``get_proposal_store()`` stays as the accessor most call sites use.
+proposal_store = ProposalStore()
 
 
 def get_proposal_store() -> ProposalStore:
-    """Module singleton, initialized on first use so importing this module never
-    touches the DB (the leaf-light import contract ``demos/store.py`` keeps)."""
-    global proposal_store
-    if not hasattr(proposal_store, "_db_path"):
-        proposal_store = ProposalStore()
+    """The module singleton. Construction does no I/O; the database is opened
+    on first use inside ``_connect``."""
     return proposal_store

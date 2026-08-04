@@ -34,8 +34,9 @@ Two latches against it:
   then asserts a positive — that first *use* does create it and the value round
   trips. A test that proved only absence would pass if the store were broken.
 * :func:`test_inventory_is_complete` rediscovers the store modules from source
-  and fails if the union of CONVERTED and PENDING does not cover them. Store #18
-  cannot appear without being listed, even mid-conversion.
+  and fails unless CONVERTED covers them exactly. Store #18 cannot appear
+  without being listed. Through stages 1-3b this was ``CONVERTED | PENDING`` so
+  the same held mid-conversion; PENDING is gone now that all 17 are converted.
 * :func:`test_importing_the_module_creates_nothing` asserts the import really
   happened -- the module is in ``sys.modules`` -- before believing the absence,
   so it cannot pass by importing nothing.
@@ -75,9 +76,9 @@ class StoreSpec:
 
 
 # --------------------------------------------------------------------------
-# The inventory. CONVERTED grows and PENDING shrinks with each stage; the
-# final stage deletes PENDING entirely. test_inventory_is_complete asserts
-# the two together always cover every store module in the tree.
+# The inventory. All 17 stores, converted across five stages.
+# test_inventory_is_complete asserts it covers every store module in the tree,
+# in both directions -- an unlisted store and a dropped entry both fail.
 # --------------------------------------------------------------------------
 
 CONVERTED: dict[str, StoreSpec] = {
@@ -124,6 +125,17 @@ CONVERTED: dict[str, StoreSpec] = {
     "admz.fleet.health": StoreSpec(cls="DeviceHealthStore", exercise="s.list_all()"),
     "admz.snapshot.drift_alerts": StoreSpec(
         cls="DriftAlertStore", exercise="s.list_alerts()"),
+    # Stage 4 (#258) — the last four. These were ALREADY "lazy" before #258,
+    # and that is the point: measured at plan time, a lazy singleton binds its
+    # path at FIRST USE and never rebinds, which is behaviourally identical to
+    # an eager one. Laziness moved when the freeze happened; it did not thaw it.
+    "admz.demos.store": StoreSpec(cls="DemoStore", exercise="s.list()"),
+    "admz.demos.inference.proposals": StoreSpec(
+        cls="ProposalStore", exercise="s.list()"),
+    "admz.demos.inference.runs": StoreSpec(
+        cls="InferenceRunStore", exercise="s.list()"),
+    "admz.session_store": StoreSpec(
+        cls="SessionStore", exercise="s.purge_expired()"),
 }
 
 #: Modules whose *import* provably creates nothing.
@@ -132,18 +144,24 @@ CONVERTED: dict[str, StoreSpec] = {
 #: them against a non-existent ADMZ_HOME creates nothing. It stayed a separate
 #: set from CONVERTED through stages 1-3a because import purity needs a
 #: module's whole TRANSITIVE store graph converted, and until sessions moved
-#: it was not true for chatbot.usage. Keep it separate: stage 4's lazy stores
-#: are not converted yet, and a future module could import one of them.
+#: it was not true for chatbot.usage. Kept as a separate name rather than
+#: inlined, so a future module that reintroduces import-time I/O has somewhere
+#: to be excluded from without silently dropping out of CONVERTED.
 IMPORT_PURE: set[str] = set(CONVERTED)
 
-PENDING: set[str] = {
-    # Stage 4 — the lazy stores, plus retiring demos/store's __new__ hack.
-    # These are the last four; PENDING is deleted entirely when they land.
-    "admz.demos.store",
-    "admz.demos.inference.proposals",
-    "admz.demos.inference.runs",
-    "admz.session_store",
-}
+# PENDING is GONE, and its absence is the deliverable.
+#
+# Through stages 1-3b it held the not-yet-converted stores, and
+# test_inventory_is_complete asserted `discovered == CONVERTED | PENDING` so a
+# store could never be missing from BOTH lists mid-conversion. With every store
+# converted the assertion becomes `discovered == CONVERTED`, which is strictly
+# stronger, not weaker: set equality still fails in both directions -- an
+# unlisted store #18 makes `discovered` the larger side, and a store dropped
+# from CONVERTED makes it the smaller one. Both were re-verified by mutation on
+# this final shape rather than argued.
+#
+# So an empty PENDING would be dead weight, and keeping one "just in case"
+# would invite someone to park a new store there instead of converting it.
 
 
 def _discover_store_modules() -> set[str]:
@@ -188,20 +206,32 @@ class TestInventory:
     def test_inventory_is_complete(self):
         """Store #18 cannot escape, at any stage of the conversion."""
         discovered = _discover_store_modules()
-        listed = set(CONVERTED) | PENDING
+        listed = set(CONVERTED)
         assert discovered == listed, (
             f"store inventory drifted.\n"
             f"  in tree but unlisted: {sorted(discovered - listed)}\n"
             f"  listed but not found: {sorted(listed - discovered)}"
         )
 
-    def test_converted_and_pending_are_disjoint(self):
-        assert not (set(CONVERTED) & PENDING)
-
     def test_something_is_actually_converted(self):
         """Anti-vacuity: every parametrised test below draws from CONVERTED,
         so an empty CONVERTED would silently skip the whole file."""
         assert CONVERTED
+
+    def test_every_store_in_the_tree_is_converted(self):
+        """The claim #258 was filed to make true, stated as an assertion.
+
+        Not "we converted some stores" — every SQLite store discovered in
+        ``admz/`` is in CONVERTED, and every entry in CONVERTED is exercised by
+        the parametrised tests below for both properties. When this passes,
+        "every store resolves its DB path at call time" is a checked fact.
+        """
+        discovered = _discover_store_modules()
+        assert discovered == set(CONVERTED)
+        assert len(discovered) == 17, (
+            f"expected 17 stores, found {len(discovered)} — if a store was "
+            "added or removed, update this number deliberately"
+        )
 
     def test_import_pure_is_a_subset_of_converted(self):
         """A module cannot be import-pure while its own store still does I/O.
