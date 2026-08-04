@@ -203,6 +203,82 @@ class TestTestAndDisconnect:
         j = r.json()
         assert r.status_code == 200 and j["ok"] is True and j["repo"] == "o/r"
 
+    def _connected(self, monkeypatch):
+        gh_secrets.save_app(1, "s", "PEM")
+        gh_secrets.set_installation_id(9)
+        gh_secrets.set_config_repo("o/r")
+
+    def _named_principal(self, monkeypatch):
+        """A REAL, named principal so the audit assertion can name it.
+
+        Asserting merely "not unknown" would pass on the bug: a Request is
+        truthy and stringifies to something, so a laxer test could go green
+        against the very misattribution this pins (#205).
+        """
+        from types import SimpleNamespace
+
+        who = SimpleNamespace(name="AXIS\\dnich", source="windows-local",
+                              groups=["Administrators"], is_anonymous=False)
+
+        async def _cur(request):
+            return who
+        monkeypatch.setattr("admz.auth.get_current_principal", _cur)
+        return who
+
+    def _requesters(self):
+        from admz.audit import AuditLog
+        return [(e.requester, e.auth_source, e.success)
+                for e in AuditLog().list_recent(action="github_app.test")]
+
+    def test_a_failed_test_is_attributed_to_the_real_operator(
+            self, client, monkeypatch):
+        """#205 — the failure path passed the Request instead of the principal.
+
+        `record_event` reads `.name`/`.source` with getattr defaults and a
+        Request has neither while being truthy, so the row was written with
+        requester="unknown": a positive assertion of the wrong thing, on exactly
+        the rows an audit review most wants attributed.
+        """
+        self._connected(monkeypatch)
+        self._named_principal(monkeypatch)
+
+        def _boom(*a, **k):
+            raise RuntimeError("installation token rejected")
+        monkeypatch.setattr(gh_client, "get_installation_token", _boom)
+
+        r = client.post("/api/github/test")
+        assert r.status_code == 200 and r.json()["ok"] is False
+
+        rows = self._requesters()
+        assert rows, "the failure wrote no audit row at all"
+        requester, auth_source, success = rows[0]
+        assert success is False
+        assert requester == "AXIS\\dnich"          # not "unknown"
+        assert auth_source == "windows-local"      # not "none"
+
+    def test_failure_and_success_attribute_identically(self, client, monkeypatch):
+        """The two paths must agree — the defect was that only one did."""
+        self._connected(monkeypatch)
+        self._named_principal(monkeypatch)
+
+        monkeypatch.setattr(gh_client, "get_installation_token",
+                            lambda *a, **k: "ghs_tok")
+        monkeypatch.setattr(
+            gh_client, "list_installation_repositories",
+            lambda tok, session=None: [{"full_name": "o/r", "owner": "o", "name": "r"}])
+        assert client.post("/api/github/test").json()["ok"] is True
+
+        def _boom(*a, **k):
+            raise RuntimeError("nope")
+        monkeypatch.setattr(gh_client, "get_installation_token", _boom)
+        assert client.post("/api/github/test").json()["ok"] is False
+
+        rows = self._requesters()
+        assert len(rows) == 2
+        assert {r[0] for r in rows} == {"AXIS\\dnich"}
+        assert {r[1] for r in rows} == {"windows-local"}
+        assert sorted(r[2] for r in rows) == [False, True]   # one of each path
+
     def test_disconnect_clears_everything(self, client, monkeypatch):
         gh_secrets.save_app(1, "s", "PEM")
         gh_secrets.set_installation_id(9)
