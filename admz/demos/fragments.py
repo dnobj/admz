@@ -175,11 +175,35 @@ def validate_assignment(
         pass
 
     if mode == MODE_SET:
-        # param.cgi can't create keys — the demo must override, not invent (H2).
+        # ADR-0047 Guard 3, BOTH halves: param.cgi can create no key and delete
+        # none, so a `set` fragment overrides an existing key — it never invents
+        # one and never removes one. Both endpoints of the diff must therefore be
+        # real values the device actually had.
+        #
+        # absent from the baseline -> the fragment would have to CREATE the key.
         if field.expected == MISSING:
             return False, "not-in-baseline", warnings
         if facet is None or facet.revert_param(field.path, field.actual) is None:
             return False, "read-only", warnings
+        # absent from the device -> the fragment would have to DELETE the key,
+        # and the value captured would be the sentinel itself, which is a value
+        # to nothing. Once such a fragment is adopted, `attribution_maps`
+        # registers want="<missing>" and drift.py's `actual == want` is then
+        # satisfied precisely WHILE the key stays deleted — bucketing it
+        # `demo_set` and dropping it from real_fields. A key deleted from a
+        # production device would be relabelled deliberate demo config and never
+        # reported as drift again (#208).
+        #
+        # Deliberately AFTER the read-only gate. A key that is both read-only
+        # and vanished is not capturable on the more fundamental ground, and
+        # "read-only" is the honest reason — "vanished-from-device" would advise
+        # a revert that a Volatile*/excluded key cannot receive either. The gate
+        # above cannot substitute for this one, though: `is_restorable` screens
+        # only MASKED_SECRET, Volatile* and per-facet excludes, so for an
+        # ordinary writable key revert_param(path, "<missing>") returns a
+        # perfectly normal write tuple and the sentinel sails through.
+        if field.actual == MISSING:
+            return False, "vanished-from-device", warnings
 
     hits = device_local_hits(field.actual, device_info)
     if hits:
