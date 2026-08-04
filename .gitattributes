@@ -7,3 +7,10 @@
 # `* text=auto` would renormalise every file in the tree and collide with every
 # in-flight branch.
 *.sh text eol=lf
+
+# Vendored third-party browser assets (GH-200). Byte-exact on every platform:
+# tests/test_no_external_subresources.py verifies each file against a recorded
+# sha256, and CRLF conversion would change those bytes. lucide-1.28.0.min.js
+# carries 12 LF bytes, so without this a Windows checkout would produce a
+# different hash than a Linux one and the guard would fail on one leg only.
+admz/api/static/vendor/** -text

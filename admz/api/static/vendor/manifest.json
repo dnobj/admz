@@ -1,0 +1,18 @@
+{
+  "_comment": "Provenance for vendored third-party browser assets. tests/test_no_external_subresources.py verifies each file still matches its recorded sha256.",
+  "assets": [
+    {
+      "name": "lucide",
+      "version": "1.28.0",
+      "file": "lucide-1.28.0.min.js",
+      "source_url": "https://unpkg.com/lucide@1.28.0/dist/umd/lucide.min.js",
+      "sri": "sha384-VrnzGPiSyQxm3mI2VhlssyR85zugSHtxMkgO42qV3wUAbNk1oRdZkCWjXKOhuVu6",
+      "sha256": "9723deed8adf7dbc3a2579927d7b724e44001ba12280025d66defc57d1cd8316",
+      "bytes": 414203,
+      "vendored_on": "2026-08-04",
+      "vendored_for": "GH-200",
+      "license": "ISC",
+      "why_not_tree_shaken": "ADMZ has no JS build toolchain (no package.json, no bundler config). Tree-shaking the 92 icons in use would make the update path 'install node deps and run a bundler' in a Python project, which will not be maintained. 404 KB over loopback is the cheaper trade."
+    }
+  ]
+}

@@ -273,6 +273,13 @@ app.add_middleware(
 # of zero-config local installs and the existing test suite.
 app.middleware("http")(auth_middleware)
 
+# Security headers, principally a Content-Security-Policy (#200). Registered
+# last so it runs OUTERMOST (FastAPI applies middleware in reverse order of
+# registration), which means the headers land on every response including
+# 401s from auth_middleware and 403s from the #3 same-origin check.
+from admz.security_headers import security_headers_middleware  # noqa: E402
+app.middleware("http")(security_headers_middleware)
+
 template_dir = Path(__file__).parent / "templates"
 static_dir = Path(__file__).parent / "static"
 template_dir.mkdir(exist_ok=True)
