@@ -98,6 +98,19 @@ CONVERTED: dict[str, StoreSpec] = {
         cls="FleetSettings",
         exercise="s.set('probe_key', 'probe_value')",
     ),
+    # Stage 3a (#258). The six stores whose _ensure_table only creates schema
+    # -- no column migration -- and which have no open issue needing reviewer
+    # context. Stage 3b takes the five where moving _ensure_table also moves a
+    # migration (api.confirm_store, chatbot.sessions, fleet.health,
+    # snapshot.drift_alerts) or where an open issue does (audit #270,
+    # confirm_store #266).
+    "admz.api.capture": StoreSpec(
+        cls="CaptureStore", exercise="s.get_session('no-such-token')"),
+    "admz.api_keys": StoreSpec(cls="ApiKeyStore", exercise="s.list()"),
+    "admz.events.detections": StoreSpec(cls="DetectionStore", exercise="s.list()"),
+    "admz.events.store": StoreSpec(cls="EventStore", exercise="s.count()"),
+    "admz.events.watched": StoreSpec(cls="WatchedEventStore", exercise="s.list()"),
+    "admz.tasks.store": StoreSpec(cls="TaskStore", exercise="s.list()"),
 }
 
 #: Modules whose *import* provably creates nothing. Strictly smaller than
@@ -109,18 +122,14 @@ IMPORT_PURE: set[str] = {
 }
 
 PENDING: set[str] = {
-    # Stage 3 — the remaining eager stores
-    "admz.api.capture",
-    "admz.api.confirm_store",
-    "admz.api_keys",
-    "admz.audit",
-    "admz.chatbot.sessions",
-    "admz.events.detections",
-    "admz.events.store",
-    "admz.events.watched",
-    "admz.fleet.health",
-    "admz.snapshot.drift_alerts",
-    "admz.tasks.store",
+    # Stage 3b — the eager stores where moving _ensure_table into _connect also
+    # moves a schema COLUMN MIGRATION, or where an open issue means a reviewer
+    # needs extra context. Split out of stage 3 so 11 stores are not one diff.
+    "admz.api.confirm_store",   # column migration + #266 (retention) open
+    "admz.audit",               # #270 (web-API audit gap) open
+    "admz.chatbot.sessions",    # _migrate_columns
+    "admz.fleet.health",        # _MIGRATION_COLUMNS
+    "admz.snapshot.drift_alerts",  # attributed-counts column
     # Stage 4 — the lazy stores, plus retiring demos/store's __new__ hack
     "admz.demos.store",
     "admz.demos.inference.proposals",
@@ -195,6 +204,33 @@ class TestInventory:
         """Anti-vacuity for the import-purity parametrisation, which would
         collect nothing — and so assert nothing — if IMPORT_PURE emptied."""
         assert IMPORT_PURE
+
+    @pytest.mark.parametrize("module", sorted(CONVERTED))
+    def test_no_duplicate_method_definitions(self, module):
+        """A converted store must define each method exactly once.
+
+        Earned the hard way in stage 3a. The mechanical edit that converts a
+        store replaced ``__init__`` but, in two files where an ``@property``
+        sits between ``__init__`` and ``_connect``, stopped short — leaving the
+        ORIGINAL ``_connect`` and ``_ensure_table`` further down the class.
+        Python takes the last definition, so the old ones silently won and the
+        schema was never created: ``DetectionStore.list()`` raised
+        ``no such table: event_detections`` while every other check passed.
+
+        The rebind/no-IO tests do catch it once a store is in CONVERTED, but
+        only then; this catches it structurally and points straight at the
+        cause rather than at a missing table.
+
+        The regex ends in ``\(`` deliberately. An earlier version used a
+        ``\b`` word boundary that got written through a shell heredoc as a
+        literal backspace byte, so it matched nothing and this guard passed
+        vacuously — caught only by mutation-checking it.
+        """
+        path = REPO_ROOT / Path(*module.split(".")).with_suffix(".py")
+        src = path.read_text(encoding="utf-8")
+        for name in ("_connect", "_ensure_table", "_create_schema", "_db_path"):
+            n = len(re.findall(rf"^    def {name}\(", src, re.M))
+            assert n <= 1, f"{module}: {name} defined {n} times"
 
 
 @pytest.mark.parametrize("module", sorted(CONVERTED))
