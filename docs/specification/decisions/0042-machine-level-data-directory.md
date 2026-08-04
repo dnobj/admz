@@ -75,6 +75,65 @@ Coupling server state to the launching user's profile broke down twice:
   pushes are best-effort. If remote push is ever needed from the service, use a
   machine-level credential (deploy key) — deliberately out of scope here.
 
+## ADMZ_HOME hardening is setup's job, not the code's (added 2026-08-04, #250)
+
+The code deliberately does **not** set an ACL on `ADMZ_HOME` on Windows.
+`admz/backends/sqlite_backend.py` now guards its `chmod 0o700` on
+`sys.platform` and does nothing on Windows. That absence is a decision, not
+an omission awaiting cleanup — record it here so the next reader does not
+"finish the job."
+
+Background: `os.chmod` on Windows is a complete no-op for access control
+(#207 / ADR-0010). The obvious follow-up was to point #252's ctypes DACL
+mechanism at the directory as well. That is wrong, for three measured
+reasons:
+
+1. **A file-shaped DACL collapses the contents.** `win_acl`'s
+   `build_secret_file_sddl` emits ACEs with no inheritance flags — correct
+   for a file, wrong for a container. `SetNamedSecurityInfo` re-propagates
+   inheritance to existing children, so a parent left with no inheritable
+   ACEs strips theirs. Measured: `admz.db` went from 4 ACEs to **0** — an
+   empty DACL, which denies *everyone*, including SYSTEM. A directory-shaped
+   `(A;OICI;...)` SDDL does work, but it is a different mechanism, not a
+   reuse.
+2. **The code cannot know the right principals.** The service runs as
+   LocalSystem, so a service-created directory is owned by `S-1-5-18`.
+   Granting SYSTEM + Administrators is *not* sufficient for the operator: a
+   non-elevated administrator's UAC-filtered token does not carry
+   `S-1-5-32-544` at all, and such a file is measured unreadable. This is
+   why `setup-admz-service.ps1` grants `${env:USERDOMAIN}\${env:USERNAME}`
+   explicitly — an account the running code has no way to identify. The
+   production directory's ACL shows the same thing: `DNLT\dnich` appears
+   separately from `BUILTIN\Administrators` because it has to.
+3. **This is not the creation path.** Twelve sites create `ADMZ_HOME`. In
+   the web/service process `admz/events/store.py` creates it at *import*,
+   long before the registry is constructed in the FastAPI lifespan — so a
+   DACL applied from the registry would land on a directory another module
+   already made, potentially with files in it. Worse, because inheritance
+   re-propagates, it would rewrite the ACL of the existing `admz.key`, and
+   tightening *that* file is #183 — an open operator decision.
+
+So: **`setup-admz-service.ps1` owns Windows ADMZ_HOME permissions**, as this
+ADR already said. [ADR-0054](0054-separate-production-tree-and-venv.md) plans
+to bring that script into `scripts/`; the SID-vs-name issue below should be
+fixed when it lands.
+
+Two defects in the current script, noted for that move:
+
+- It grants `SYSTEM` and the operator **by name**, not by SID
+  (`*S-1-5-32-544` is used for Administrators but not the other two). Account
+  names are localized; SIDs are not. `admz/win_acl.py` compares only SIDs for
+  exactly this reason.
+- `robocopy /COPY:DAT` does not copy ACLs (no `S`), so migrated files land
+  inheriting `C:\ProgramData` and are rescued only by the subsequent
+  directory-level `/inheritance:r` propagating down. That works, but by side
+  effect rather than by intent.
+
+The `~/.admz` rollback copy this ADR keeps (see Migration notes) is a second
+copy of the Fernet key and DB outside `ADMZ_HOME`. It is absent on the
+current deployment, so this is script hygiene rather than a live exposure —
+but it belongs in the same cleanup.
+
 ## Consequences
 
 - Any host can relocate ADMZ state with one env var; services/agents on the

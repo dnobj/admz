@@ -1,12 +1,14 @@
 """Tests for the SQLite backend."""
 
+import logging
 import os
 import subprocess
 import sys
 
 import pytest
 
-from admz.backends.sqlite_backend import SQLiteDeviceRegistry
+import admz.backends.sqlite_backend as sqlite_backend
+from admz.backends.sqlite_backend import SQLiteDeviceRegistry, _restrict_data_dir
 from admz.exceptions import (
     AccountNotFoundError,
     BackendError,
@@ -490,6 +492,112 @@ class TestEncryption:
         key1 = open(str(tmp_path / "a.key"), "rb").read()
         key2 = open(str(tmp_path / "b.key"), "rb").read()
         assert key1 != key2
+
+
+class TestDataDirPermissions:
+    """#250 — the ADMZ_HOME ``chmod 0o700`` is POSIX-only.
+
+    Be honest about what is assertable here, because it is much less than
+    #252 got. On Windows ``os.chmod`` was a *measured no-op* — that was
+    the whole defect — so removing it changes no observable file-system
+    state. There is nothing to inspect afterwards, by definition. The only
+    truthful Windows assertion is therefore that the call is not made, and
+    that is a platform-guard test rather than a behavioural one.
+
+    What is NOT asserted, deliberately: that the directory gets a
+    protected DACL. It does not, and must not — see
+    ``_restrict_data_dir``'s docstring and ADR-0042. A future port of
+    ``admz.win_acl`` to this path would collapse the DACL of every file
+    inside ADMZ_HOME (measured: ``admz.db`` 4 ACEs -> 0, deny-all).
+
+    The two ``sys.platform``-monkeypatched tests are the load-bearing
+    ones: they exercise BOTH branches on BOTH CI legs, so the POSIX branch
+    is covered on windows-latest and the Windows branch on ubuntu-latest.
+    Neither leg can reach the other's real behaviour otherwise.
+    """
+
+    @staticmethod
+    def _spy(monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            os, "chmod", lambda p, m, *a, **k: calls.append((str(p), m))
+        )
+        return calls
+
+    # -- real platform behaviour -------------------------------------------
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX mode bits; no-op on Windows"
+    )
+    def test_data_dir_is_0700_on_posix(self, tmp_path):
+        """The effect, not the call. Previously asserted by nothing at all."""
+        home = tmp_path / "admz-home"
+        SQLiteDeviceRegistry(
+            db_path=str(home / "admz.db"), key_path=str(home / "admz.key")
+        )
+        assert home.is_dir()
+        assert oct(os.stat(home).st_mode & 0o777) == oct(0o700)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+    def test_chmod_not_called_on_data_dir_on_windows(self, tmp_path, monkeypatch):
+        home = tmp_path / "admz-home"
+        calls = self._spy(monkeypatch)
+        SQLiteDeviceRegistry(
+            db_path=str(home / "admz.db"), key_path=str(home / "admz.key")
+        )
+        assert home.is_dir()
+        assert [c for c in calls if c[0] == str(home)] == []
+
+    # -- branch selection: runs on every platform ---------------------------
+
+    def test_posix_branch_chmods_0700(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sqlite_backend.sys, "platform", "linux")
+        calls = self._spy(monkeypatch)
+        _restrict_data_dir(tmp_path)
+        assert calls == [(str(tmp_path), 0o700)]
+
+    def test_win32_branch_does_not_chmod(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sqlite_backend.sys, "platform", "win32")
+        calls = self._spy(monkeypatch)
+        _restrict_data_dir(tmp_path)
+        assert calls == []
+
+    # -- the other half of the change: failure is no longer swallowed -------
+
+    def test_chmod_failure_is_logged_not_swallowed(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The old code was `except OSError: pass` — a failure to restrict
+        the directory holding every device credential was silent."""
+        monkeypatch.setattr(sqlite_backend.sys, "platform", "linux")
+
+        def boom(*a, **k):
+            raise OSError(13, "denied")
+
+        monkeypatch.setattr(os, "chmod", boom)
+        with caplog.at_level(logging.ERROR, logger=sqlite_backend.__name__):
+            _restrict_data_dir(tmp_path)  # must not raise
+        assert "ADMZ data directory" in caplog.text
+        assert str(tmp_path) in caplog.text
+
+    def test_chmod_failure_does_not_abort_registry_construction(
+        self, tmp_path, monkeypatch
+    ):
+        """Logged, but never fatal — a service that refuses to boot on an
+        exotic filesystem is worse than one that boots and says so."""
+        real_chmod = os.chmod
+
+        def selective(path, mode, *a, **k):
+            if str(path) == str(tmp_path):
+                raise OSError(13, "denied")
+            return real_chmod(path, mode, *a, **k)
+
+        monkeypatch.setattr(os, "chmod", selective)
+        reg = SQLiteDeviceRegistry(
+            db_path=str(tmp_path / "admz.db"),
+            key_path=str(tmp_path / "admz.key"),
+        )
+        assert reg.list_devices() == []
 
 
 class TestShortLivedConnections:
