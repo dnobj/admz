@@ -238,7 +238,7 @@ async def run_fast(ctx: Any, store: InferenceRunStore, *, created_by: str = "",
 async def run_survey(ctx: Any, store: InferenceRunStore, run_id: str, *,
                      register_new: bool = True, timeout: float = 5.0,
                      subnet: Optional[str] = None, proposal_store: Any = None,
-                     include_weak: bool = True) -> None:
+                     include_weak: bool = True, principal: Any = None) -> None:
     """The background body of a ``survey`` run: discover → onboard → snapshot →
     collect, writing progress and terminal state onto the run row.
 
@@ -261,9 +261,16 @@ async def run_survey(ctx: Any, store: InferenceRunStore, run_id: str, *,
         store.progress(run_id, phase="onboard", step=1, total=total,
                        message=f"Found {len(discovered)} device(s); resolving "
                                "credentials for any that are new…")
-        added = await _onboard(ctx, discovered) if register_new else []
+        added, provisioned = (await _onboard(ctx, discovered) if register_new
+                              else ([], []))
         notes.append(f"onboarded {len(added)} new device(s)"
                      if register_new else "onboarding skipped by request")
+        # Record the device writes HERE, not at the end of the run: the onboard
+        # phase is where credentials were provisioned onto devices, and a later
+        # phase failing must not lose that record (#199).
+        _record_survey_writes(principal, run_id=run_id, subnet=subnet,
+                              register_new=register_new, registered=added,
+                              provisioned=provisioned)
 
         # 3 ── snapshot, so action_rules / applications facets exist to read
         device_ids = _all_device_ids(ctx)
@@ -279,6 +286,11 @@ async def run_survey(ctx: Any, store: InferenceRunStore, run_id: str, *,
         graph = await collect_graph(ctx)
         graph["survey"] = {"discovered": len(discovered), "onboarded": len(added),
                            "snapshotted": ok, "snapshot_failed": failed,
+                           # The run row is the survey's own record, so it
+                           # carries the same scope + writes the audit row does
+                           # — it used to hold counts only (#199).
+                           "subnet": subnet, "registered": sorted(added),
+                           "provisioned": sorted(provisioned),
                            "notes": notes}
         run = store.finish(run_id, graph,
                            message=describe(graph) + " · " + "; ".join(notes))
@@ -300,6 +312,68 @@ async def run_survey(ctx: Any, store: InferenceRunStore, run_id: str, *,
         store.fail(run_id, str(exc))
 
 
+#: Keys a survey may record about the devices it WROTE to (#199).
+#:
+#: An ALLOW-LIST, and it must stay one — the same discipline as
+#: ``audit.OUTCOME_IDENTITY_KEYS`` (#246) and the approve-row fields (#276).
+#: :func:`_survey_audit_fields` filters through it, so adding a key to that dict
+#: without adding it here silently drops the key rather than leaking it, and a
+#: test pins that.
+#:
+#: Identifiers and the requested scope ONLY. Never the discovered device dicts
+#: (host / mac / model / firmware), and never anything out of onboarding's
+#: result: ``provision_factory_default`` **writes a credential**, and an audit
+#: log that is never pruned (there is no DELETE in ``audit.py``) is the last
+#: place it should be echoed.
+_SURVEY_AUDIT_KEYS = (
+    "run", "subnet", "register_new",
+    "registered_count", "provisioned_count",
+    "registered", "provisioned",
+)
+
+
+def _survey_audit_fields(*, run_id: str, subnet: Optional[str],
+                         register_new: bool, registered: List[str],
+                         provisioned: List[str]) -> Dict[str, Any]:
+    """What a survey wrote, for the audit row — allow-listed.
+
+    ``subnet`` is recorded AS REQUESTED. ``None`` means the caller did not name
+    one and the ARP scanner auto-detects the local ``/24``; recording that
+    honestly is more useful than inventing the resolved CIDR here, which is
+    derived several layers down and could differ from what was actually scanned.
+    """
+    fields = {
+        "run": run_id,
+        "subnet": subnet if subnet else "(none given — local /24 auto-detected)",
+        "register_new": bool(register_new),
+        "registered_count": len(registered),
+        "provisioned_count": len(provisioned),
+        "registered": sorted(registered),
+        "provisioned": sorted(provisioned),
+    }
+    return {k: v for k, v in fields.items() if k in _SURVEY_AUDIT_KEYS}
+
+
+def _record_survey_writes(principal: Any, **kw: Any) -> None:
+    """One audit row naming the scope and the devices a survey wrote to.
+
+    Called right after the onboard phase rather than at the end of the run, on
+    purpose: a later phase failing (snapshot, collect, clustering) must not lose
+    the record of writes that already reached devices. Same reasoning as #209 —
+    never let the record of work depend on later work succeeding.
+
+    Never raises: an audit failure must not turn a completed survey into a
+    failed one (house convention, cf. ``routes/github_app.py::_audit``).
+    """
+    try:
+        from admz.audit import record_event
+        record_event(principal, "demo.survey_devices", resource="demos:inference",
+                     details=_survey_audit_fields(**kw))
+    except Exception:  # noqa: BLE001
+        logger.warning("demo inference survey: could not record device writes",
+                       exc_info=True)
+
+
 async def _discover(*, timeout: float, subnet: Optional[str]) -> List[Any]:
     try:
         from admz.discovery import discover_devices
@@ -310,20 +384,27 @@ async def _discover(*, timeout: float, subnet: Optional[str]) -> List[Any]:
         return []
 
 
-async def _onboard(ctx: Any, discovered: List[Any]) -> List[str]:
+async def _onboard(ctx: Any, discovered: List[Any]) -> tuple:
     """Register devices the fleet has but ADMZ doesn't, then run the standard
     credential onboarding on each (stored-verify → needsetup → fleet pair →
-    capture widget). Reuses ``onboarding.onboard_device_credentials`` verbatim."""
+    capture widget). Reuses ``onboarding.onboard_device_credentials`` verbatim.
+
+    Returns ``(registered, provisioned)`` — the ids added to the registry, and
+    the subset that had an admin account **created on the device**. The second
+    list is the whole point: this used to discard the onboarding result, so
+    nothing in the system knew which devices a survey had written to (#199).
+    """
     from admz.device_registry import canonical_mac
-    from admz.onboarding import onboard_device_credentials
+    from admz.onboarding import PROVISIONED, onboard_device_credentials
 
     try:
         known = {canonical_mac(d.get("mac_address") or d.get("device_id") or "")
                  for d in (ctx.registry.list_devices() or [])}
     except Exception:  # noqa: BLE001
-        return []
+        return [], []
 
     added: List[str] = []
+    provisioned: List[str] = []
     for dev in discovered:
         try:
             info = dev.to_registry_dict() if hasattr(dev, "to_registry_dict") else dict(dev)
@@ -342,13 +423,18 @@ async def _onboard(ctx: Any, discovered: List[Any]) -> List[str]:
                         exc_info=True)
             continue
         try:
-            await onboard_device_credentials(
+            result = await onboard_device_credentials(
                 device_id=device_id, registry=ctx.registry, catalog=ctx.catalog,
                 executors=ctx.executors)
+            # PROVISIONED is the one status that means a root admin account was
+            # CREATED on the device (onboarding.py -> provision_factory_default).
+            # The other statuses only read, or write to the registry.
+            if (result or {}).get("status") == PROVISIONED:
+                provisioned.append(device_id)
         except Exception:  # noqa: BLE001 — onboarding never fails a survey
             logger.info("demo inference survey: onboarding %s failed", device_id,
                         exc_info=True)
-    return added
+    return added, provisioned
 
 
 def _all_device_ids(ctx: Any) -> List[str]:

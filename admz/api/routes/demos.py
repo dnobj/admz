@@ -75,6 +75,9 @@ class InferenceRunRequest(BaseModel):
     include_acs: bool = True
     # survey only — leave onboarding on for a genuinely fresh install; turn it
     # off for a strictly read-only sweep of what is already registered.
+    # "Onboarding" here can WRITE to a device: a factory-defaulted unit has a
+    # root admin account provisioned on it. This flag is the opt-OUT, and it
+    # defaults to on — see the gate note above the route handler (#199).
     register_new: bool = True
     subnet: Optional[str] = None
     timeout: float = 5.0
@@ -375,12 +378,24 @@ async def end_demo(demo_id: str, request: Request,
 
 # ── Inference (#124 slice 2 — the evidence graph) ────────────────────────────
 #
-# Read-only and inert: a run reads the registry, the last snapshots and ACS, and
-# writes ONE row to `demo_inference_runs`. It touches no device, issues no ACS
-# write, and never creates a demo — so no confirmation gate, same bar as demo
-# metadata CRUD (0046-demos.md:126). `survey` mode's extra phases reuse the
-# existing discovery/onboarding/snapshot entry points; it adds no new
-# device-touch path.
+# `fast` mode is read-only and inert: it reads the registry, the last snapshots
+# and ACS, and writes ONE row to `demo_inference_runs`. It touches no device,
+# issues no ACS write, and never creates a demo — so no confirmation gate, same
+# bar as demo metadata CRUD (0046-demos.md:126).
+#
+# `survey` mode is NOT inert, and this comment used to claim it was. Its onboard
+# phase reaches `onboarding.onboard_device_credentials`, which for a
+# factory-defaulted unit calls `provisioning.provision_factory_default` — a real
+# device WRITE: `pwdgrp.cgi:add-user`, group=root, auth_method="none". The old
+# wording ("it adds no new device-touch path") was the stated basis for skipping
+# the confirmation gate and it was false, while `register_new`'s own comment on
+# InferenceRunRequest above already acknowledged the write. The file disagreed
+# with itself; this is the half that was wrong (#199).
+#
+# Whether that write should be gated, and at which ADR-0034 level, is an OPEN
+# operator decision tracked in #199 — deliberately NOT made here. What did
+# change is that a survey now records what it wrote (`collect._survey_audit_fields`),
+# so the decision can be taken against evidence instead of without it.
 
 #: Strong refs to in-flight survey tasks (the loop holds only weak ones).
 _BACKGROUND_RUNS: set = set()
@@ -432,7 +447,11 @@ async def start_inference_run(req: InferenceRunRequest, request: Request,
     task = asyncio.create_task(collect.run_survey(
         ctx, store, run.id, register_new=req.register_new,
         timeout=req.timeout, subnet=req.subnet,
-        proposal_store=ctx.proposal_store, include_weak=req.include_weak))
+        proposal_store=ctx.proposal_store, include_weak=req.include_weak,
+        # The survey runs in the BACKGROUND, so the row written below records
+        # only that one started. The device writes happen minutes later and are
+        # audited from inside the run — which needs the principal (#199).
+        principal=principal))
     _BACKGROUND_RUNS.add(task)
     task.add_done_callback(_BACKGROUND_RUNS.discard)
     record_event(principal, "demo.inference_run", resource="demos:inference",
