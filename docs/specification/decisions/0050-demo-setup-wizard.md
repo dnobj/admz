@@ -70,6 +70,38 @@ fleet capture flag + reconciles the WS supervisor — **prompted, never auto** (
 user decision). Tool count 67 → 69. The `# Demos` prompt gains a "Setting a demo
 up end-to-end" sequence, hooked into the compound-intent rule.
 
+### Amendment 2026-08-04 — what "recorded vs observed" compares (#198)
+
+The `observed` flag shipped as `rule_id in str(facet_doc)` — a substring test
+against the repr of the whole parsed `action_rules` facet. Since `rule_id` is a
+small AXIS integer and that repr contains every rule name, ONVIF topic and
+profile string, `"2"` matched `Camera1Profile2`: the check answered `true` in
+precisely the case it existed to catch, and nothing tested it. Fixed to a
+structural lookup that delegates to `inference/graph.normalize_device_rule`
+rather than re-parsing the facet — that function already owns the id-resolution
+chain and the AXIS OS <12 firmware asymmetry, and a second parser for one facet
+is the drift behind #255/#274.
+
+Two things worth stating precisely, because the phrase "observed" invites a
+stronger reading than the design supports:
+
+- **It is the last *audit*, not the device.** The facet is read from the git
+  snapshot repo at `latest_observed_sha`. Phase C is explicitly no-probe so the
+  chat can answer instantly, so `observed` means "present as of the last
+  snapshot" — a rule deleted since then still reads `true` until the device is
+  re-audited. That is the strongest claim a no-probe check can make, and it is
+  a *staleness* bound rather than the *always-true* bug above.
+- **Identity is id-or-name.** Phase B notes device-assigned rule ids rot, and
+  `snapshot/facets/action_rules.py` keys the facet by
+  `id or name or index` — so an entry with no id is identified only by its
+  name. The check matches either; matching ids alone would report a live rule
+  as vanished on that shape.
+
+`observed` fed nothing: `next_actions` branched on the recorded rule list being
+*empty*, so a demo whose rule had vanished still reported "Demo looks set up"
+while its own rules table said otherwise. A `next_actions` branch now names the
+missing rules — guarded on `is False`, since `None` means "cannot tell".
+
 ## Consequences
 
 - A demo can be set up end-to-end by conversation, each gated stage a card.
