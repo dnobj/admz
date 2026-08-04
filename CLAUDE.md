@@ -73,6 +73,16 @@ TOK=$(gh auth token --user mrdnlabs); B64=$(printf 'x-access-token:%s' "$TOK" | 
 git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $B64" push origin <branch>
 ```
 
+**`gh issue view` does not work on this repo.** It fails with a GraphQL classic-Projects
+deprecation error (`repository.issue.projectCards`) and prints no issue body — the
+failure looks like an auth or network problem and is neither. Use the REST API instead;
+`gh issue list`, `gh issue comment`, and `gh pr` are unaffected.
+
+```sh
+GH_TOKEN=$(gh auth token --user dnobj) gh api repos/dnobj/admz/issues/227 \
+  --jq '.title + "\n---\n" + .body'
+```
+
 For private repos this machine's default identity cannot see, credentials can also be obtained through the operator's approval-gated access hub rather than by asking for tokens.
 
 ## Architecture orientation

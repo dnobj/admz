@@ -1,8 +1,26 @@
+# Bounds follow the rule stated at the top of requirements.txt: `>=F,<C` where C
+# is the next boundary above the version currently installed, on the package's
+# own breaking axis. Floors raised to the installed major only where they sat
+# below it — a floor under the installed major lets a resolver backtrack install
+# a version this suite cannot run.
+#
+# These matter as much as the runtime bounds: a test-tool major that lands
+# mid-week turns CI red on an unchanged commit, and there is no way to tell that
+# apart from a real regression. That is the whole complaint in #227.
 -r requirements.txt
-pytest>=7.0.0
-pytest-asyncio>=0.21.0
-pytest-cov>=4.0.0
-pytest-mock>=3.10.0
-black>=23.0.0
-flake8>=6.0.0
-mypy>=1.0.0
+pytest>=9.0.0,<10         # installed 9.0.2; latest 9.1.1. Floor raised from >=7.0.0 — TWO
+                          # majors below installed.
+pytest-asyncio>=1.0.0,<2  # installed 1.3.0; latest 1.4.0. Floor raised from >=0.21.0, which
+                          # predates the 1.0 rewrite of loop/scope handling; the suite's
+                          # asyncio_mode config does not work on 0.x.
+pytest-cov>=7.0.0,<8      # installed 7.0.0; latest 7.1.0. Floor raised from >=4.0.0 — three
+                          # majors below installed.
+pytest-mock>=3.10.0,<4    # installed 3.15.1 (= latest). Floor already at the installed major.
+black>=26.0.0,<27         # installed 26.1.0; latest 26.5.1. Floor raised from >=23.0.0 —
+                          # three majors below installed, and black's formatting output
+                          # changes across majors, so a drift here fails the format check.
+flake8>=7.0.0,<8          # installed 7.3.0 (= latest). Floor raised from >=6.0.0.
+mypy>=1.0.0,<2            # installed 1.19.1. Floor already at the installed major, so it is
+                          # left alone. The CEILING is the live one: mypy 2.3.0 is out, and
+                          # an unbounded mypy would pull a major that rejects code 1.x
+                          # accepts.
