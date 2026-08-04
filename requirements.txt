@@ -98,27 +98,39 @@ jsonschema>=4.20.0,<5     # installed 4.26.0 (= latest).
 # (model,firmware) capability matrix, now the single source of truth
 # (ADR-0029).
 #
-# This MUST stay a PEP 508 direct reference, never a bare name. The package is
-# private (mrdnlabs/axis-api-atlas) and the name is UNREGISTERED on PyPI, so a
-# bare `axis-api-atlas>=0.1.0` resolves against PyPI and anyone who registers
-# the name there gets code execution inside this venv — which the admz Windows
-# service then runs as LocalSystem. That was issue #179.
+# `axis-api-atlas` IS NOT DECLARED HERE. It lives in the `atlas` extra, in
+# setup.py. It is still required to run ADMZ — this is about *where* the
+# requirement is written, not whether it exists.
 #
-# A direct reference never consults an index: with no credential the git clone
-# fails loudly instead of silently installing a stranger's package.
+# Why it moved (#235): the reference is `git+ssh://`, and the read-only deploy
+# key that authenticates it exists ONLY as a GitHub Actions secret. When this
+# line sat here, `pip install -r requirements.txt` re-evaluated the direct URL
+# on every run and tried to clone — even on a machine that already had a
+# perfectly good editable atlas installed — so it failed with
+# `Permission denied (publickey)` on the operator's host and on every fresh
+# developer setup. It failed AFTER resolving everything else, so it landed
+# mid-operation. The README claimed an editable install "takes precedence over
+# this line"; it did not, because pip re-evaluates a direct URL regardless of
+# what is installed. Moving the requirement out is what makes that claim true:
+# nothing re-evaluates a URL that is not here.
 #
-# Access: read-only deploy key. CI reads it from the repo secret
-# AXIS_API_ATLAS_DEPLOY_KEY (see .github/workflows/ci.yml).
-# Local dev: `pip install -e ../axis-api-atlas` takes precedence over this line
-# and needs no credential — see README "Installation".
+# `git+https://` was considered and rejected. GitHub deploy keys are SSH-only,
+# so HTTPS would retire a non-expiring, read-only, single-repo credential in
+# favour of an expiring PAT or a whole GitHub App. And it would not fix the
+# laptop anyway: pip clones into a temp directory, so an HTTPS credential has
+# to live in user-global git config — shared state this project does not
+# mutate. See the #235 thread for the `git ls-remote` evidence.
 #
-# #227 proposed pinning `@main` to a SHA. DEFERRED — it needs a bump mechanism
-# to be a net improvement, because an unwatched cross-account SHA fails SILENTLY
-# in the stale direction. Tracked separately; see the follow-up issue. The #179
-# property comes from the direct reference, not from the SHA, so deferring costs
-# nothing security-wise. It does mean a rebuild still pulls whatever atlas HEAD
-# is at the time — use `pip install --dry-run --report` to see the commit first.
-axis-api-atlas @ git+ssh://git@github.com/mrdnlabs/axis-api-atlas.git@main
+# The #179 property is UNCHANGED and does not come from this file. A PEP 508
+# direct reference never consults an index; that reference now lives in the
+# `atlas` extra, and `.github/scripts/assert_atlas_provenance.py` proves the
+# INSTALLED distribution came from git or a local dir, never from PyPI. That
+# script is now the only mechanical guard, so it matters more than it did.
+#
+#   CI / a machine with the deploy key:  pip install -e ".[atlas]"
+#   Local dev (no credential needed):    pip install -e ../axis-api-atlas
+#
+# See README "Installation" and .github/workflows/README.md.
 
 # LDAP (optional — only used when ADMZ_LDAP_ENABLED=true for Windows
 # IWA group enrichment). Pure-Python so no native deps.

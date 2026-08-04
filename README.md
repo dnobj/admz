@@ -35,11 +35,14 @@ conversationally.
 
 ADMZ depends on the [axis-api-atlas](https://github.com/mrdnlabs/axis-api-atlas)
 package (the executable operation catalog + knowledge + capability matrix —
-ADR-0029). It is **private and not on PyPI**, so `requirements.txt` declares it
-as a direct git reference rather than a bare package name — a bare name would
-resolve against PyPI, where the name is unregistered and anyone could claim it
-(issue #179). Install the sibling clone editable **first**; it satisfies the
-requirement locally and needs no credential:
+ADR-0029). It is **private and not on PyPI**, so it is declared as a direct git
+reference rather than a bare package name — a bare name would resolve against
+PyPI, where the name is unregistered and anyone could claim it (issue #179).
+
+That reference lives in the **`atlas` extra** (`setup.py`), *not* in
+`requirements.txt`. Installing it needs a credential; everything else does not,
+and keeping the two apart is what lets a fresh checkout install at all. Clone
+the sibling repo and install it editable **first**:
 
 ```bash
 git clone <admz-repo-url> admz
@@ -49,13 +52,35 @@ pip install -e ../axis-api-atlas   # the catalog dependency (required, FIRST)
 pip install -e .                   # ADMZ itself
 ```
 
-Order matters. `pip install -r requirements.txt` on a machine that does **not**
-already have the atlas installed will try to clone
-`git@github.com:mrdnlabs/axis-api-atlas.git` over SSH and fail with
-`Permission denied (publickey)` unless you have access to that private
-repository. That failure is deliberate — it is what stops a clean install from
-silently fetching an impostor package from PyPI. CI resolves it with a
-read-only deploy key; see [`.github/workflows/README.md`](.github/workflows/README.md).
+**Order matters, and now it actually works.** The editable atlas genuinely
+satisfies the dependency, because nothing re-evaluates a reference that is not
+in `requirements.txt`. `pip install -r requirements.txt` succeeds on any machine
+with no credential at all.
+
+> This was not true before #235. The reference used to sit in
+> `requirements.txt`, and pip re-evaluates a direct URL **regardless of what is
+> already installed** — so it tried to clone over SSH and died with
+> `Permission denied (publickey)` even on a machine with a perfectly good
+> editable atlas. This section claimed otherwise. It was wrong, and moving the
+> reference is what made it right.
+
+The one credentialed path is the extra, which is how CI installs atlas:
+
+```bash
+pip install -e ".[atlas]"        # needs the read-only deploy key
+```
+
+Cloning atlas over HTTPS (the `git clone` above) needs read access to that
+private repo but no special setup. The `atlas` extra clones over **SSH** and
+needs the deploy key, which is why CI is the only place it runs — see
+[`.github/workflows/README.md`](.github/workflows/README.md).
+
+If atlas is missing entirely, ADMZ fails at import — loudly, with a normal
+`ImportError`. That is deliberate: a clean checkout that cannot install is a
+worse failure than one that installs and then tells you what is missing. What
+must **never** happen is `axis-api-atlas` arriving from a package index;
+`.github/scripts/assert_atlas_provenance.py` is the mechanical guard for that,
+and it is now the only one.
 
 The core install already includes the network-discovery stack (zeroconf,
 WSDiscovery, scapy, pysnmp), the Vault client (hvac), the chatbot LLM client

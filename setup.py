@@ -14,6 +14,37 @@ from setuptools import setup, find_packages
 HERE = Path(__file__).parent
 
 
+# --- axis-api-atlas: the one place the reference is written ------------------
+#
+# This used to live in requirements.txt. It moved here in #235 so that
+# `pip install -r requirements.txt` stops demanding a credential that only CI
+# has, and so a local `pip install -e ../axis-api-atlas` genuinely satisfies
+# the dependency instead of being re-evaluated and overridden.
+#
+# It is an EXTRA, not an install_requires entry, so `pip install -e .` succeeds
+# credential-free. ADMZ does not run without atlas — it will fail at import,
+# loudly — but that is a better failure than a clean checkout that cannot
+# install at all.
+#
+# Pinned to a SHA (#232) so `pip freeze` can tell two builds apart and
+# `git bisect` can tell an ADMZ regression from an atlas one. The mutable
+# `@main` meant CI cloned whatever HEAD was at that moment and the version
+# string read `0.1.0` forever.
+#
+# ATLAS_SHA is parsed out of this file by:
+#   .github/scripts/assert_atlas_provenance.py   (asserts the installed commit)
+#   .github/workflows/atlas-pin-drift.yml        (weekly: is the pin behind?)
+# Same trick as _read_version() below. Keep the literal on one line, in this
+# exact `ATLAS_SHA = "<40 hex>"` shape, or both of those stop finding it.
+#
+# To bump: change ATLAS_SHA, run the suite, and say in the PR why atlas moved.
+ATLAS_SHA = "af92f832f042e09e29d4c4bc9c5dc11b27ab0b21"
+ATLAS_REPO = "mrdnlabs/axis-api-atlas"
+ATLAS_REQUIREMENT = (
+    f"axis-api-atlas @ git+ssh://git@github.com/{ATLAS_REPO}.git@{ATLAS_SHA}"
+)
+
+
 def _read(filename: str) -> str:
     return (HERE / filename).read_text(encoding="utf-8")
 
@@ -30,15 +61,31 @@ def _read_version() -> str:
 
 def _read_requirements(filename: str) -> list:
     """Parse a pip requirements file, ignoring comments, blank lines, and
-    -r recursive includes."""
+    -r recursive includes.
+
+    Inline comments are stripped on " #" (space-hash), never on a bare "#".
+    Almost every line in requirements.txt carries a trailing `# installed X;
+    latest Y` note from the bounds work in #231, and setuptools happens to
+    strip those itself — checked, and `pip install -e . --dry-run --no-deps`
+    exits 0 with 26 correctly-parsed Requires-Dist entries. This is not a bug
+    fix; it is hardening, so the metadata stops depending on another library's
+    leniency. `packaging.requirements.Requirement` is stricter than the real
+    build path and rejects those same lines.
+
+    The space-hash rule matters: a bare "#" split would eat a URL fragment,
+    and direct references legitimately carry `#egg=` / `#subdirectory=`. No
+    line here uses one today — the `atlas` extra below pins with `@<sha>`, not
+    a fragment — but a future one would be silently truncated into a different
+    requirement, which is the kind of breakage that does not announce itself.
+    """
     lines = (HERE / filename).read_text(encoding="utf-8").splitlines()
-    return [
-        line.strip()
-        for line in lines
-        if line.strip()
-        and not line.strip().startswith("#")
-        and not line.strip().startswith("-r")
-    ]
+    out = []
+    for raw in lines:
+        line = raw.split(" #", 1)[0].strip()
+        if not line or line.startswith("#") or line.startswith("-r"):
+            continue
+        out.append(line)
+    return out
 
 
 setup(
@@ -78,6 +125,10 @@ setup(
     python_requires=">=3.10",
     install_requires=_read_requirements("requirements.txt"),
     extras_require={
+        # The catalog dependency. Needs the read-only deploy key (CI has it);
+        # a local `pip install -e ../axis-api-atlas` is the credential-free
+        # equivalent and satisfies the same import.
+        "atlas": [ATLAS_REQUIREMENT],
         "dev": [
             line
             for line in _read_requirements("requirements-dev.txt")
