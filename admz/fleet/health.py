@@ -271,7 +271,8 @@ class DeviceHealthStore:
 
     def __init__(self, db_path: Optional[str] = None):
         self._db_path = str(db_path or _default_db_path())
-        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+        from admz.paths import ensure_parent_dir
+        ensure_parent_dir(self._db_path)
         self._ensure_table()
 
     def _connect(self) -> sqlite3.Connection:

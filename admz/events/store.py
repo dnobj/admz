@@ -51,7 +51,8 @@ class EventStore:
 
     def __init__(self, db_path: Optional[str] = None):
         self._db_path = str(db_path or _default_db_path())
-        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+        from admz.paths import ensure_parent_dir
+        ensure_parent_dir(self._db_path)
         # Monotonic count of appends lost to a swallowed sqlite error. `append`
         # returns False for a duplicate AND for a DB failure, so its return value
         # alone cannot tell a caller which happened. ADR-0057 gates ACS firing on

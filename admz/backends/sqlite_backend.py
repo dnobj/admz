@@ -98,55 +98,6 @@ def _restrict_key_file(key_path: Path) -> None:
             )
 
 
-def _restrict_data_dir(dir_path: Path) -> None:
-    """Tighten the ADMZ data directory's permissions — **POSIX only** (#250).
-
-    On POSIX, ``chmod 0o700`` is correct and is applied.
-
-    On Windows this deliberately does **nothing**, and the absence is the
-    decision. It is not an omission to be tidied up later — see ADR-0042.
-    Three measured reasons, in the order they rule the alternative out:
-
-    1. **The obvious fix collapses the DACL of everything inside.** The
-       key-file helper in :mod:`admz.win_acl` emits ACEs with no
-       inheritance flags, which is right for a file and wrong for a
-       container. ``SetNamedSecurityInfo`` re-propagates inheritance to
-       existing children, so a parent with no inheritable ACEs strips
-       theirs: measured, ``admz.db`` went from 4 ACEs to 0 — an empty
-       DACL, which denies everyone including SYSTEM.
-    2. **This code cannot know the right principals.** The ``admz``
-       service runs as LocalSystem, so a service-created directory would
-       be owned by ``S-1-5-18``. Granting SYSTEM + Administrators is not
-       enough for the operator: a non-elevated admin's UAC-filtered token
-       does not carry ``S-1-5-32-544`` at all, and such a file is measured
-       unreadable. ``setup-admz-service.ps1`` therefore grants the
-       operator's account explicitly — something only setup knows.
-    3. **This is not the creation path.** Twelve sites create ADMZ_HOME;
-       in the web/service process ``admz/events/store.py`` wins at import,
-       long before the registry is built in the FastAPI lifespan. A DACL
-       applied here would land on a directory someone else created, and
-       would propagate into the existing ``admz.key`` — which is #183, an
-       open operator decision.
-
-    Hardening ADMZ_HOME on Windows belongs to ``setup-admz-service.ps1``
-    (ADR-0042), which ADR-0054 plans to bring into ``scripts/``.
-
-    The precedent for this shape is ``admz/snapshot/git_repo.py``, which
-    already guards its ``chmod`` on ``sys.platform``.
-    """
-    if sys.platform == "win32":
-        return
-    try:
-        os.chmod(dir_path, 0o700)
-    except OSError:
-        logger.error(
-            "Could not chmod 0o700 the ADMZ data directory %s — it may be "
-            "readable by other users.",
-            dir_path,
-            exc_info=True,
-        )
-
-
 def _build_fernet(key_path: Path):
     """Build a Fernet instance from a key file, creating the file if needed."""
     try:
@@ -161,7 +112,8 @@ def _build_fernet(key_path: Path):
         key = key_path.read_bytes().strip()
     else:
         key = Fernet.generate_key()
-        key_path.parent.mkdir(parents=True, exist_ok=True)
+        from admz.paths import ensure_parent_dir
+        ensure_parent_dir(key_path)
         key_path.write_bytes(key)
         _restrict_key_file(key_path)
 
@@ -327,9 +279,10 @@ class SQLiteDeviceRegistry(DeviceRegistry):
         self._db_path = Path(db_path) if db_path else paths.db_path()
         self._key_path = Path(key_path) if key_path else paths.key_path()
 
-        # Ensure parent directories exist
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        _restrict_data_dir(self._db_path.parent)
+        # Create the data directory (and restrict it on POSIX).
+        # paths.ensure_parent_dir, not ensure_admz_home: an explicit
+        # db_path= or ADMZ_DB_PATH may point outside ADMZ_HOME.
+        paths.ensure_parent_dir(self._db_path)
 
         # Initialise encryption
         self._fernet = _build_fernet(self._key_path)

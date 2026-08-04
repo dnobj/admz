@@ -172,7 +172,8 @@ class ApiKeyStore:
         # Defensive: ensure parent dir exists so the SQLite connect
         # doesn't fail on a fresh install where ~/.admz/ hasn't been
         # created yet by another component.
-        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+        from admz.paths import ensure_parent_dir
+        ensure_parent_dir(self._db_path)
         self._ensure_table()
 
     def _connect(self) -> sqlite3.Connection:

@@ -123,9 +123,8 @@ def _askpass_helper_path() -> str:
     from the ``ADMZ_GH_TOKEN`` env var — so a GitHub App installation token can
     authenticate a push without ever landing in the command line or the
     persisted remote URL. Generated once under ADMZ_HOME."""
-    from admz.paths import admz_home
-    home = Path(admz_home())
-    home.mkdir(parents=True, exist_ok=True)
+    from admz.paths import ensure_admz_home
+    home = ensure_admz_home()
     if sys.platform == "win32":
         path = home / "git-askpass.cmd"
         content = "@echo %ADMZ_GH_TOKEN%\r\n"

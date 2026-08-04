@@ -75,12 +75,19 @@ jobs:
       - name: Collect every test
         shell: bash
         env:
-          # ADMZ_HOME must exist BEFORE pytest starts: admz/fleet_settings.py:219
-          # constructs its singleton at import and, unlike the other 16
-          # import-time stores, does not mkdir its parent (fleet_settings.py:160
-          # goes straight to sqlite3.connect). Today it free-rides on whichever
-          # other store created the directory first; that is an import-order
-          # accident, not a guarantee.
+          # CORRECTED in #254. This used to say fleet_settings was alone in
+          # not creating its parent — "unlike the other 16 import-time stores".
+          # That was wrong: EIGHT stores lacked the mkdir (tasks_store,
+          # capture_store, confirm_store, chat_sessions, fleet_settings, and
+          # the three lazy demo stores), and the directory was created by
+          # whichever of the other twelve happened to import first — an
+          # import-order accident, not a guarantee.
+          #
+          # Since #254 every one of them calls paths.ensure_admz_home() /
+          # ensure_parent_dir(), so ADMZ_HOME no longer has to pre-exist and
+          # the mkdir below is belt-and-braces. Both are kept: the env var
+          # still pins the suite away from a real data directory, which is
+          # what #257 is about, and tests/conftest.py now redirects it anyway.
           ADMZ_HOME: ${{ runner.temp }}/admz-home
         run: |
           set -euo pipefail
