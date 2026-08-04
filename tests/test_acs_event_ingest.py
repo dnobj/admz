@@ -319,10 +319,59 @@ def test_status_exposes_the_adr0057_fields(monkeypatch):
     p = _poller(monkeypatch, [])
     st = p.status()
     for k in ("enabled", "running", "seeded", "last_count", "last_fired",
-              "fired_total", "last_error", "newest_event_ts_ms", "apparent_skew_ms",
-              "last_truncated", "truncated_polls", "unparsed_ts", "store_error_polls"):
+              "fired_total", "fire_failed_total", "last_error", "newest_event_ts_ms",
+              "apparent_skew_ms", "last_truncated", "truncated_polls", "unparsed_ts",
+              "store_error_polls"):
         assert k in st
     assert st["apparent_skew_ms"] is None             # no event seen yet
+
+
+# ── fire_failed_total's meaning (ADR-0058) ───────────────────────────────────
+def test_an_injected_on_event_that_raises_is_counted(monkeypatch):
+    """The counter exists for injected callbacks — the only thing that can still
+    raise here once the evaluator degrades instead of dropping."""
+    p = _paged_poller(monkeypatch, [[_det(1, "2026-06-21T10:00:00.0Z")]])
+    p._seeded = True
+
+    async def boom(rec):
+        raise RuntimeError("injected handler blew up")
+    p.on_event = boom
+
+    assert _run(p.poll_once())["fired"] == 0
+    assert p.fire_failed_total == 1
+    assert p.status()["fire_failed_total"] == 1
+
+
+def test_the_real_evaluator_cannot_increment_fire_failed_total(monkeypatch):
+    """ADR-0058 claims this counter is **structurally** zero on the current wiring.
+
+    That claim is only worth something if something enforces it, so: wire a REAL
+    ``DetectionEvaluator`` whose rule store fails *every* read — the worst case
+    that used to raise straight through ``evaluate`` — and the firing must still
+    be delivered and the counter must stay at zero.
+    """
+    import sqlite3
+    from types import SimpleNamespace
+
+    from admz.events.evaluator import DetectionEvaluator
+
+    class _AlwaysFailingRuleStore:
+        version = 1
+
+        def list(self, enabled_only=False):
+            raise sqlite3.OperationalError("database is locked")
+
+    ev = DetectionEvaluator(
+        registry=SimpleNamespace(get_device_info=lambda d: {"tags": []}),
+        store=_AlwaysFailingRuleStore(),
+    )
+    p = _paged_poller(monkeypatch, [[_det(1, "2026-06-21T10:00:00.0Z")]])
+    p.on_event = ev.evaluate
+    p._seeded = True
+
+    assert _run(p.poll_once())["fired"] == 1     # the callback returned normally
+    assert p.fire_failed_total == 0              # ...so nothing was lost
+    assert p.status()["fire_failed_total"] == 0
 
 
 # ── unchanged gating ─────────────────────────────────────────────────────────

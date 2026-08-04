@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -179,6 +181,125 @@ def test_cooldown_debounces(tmp_path, monkeypatch):
     # immediate second event is within cooldown → no new fire (stamp unchanged)
     _run(ev.evaluate(_rec(id="e2")))
     assert ev._last_fired.get(rid) == first
+
+
+# ── the evaluator degrades, never drops (GH #255 / ADR-0058) ─────────────────
+class _FlakyRuleStore:
+    """A ``DetectionStore`` stand-in whose ``list()`` raises the way the real one
+    does: it wraps in ``try``/*``finally``* with no ``except``, so a sqlite error
+    propagates straight to the caller (``detections.py:180-192``)."""
+
+    def __init__(self, rules, fail_times=0):
+        self._rules = list(rules)
+        self.version = 1
+        self.fail_times = fail_times
+        self.calls = 0
+
+    def list(self, enabled_only=False):
+        self.calls += 1
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise sqlite3.OperationalError("database is locked")
+        return list(self._rules)
+
+    def record_fire(self, det_id, ts_ms, error=""):   # pragma: no cover — _fire only
+        pass
+
+
+def _flaky_evaluator(rules, fail_times=0):
+    from admz.events.evaluator import DetectionEvaluator
+    s = _FlakyRuleStore(rules, fail_times=fail_times)
+    return DetectionEvaluator(registry=_Reg({}), store=s), s
+
+
+# `_last_fired[rule_id]` is stamped synchronously at evaluator.py:78, BEFORE the
+# detached `create_task(self._fire(...))` — so it is the deterministic "this rule
+# fired" signal, with no task draining and no second event loop involved.
+def _fired(ev):
+    return set(ev._last_fired)
+
+
+class TestEvaluatorDegradesNeverDrops:
+    """`evaluate` is `on_event` for five call paths and used to have exactly one
+    raise path — the unguarded `_refresh()`. It raised *before any rule was
+    evaluated*, so one unreadable rule cache dropped the whole firing, and four of
+    the five paths can never re-deliver it."""
+
+    def test_evaluate_does_not_raise_when_the_rule_store_does(self):
+        ev, _ = _flaky_evaluator([_det(id="r1", match={"category": "io"})], fail_times=1)
+        _run(ev.evaluate(_rec()))            # must not propagate — this IS the fix
+
+    def test_evaluates_against_the_last_good_rules_during_an_outage(self):
+        ev, s = _flaky_evaluator([_det(id="r1", match={"category": "io"})])
+        _run(ev.evaluate(_rec()))
+        assert _fired(ev) == {"r1"}          # loaded and fired normally
+        ev._last_fired.clear()
+
+        s.version = 2                        # a bump forces a refresh...
+        s.fail_times = 1                     # ...and that refresh fails
+        _run(ev.evaluate(_rec(id="e2")))
+        assert _fired(ev) == {"r1"}          # still evaluated, against the stale list
+
+    def test_a_failed_read_does_not_advance_the_version_cursor(self):
+        r1 = _det(id="r1", match={"category": "io"})
+        r2 = _det(id="r2", match={"category": "io"})
+        ev, s = _flaky_evaluator([r1])
+        _run(ev.evaluate(_rec()))
+        ev._last_fired.clear()
+
+        s._rules, s.version, s.fail_times = [r1, r2], 2, 1
+        _run(ev.evaluate(_rec(id="e2")))
+        assert _fired(ev) == {"r1"}          # r2 was added but the read failed
+        ev._last_fired.clear()
+
+        # Cursor untouched ⇒ the next call re-reads and picks r2 up.
+        _run(ev.evaluate(_rec(id="e3")))
+        assert _fired(ev) == {"r1", "r2"}
+        assert s.calls == 3
+        assert ev._rules_version == s.version    # structural check last (#207)
+
+    def test_first_ever_failure_fires_nothing_but_still_does_not_raise(self):
+        ev, _ = _flaky_evaluator([_det(id="r1", match={"category": "io"})], fail_times=1)
+        _run(ev.evaluate(_rec()))            # no previous list to fall back on
+        assert _fired(ev) == set()
+        _run(ev.evaluate(_rec(id="e2")))     # ...and it recovers on the next call
+        assert _fired(ev) == {"r1"}
+
+    def test_a_rule_disabled_during_an_outage_still_fires_once(self, caplog):
+        """DELIBERATE, per ADR-0058 — do not "fix" this.
+
+        Evaluating one refresh cycle stale can fire a rule disabled moments ago.
+        The alternative it replaces is dropping the event and firing *nothing*,
+        including every rule still enabled. `pre_authorized` still gates every
+        service-affecting action, and the staleness is bounded to one cycle —
+        which the last two asserts pin.
+        """
+        r1 = _det(id="r1", match={"category": "io"})
+        ev, s = _flaky_evaluator([r1])
+        _run(ev.evaluate(_rec()))
+        ev._last_fired.clear()
+
+        s._rules, s.version, s.fail_times = [], 2, 1   # disabled, but the read fails
+        _run(ev.evaluate(_rec(id="e2")))
+        assert _fired(ev) == {"r1"}          # fires once more — accepted trade
+        ev._last_fired.clear()
+
+        _run(ev.evaluate(_rec(id="e3")))     # next refresh succeeds → it stops
+        assert _fired(ev) == set()
+
+    def test_warns_once_per_streak_and_once_on_recovery(self, caplog):
+        ev, s = _flaky_evaluator([_det(id="r1", match={"category": "io"})])
+        _run(ev.evaluate(_rec()))
+        s.version, s.fail_times = 2, 3
+
+        with caplog.at_level(logging.WARNING, logger="admz.events.evaluator"):
+            for i in range(3):
+                _run(ev.evaluate(_rec(id=f"e{i}")))      # three failing refreshes
+            failed = [r for r in caplog.records if "refresh failed" in r.getMessage()]
+            assert len(failed) == 1                      # not one per event
+            _run(ev.evaluate(_rec(id="ok")))             # recovers
+            recovered = [r for r in caplog.records if "refresh recovered" in r.getMessage()]
+            assert len(recovered) == 1
 
 
 # ── handlers ─────────────────────────────────────────────────────────────────

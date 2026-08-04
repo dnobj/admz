@@ -157,6 +157,11 @@ class AcsActionRulePoller:
         self.last_count = 0          # action-rule events seen in the last poll
         self.last_fired = 0          # detections fired in the last poll
         self.fired_total = 0
+        # ADR-0058: on the current wiring this is structurally pinned at zero —
+        # DetectionEvaluator.evaluate no longer has a raise path. A non-zero
+        # reading therefore means an INJECTED on_event is failing, and those
+        # firings are not retried (the row is appended before the callback runs).
+        self.fire_failed_total = 0
         self.last_error = ""
         # Observability (ADR-0057). Skew between the ADMZ host clock and the ACS
         # server clock is unmeasurable directly — ACS exposes no server-time op —
@@ -302,12 +307,15 @@ class AcsActionRulePoller:
                 try:
                     await self.on_event(rec)
                     fired += 1
+                    self._warned_fire_failed = False
                 except Exception:  # noqa: BLE001 — one bad rule must not stop the poll
                     # NOTE: the row is already appended, so `inserted` is False on
                     # every later poll and this firing will NOT be retried. The
                     # window's retry buffer covers a failed *append*, not a failed
-                    # *fire*. Not a regression (the old watermark had advanced past
-                    # it too), but it is why this is a warning and not a debug line.
+                    # *fire*. ADR-0058 removes the wired evaluator's only raise
+                    # path, so this is now reachable only via an injected on_event
+                    # — which is exactly what `fire_failed_total` reports.
+                    self.fire_failed_total += 1
                     if not self._warned_fire_failed:
                         self._warned_fire_failed = True
                         logger.warning("ACS on_event failed for %s; this firing will not "
@@ -344,6 +352,7 @@ class AcsActionRulePoller:
             "last_count": self.last_count,
             "last_fired": self.last_fired,
             "fired_total": self.fired_total,
+            "fire_failed_total": self.fire_failed_total,
             "last_error": self.last_error,
             "newest_event_ts_ms": self.newest_event_ts_ms,
             "apparent_skew_ms": skew,

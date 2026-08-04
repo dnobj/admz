@@ -37,7 +37,9 @@ class AcsFirebirdPoller:
         self.last_poll_at: float = 0.0
         self.last_count = 0
         self.fired_total = 0
+        self.fire_failed_total = 0
         self.last_error = ""
+        self._warned_on_event = False    # log-once-per-failure-streak latch
 
     # ----- gating -----
     @staticmethod
@@ -124,8 +126,21 @@ class AcsFirebirdPoller:
                 try:
                     await self.on_event(rec)
                     fired += 1
+                    self._warned_on_event = False
                 except Exception:  # noqa: BLE001
-                    logger.debug("ACS firebird on_event failed for %s", rec.get("id"), exc_info=True)
+                    # `_hw_id` has already advanced above, and the cursor is pushed
+                    # into the query — so this row is never returned again and the
+                    # firing is lost outright. ADR-0058 removes the wired
+                    # evaluator's only raise path; a hit here means an injected
+                    # callback is failing. Once per streak (this runs per row).
+                    self.fire_failed_total += 1
+                    if not self._warned_on_event:
+                        self._warned_on_event = True
+                        logger.warning("ACS firebird on_event failed for %s; this firing "
+                                       "will not be retried", rec.get("id"), exc_info=True)
+                    else:
+                        logger.debug("ACS firebird on_event still failing for %s",
+                                     rec.get("id"), exc_info=True)
         self.fired_total += fired
         return {"enabled": True, "count": len(rows), "fired": fired}
 
@@ -142,5 +157,6 @@ class AcsFirebirdPoller:
             "last_poll_at": self.last_poll_at,
             "last_count": self.last_count,
             "fired_total": self.fired_total,
+            "fire_failed_total": self.fire_failed_total,
             "last_error": self.last_error,
         }

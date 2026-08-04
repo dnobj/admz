@@ -31,13 +31,43 @@ class DetectionEvaluator:
         self._rules_version = -1
         self._last_fired: Dict[str, int] = {}   # rule id → epoch ms (in-process cooldown)
         self._tags_cache: Dict[str, list] = {}
+        self._refresh_failing = False           # log-once-per-failure-streak latch
 
     # ----- rule cache -----
     def _refresh(self) -> None:
-        if self.store.version != self._rules_version:
-            self._rules = self.store.list(enabled_only=True)
-            self._rules_version = self.store.version
-            self._tags_cache.clear()
+        v = self.store.version
+        if v == self._rules_version:
+            return
+        # A failed read must not DROP the event (GH #255, ADR-0058). evaluate()
+        # calls this unguarded as its first statement, so a raise here propagates
+        # out to every on_event call site and loses the whole firing — every
+        # matching rule, not one — across five paths, four of which can never
+        # re-deliver it (a WS event arrives once, the Firebird poller advances its
+        # cursor before firing, the webhook swallows silently). Keep the previous
+        # rules, leave the cursor alone, and let the next call retry.
+        #
+        # This is deliberately the same shape as WatchGate._refresh (GH #209/#249):
+        # they are the same method in the same subsystem, and they diverged once
+        # already — which is how this defect survived. Change both or neither.
+        try:
+            rules = self.store.list(enabled_only=True)
+        except Exception:  # noqa: BLE001 — a store hiccup must not drop the event
+            if not self._refresh_failing:
+                self._refresh_failing = True
+                logger.warning("detection rule refresh failed; evaluating against the "
+                               "previous rules and retrying on the next call", exc_info=True)
+            else:
+                logger.debug("detection rule refresh still failing", exc_info=True)
+            return
+        if self._refresh_failing:
+            self._refresh_failing = False
+            logger.warning("detection rule refresh recovered (%d rule(s)).", len(rules))
+        self._rules = rules
+        # Capture BEFORE the read, as WatchGate does: reading store.version again
+        # here would record a bump that landed DURING list(), and the early return
+        # above would then never re-read that rule.
+        self._rules_version = v
+        self._tags_cache.clear()
 
     def _device_tags(self, device_id: str) -> list:
         if device_id in self._tags_cache:

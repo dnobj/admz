@@ -12,6 +12,7 @@ the *visible* surface (nav item, tools, prompt) gates on ``acs_enabled()``.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -21,7 +22,13 @@ from fastapi.templating import Jinja2Templates
 from admz.modules.acs_pro.client import run_acs_op, run_acs_op_direct
 from admz.modules.acs_pro.config import DEFAULT_PORT, acs_config, save_acs_config
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+# Log-once-per-failure-streak latch for the webhook's detection-evaluation call
+# (ADR-0058). Module-level because the handler is a function, not an object.
+_WEBHOOK_EVAL_WARNED = False
 
 template_dir = Path(__file__).parent.parent.parent / "api" / "templates"
 templates = Jinja2Templates(directory=str(template_dir))
@@ -240,6 +247,8 @@ async def acs_rule_fired(request: Request):
     ``source="acs"`` event, append it to the store (so it shows in Activity with
     the rule NAME), and run the detection evaluator so ACS-source detections fire.
     """
+    global _WEBHOOK_EVAL_WARNED
+
     from admz.api.context import get_context
     from admz.audit import record_event
     from admz.modules.acs_pro.webhook import normalize_webhook, token_ok
@@ -269,8 +278,19 @@ async def acs_rule_fired(request: Request):
         pass
     try:
         await ctx.detection_evaluator.evaluate(rec)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception:  # noqa: BLE001 — a handler error must not fail the webhook
+        # A webhook firing is delivered once; there is nothing to re-poll, so this
+        # loses the detection outright. It used to be a bare `pass` — the quietest
+        # of the five on_event sites. ADR-0058 removes the wired evaluator's only
+        # raise path, so a hit here means an injected callback is failing.
+        if not _WEBHOOK_EVAL_WARNED:
+            _WEBHOOK_EVAL_WARNED = True
+            logger.warning("ACS webhook detection evaluation failed; this firing's "
+                           "detections will not be retried", exc_info=True)
+        else:
+            logger.debug("ACS webhook detection evaluation still failing", exc_info=True)
+    else:
+        _WEBHOOK_EVAL_WARNED = False
     # Audit the firing (synthetic principal; never log the token / raw secrets).
     try:
         from types import SimpleNamespace
