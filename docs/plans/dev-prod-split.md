@@ -166,7 +166,7 @@ Built and verified. Deviations from the text above, all deliberate:
 - **`pip install -r requirements.txt` does not install atlas.** #235/#236 moved it to an
   `extras_require` entry, so the production venv came up without it and
   `import admz.mcp.server` failed on `axis_api_atlas`. Installed **non-editable** from
-  `C:dmzxis-api-atlas` so production holds its own copy — the dev venv has it
+  `C:\admz\axis-api-atlas` so production holds its own copy — the dev venv has it
   *editable*, which would have re-created exactly the coupling this plan exists to remove.
   Worth knowing: that shared checkout is on branch `survey/motion-alarm-publisher-caution`,
   not `main`, so production had been running atlas from a feature branch.
@@ -182,11 +182,11 @@ Built and verified. Deviations from the text above, all deliberate:
 
 Both flagged risks checked and clear:
 
-- **Dubious ownership:** `C:dmzdmz-prod` is owned by `DNLT\dnich`, *identical* to
-  `C:dmzdmz`, which LocalSystem already reads successfully. No new exposure.
+- **Dubious ownership:** `C:\admz\admz-prod` is owned by `DNLT\dnich`, *identical* to
+  `C:\admz\admz`, which LocalSystem already reads successfully. No new exposure.
   (`git config --system safe.directory` covers only `ADMZ_HOME`'s repos, as the plan says.)
 - **Absolute paths in the DB:** 270 columns scanned across every table in production's
-  `admz.db` (read-only) for a literal `admzdmz`. **None.** No analogue to ADR-0042's
+  `admz.db` (read-only) for a literal `admz\admz`. **None.** No analogue to ADR-0042's
   `organizations.repo_path` migration is needed.
 
 ### Slice 3 — STATUS: DONE, 2026-08-04
@@ -232,7 +232,7 @@ The exact change, both halves already written to disk during the attempt:
 ```powershell
 # elevated PowerShell
 Stop-Service admz -Force
-$new = '<binPath with --cwd \?\C:dmzdmz-prod and admz-prod\.venv\Scripts\python.exe>'
+$new = '<binPath with --cwd \\?\C:\admz\admz-prod and admz-prod\.venv\Scripts\python.exe>'
 sc.exe config admz binPath= "$new"
 Start-Service admz
 ```
