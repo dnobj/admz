@@ -166,7 +166,7 @@ Built and verified. Deviations from the text above, all deliberate:
 - **`pip install -r requirements.txt` does not install atlas.** #235/#236 moved it to an
   `extras_require` entry, so the production venv came up without it and
   `import admz.mcp.server` failed on `axis_api_atlas`. Installed **non-editable** from
-  `C:dmzxis-api-atlas` so production holds its own copy — the dev venv has it
+  `C:\admz\axis-api-atlas` so production holds its own copy — the dev venv has it
   *editable*, which would have re-created exactly the coupling this plan exists to remove.
   Worth knowing: that shared checkout is on branch `survey/motion-alarm-publisher-caution`,
   not `main`, so production had been running atlas from a feature branch.
@@ -182,14 +182,38 @@ Built and verified. Deviations from the text above, all deliberate:
 
 Both flagged risks checked and clear:
 
-- **Dubious ownership:** `C:dmzdmz-prod` is owned by `DNLT\dnich`, *identical* to
-  `C:dmzdmz`, which LocalSystem already reads successfully. No new exposure.
+- **Dubious ownership:** `C:\admz\admz-prod` is owned by `DNLT\dnich`, *identical* to
+  `C:\admz\admz`, which LocalSystem already reads successfully. No new exposure.
   (`git config --system safe.directory` covers only `ADMZ_HOME`'s repos, as the plan says.)
 - **Absolute paths in the DB:** 270 columns scanned across every table in production's
-  `admz.db` (read-only) for a literal `admzdmz`. **None.** No analogue to ADR-0042's
+  `admz.db` (read-only) for a literal `admz\admz`. **None.** No analogue to ADR-0042's
   `organizations.repo_path` migration is needed.
 
-### Slice 3 — STATUS: BLOCKED on elevation, 2026-08-04
+### Slice 3 — STATUS: DONE, 2026-08-04
+
+Production runs from `C:\admz\admz-prod` on its own venv. Verified independently of the
+script's own report: the service configuration points there, `admz-prod`'s `python.exe` is
+**locked** by a running process while the dev one is **not**, and the fleet poll resumed
+against live devices with `/` returning its usual `401` challenge.
+
+The route there took two failed attempts, both worth recording because each failure was in
+the *tooling*, not the change:
+
+1. **`sc.exe config` returned 1639** (`ERROR_INVALID_COMMAND_LINE`). The binPath is 411
+   characters and contains embedded quotes, which does not survive PowerShell argument
+   marshalling. Use `Invoke-CimMethod -MethodName Change`, which passes the string as a
+   parameter rather than a command line.
+2. **The first elevated script never ran.** It was written UTF-8 without a BOM and
+   contained em-dashes; PowerShell 5.1 reads BOM-less files as ANSI, which mangled them
+   into a parse error. The UAC prompt was approved and the shell exited before executing a
+   line — no log, no change, and nothing to indicate why. **Parse-check a generated script
+   with `[Parser]::ParseFile` before launching it elevated**, and keep such scripts ASCII.
+
+Both attempts left production serving on the original configuration; it was never down.
+
+<details>
+<summary>Original slice 3 text</summary>
+
 
 Attempted and cleanly reverted; production was never left down.
 
@@ -208,7 +232,7 @@ The exact change, both halves already written to disk during the attempt:
 ```powershell
 # elevated PowerShell
 Stop-Service admz -Force
-$new = '<binPath with --cwd \?\C:dmzdmz-prod and admz-prod\.venv\Scripts\python.exe>'
+$new = '<binPath with --cwd \\?\C:\admz\admz-prod and admz-prod\.venv\Scripts\python.exe>'
 sc.exe config admz binPath= "$new"
 Start-Service admz
 ```
@@ -247,6 +271,8 @@ Risks to check explicitly during this slice, both silent if missed:
 - Confirm no absolute path in the DB references `C:\admz\admz`. ADR-0042's
   migration had to rewrite `organizations.repo_path`; a code-tree move *should*
   need no analogue.
+
+</details>
 
 ### Slice 4 — the deploy step, the script, and #173
 

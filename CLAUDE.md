@@ -29,37 +29,48 @@ Two files live in `C:\admz\.claude\` — deliberately **not** in the repo, becau
 
 | | Port | `ADMZ_HOME` | Code from | venv |
 |---|---|---|---|---|
-| **Production** | 4242 | `C:\ProgramData\admz` | `C:\admz\admz` ⚠️ *the dev checkout* | `C:\admz\admz\.venv` ⚠️ *shared* |
+| **Production** | 4242 | `C:\ProgramData\admz` | `C:\admz\admz-prod` (detached, pinned) | `C:\admz\admz-prod\.venv` |
 | **Staging** | 4243 | `C:\ProgramData\admz-staging` | `C:\admz\admz-staging-code` (detached) | *none — uses the dev venv* |
 | **Dev** | — | — | `C:\admz\admz` | `C:\admz\admz\.venv` |
 
 **Production manages a live Axis fleet and a live ACS install.** It runs as the Shawl-supervised Windows service `admz`. Never point tests, agents, or experiments at `:4242` or `C:\ProgramData\admz`. Restarting it, migrating its DB, or driving its devices requires explicit human authorization.
 
-### ⚠️ Production shares its code and interpreter with the dev workspace
+### Production has its own tree and interpreter (ADR-0054, live 2026-08-04)
 
-This is the live state and it is a known hazard, not an oversight in this document.
-**ADR-0042 separated production's *data*** (`ADMZ_HOME` → `C:\ProgramData\admz`) and
-staging exists — so it is easy to believe the environments are separated. Production's
-**code and Python interpreter are not**: the service runs `--cwd \\?\C:\admz\admz` with
-`C:\admz\admz\.venv\Scripts\python.exe`.
+`C:\admz\admz-prod` is an independent **clone** — not a `git worktree`, so a `git gc`,
+branch delete or prune in the dev tree cannot reach production's object store. It is
+checked out **detached at a pinned commit**, with its own `.venv` built from that commit's
+`requirements.txt` and its own **non-editable** copy of `axis-api-atlas`.
 
-The failure mode this produces is not theoretical. On **2026-08-04** a merge landed code
-requiring `mcp` 2.x in the shared checkout while the shared venv still held `mcp` 1.26.
-Production kept serving — it had loaded its code hours earlier — but **any restart would
-have raised `AttributeError` at import, and Shawl would have restarted it into a loop.**
-A Windows update would have triggered it as surely as a deliberate restart. See
-[ADR-0054](docs/specification/decisions/0054-separate-production-tree-and-venv.md).
+**So `C:\admz\admz` is now purely a dev workspace.** Pulling, branching, installing and
+breaking it is no longer a production event. That is the point of the split.
 
-Practical consequence while this is true: **a `pip install` in `C:\admz\admz\.venv` is a
-production change.** Treat it as one.
+Why it exists: on **2026-08-04**, before the split, a merge landed code requiring `mcp` 2.x
+in the then-shared checkout while the shared venv still held `mcp` 1.26. Production kept
+serving because it had loaded its code hours earlier — but **any restart would have raised
+`AttributeError` at import, and Shawl would have restarted it into a loop.** A Windows
+update would have triggered it as surely as a deliberate restart.
 
-### The replacement is built and waiting
+Note that ADR-0042 had already separated production's *data*, and staging existed, which
+made it easy to believe the environments were fully separated. They were not: code and
+interpreter were shared until this landed.
 
-`C:\admz\admz-prod` exists as of 2026-08-04 — an independent **clone** (not a worktree, so
-a `git gc` in the dev tree cannot reach it), detached at a deliberate commit, with its own
-`.venv` built from that commit's `requirements.txt` and its own non-editable copy of
-`axis-api-atlas`. Verified: 226 modules import cleanly on it, no row in production's DB
-references the dev tree, and its directory owner matches the tree LocalSystem already reads.
+**Two things that are easy to get wrong when updating production:**
+
+- **`pip install -r requirements.txt` does not install atlas.** #235/#236 moved it to an
+  `extras_require` entry, so a venv built from `requirements.txt` alone cannot
+  `import admz` at all. Install it **non-editable** — the dev venv has it *editable* from
+  `C:\admz\axis-api-atlas`, and copying that arrangement would re-create exactly the
+  coupling this split removes.
+- **The test suite cannot run on the production interpreter.** `requirements.txt` is
+  runtime-only and carries no `pytest`, correctly. Verify a production venv by importing
+  every module instead (`pkgutil.walk_packages`), which is what dependency completeness
+  actually needs.
+
+**Changing the service's configuration requires an elevated shell**; stopping and starting
+it does not. `sc.exe config` also fails on this service's 401-character binPath
+(`1639`, invalid command line) — use `Invoke-CimMethod -MethodName Change`, which passes
+the string as a parameter rather than a command line.
 
 **It is not live.** Repointing the service is the remaining step and needs an *elevated*
 shell — changing service configuration requires Administrator, unlike stop/start. Until
