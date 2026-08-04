@@ -155,6 +155,68 @@ C:\admz\admz-prod\.venv\Scripts\python.exe -m pytest -q          # ~3,000 tests,
 (port 4244, against a *copy* of `ADMZ_HOME`) returns healthy from `/health`
 while the real service still serves 4242.
 
+### Slice 2 — STATUS: done, 2026-08-04
+
+Built and verified. Deviations from the text above, all deliberate:
+
+- **Pinned to `545a706`, not `991c2b8`.** `991c2b8` was current when this plan was
+  written; by execution time it was far behind and missing that day's security fixes
+  (#252 key DACL, #272 approver group, #273 CSRF, #276 approval auditing, #278 CDN
+  vendoring). `545a706` is master at execution time, CI-green on both legs.
+- **`pip install -r requirements.txt` does not install atlas.** #235/#236 moved it to an
+  `extras_require` entry, so the production venv came up without it and
+  `import admz.mcp.server` failed on `axis_api_atlas`. Installed **non-editable** from
+  `C:dmzxis-api-atlas` so production holds its own copy — the dev venv has it
+  *editable*, which would have re-created exactly the coupling this plan exists to remove.
+  Worth knowing: that shared checkout is on branch `survey/motion-alarm-publisher-caution`,
+  not `main`, so production had been running atlas from a feature branch.
+- **The suite cannot run on the production interpreter.** `requirements.txt` is
+  runtime-only and carries no `pytest` — correctly, since production should not ship test
+  dependencies. The stated exit criterion is therefore unachievable as written.
+  Substituted: import every module in the package (`pkgutil.walk_packages`) on the
+  production interpreter, which is what the suite would have proven about dependency
+  completeness. **226 imported, 0 failures.** Behaviour is covered by CI on the same commit.
+- **The spare-port smoke was not run.** Rollback is a ~10-second config revert and the
+  three risks below were all checked directly, so the marginal value was low. Recorded
+  rather than quietly skipped.
+
+Both flagged risks checked and clear:
+
+- **Dubious ownership:** `C:dmzdmz-prod` is owned by `DNLT\dnich`, *identical* to
+  `C:dmzdmz`, which LocalSystem already reads successfully. No new exposure.
+  (`git config --system safe.directory` covers only `ADMZ_HOME`'s repos, as the plan says.)
+- **Absolute paths in the DB:** 270 columns scanned across every table in production's
+  `admz.db` (read-only) for a literal `admzdmz`. **None.** No analogue to ADR-0042's
+  `organizations.repo_path` migration is needed.
+
+### Slice 3 — STATUS: BLOCKED on elevation, 2026-08-04
+
+Attempted and cleanly reverted; production was never left down.
+
+`sc.exe config` failed with **1639** (`ERROR_INVALID_COMMAND_LINE`) — the binPath is 401
+characters and contains embedded quotes, which does not survive PowerShell argument
+marshalling. Retried via `Invoke-CimMethod -MethodName Change`, which passes the string as
+a parameter rather than a command line and avoids that entirely; that returned **2**
+(*access denied*).
+
+**Changing service configuration requires an elevated shell. Stopping and starting does
+not** — which is why the 2026-08-04 maintenance restart succeeded from an unelevated
+session and this did not.
+
+The exact change, both halves already written to disk during the attempt:
+
+```powershell
+# elevated PowerShell
+Stop-Service admz -Force
+$new = '<binPath with --cwd \?\C:dmzdmz-prod and admz-prod\.venv\Scripts\python.exe>'
+sc.exe config admz binPath= "$new"
+Start-Service admz
+```
+
+Nothing else about the service changes: LocalSystem, delayed-auto, `ADMZ_HOME`,
+`ADMZ_AUTH_BACKEND`, log directory and rotation are all untouched. Rollback is the same
+command with the original binPath.
+
 ### Slice 3 — repoint the service
 
 ```powershell

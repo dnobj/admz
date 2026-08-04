@@ -27,12 +27,43 @@ Two files live in `C:\admz\.claude\` — deliberately **not** in the repo, becau
 
 ## Environments — read this before running anything
 
-| | Port | `ADMZ_HOME` | Code from |
-|---|---|---|---|
-| **Production** | 4242 | `C:\ProgramData\admz` | `C:\admz\admz` (the human's checkout) |
-| **Staging** | 4243 | `C:\ProgramData\admz-staging` | `C:\admz\admz-staging-code` (detached on `origin/master`) |
+| | Port | `ADMZ_HOME` | Code from | venv |
+|---|---|---|---|---|
+| **Production** | 4242 | `C:\ProgramData\admz` | `C:\admz\admz` ⚠️ *the dev checkout* | `C:\admz\admz\.venv` ⚠️ *shared* |
+| **Staging** | 4243 | `C:\ProgramData\admz-staging` | `C:\admz\admz-staging-code` (detached) | *none — uses the dev venv* |
+| **Dev** | — | — | `C:\admz\admz` | `C:\admz\admz\.venv` |
 
 **Production manages a live Axis fleet and a live ACS install.** It runs as the Shawl-supervised Windows service `admz`. Never point tests, agents, or experiments at `:4242` or `C:\ProgramData\admz`. Restarting it, migrating its DB, or driving its devices requires explicit human authorization.
+
+### ⚠️ Production shares its code and interpreter with the dev workspace
+
+This is the live state and it is a known hazard, not an oversight in this document.
+**ADR-0042 separated production's *data*** (`ADMZ_HOME` → `C:\ProgramData\admz`) and
+staging exists — so it is easy to believe the environments are separated. Production's
+**code and Python interpreter are not**: the service runs `--cwd \\?\C:\admz\admz` with
+`C:\admz\admz\.venv\Scripts\python.exe`.
+
+The failure mode this produces is not theoretical. On **2026-08-04** a merge landed code
+requiring `mcp` 2.x in the shared checkout while the shared venv still held `mcp` 1.26.
+Production kept serving — it had loaded its code hours earlier — but **any restart would
+have raised `AttributeError` at import, and Shawl would have restarted it into a loop.**
+A Windows update would have triggered it as surely as a deliberate restart. See
+[ADR-0054](docs/specification/decisions/0054-separate-production-tree-and-venv.md).
+
+Practical consequence while this is true: **a `pip install` in `C:\admz\admz\.venv` is a
+production change.** Treat it as one.
+
+### The replacement is built and waiting
+
+`C:\admz\admz-prod` exists as of 2026-08-04 — an independent **clone** (not a worktree, so
+a `git gc` in the dev tree cannot reach it), detached at a deliberate commit, with its own
+`.venv` built from that commit's `requirements.txt` and its own non-editable copy of
+`axis-api-atlas`. Verified: 226 modules import cleanly on it, no row in production's DB
+references the dev tree, and its directory owner matches the tree LocalSystem already reads.
+
+**It is not live.** Repointing the service is the remaining step and needs an *elevated*
+shell — changing service configuration requires Administrator, unlike stop/start. Until
+then the table above is accurate and the hazard above is real.
 
 Staging exists so UI and behavior can be exercised without touching production. It carries a **copy** of the real device data (so it has real credentials — treat its `ADMZ_HOME` as secret-bearing) and runs with health polling turned down and GitHub config-push disabled.
 
