@@ -57,6 +57,13 @@ Scheme adds nothing against CSRF: an attacker on ``http://evil.example`` and on
 
 ``ADMZ_TRUSTED_ORIGINS`` (comma-separated) exists for deployments where the
 public hostname differs from the ``Host`` ADMZ receives.
+
+**Deliberately not ``ADMZ_ALLOWED_ORIGINS``.** That variable is the CORS
+allow-list, and reusing it here would be actively wrong in two ways. Its
+default is localhost-only, so every deployment on a real hostname would start
+refusing its own forms. And it accepts ``*`` — "any origin may read a
+cross-origin response" must never silently become "any origin may submit
+credentials". Two concerns, two variables.
 """
 
 from __future__ import annotations

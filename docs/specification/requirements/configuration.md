@@ -41,6 +41,18 @@ Mount point and path prefix are constructor args (defaults: `secret` and `device
 ### FR-CFG-006 — CORS allowlist via env ✅
 `ADMZ_ALLOWED_ORIGINS` — comma-separated list of allowed origins for the REST API. Default: `http://localhost:4242,http://127.0.0.1:4242,http://localhost:8000,http://127.0.0.1:8000`. Wildcard `*` is permitted but forces `allow_credentials=False`.
 
+### FR-CFG-006b — Same-origin allowlist for the capture forms via env ✅
+`ADMZ_TRUSTED_ORIGINS` — comma-separated extra `host[:port]` values accepted by the
+same-origin check on the capture POSTs (#3, `admz/csrf.py`). Default: **none needed** —
+the request's own `Host` header is always accepted. Set this only when a reverse proxy
+presents a public hostname that differs from the `Host` ADMZ receives.
+
+**Deliberately separate from `ADMZ_ALLOWED_ORIGINS`.** That is CORS — who may *read* a
+cross-origin response. This is CSRF — who may *submit* a form. Reusing the CORS list
+would break every deployment on a real hostname (its default is localhost-only) and,
+worse, would let `*` mean "any origin may submit credentials". Two concerns, two
+variables.
+
 ### FR-CFG-007 — MCP base URL for capture links ✅
 `ADMZ_BASE_URL` — the URL the MCP server prepends when generating fleet-password capture URLs. Default: `http://localhost:8000`. Operators running the API on a different port (e.g. 4242) must set this so capture links are not broken.
 
