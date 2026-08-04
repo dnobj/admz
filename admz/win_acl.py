@@ -57,6 +57,7 @@ __all__ = [
     "build_secret_file_sddl",
     "current_user_sid",
     "harden_secret_file",
+    "lookup_account_sid",
     "read_file_dacl",
     "SID_ADMINISTRATORS",
     "SID_AUTHENTICATED_USERS",
@@ -261,6 +262,17 @@ def _load():
     ]
     advapi32.ConvertSidToStringSidW.restype = ctypes.c_int
 
+    advapi32.LookupAccountNameW.argtypes = [
+        ctypes.c_wchar_p,                    # lpSystemName
+        ctypes.c_wchar_p,                    # lpAccountName
+        ctypes.c_void_p,                     # Sid (out)
+        ctypes.POINTER(ctypes.c_uint32),     # cbSid
+        ctypes.c_wchar_p,                    # ReferencedDomainName (out)
+        ctypes.POINTER(ctypes.c_uint32),     # cchReferencedDomainName
+        ctypes.POINTER(ctypes.c_int),        # peUse (SID_NAME_USE)
+    ]
+    advapi32.LookupAccountNameW.restype = ctypes.c_int
+
     advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
         ctypes.c_wchar_p,
         ctypes.c_uint32,
@@ -344,6 +356,53 @@ def current_user_sid() -> str:
         return _sid_to_string(advapi32, kernel32, info.Sid)
     finally:
         kernel32.CloseHandle(token)
+
+
+def lookup_account_sid(name: str) -> str:
+    """Resolve an account or group *name* to its SID string.
+
+    The inverse of the constants above, for names this module cannot know in
+    advance — an operator's own ``ADMZ-Admins``, or the localised display name
+    of a built-in group as reported by ``NetUserGetLocalGroups`` (issue #274:
+    ``Administratoren`` on a German install is ``S-1-5-32-544`` all the same).
+
+    ``lpSystemName=None`` means "this machine, then its domain", which is the
+    same resolution order the gates' existing name comparison implicitly
+    assumed.
+
+    Raises :class:`WinAclUnavailable` off-Windows and :class:`WinAclError` if
+    the name does not resolve — callers that must not fail closed should catch
+    both. See ``admz/authz.py``, which treats an unresolvable name as "compare
+    by name instead", never as "deny".
+    """
+    advapi32, kernel32 = _load()
+    if not name:
+        raise WinAclError("lookup_account_sid requires a non-empty name")
+
+    sid_size = ctypes.c_uint32(0)
+    dom_size = ctypes.c_uint32(0)
+    use = ctypes.c_int(0)
+    # First call sizes the buffers; it is EXPECTED to fail with
+    # ERROR_INSUFFICIENT_BUFFER (122). Any other failure is the real answer —
+    # in particular ERROR_NONE_MAPPED (1332) for a name that does not exist.
+    advapi32.LookupAccountNameW(
+        None, name, None, ctypes.byref(sid_size),
+        None, ctypes.byref(dom_size), ctypes.byref(use),
+    )
+    if sid_size.value == 0:
+        raise WinAclError(
+            f"LookupAccountNameW({name!r}) failed: {ctypes.get_last_error()}"
+        )
+    sid_buf = ctypes.create_string_buffer(sid_size.value)
+    dom_buf = ctypes.create_unicode_buffer(dom_size.value)
+    if not advapi32.LookupAccountNameW(
+        None, name, sid_buf, ctypes.byref(sid_size),
+        dom_buf, ctypes.byref(dom_size), ctypes.byref(use),
+    ):
+        raise WinAclError(
+            f"LookupAccountNameW({name!r}) failed: {ctypes.get_last_error()}"
+        )
+    return _sid_to_string(advapi32, kernel32, ctypes.cast(sid_buf, ctypes.c_void_p))
 
 
 def build_secret_file_sddl(owner_sid: str) -> str:

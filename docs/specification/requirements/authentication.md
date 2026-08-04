@@ -322,6 +322,45 @@ semantics), not on the token's elevation state. The lookup is
 best-effort: a failure leaves the token groups as-is and never breaks a
 login.
 
+### KL-AUTH-010 — group matching was by localised name, not SID (fixed) ✅
+`NetUserGetLocalGroups` returns `lgrui0_name`, a **localised display
+name**. Both the reveal gate and the approver gate compared it against
+the literal `"Administrators"`, so on a German or French install the
+built-in group (`Administratoren`, `Administrateurs`) matched nobody:
+`/settings/advanced` and plaintext credentials were silently denied, and
+after #272 no confirmation could be approved either. The SID is
+invariant (`S-1-5-32-544`); the name is not — which is why
+`admz/win_acl.py` has compared SIDs since #252.
+
+Fixed in #274 by one matcher, `authz._match_groups`, used by **both**
+gates — fixing only one would have created a second membership
+convention, the divergence that produced #255. It compares names first
+and falls back to SIDs, so:
+
+- the SID pass is **purely additive** — it can turn a "no" into a "yes",
+  never a "yes" into a "no", so an unresolvable SID (off-Windows, a
+  group that does not exist locally, a DC that did not answer) degrades
+  to the previous behaviour instead of locking an operator out of the
+  gate needed to fix it;
+- **no Win32 call happens on the common path**, because an English
+  install matches by name on the first pass;
+- an audit reason of `sid:S-1-5-32-544` rather than `group:<name>`
+  marks a match that crossed locales.
+
+Configured English names still resolve because ADMZ carries a table of
+`BUILTIN\` aliases → invariant SIDs. That table is load-bearing:
+`LookupAccountNameW` resolves the *localised* name, so looking up the
+literal `"Administrators"` **fails** on a localised install and
+resolving both sides through Win32 alone would still not match. Domain
+groups (`Domain Admins` = `S-1-5-21-<domain>-512`) are domain-relative,
+cannot be tabled, and resolve via the API or fall through to names.
+
+**Not verified on a localised install.** Every machine available
+(developer box, both CI legs) is English. The ADMZ-side logic is tested
+against a simulated German machine; the assumption *about Windows* — that
+`LookupAccountNameW` resolves the localised name and not the English one
+— is reasoned from documented behaviour, not observed.
+
 ## References
 
 - ADRs: [0021](../decisions/0021-windows-iwa-via-reverse-proxy.md),
