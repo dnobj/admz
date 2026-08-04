@@ -8,6 +8,15 @@ on:
   push:
     branches: [master]
   pull_request:
+    # `ready_for_review` is NOT in the default type set
+    # (`opened`, `synchronize`, `reopened`) and is the single most load-bearing
+    # line in this file. The Windows leg is skipped on draft PRs (see `suite`),
+    # so without this event a PR opened as a draft and then marked ready — with
+    # no further push — would go to merge having NEVER run Windows, and the
+    # checks would read green because nothing ran. `synchronize` is listed
+    # explicitly and must stay: dropping it silently stops CI on every
+    # subsequent push to a PR, which is the same class of failure.
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
@@ -97,20 +106,58 @@ jobs:
             --ignore=tests/test_chat_action_live.py
 
   # ---------------------------------------------------------------------------
-  # The real suite, on both target platforms. Both legs block: Windows is the
-  # deployment target and the only place the SSPI branch runs; Linux is the only
-  # place the `skipif(sys.platform == "win32")` branches ever run, and those had
-  # never executed anywhere before this workflow.
+  # The real suite. Windows is the deployment target and the only place the SSPI
+  # branch runs; Linux is the only place the `skipif(sys.platform == "win32")`
+  # branches ever run, and those had never executed anywhere before this
+  # workflow. Both still matter — what changed is *when* Windows runs.
+  #
+  # WHY (measured, from a real green run): windows-latest is 797s wall AND
+  # billed at 2x, so it is 1,594 of the ~1,770 billable seconds a full-matrix
+  # run costs — 90% of the bill. The free-tier private-repo allowance is
+  # 2,000 min/month, i.e. ~68 full runs. We burned ~60 in one day and GitHub
+  # began refusing jobs outright (11s, no steps, no runner).
+  #
+  # Two rules, and between them Windows still runs on every change before it
+  # can merge:
+  #
+  #   1. Skipped entirely on `push` (see the `if:` below) — post-merge the
+  #      suite re-tests code the PR proved green minutes earlier.
+  #   2. Linux-only on DRAFT pull requests. GitHub will not let a draft PR be
+  #      merged, so "not a draft" is exactly the set of PRs that can land, and
+  #      marking one ready re-runs CI via the `ready_for_review` trigger above.
+  #
+  # Draft-first iteration is therefore an OPTIONAL cost optimisation, not a
+  # correctness requirement: a non-draft PR behaves exactly as it always has.
+  # Iterating in draft costs ~3 billable minutes a push instead of ~29.5.
+  #
+  # NOTE: this repo has no branch protection (free-tier private — the API
+  # returns 403), so no workflow can *enforce* that Windows passed before a
+  # merge. This arrangement only guarantees the result is present and visible
+  # at merge time; a human still has to look at it.
+  #
+  # Escape hatch: `workflow_dispatch` runs the full matrix on any branch,
+  # including one whose PR is still a draft.
   # ---------------------------------------------------------------------------
   suite:
     name: suite (${{ matrix.os }})
     needs: [quick]
+    # Rule 1. `preflight` + `quick` still run on master (~43 billable seconds)
+    # as a post-merge canary, so a merge that breaks an import is attributed to
+    # the merge instead of surfacing inside the next unrelated PR.
+    if: github.event_name != 'push'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Rule 2. `github.event.pull_request` is null for `workflow_dispatch`,
+        # and reading `.draft` off null yields null — falsy — so a manual run
+        # gets the full matrix. A non-draft PR has `draft == false`, also
+        # falsy, so it too gets the full matrix. ONLY a draft PR narrows this.
+        # Kept on ONE line deliberately: a folded (`>-`) scalar does not fold
+        # more-indented continuation lines, so wrapping this would embed literal
+        # newlines in the expression.
+        os: ${{ fromJSON(github.event.pull_request.draft && '["ubuntu-latest"]' || '["ubuntu-latest","windows-latest"]') }}
     steps:
       - uses: actions/checkout@v4
 
