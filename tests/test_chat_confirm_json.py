@@ -325,3 +325,165 @@ class TestConfirmAudit:
             assert rows[-1].details["locked_out"] is False
         finally:
             fs.delete("confirm_password_hash")
+
+
+# ---------------------------------------------------------------------------
+# Identifying fields lifted off the execution outcome
+#
+# Without these, the confirm.approve row that records the *actual* creation of
+# a rule carries device/approver/timestamp/success but not the rule id — so a
+# drift row for rule 175 can only be joined back to its approval by correlating
+# the rule *name* across two rows by time adjacency. Names are not unique and
+# not stable under on-device rename, so that join is fuzzy. These pin the exact
+# one.
+# ---------------------------------------------------------------------------
+
+
+class TestApproveOutcomeIdentityAudit:
+    def _audit(self):
+        from admz.audit import AuditLog
+        return AuditLog()
+
+    def _patch_outcome(self, monkeypatch, outcome):
+        """Force execute_approved_session to return a chosen envelope.
+
+        The real thing needs a reachable device; the shape of what it returns
+        is what is under test here, not how it got there.
+        """
+        from admz import operations
+
+        async def _fake(session, **kwargs):
+            return outcome
+
+        monkeypatch.setattr(operations, "execute_approved_session", _fake)
+
+    def test_rule_id_reaches_the_audit_row(self, client, monkeypatch):
+        self._patch_outcome(monkeypatch, {
+            "success": True, "action": "create_action_rule",
+            "device_id": "cam-01", "rule_id": "175", "config_id": "42",
+            "rule_name": "AtlasRule",
+        })
+        session = _make_session()
+        r = client.post(f"/api/chat/confirm/{session.token}")
+        assert r.status_code == 200
+
+        rows = self._audit().list_recent(action="confirm.approve")
+        assert len(rows) == 1
+        details = rows[0].details
+        # The whole point: the approval that created rule 175 says so.
+        assert details["rule_id"] == "175"
+        assert details["config_id"] == "42"
+        # ...without losing what the row already carried.
+        assert details["confirmed_by"] == "chat"
+        assert details["risk_level"] == "dangerous"
+
+    def test_delete_path_records_the_removed_rule(self, client, monkeypatch):
+        # Deletion has the same attribution problem as creation: a drift row
+        # showing a rule vanished is just as unjoinable without the id.
+        self._patch_outcome(monkeypatch, {
+            "success": True, "action": "delete_action_rule",
+            "removed_rule": "175", "removed_config": "42",
+        })
+        session = _make_session()
+        client.post(f"/api/chat/confirm/{session.token}")
+
+        details = self._audit().list_recent(action="confirm.approve")[0].details
+        assert details["removed_rule"] == "175"
+        assert details["removed_config"] == "42"
+
+    def test_operation_without_identifiers_writes_todays_row(
+        self, client, monkeypatch,
+    ):
+        """The no-rule-id path must be untouched — no empty key, no exception.
+
+        This runs for every approved operation, not just rule creation, so the
+        exact key set is asserted rather than just the absence of rule_id.
+        """
+        self._patch_outcome(monkeypatch, {
+            "success": True, "operation_id": "factorydefault.cgi:factory-reset",
+            "device_id": "cam-01", "status_code": 200, "duration_ms": 12.5,
+        })
+        session = _make_session()
+        client.post(f"/api/chat/confirm/{session.token}")
+
+        details = self._audit().list_recent(action="confirm.approve")[0].details
+        assert details == {
+            "confirmed_by": "chat",
+            "risk_level": "dangerous",
+            "confirmation_level": "url_only",
+            "is_plan": False,
+        }
+
+    def test_null_rule_id_on_successful_create_is_omitted(
+        self, client, monkeypatch,
+    ):
+        # rules/runner.py parses RuleID off the SOAP response without
+        # validating it, so a successful create can still yield None. That must
+        # not write rule_id=None into a durable row.
+        self._patch_outcome(monkeypatch, {
+            "success": True, "action": "create_action_rule",
+            "rule_id": None, "config_id": "",
+        })
+        session = _make_session()
+        r = client.post(f"/api/chat/confirm/{session.token}")
+        assert r.status_code == 200
+
+        details = self._audit().list_recent(action="confirm.approve")[0].details
+        assert "rule_id" not in details
+        assert "config_id" not in details
+
+    def test_outcome_payload_never_reaches_the_audit_row(
+        self, client, monkeypatch,
+    ):
+        """#217 guard: only the allow-list crosses into the row.
+
+        The outcome envelope is not a fixed shape, and several handlers build
+        theirs with ``**out`` spreads. A deny-list — or a bare ``**outcome`` —
+        would carry device responses, SOAP traces and scheduled-job params into
+        a durable, long-lived row.
+        """
+        self._patch_outcome(monkeypatch, {
+            "success": True, "action": "create_action_rule", "rule_id": "175",
+            # Every one of these is a real key some handler returns.
+            "data": {"root.Network.Password": "s3cr3t-device-pw"},
+            "steps": [{"op": "add", "error": "SOAP fault: user=admin pw=hunter2"}],
+            "results": [{"error": "500 body: token=abcdef"}],
+            "task": {"action_params": {"password": "task-secret"}},
+            "added": [{"path": "root.Foo", "value": "live-config-value"}],
+            "fragments": {"role": {"facets": {"body": "secret-body"}}},
+            "demo": {"id": "d1", "rules": ["..."]},
+            "message": "Rule 'AtlasRule' created on cam-01 (rule id 175).",
+        })
+        session = _make_session()
+        client.post(f"/api/chat/confirm/{session.token}")
+
+        row = self._audit().list_recent(action="confirm.approve")[0]
+        details = row.details
+        assert details["rule_id"] == "175"
+        for leaked in (
+            "data", "steps", "results", "task", "added", "fragments", "demo",
+            "message",
+        ):
+            assert leaked not in details, f"{leaked} must not be audited"
+
+        import json as json_mod
+        flat = json_mod.dumps(details) + (row.error_message or "")
+        for secret in (
+            "s3cr3t-device-pw", "hunter2", "abcdef", "task-secret",
+            "live-config-value", "secret-body",
+        ):
+            assert secret not in flat, f"{secret!r} reached the audit row"
+
+    def test_non_scalar_identifier_is_dropped(self, client, monkeypatch):
+        # A downstream shape change must not smuggle a blob in under an
+        # allow-listed name; the audit store serializes with default=str and
+        # would stringify it happily.
+        self._patch_outcome(monkeypatch, {
+            "success": True,
+            "rule_id": {"nested": "unexpected-blob"},
+        })
+        session = _make_session()
+        client.post(f"/api/chat/confirm/{session.token}")
+
+        details = self._audit().list_recent(action="confirm.approve")[0].details
+        assert "rule_id" not in details

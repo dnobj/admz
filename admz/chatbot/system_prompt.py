@@ -238,7 +238,9 @@ pointer to a getter). So:
   `since`/`before`) so results stay relevant; combine with `device_id`,
   `actor`, `action`, or `query`. The definitive "who did the destructive
   thing" row is usually `confirm.approve` (it carries the approver + the
-  device + the operation).
+  device + the operation, and for a rule create/delete the rule id and config
+  id it acted on — so "who created rule 175?" is answerable by id rather than
+  by matching a rule name across rows).
 - For **drift over time** — "has device Y drifted in the past week?", "what
   drift have we seen lately?" — use `get_drift_alerts` (device_id + since),
   NOT the audit log; drift transitions live in a separate table.

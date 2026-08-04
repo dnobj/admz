@@ -111,7 +111,7 @@ async def _approve_session(
     password attempt and the approval itself (with the execution result).
     Never logs the submitted password.
     """
-    from admz.audit import record_event
+    from admz.audit import outcome_identity_fields, record_event
     from admz.auth import get_current_principal
 
     principal = await get_current_principal(request)
@@ -176,6 +176,10 @@ async def _approve_session(
             "risk_level": session.risk_level,
             "confirmation_level": session.confirmation_level,
             "is_plan": session.is_plan,
+            # Allow-listed identifiers only — never ``**outcome``, whose shape
+            # varies per operation and can carry device payloads. Empty for
+            # operations that return none, leaving the row as it was.
+            **outcome_identity_fields(outcome),
         },
     )
 

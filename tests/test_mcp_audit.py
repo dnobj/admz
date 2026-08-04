@@ -278,3 +278,60 @@ class TestCallToolAuditing:
         # The resource string should mention the device_id so the
         # audit log groups by device.
         assert "test-cam-2" in entries[0].resource
+
+
+# ---------------------------------------------------------------------------
+# _fmt_audit_entry whitelists the fields it surfaces
+#
+# Capturing an identifier into the audit row is only half a fix if the MCP
+# audit tool then drops it on the way out — the operator reading the log
+# through the tool would never see it.
+# ---------------------------------------------------------------------------
+
+
+class TestFmtAuditEntrySurfacesIdentifiers:
+    """_fmt_audit_entry reads nothing off ``self``, so it is exercised unbound.
+
+    That keeps these independent of ``ADMZMCPServer()`` construction, which
+    needs a live ``mcp`` Server to register handlers against.
+    """
+
+    def _fmt(self, details):
+        from admz.audit import AuditEntry
+        from admz.mcp.server import ADMZMCPServer
+
+        entry = AuditEntry(
+            id=1,
+            timestamp=1750000000.0,
+            requester="AXIS\\alice",
+            auth_source="windows",
+            action="confirm.approve",
+            resource="device:cam-01/op:action:create_action_rule",
+            details=details,
+            success=True,
+            error_message="",
+        )
+        return ADMZMCPServer._fmt_audit_entry(None, entry)
+
+    def test_rule_id_appears_in_the_summary(self):
+        out = self._fmt({
+            "confirmed_by": "chat", "risk_level": "dangerous", "rule_id": "175",
+            "config_id": "42",
+        })
+        assert "rule_id=175" in out["summary"]
+        assert "config_id=42" in out["summary"]
+        # The fields it already surfaced are still there.
+        assert "approved_by=chat" in out["summary"]
+        assert "risk=dangerous" in out["summary"]
+
+    def test_every_allow_listed_key_is_surfaced(self):
+        """Driven off the writer's allow-list, so extending one extends both."""
+        from admz.audit import OUTCOME_IDENTITY_KEYS
+
+        out = self._fmt({k: f"v-{k}" for k in OUTCOME_IDENTITY_KEYS})
+        for key in OUTCOME_IDENTITY_KEYS:
+            assert f"{key}=v-{key}" in out["summary"], f"{key} dropped"
+
+    def test_row_without_identifiers_summarises_as_before(self):
+        out = self._fmt({"confirmed_by": "web", "risk_level": "dangerous"})
+        assert out["summary"] == "approved_by=web; risk=dangerous"

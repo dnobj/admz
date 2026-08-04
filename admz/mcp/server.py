@@ -4036,6 +4036,14 @@ class ADMZMCPServer:
             bits.append(f"risk={d['risk_level']}")
         if d.get("intent"):
             bits.append(f"intent={d['intent']}")
+        # Identifiers captured off the execution outcome (e.g. the rule id a
+        # confirm.approve row actually created). Driven off the same allow-list
+        # the writer uses, so adding a key there surfaces it here rather than
+        # being silently dropped by this whitelist.
+        from admz.audit import OUTCOME_IDENTITY_KEYS
+        for key in OUTCOME_IDENTITY_KEYS:
+            if d.get(key):
+                bits.append(f"{key}={d[key]}")
         if d.get("summary"):
             bits.append(str(d["summary"]))
         return {
