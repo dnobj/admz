@@ -27,7 +27,12 @@ TEMPLATE = "admz/api/templates/index.html"
 @pytest.fixture()
 def audit(tmp_path):
     """Isolated audit DB. NEVER the operator's real one (CLAUDE.md)."""
-    return AuditLog(db_path=str(tmp_path / "admz.db"))
+    store = AuditLog(db_path=str(tmp_path / "admz.db"))
+    # #258: constructing a store no longer creates its schema -- that moved
+    # into _connect(). _insert() below writes with raw sqlite3, bypassing the
+    # store, so realise the tables first.
+    store._ensure_table()
+    return store
 
 
 def _insert(audit, *, action, resource="", details=None, ts=None, success=True):

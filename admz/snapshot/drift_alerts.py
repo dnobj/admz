@@ -52,6 +52,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -194,19 +195,51 @@ class DriftAlertStore:
     """SQLite-backed last-known-signature store + alert log."""
 
     def __init__(self, db_path: Optional[str] = None):
-        self._db_path = str(db_path or _default_db_path())
-        from admz.paths import ensure_parent_dir
-        ensure_parent_dir(self._db_path)
-        self._ensure_table()
+        """No I/O here -- constructing a store must not touch the filesystem,
+        because this class backs a module-level singleton and anything done
+        here happens at *import* (#254/#258)."""
+        self._explicit_db_path = str(db_path) if db_path else None
+        self._ready: set = set()
+        self._ready_lock = threading.Lock()
+
+    @property
+    def _db_path(self) -> str:
+        """Resolved at CALL time, not cached at construction (#258).
+
+        Caching in ``__init__`` is what froze the path: an ``ADMZ_HOME`` or
+        ``ADMZ_DB_PATH`` set afterwards was ignored for the life of the
+        process. Stays a ``str`` -- tests read this attribute and hand it
+        straight to ``sqlite3.connect()``.
+        """
+        return self._explicit_db_path or str(_default_db_path())
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
+        path = self._db_path
+        if path not in self._ready:  # fast path: no lock once warm
+            with self._ready_lock:
+                if path not in self._ready:  # double-checked
+                    from admz.paths import ensure_parent_dir
+
+                    ensure_parent_dir(path)
+                    self._create_schema(path)
+                    self._ready.add(path)
+        conn = sqlite3.connect(path)
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
-    def _ensure_table(self) -> None:
+    def _create_schema(self, path: str) -> None:
+        """Open our own connection -- via ``_connect`` this would recurse.
+
+        ``_ready`` is keyed by path rather than a boolean, so a rebind runs
+        the schema and its migrations against the new file instead of
+        assuming the previous one's columns exist.
+
+        Adds ADR-0047's `attributed` column to drift_signatures if absent.
+        Swallowed exactly as before.
+        """
         try:
-            with self._connect() as conn:
+            conn = sqlite3.connect(path)
+            try:
                 conn.executescript(_SCHEMA)
                 # ADR-0047: attributed-counts column, added after first ship.
                 try:
@@ -216,13 +249,15 @@ class DriftAlertStore:
                 except sqlite3.OperationalError:
                     pass  # column already exists
                 conn.commit()
-        except sqlite3.Error as exc:  # pragma: no cover — defensive
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:  # pragma: no cover - defensive
             logger.warning("DriftAlertStore table creation failed: %s", exc)
 
-    # ------------------------------------------------------------------
-    # Signature bookkeeping
-    # ------------------------------------------------------------------
-
+    def _ensure_table(self) -> None:
+        """Retained for callers that reach for it by name; ensuring now
+        happens inside :meth:`_connect`."""
+        self._connect().close()
     def get_last_signature(
         self, device_id: str
     ) -> Optional[Dict[str, Any]]:

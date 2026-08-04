@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -110,28 +111,86 @@ class ChatSessionStore:
     """SQLite-backed per-principal session + conversation store."""
 
     def __init__(self, db_path: Optional[str] = None):
-        self._db_path = str(db_path or _default_db_path())
-        from admz.paths import ensure_parent_dir
-        ensure_parent_dir(self._db_path)
-        self._ensure_table()
+        """No I/O here -- constructing a store must not touch the filesystem,
+        because this class backs a module-level singleton and anything done
+        here happens at *import* (#254/#258)."""
+        self._explicit_db_path = str(db_path) if db_path else None
+        self._ready: set = set()        # schema + column migration done
+        self._backfilled: set = set()   # post-schema DATA migration done
+        # RLock, not Lock. This is the only store with post-schema work, and
+        # ``_backfill_conversations`` calls ``_connect`` -- so setup re-enters
+        # this object. The markers below make that re-entry short-circuit
+        # before it reaches the lock; RLock is the belt to that braces, so
+        # moving an ``.add()`` later cannot silently deadlock.
+        self._ready_lock = threading.RLock()
+
+    @property
+    def _db_path(self) -> str:
+        """Resolved at CALL time, not cached at construction (#258).
+
+        Stays a ``str`` -- tests read this attribute and hand it straight to
+        ``sqlite3.connect()`` (tests/test_chat_conversations.py:322).
+        """
+        return self._explicit_db_path or str(_default_db_path())
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
+        path = self._db_path
+
+        # 1. Schema + idempotent column migration.
+        if path not in self._ready:
+            with self._ready_lock:
+                if path not in self._ready:
+                    from admz.paths import ensure_parent_dir
+
+                    ensure_parent_dir(path)
+                    self._create_schema(path)
+                    self._ready.add(path)
+
+        # 2. The DATA migration, kept a separate marker because it is a
+        #    different kind of thing and fails independently. It used to run
+        #    at the end of __init__ on its own connection; it now runs once
+        #    per path before the first connection is handed out, so its
+        #    ordering relative to any read is unchanged.
+        if path not in self._backfilled:
+            with self._ready_lock:
+                if path not in self._backfilled:
+                    # Marked BEFORE running, not after: the backfill calls
+                    # _connect(), and without this the re-entry would start
+                    # the backfill a second time.
+                    self._backfilled.add(path)
+                    try:
+                        self._backfill_conversations()
+                    except Exception:
+                        # This used to fail loudly out of __init__. Drop the
+                        # marker so a transient failure is retried on the next
+                        # call rather than skipped for the process's life.
+                        self._backfilled.discard(path)
+                        raise
+
+        conn = sqlite3.connect(path)
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
-    def _ensure_table(self) -> None:
-        conn = self._connect()
+    def _create_schema(self, path: str) -> None:
+        """Open our own connection -- via ``_connect`` this would recurse.
+
+        ``_ready`` is keyed by path rather than a boolean, so a rebind runs
+        ``_SCHEMA`` and ``_migrate_columns`` against the new file instead of
+        assuming the previous one's columns exist. Failures propagate, as they
+        did from ``__init__``; only the moment moved.
+        """
+        conn = sqlite3.connect(path)
         try:
             conn.executescript(_SCHEMA)
             self._migrate_columns(conn)
             conn.commit()
         finally:
             conn.close()
-        # Backfill pre-existing history into per-principal conversations.
-        # Separate connection/transaction so a failure here can't leave
-        # the schema half-created.
-        self._backfill_conversations()
+
+    def _ensure_table(self) -> None:
+        """Retained for callers that reach for it by name; ensuring now
+        happens inside :meth:`_connect`."""
+        self._connect().close()
 
     # ------------------------------------------------------------------
     # Idempotent column migrations (ALTER … ADD COLUMN only if absent)
