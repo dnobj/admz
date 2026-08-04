@@ -25,6 +25,13 @@ neither: it writes one row to ``demos`` (metadata, the same bar as
 ``active`` False, so ``fragments.attribution_maps`` sees nothing new on the next
 drift check. It touches no device and issues no ACS write. Deleting a demo is
 cheap and touches no device, so a wrong confirm is trivially reversible.
+
+That last clause is load-bearing for the ungated decision, and until #201 it was
+false: ``delete_demo_core`` removed the demo but left this proposal
+``confirmed``, so ``decided_content_keys`` locked its member set out of every
+future inference run and both exits below refused it. Deleting the demo now
+re-opens the proposal (``ProposalStore.reopen_for_demo``), which is what makes
+the sentence true — keep them in step.
 """
 
 from __future__ import annotations
@@ -84,7 +91,8 @@ def confirm_proposal_core(ctx, proposal, principal, *,
     if proposal.status == pstore.STATUS_CONFIRMED:
         raise DemoActionError(
             f"Proposal '{proposal.name}' was already confirmed as demo "
-            f"{proposal.demo_id}.", status=409)
+            f"{proposal.demo_id} — delete that demo to re-open this proposal.",
+            status=409)
 
     wanted = list(device_ids if device_ids is not None else proposal.device_ids)
     resolved: List[str] = []
@@ -201,7 +209,8 @@ def dismiss_proposal_core(ctx, proposal, principal, *,
     if proposal.status == pstore.STATUS_CONFIRMED:
         raise DemoActionError(
             f"Proposal '{proposal.name}' is already a demo ({proposal.demo_id}) "
-            "— delete the demo instead.", status=409)
+            "— delete the demo instead; that re-opens this proposal so you can "
+            "dismiss it.", status=409)
 
     updated = ctx.proposal_store.decide(proposal.id, pstore.STATUS_DISMISSED,
                                         decided_by=str(principal))

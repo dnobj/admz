@@ -115,6 +115,19 @@ def delete_demo_core(ctx, demo: Demo, principal) -> None:
     from admz.audit import record_event
 
     ctx.demo_store.delete(demo.id)
+    # The proposal this demo was confirmed from goes back to `proposed` (#201).
+    # `demo_proposals.demo_id` is the only persisted back-reference to a demo,
+    # and nothing else reconciled it: the row stayed `confirmed`, so
+    # `decided_content_keys` skipped that member set on every later inference
+    # run and the operator could neither re-propose it nor dismiss it. This is
+    # what makes inference/confirm.py's "a wrong confirm is trivially
+    # reversible" — the premise for leaving confirm ungated — actually true.
+    reopened: List[str] = []
+    try:
+        reopened = ctx.proposal_store.reopen_for_demo(demo.id)
+    except Exception:  # noqa: BLE001 — the demo row is already gone; failing to
+        # tidy the proposal must not turn a completed delete into an error
+        logger.warning("demo %s: proposal re-open failed", demo.id, exc_info=True)
     try:
         from admz.demos import fragments as fr
 
@@ -122,7 +135,7 @@ def delete_demo_core(ctx, demo: Demo, principal) -> None:
     except Exception:  # noqa: BLE001 — orphan fragments are harmless; history keeps them
         logger.warning("demo %s: fragment cleanup failed", demo.id, exc_info=True)
     record_event(principal, "demo.delete", resource=f"demo:{demo.id}",
-                 details={"name": demo.name})
+                 details={"name": demo.name, "proposals_reopened": reopened})
 
 
 # ── Fragment capture (drift-affecting — callers gate per ADR-0047) ───────────

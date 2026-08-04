@@ -347,6 +347,41 @@ class ProposalStore:
         finally:
             conn.close()
 
+    def reopen_for_demo(self, demo_id: str) -> List[str]:
+        """Undo the confirm of every proposal that became ``demo_id`` (#201).
+
+        Called when that demo is deleted. Without it the row stays ``confirmed``
+        forever, so :meth:`decided_content_keys` skips its member set on every
+        future inference run and the cluster can never be proposed again — while
+        ``dismiss`` refuses it with *"delete the demo instead"*, advice the
+        operator has by then already taken.
+
+        The row goes back to ``proposed`` rather than being deleted, so the
+        evidence and score survive and **both** exits reopen: re-confirm with a
+        corrected device list, or dismiss. ``demo_id``/``decided_at``/
+        ``decided_by`` are cleared because a re-opened row has no current
+        decision; the audit log keeps the history of the one it had.
+
+        Returns the ids it re-opened, so the caller can record them.
+        """
+        if not demo_id:
+            return []
+        conn = self._connect()
+        try:
+            ids = [r[0] for r in conn.execute(
+                "SELECT id FROM demo_proposals WHERE demo_id = ? AND status = ?",
+                (demo_id, STATUS_CONFIRMED)).fetchall()]
+            if ids:
+                conn.execute(
+                    "UPDATE demo_proposals SET status = ?, demo_id = '', "
+                    "decided_at = 0, decided_by = '' "
+                    "WHERE demo_id = ? AND status = ?",
+                    (STATUS_PROPOSED, demo_id, STATUS_CONFIRMED))
+                conn.commit()
+            return ids
+        finally:
+            conn.close()
+
     def delete(self, proposal_id: str) -> bool:
         conn = self._connect()
         try:
