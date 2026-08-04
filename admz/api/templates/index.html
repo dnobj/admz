@@ -260,7 +260,8 @@
 .grp-name { font-family: monospace; }
 /* #230 — read-only sub-group header (action_rules rows, grouped per rule). */
 .ro-subgroup-head td { background: var(--surface); border-bottom: 1px solid var(--border); }
-.ro-subgroup-cell { color: var(--text); font-weight: 600; font-size: 12px; padding: 6px 6px 6px 22px; }
+.ro-subgroup-cell { color: var(--text); font-weight: 600; font-size: 12px; padding: 6px 6px 6px 22px; cursor: pointer; user-select: none; }
+.ro-subgroup-head.grp-open .grp-chev { transform: rotate(90deg); }
 /* #230 attribution chip — provenance, not a verdict. Deliberately NOT styled as
    a "resolved"/success state: the row is still drift. */
 .admz-attr { color: var(--text-muted); border-color: var(--border-strong, var(--border)); cursor: help; }
@@ -365,10 +366,21 @@ function toggleDrift(did) {
 function toggleReadOnly(td) {
   const table = td.closest('table');
   if (!table) return;
+  // `tr.ro-collapsed` is the block's own membership: the ungrouped read-only
+  // rows plus each rule's subgroup HEADER. A rule's field rows are `ro-grouped`
+  // instead, so opening the block reveals the three rule headers rather than
+  // all thirty-six rows (#263) — while ungrouped rows keep the original
+  // all-or-nothing behaviour exactly.
   const rows = table.querySelectorAll('tr.ro-collapsed');
   const chev = td.querySelector('.ro-chev');
   const showing = rows.length > 0 && rows[0].style.display !== 'none';
   rows.forEach(r => { r.style.display = showing ? 'none' : ''; });
+  if (showing) {
+    // Collapsing the block collapses every subgroup with it, so an expanded
+    // rule can never survive as orphaned visible rows under a closed block.
+    table.querySelectorAll('tr.ro-grouped').forEach(r => { r.style.display = 'none'; });
+    table.querySelectorAll('tr.ro-subgroup-head').forEach(h => h.classList.remove('grp-open'));
+  }
   if (chev) chev.style.transform = showing ? '' : 'rotate(90deg)';
 }
 
@@ -380,6 +392,23 @@ function toggleDriftGroup(cell) {
   const open = head.classList.toggle('grp-open');
   const tbody = head.parentElement;
   Array.from(tbody.querySelectorAll('tr.drift-field-row')).forEach(r => {
+    if (r.getAttribute('data-group') === g) r.style.display = open ? '' : 'none';
+  });
+}
+
+// Collapse/expand ONE rule's rows inside the read-only block (#263). The sibling
+// above only matches `tr.drift-field-row` — the revertable rows — so it could
+// never reach an action_rules row, which is `row-readonly ro-grouped`. That is
+// why #247's per-rule headers were inert labels: the markup grouped, nothing
+// toggled. Same shape as toggleDriftGroup, different row class.
+function toggleRoGroup(cell) {
+  const head = cell.closest('tr');
+  if (!head) return;
+  const g = head.getAttribute('data-group');
+  const open = head.classList.toggle('grp-open');   // CSS rotates .grp-chev
+  const tbody = head.parentElement;
+  if (!tbody) return;
+  Array.from(tbody.querySelectorAll('tr.ro-grouped')).forEach(r => {
     if (r.getAttribute('data-group') === g) r.style.display = open ? '' : 'none';
   });
 }
@@ -545,10 +574,13 @@ function renderDiff(did, data) {
         // facet fields like ACAP run-state), since ignore covers any field.
         const ign = '<button type="button" class="row-ignore-btn" title="Exclude this field from tracking"'
           + ' data-did="' + esc(did) + '" data-canonical="' + esc(ck) + '"><i data-lucide="eye-off"></i></button>';
-        // Revertable rows belong to a collapsible category group; read-only rows
-        // stay in the single bottom block (ro-collapsed, found by toggleReadOnly).
-        const cls = rv ? 'drift-field-row' : 'row-readonly ro-collapsed';
-        const dg = rv ? ' data-group="' + esc(group || '') + '"' : '';
+        // Revertable rows belong to a collapsible category group. A read-only row
+        // belonging to a RULE is `ro-grouped` and answers to that rule's own
+        // toggle (#263); an ungrouped read-only row stays `ro-collapsed` and keeps
+        // the original all-or-nothing behaviour under toggleReadOnly.
+        const cls = rv ? 'drift-field-row'
+                       : ('row-readonly ' + (group ? 'ro-grouped' : 'ro-collapsed'));
+        const dg = (rv || group) ? ' data-group="' + esc(group || '') + '"' : '';
         const style = hidden ? ' style="display:none"' : '';
         return '<tr class="' + cls + '"' + dg + style + '>'
           + '<td class="col-sel">' + sel + '</td>'
@@ -617,13 +649,17 @@ function renderDiff(did, data) {
         roOrder.forEach(c => {
           const items = roBuckets[c];
           if (c) {
-            // ro-collapsed so it opens/closes with its rows (toggleReadOnly).
-            rows += '<tr class="ro-subgroup-head ro-collapsed" style="display:none">'
-              + '<td colspan="5" class="ro-subgroup-cell">'
+            // The HEADER is ro-collapsed (it belongs to the block); its ROWS are
+            // ro-grouped and stay shut until this header is clicked. Opening the
+            // block therefore shows "Rule 175 · 12 changes", not 12 rows (#263).
+            rows += '<tr class="ro-subgroup-head ro-collapsed" data-group="' + esc(c) + '"'
+              + ' style="display:none">'
+              + '<td colspan="5" class="ro-subgroup-cell" onclick="toggleRoGroup(this)">'
+              + '<i data-lucide="chevron-right" class="grp-chev"></i> '
               + '<span class="grp-name">' + esc(grpLabel(c)) + '</span>'
               + '<span class="grp-count">' + items.length + '</span></td></tr>';
           }
-          rows += items.map(f => mkRow(f, true, '')).join('');
+          rows += items.map(f => mkRow(f, true, c)).join('');
         });
       }
       const anyRevertable = rvFields.length > 0;
