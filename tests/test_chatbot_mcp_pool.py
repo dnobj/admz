@@ -10,6 +10,7 @@ Verifies:
 """
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
 from unittest.mock import MagicMock
 
@@ -155,26 +156,77 @@ async def test_acquire_yields_none_on_bridge_error(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+# Staleness is *constructed*, never raced.
+#
+# These tests backdate ``last_used`` instead of sleeping. Sleeping does not
+# work reliably here: ``_evict_idle`` compares ``last_used`` against
+# ``time.monotonic()``, and on Windows ``time.monotonic()`` is backed by
+# ``GetTickCount64()`` with a ~15.6 ms resolution. Measured on the CI host,
+# ``monotonic`` yields only 32 distinct values per half-second, with gaps of
+# exactly 15-16 ms and nothing in between -- so the elapsed time across a
+# short sleep is reported as either 0.0 or >=15 ms, never the actual value.
+#
+# The original version of this test used ``idle_seconds=0.001`` and
+# ``asyncio.sleep(0.01)``: a 1 ms threshold and a 10 ms wait, both below one
+# tick. When both clock reads landed in the same tick the measured delta was
+# exactly 0.0, ``last_used < cutoff`` was false, nothing was evicted, and the
+# test failed ``assert 1 == 0``. Reproduced at 7/200 runs (3.5%) on Windows;
+# Linux never saw it because its ``monotonic`` is nanosecond-scale (#234).
+#
+# An hour of backdating is unambiguous at any clock resolution on any
+# platform, and it runs instantly rather than sleeping.
+_AN_HOUR = 3600.0
+
+
 @pytest.mark.asyncio
 async def test_evict_idle_drops_stale_entries(fake_bridge):
     """Manually invoke the idle-eviction logic to verify it removes
     entries whose last_used is too old."""
-    pool = McpSessionPool(idle_seconds=0.001)  # essentially immediate
+    pool = McpSessionPool(idle_seconds=60.0)
 
     try:
         async with pool.acquire("alice"):
             pass
         assert pool.size() == 1
 
-        # Wait long enough that the entry is now stale relative to the
-        # idle threshold.
-        await asyncio.sleep(0.01)
+        # Make the entry stale by construction rather than by waiting.
+        for entry in pool._entries.values():
+            entry.last_used = time.monotonic() - _AN_HOUR
+
         await pool._evict_idle()
 
         assert pool.size() == 0
         # The fake's close path should have been hit when the
         # AsyncExitStack ran.
         assert "s-" in fake_bridge[0]  # at least one closure recorded
+    finally:
+        await pool.stop()
+
+
+@pytest.mark.asyncio
+async def test_evict_idle_keeps_fresh_entries(fake_bridge):
+    """The other half of the branch: eviction is selective.
+
+    The stale-entry test above passes just as well against a buggy
+    ``_evict_idle`` that drops *everything*, so assert that a
+    recently-used entry survives a sweep that evicts a stale sibling.
+    """
+    pool = McpSessionPool(idle_seconds=60.0)
+
+    try:
+        async with pool.acquire("alice"):
+            pass
+        async with pool.acquire("bob"):
+            pass
+        assert pool.size() == 2
+
+        # Backdate only alice; bob stays fresh.
+        pool._entries["alice"].last_used = time.monotonic() - _AN_HOUR
+
+        await pool._evict_idle()
+
+        assert pool.size() == 1
+        assert pool.known_principals() == ["bob"]
     finally:
         await pool.stop()
 
