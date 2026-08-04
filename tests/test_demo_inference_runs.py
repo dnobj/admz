@@ -200,8 +200,14 @@ class TestRunStore:
 
         monkeypatch.setattr(sqlite3, "connect",
                             lambda *a, **k: _AlterFails(real_connect(*a, **k)))
+        # #258: constructing a store no longer runs the migration -- that
+        # moved into _connect(). The PROPERTY under test is unchanged (a
+        # non-"duplicate column" OperationalError is re-raised, never
+        # swallowed); only the moment it surfaces moved from construction to
+        # first use. So exercise the store rather than just build it.
+        store = InferenceRunStore(db_path=str(tmp_path / "admz.db"))
         with pytest.raises(sqlite3.OperationalError, match="locked"):
-            InferenceRunStore(db_path=str(tmp_path / "admz.db"))
+            store.list()
 
     def test_the_demos_table_is_untouched(self, tmp_path):
         """A run is evidence, never a demo — it must not appear in list_demos."""

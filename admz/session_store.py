@@ -27,6 +27,7 @@ import logging
 import os
 import secrets
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,17 +97,54 @@ class SessionStore:
     SQLite stores: short-lived connections per call, WAL mode."""
 
     def __init__(self, db_path: Optional[str] = None):
-        self._db_path = str(db_path or _default_db_path())
-        from admz.paths import ensure_parent_dir
-        ensure_parent_dir(self._db_path)
-        with self._connect() as conn:
-            conn.executescript(_SCHEMA)
-            conn.commit()
+        """No I/O here -- constructing a store must not touch the filesystem
+        (#254/#258). This one had no ``_ensure_table``: it ran the schema
+        inline in ``__init__``, which is the same defect in a different shape.
+        """
+        self._explicit_db_path = str(db_path) if db_path else None
+        self._ready: set = set()
+        self._ready_lock = threading.Lock()
+
+    @property
+    def _db_path(self) -> str:
+        """Resolved at CALL time, not cached at construction (#258).
+
+        Stays a ``str`` -- callers read this attribute and hand it straight to
+        ``sqlite3.connect()``.
+        """
+        return self._explicit_db_path or str(_default_db_path())
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
+        path = self._db_path
+        if path not in self._ready:  # fast path: no lock once warm
+            with self._ready_lock:
+                if path not in self._ready:  # double-checked
+                    from admz.paths import ensure_parent_dir
+
+                    ensure_parent_dir(path)
+                    self._create_schema(path)
+                    self._ready.add(path)
+        conn = sqlite3.connect(path)
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
+
+    def _create_schema(self, path: str) -> None:
+        """Open our own connection -- via ``_connect`` this would recurse.
+
+        ``_ready`` is keyed by path rather than a boolean, so a rebind runs
+        the schema against the new file. No column migration on this table.
+        """
+        conn = sqlite3.connect(path)
+        try:
+            conn.executescript(_SCHEMA)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _ensure_table(self) -> None:
+        """Parity with the other sixteen stores; ensuring happens inside
+        :meth:`_connect`."""
+        self._connect().close()
 
     # ---- create ---------------------------------------------------------
 

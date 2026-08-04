@@ -303,6 +303,43 @@ Name these in the PRs; each is a place someone could reasonably assume more was 
   the churn.
 - `admz/tasks/migrate.py:91`, which connects to a path handed to it directly. Not a store.
 
+## Outcome (all stages merged, #258 closed)
+
+Shipped as **five** stages, not four. Stage 3's eleven stores were split
+because moving `_ensure_table` into `_connect()` also moves **when a column
+migration runs** — a materially different review from moving a bare
+`CREATE TABLE IF NOT EXISTS` — so 3a took the six with schema only and 3b the
+five carrying a migration.
+
+| stage | PR | stores |
+|---|---|---|
+| 1 | #267 | `chatbot.usage` + the harness |
+| 2 | #269 | `fleet_settings` |
+| 3a | #271 | `api.capture`, `api_keys`, `events.detections`, `events.store`, `events.watched`, `tasks.store` |
+| 3b | #284 | `api.confirm_store`, `audit`, `chatbot.sessions`, `fleet.health`, `snapshot.drift_alerts` |
+| 4 | this | `demos.store`, `demos.inference.proposals`, `demos.inference.runs`, `session_store`; `__new__` hack retired; `PENDING` deleted |
+
+**All 17 stores resolve their DB path at call time**, and
+`tests/test_store_import_purity.py` proves it for each: construction does no
+I/O, a changed `ADMZ_DB_PATH` is honoured, and importing the module creates
+nothing. `test_every_store_in_the_tree_is_converted` rediscovers stores from
+source, so the claim stays true rather than being a snapshot.
+
+Corrections the build made to this plan, recorded because the plan was wrong
+about them:
+
+- **D4's import-purity assertion was not reachable in stage 1.** A module is
+  import-pure only once its whole *transitive* store graph is converted;
+  `chatbot.usage` pulls in `chatbot.sessions` via the package `__init__`, which
+  was stage 3b. Handled with a characterisation tripwire that fired on
+  schedule.
+- **`audit` has no column migration at all.** It sat in 3b only because
+  #270/#276 was in flight against it.
+- **`chatbot.sessions` carries a DATA migration**, not just a schema one:
+  `_backfill_conversations` calls `_connect()`, so the setup path re-enters the
+  object and needs its own marker set plus an `RLock`.
+- **Zero call sites changed**, as predicted — the count held across all 17.
+
 ## Critical files
 
 | file | role |
