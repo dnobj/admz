@@ -55,6 +55,11 @@ async def open_mcp_session(
     block exits, the subprocess is terminated and stdio streams
     are drained.
 
+    The subprocess's **stderr** is captured into the ADMZ log rather than left
+    on the parent's ``sys.stderr`` (#296). Diagnostic only — the spawn is
+    unchanged. See :mod:`admz.chatbot.mcp_stderr` for why that needs a real
+    pipe rather than a logger object.
+
     Raises:
         McpBridgeMissing: the ``mcp`` SDK isn't installed.
         McpBridgeError: subprocess spawn or handshake failed.
@@ -82,8 +87,17 @@ async def open_mcp_session(
         env=env,
     )
 
+    # #296 — DIAGNOSTIC ONLY. The spawn is unchanged: same command, same args,
+    # same env, same cwd semantics. The only difference is where the child's
+    # stderr points. Without this, `stdio_client` defaults `errlog` to the
+    # PARENT's `sys.stderr`, which under the Shawl-supervised service is not the
+    # ADMZ log — so a subprocess that dies mid-`list_tools()` takes its
+    # traceback with it and production surfaces only "Connection closed".
+    from admz.chatbot.mcp_stderr import StderrPump, log_tail
+
+    pump = StderrPump()
     try:
-        async with stdio_client(params) as (read, write):
+        async with stdio_client(params, errlog=pump.writer) as (read, write):
             async with ClientSession(read, write) as session:
                 # Handshake — sends an `initialize` request to the
                 # spawned server and waits for the capabilities
@@ -95,6 +109,16 @@ async def open_mcp_session(
     except McpBridgeMissing:
         raise
     except Exception as exc:
+        # Drain BEFORE wrapping: the child has already exited by the time we get
+        # here, and its last words are the whole point of this change. `close()`
+        # joins the reader, so a traceback written microseconds before exit is
+        # not lost to a thread that had not been scheduled.
+        log_tail(pump.close(), reason=f"MCP session failed: {exc}", log=logger)
         # Wrap so callers can distinguish bridge failures from SDK
         # failures further down the stack.
         raise McpBridgeError(f"Failed to open MCP session: {exc}") from exc
+    finally:
+        # Idempotent — a no-op when the except arm already closed it. Closing
+        # matters even on the happy path: this process holds a copy of the write
+        # end, and the reader thread only reaches EOF once every copy is gone.
+        pump.close()
