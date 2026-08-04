@@ -286,7 +286,13 @@ async def github_test(request: Request, ctx: AppContext = Depends(get_context)):
         )
         repos = [r["full_name"] for r in gh_client.list_installation_repositories(token)]
     except Exception as exc:  # noqa: BLE001
-        _audit(request, "github_app.test", success=False, error=str(exc))
+        # `principal` (bound above), NOT `request` — #205. record_event reads
+        # `.name`/`.source` off this argument with getattr defaults, and a
+        # Request is truthy while having neither, so passing it wrote
+        # requester="unknown" while the success path below recorded the real
+        # operator. The failure rows are the ones an audit review most wants
+        # attributed, and they were the only ones losing the identity.
+        _audit(principal, "github_app.test", success=False, error=str(exc))
         return JSONResponse({"ok": False, "error": str(exc)[:200]})
     want = gh_secrets.get_config_repo()
     ok = bool(want and want in repos)
