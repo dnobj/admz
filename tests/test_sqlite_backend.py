@@ -7,8 +7,7 @@ import sys
 
 import pytest
 
-import admz.backends.sqlite_backend as sqlite_backend
-from admz.backends.sqlite_backend import SQLiteDeviceRegistry, _restrict_data_dir
+from admz.backends.sqlite_backend import SQLiteDeviceRegistry
 from admz.exceptions import (
     AccountNotFoundError,
     BackendError,
@@ -506,14 +505,15 @@ class TestDataDirPermissions:
 
     What is NOT asserted, deliberately: that the directory gets a
     protected DACL. It does not, and must not — see
-    ``_restrict_data_dir``'s docstring and ADR-0042. A future port of
+    ``admz.paths._restrict_dir``'s docstring and ADR-0042. A future port of
     ``admz.win_acl`` to this path would collapse the DACL of every file
     inside ADMZ_HOME (measured: ``admz.db`` 4 ACEs -> 0, deny-all).
 
-    The two ``sys.platform``-monkeypatched tests are the load-bearing
-    ones: they exercise BOTH branches on BOTH CI legs, so the POSIX branch
-    is covered on windows-latest and the Windows branch on ubuntu-latest.
-    Neither leg can reach the other's real behaviour otherwise.
+    These are the *registry-level* tests — they go through
+    ``SQLiteDeviceRegistry`` and assert the directory it ends up with. The
+    unit tests for the mechanism itself moved to ``tests/test_paths.py``
+    in #254, when ``_restrict_data_dir`` moved out of this backend and
+    into ``admz/paths.py`` where the path policy belongs.
     """
 
     @staticmethod
@@ -548,37 +548,7 @@ class TestDataDirPermissions:
         assert home.is_dir()
         assert [c for c in calls if c[0] == str(home)] == []
 
-    # -- branch selection: runs on every platform ---------------------------
-
-    def test_posix_branch_chmods_0700(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(sqlite_backend.sys, "platform", "linux")
-        calls = self._spy(monkeypatch)
-        _restrict_data_dir(tmp_path)
-        assert calls == [(str(tmp_path), 0o700)]
-
-    def test_win32_branch_does_not_chmod(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(sqlite_backend.sys, "platform", "win32")
-        calls = self._spy(monkeypatch)
-        _restrict_data_dir(tmp_path)
-        assert calls == []
-
-    # -- the other half of the change: failure is no longer swallowed -------
-
-    def test_chmod_failure_is_logged_not_swallowed(
-        self, tmp_path, monkeypatch, caplog
-    ):
-        """The old code was `except OSError: pass` — a failure to restrict
-        the directory holding every device credential was silent."""
-        monkeypatch.setattr(sqlite_backend.sys, "platform", "linux")
-
-        def boom(*a, **k):
-            raise OSError(13, "denied")
-
-        monkeypatch.setattr(os, "chmod", boom)
-        with caplog.at_level(logging.ERROR, logger=sqlite_backend.__name__):
-            _restrict_data_dir(tmp_path)  # must not raise
-        assert "ADMZ data directory" in caplog.text
-        assert str(tmp_path) in caplog.text
+    # -- failure is logged, never fatal -------------------------------------
 
     def test_chmod_failure_does_not_abort_registry_construction(
         self, tmp_path, monkeypatch

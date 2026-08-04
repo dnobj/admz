@@ -6,7 +6,12 @@ and precedence is  specific override > ADMZ_HOME-derived > ~/.admz default.
 
 from __future__ import annotations
 
+import logging
+import os
+import sys
 from pathlib import Path
+
+import pytest
 
 from admz import paths
 
@@ -102,3 +107,103 @@ class TestCallersResolveViaPaths:
         db = tmp_path / "explicit.db"
         reg = SQLiteDeviceRegistry(db_path=str(db), key_path=str(tmp_path / "k.key"))
         assert reg._db_path == db
+
+
+class TestEnsureAdmzHome:
+    """#254 — one authoritative creator for the ADMZ data directory.
+
+    Twenty places used to create it: twelve with an ad-hoc ``mkdir``, and
+    eight not at all. The eight went straight to ``sqlite3.connect`` at
+    import, so on a machine with no ADMZ_HOME the first one imported killed
+    the process. These are the unit tests for the replacement; the
+    fresh-install proof is ``TestFreshInstall`` below.
+
+    The two ``sys.platform``-monkeypatched tests carry the weight: they
+    exercise BOTH branches on BOTH CI legs, so the POSIX branch is covered
+    on windows-latest and the Windows branch on ubuntu-latest. Neither leg
+    can reach the other's real behaviour otherwise.
+    """
+
+    @staticmethod
+    def _spy(monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            os, "chmod", lambda p, m, *a, **k: calls.append((str(p), m))
+        )
+        return calls
+
+    def test_creates_a_missing_admz_home(self, monkeypatch, tmp_path):
+        home = tmp_path / "brand-new"
+        monkeypatch.setenv("ADMZ_HOME", str(home))
+        assert not home.exists()
+        assert paths.ensure_admz_home() == home
+        assert home.is_dir()
+
+    def test_is_idempotent(self, monkeypatch, tmp_path):
+        home = tmp_path / "twice"
+        monkeypatch.setenv("ADMZ_HOME", str(home))
+        paths.ensure_admz_home()
+        paths.ensure_admz_home()
+        assert home.is_dir()
+
+    def test_creates_nested_parents(self, monkeypatch, tmp_path):
+        home = tmp_path / "a" / "b" / "c"
+        monkeypatch.setenv("ADMZ_HOME", str(home))
+        paths.ensure_admz_home()
+        assert home.is_dir()
+
+    def test_ensure_parent_dir_follows_a_specific_override(
+        self, monkeypatch, tmp_path
+    ):
+        """The reason ensure_parent_dir exists at all.
+
+        ADMZ_DB_PATH takes precedence over ADMZ_HOME (ADR-0042), so a
+        redirected DB does not live under ADMZ_HOME. Creating ADMZ_HOME
+        instead of the real parent would leave the store connecting into a
+        directory that still does not exist.
+        """
+        monkeypatch.setenv("ADMZ_HOME", str(tmp_path / "home"))
+        elsewhere = tmp_path / "elsewhere" / "admz.db"
+        monkeypatch.setenv("ADMZ_DB_PATH", str(elsewhere))
+        assert not elsewhere.parent.exists()
+        assert paths.ensure_parent_dir(paths.db_path()) == elsewhere.parent
+        assert elsewhere.parent.is_dir()
+
+    # -- the POSIX mode, and the deliberate Windows no-op (#250) ------------
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX mode bits; no-op on Windows"
+    )
+    def test_admz_home_is_0700_on_posix(self, monkeypatch, tmp_path):
+        home = tmp_path / "moded"
+        monkeypatch.setenv("ADMZ_HOME", str(home))
+        paths.ensure_admz_home()
+        assert oct(os.stat(home).st_mode & 0o777) == oct(0o700)
+
+    def test_posix_branch_chmods_0700(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(paths.sys, "platform", "linux")
+        calls = self._spy(monkeypatch)
+        paths._restrict_dir(tmp_path)
+        assert calls == [(str(tmp_path), 0o700)]
+
+    def test_win32_branch_does_not_chmod(self, tmp_path, monkeypatch):
+        """os.chmod on Windows is a measured no-op for access control, so it
+        is deliberately not called. See ADR-0042 / #250."""
+        monkeypatch.setattr(paths.sys, "platform", "win32")
+        calls = self._spy(monkeypatch)
+        paths._restrict_dir(tmp_path)
+        assert calls == []
+
+    def test_chmod_failure_is_logged_not_swallowed(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(paths.sys, "platform", "linux")
+
+        def boom(*a, **k):
+            raise OSError(13, "denied")
+
+        monkeypatch.setattr(os, "chmod", boom)
+        with caplog.at_level(logging.ERROR, logger=paths.__name__):
+            paths._restrict_dir(tmp_path)  # must not raise
+        assert "ADMZ data directory" in caplog.text
+        assert str(tmp_path) in caplog.text

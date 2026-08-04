@@ -97,7 +97,8 @@ class SessionStore:
 
     def __init__(self, db_path: Optional[str] = None):
         self._db_path = str(db_path or _default_db_path())
-        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+        from admz.paths import ensure_parent_dir
+        ensure_parent_dir(self._db_path)
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
             conn.commit()
