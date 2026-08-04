@@ -149,6 +149,25 @@ class FacetAdapter(ABC):
         use revert_param)."""
         return None
 
+    def normalize_doc(self, doc: Dict[str, Any]) -> Dict[str, Any]:
+        """Canonicalise a serialized facet doc so an ORDER-ONLY difference
+        stops reading as drift (#228).
+
+        Applied by the drift detector to BOTH sides of the compare — the live
+        doc AND the git-stored baseline — for the same reason the ignore list
+        is (see ``drift.py``): a noise fix that only touched newly captured
+        state would leave every existing baseline drifting until an operator
+        re-captured it, which is a silent no-op dressed as a fix.
+
+        Facets also call this from ``serialize`` so new baselines and the git
+        config repo are written already-canonical. It must therefore be PURE
+        and IDEMPOTENT, must not drop or invent fields, and must only collapse
+        differences it can *prove* are semantically identical — anything less
+        than certain has to stay visible as drift.
+
+        Default: identity."""
+        return doc
+
     def canonical_key(self, path: str) -> str:
         """The cross-facet identifier for a drifted/serialized field — what the
         ignore list matches against, so one rule model addresses any config

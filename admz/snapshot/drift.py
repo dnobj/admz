@@ -143,10 +143,28 @@ class DriftDetector:
 
             report.facets_checked += 1
 
-            stored_flat = _flatten(stored)
-            live_flat = _flatten(live_by_facet[facet_name])
-
             facet = facets_by_name.get(facet_name)
+
+            # Order-only canonicalisation (#228), applied to BOTH sides for the
+            # same reason the ignore list is: a baseline captured before the
+            # normalisation shipped must clear on the next computation, with no
+            # forced re-baseline. Best-effort — a facet's normaliser must never
+            # be able to break drift detection.
+            stored_doc = stored
+            live_doc = live_by_facet[facet_name]
+            if facet is not None:
+                try:
+                    stored_doc = facet.normalize_doc(stored_doc)
+                    live_doc = facet.normalize_doc(live_doc)
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "normalize_doc failed for facet %s on %s; comparing raw",
+                        facet_name, device_id, exc_info=True)
+                    stored_doc, live_doc = stored, live_by_facet[facet_name]
+
+            stored_flat = _flatten(stored_doc)
+            live_flat = _flatten(live_doc)
+
             if ignore_rules and facet is not None:
                 stored_flat = {
                     k: v for k, v in stored_flat.items()
