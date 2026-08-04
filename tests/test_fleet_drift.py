@@ -92,6 +92,10 @@ def client(tmp_path, monkeypatch):
 
 def _set_signature(store, device_id, field_count):
     """Write a drift_signatures row directly (what process_report persists)."""
+    # #258: constructing a store no longer creates its schema -- that moved
+    # into _connect(). This writes with raw sqlite3, bypassing the store, so
+    # realise the tables first.
+    store._ensure_table()
     conn = sqlite3.connect(store._db_path)
     try:
         conn.execute(

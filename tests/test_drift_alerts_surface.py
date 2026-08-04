@@ -78,6 +78,10 @@ def _seed_alerts(store, *rows):
     tuples of (offset_seconds_ago, device_id, transition, prev, curr,
     sig, summary)."""
     import sqlite3
+    # #258: constructing a store no longer creates its schema -- that
+    # moved into _connect(). This helper writes with raw sqlite3,
+    # bypassing the store, so realise the tables first.
+    store._ensure_table()
     conn = sqlite3.connect(store._db_path)
     try:
         now = time.time()

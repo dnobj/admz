@@ -108,6 +108,9 @@ def _call(server, param_choices):
 
 def _rows():
     from admz.api.confirm_store import confirm_store
+    # #258: schema creation moved from __init__ into _connect(). This reads
+    # with raw sqlite3, bypassing the store, so realise the tables first.
+    confirm_store._ensure_table()
     conn = sqlite3.connect(confirm_store._db_path)
     try:
         return [r[0] for r in conn.execute(

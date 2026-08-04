@@ -91,12 +91,31 @@ class TestFreshInstall:
         )
         assert "unable to open database file" not in result.stderr
 
-    def test_the_directory_is_actually_created(self, tmp_path):
+    def test_importing_the_app_no_longer_creates_the_directory(self, tmp_path):
+        """CONTRACT CHANGE, #254 -> #258.
+
+        This used to assert that importing ``admz.api.main`` CREATED
+        ADMZ_HOME. That was #254's contract: every store called
+        ``ensure_parent_dir`` from ``__init__``, so import did filesystem I/O
+        and the directory appeared as a side effect of loading the app.
+
+        #258 removed exactly that. Stores now resolve their path at call time
+        and create nothing until first use, so import is inert. The
+        surrounding tests still prove a fresh install *works* -- see
+        ``test_a_store_can_actually_be_used_not_merely_imported`` below, which
+        is the assertion that matters and is unchanged.
+
+        Kept rather than deleted because the inversion is the record of the
+        contract moving.
+        """
         home = tmp_path / "never-created"
         assert not home.exists()
         result = _run("import admz.api.main", home)
         assert result.returncode == 0, result.stderr
-        assert home.is_dir(), "ADMZ_HOME should have been created"
+        assert not home.exists(), (
+            "importing the app created ADMZ_HOME -- a store is doing I/O at "
+            "import again (#258)"
+        )
 
     def test_ensure_admz_home_is_what_creates_it(self, tmp_path):
         """Not just 'something made a directory' — the shared helper did."""
