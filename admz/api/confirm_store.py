@@ -330,11 +330,38 @@ class ConfirmStore:
 
     def complete_session(self, token: str, confirmed_by: str = "web") -> bool:
         """
-        Mark a session as completed.
+        Mark a session as completed, and **strip its payload** (GH #266).
 
         Uses UPDATE ... WHERE status='pending' for concurrency safety —
         only the first caller succeeds.  Returns False if the session is
         not found, already completed, or expired.
+
+        The four payload columns are cleared in the SAME statement as the status
+        transition, deliberately: the ``status='pending'`` guard then makes the
+        strip fire exactly once, exactly on the transition, and **never on a
+        pending row**. A separate UPDATE could run without the transition, and
+        ``plan_steps_json`` is the cross-process transport — the approving
+        uvicorn process may not be the MCP subprocess that built the plan, and it
+        reconstructs the plan from this row — so stripping early would break
+        execution outright. After approval it is inert.
+
+        WHY strip at all: ``_cleanup`` never deletes a completed row, so before
+        this every approved action's arguments — device parameters, rule
+        definitions, webhook URLs, whole restore plans — persisted in ``admz.db``
+        indefinitely, in the same file as the device registry, with nothing
+        redacting them. The row survives as a **receipt** (token, status,
+        confirmed_by, operation_id, device_id, timestamps); what it was *for* is
+        recorded key-only on the ``confirm.approve`` audit row (#270), joined
+        back to this row by the token.
+
+        SAFE ONLY BECAUSE OF THE CALLER ORDERING: every consumer of the payload
+        works from the ``ConfirmSession`` object fetched *before* this runs
+        (``routes/confirm.py`` get_session -> complete_session ->
+        execute_approved_session; same shape in ``operations.py``). This method
+        only touches the database, never that in-memory object. A future
+        refactor that re-fetches the session after completion would silently get
+        an empty payload — ``tests/test_confirm_payload_strip.py`` pins the
+        ordering for exactly that reason.
         """
         session = self.get_session(token)
         if session is None or session.effective_status != ConfirmStatus.PENDING:
@@ -344,7 +371,12 @@ class ConfirmStore:
         try:
             cursor = conn.execute(
                 "UPDATE confirm_sessions "
-                "SET status=?, confirmed_by=? "
+                "SET status=?, confirmed_by=?, "
+                # params_json keeps a valid empty JSON object; the other three
+                # are '' — the schema default for each, and what their accessors
+                # already treat as "nothing stored".
+                "    params_json='{}', action_json='', "
+                "    plan_summary_json='', plan_steps_json='' "
                 "WHERE token=? AND status='pending'",
                 ("completed", confirmed_by, token),
             )
@@ -422,7 +454,27 @@ class ConfirmStore:
         return session
 
     def _cleanup(self):
-        """Remove sessions that expired more than 60s ago."""
+        """Delete **un-acted-on** sessions that expired more than 60s ago.
+
+        Note the ``status != 'completed'`` predicate: a completed session is
+        never deleted, so the retention rule is the opposite of what the name
+        suggests — abandoned sessions are reaped on a 300s TTL, approved ones are
+        kept forever. That is deliberate (the row is the approval **receipt**),
+        but it was not always stated: this docstring used to read "Remove
+        sessions that expired more than 60s ago", i.e. it described what the code
+        would do *without* the exclusion, which is what made the predicate look
+        like an inverted bug rather than a retention choice (GH #266). The
+        exclusion arrived in the original confirm-store commit with no recorded
+        rationale, and nothing else documented it.
+
+        What made keeping them forever *safe* is that ``complete_session`` now
+        strips the payload columns on the way in, so a retained row carries who
+        approved what and when, and none of the arguments.
+
+        Rows completed BEFORE that change still hold their payload — this is
+        forward-only by design. Rewriting them is a destructive migration over
+        production data and is the operator's call, not this method's.
+        """
         cutoff = time.time() - 60
         conn = self._connect()
         try:
