@@ -146,7 +146,8 @@ Scheduled / policy-driven rotation isn't implemented.
 
 ### KL-CRED-003 — No CSRF on capture form POSTs ⚠️
 Tokens are single-use and high-entropy, but a CSRF token in the form
-would be defense-in-depth. Tracked as KG-SEC-002.
+would be defense-in-depth. KG-SEC-002 — the capture forms now enforce
+same-origin on POST (#3, `admz/csrf.py`); `POST /confirm/{token}` still does not.
 
 ### KL-CRED-004 — Vault mount-point / path-prefix not in env ⚠️
 The factory docstring lists `VAULT_MOUNT_POINT` and `VAULT_PATH_PREFIX`

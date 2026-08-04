@@ -233,6 +233,9 @@ class TestCaptureRouteUsesUpdate:
             r = web_client.post(
                 f"/capture/{session.token}",
                 data={"username": "root", "password": "new-rotated-pw"},
+                # A real browser always sends Origin on a form POST;
+                # the capture route now requires it (#3, admz/csrf.py).
+                headers={"origin": "http://testserver"},
             )
 
         assert r.status_code == 200, r.text
@@ -278,7 +281,9 @@ class TestCaptureRouteUsesUpdate:
              patch.object(registry, "add_account", side_effect=spy_add):
             r = web_client.post(
                 f"/capture/{session.token}",
-                data={"username": "root", "password": "fresh"},
+                data={"username": "root", "password": "fresh"},                # A real browser always sends Origin on a form POST;
+                # the capture route now requires it (#3, admz/csrf.py).
+                headers={"origin": "http://testserver"},
             )
 
         assert r.status_code == 200, r.text

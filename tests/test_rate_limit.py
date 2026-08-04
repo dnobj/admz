@@ -159,6 +159,8 @@ class TestCaptureRateLimit:
         for _ in range(15):
             r = client.post(
                 "/capture/dummy-token",
+                # #3: the capture POST now requires a same-origin header.
+                headers={"origin": "http://testserver"},
                 data={"username": "x", "password": "y"},
             )
             responses.append(r.status_code)

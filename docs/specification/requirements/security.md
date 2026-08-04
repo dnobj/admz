@@ -162,8 +162,46 @@ deployment guide ([DEPLOYMENT_WINDOWS.md](../../DEPLOYMENT_WINDOWS.md)).
 See [requirements/authentication.md](authentication.md) for the full
 FR/NFR list.
 
-### KG-SEC-002 — No CSRF protection on capture / confirm forms ⚠️
-Tokens are 256-bit single-use, but a CSRF defense (token in form, validated server-side) would still be appropriate.
+### KG-SEC-002 — No CSRF protection on capture / confirm forms ⚠️ PARTIALLY CLOSED (#3)
+**Capture forms: closed.** `admz/csrf.py` enforces same-origin on the three
+browser-only capture POSTs — `/capture/{token}`, `/capture/fleet/{token}` and
+`/capture/rule/{token}`. `Origin` is checked, `Referer` is the fallback, and a
+request carrying **neither is refused** (fail closed: these endpoints serve an
+HTML form a human types credentials into, and no non-browser client exists for
+them).
+
+**Confirm forms: still open.** `POST /confirm/{token}` has the same shape and
+the same need; it was left out of #3 only because `admz/api/routes/confirm.py`
+was being edited concurrently (#178). The guard is a one-line call —
+`check_same_origin(request)` — so closing it is small.
+
+Worth recording *why* this matters, because the original entry and #3 both got
+the threat model slightly wrong. CSRF needs **ambient authority**, and ADMZ's
+backends differ:
+
+| backend | browser credential | CSRF-able |
+|---|---|---|
+| `windows-local` | `admz_session` cookie, `SameSite=Lax` | no |
+| `api-key` | `Authorization: Bearer` (never ambient) | no |
+| `none` | nothing to borrow | n/a |
+| `windows`, `composite` | proxy does Negotiate, injects a trusted header — **no cookie** | **yes** |
+
+`SameSite=Lax` already blocks a cross-site POST from carrying the session
+cookie, and Negotiate SSO (ADR-0035) ends in that same cookie. The real gap is
+`ReverseProxyAuth` (ADR-0021), where the browser re-authenticates
+*automatically* on every request with no cookie involved, so `SameSite` cannot
+help. `ADMZ_AUTH_BACKEND=composite` includes it and is what
+[DEPLOYMENT_WINDOWS.md](../../DEPLOYMENT_WINDOWS.md) documents.
+
+Also note the token argument cuts the other way: an attacker who *knows* the
+token does not need CSRF — they can POST it directly. What CSRF buys is the
+victim's ambient credentials on an endpoint the attacker cannot otherwise
+reach.
+
+Comparison is on host+port, not scheme: behind a TLS-terminating proxy the
+browser sends `https://` while ADMZ sees plain HTTP with no
+`X-Forwarded-Proto`. `ADMZ_TRUSTED_ORIGINS` (comma-separated) covers a proxy
+whose public hostname differs from the `Host` ADMZ receives.
 
 ### KG-SEC-003 — No audit log ✅ CLOSED (Phase 4D)
 New `audit_log` SQLite table populated on every gated action (credential

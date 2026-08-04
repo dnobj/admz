@@ -47,7 +47,8 @@ The same pattern handles **batch capture** (one form, many devices: `device_ids:
 **Negative:**
 - Two extra round-trips: LLM → token → URL → human → submit → poll. Slower than just typing the password in chat.
 - Requires the ADMZ server to be reachable from the user's browser. For localhost dev that's free; for fleet deployments it requires either co-location or a tunnel.
-- ⚠️ The form has no CSRF protection — a malicious page that knows the token could submit on the user's behalf. Tokens are 256-bit so this is theoretical, but it's a known gap (KG-SEC-002 in `security.md`).
+- ✅ The form enforces **same-origin** on POST (#3, `admz/csrf.py`): `Origin` checked, `Referer` as fallback, neither present → refused. Applies to `/capture/{token}`, `/capture/fleet/{token}` and `/capture/rule/{token}`.
+  The gap this closes is narrower than it was first written: an attacker who knows the token does not need CSRF at all — they can POST directly. CSRF buys the *victim's ambient credentials*, which only exist under `ADMZ_AUTH_BACKEND=windows`/`composite` (proxy-injected Negotiate header, no cookie, so `SameSite=Lax` cannot help). `POST /confirm/{token}` still needs the same call — see KG-SEC-002 in `security.md`.
 - ⚠️ No rate limiting on the POST handler. Tokens are single-use so this is mostly moot, but a determined attacker who races the legitimate user could overwrite the captured password.
 
 **Alternatives considered:**
