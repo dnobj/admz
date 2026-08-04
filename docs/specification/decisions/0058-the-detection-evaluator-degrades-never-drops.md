@@ -1,6 +1,7 @@
 # ADR-0058 — The detection evaluator degrades to its last good rules, never drops the event
 
-**Status:** Proposed (2026-08-04). Planned in
+**Status:** Accepted (2026-08-04). Shipped with #255 (`_refresh` degrades; the five
+`on_event` sites made loud; `fire_failed_total`). Planned in
 [`plans/acs-refire-on-callback-failure.md`](../plans/acs-refire-on-callback-failure.md); implements GH #255.
 **Relates to:** ADR-0041 (the event subsystem, layer 3), ADR-0057 (ACS firings gate on identity — this
 supersedes its "Amended during implementation" note), GH #209 / #249 (the sibling: `WatchGate._refresh`

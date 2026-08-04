@@ -106,6 +106,7 @@ class DeviceEventStream:
         self.last_event_at: float = 0.0
         self.connected: bool = False
         self.last_error: str = ""
+        self._warned_on_event = False        # log-once-per-failure-streak latch
 
     # ----- lifecycle -----
     async def start(self) -> None:
@@ -206,5 +207,19 @@ class DeviceEventStream:
             try:
                 await self.on_event(rec)
             except Exception:  # noqa: BLE001 — a handler error must not wedge the stream
-                logger.debug("on_event handler failed for %s", self.device_id, exc_info=True)
+                # A WS event is delivered ONCE — there is no window to re-poll — so
+                # a handler failure here loses the detection outright. ADR-0058
+                # removes the only raise path in the wired evaluator, which is why
+                # this should now be unreachable; if it fires, an injected callback
+                # is failing and that must be visible, not a debug line. Once per
+                # streak: this runs per event.
+                if not self._warned_on_event:
+                    self._warned_on_event = True
+                    logger.warning("on_event handler failed for %s; this event's detections "
+                                   "will not be retried", self.device_id, exc_info=True)
+                else:
+                    logger.debug("on_event handler still failing for %s",
+                                 self.device_id, exc_info=True)
+            else:
+                self._warned_on_event = False
         return True
