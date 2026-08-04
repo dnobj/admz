@@ -264,6 +264,52 @@ def capture_param_names(action: Any) -> List[str]:
     return names
 
 
+def sensitive_param_names(action: Any) -> List[str]:
+    """Every param whose value must never arrive through ``param_choices``.
+
+    The UNION of what is advertised as capture-needed (:func:`capture_param_names`
+    — the broad password-family/login match) and the primary pair
+    :func:`primary_recipient_secret_fields` collects. Union rather than either
+    alone: widening to the advertised set must not narrow what the previous
+    exact-name strip already removed (``username``/``user`` are in the primary
+    pair but match no hint), and the advertised set must not be silently honoured
+    just because v1 declines to *capture* it (#194).
+    """
+    names: List[str] = list(capture_param_names(action))
+    for f in primary_recipient_secret_fields(action):
+        if f["name"] not in names:
+            names.append(f["name"])
+    return names
+
+
+def secret_choice_keys(action: Any, param_choices: Any) -> List[str]:
+    """Caller-supplied ``param_choices`` keys that resolve to a sensitive param.
+
+    Key matching deliberately mirrors the atlas resolver
+    (``surveys/models.py::ResolvedParams``): a choice key matches a param by its
+    SOAP ``name`` **or** its ``ui_label``, **case-insensitively**. That is also
+    what the MCP tool schema advertises ("keyed by the param's label or SOAP
+    name").
+
+    #194: the previous strip was ``param_choices.pop(p.name)`` — exact and
+    case-sensitive, i.e. narrower on two axes than both the resolver that
+    consumes the value and the schema that invites it. ``{"Password": "..."}``
+    therefore survived the strip, was still resolved (the resolver lowercases
+    both sides), and was persisted verbatim in ``confirm_sessions.action_json``.
+    Two components that must agree now derive their matching rule from one place.
+    """
+    if not param_choices:
+        return []
+    sensitive = {n.lower() for n in sensitive_param_names(action) if n}
+    for p in getattr(action, "soap_params", []) or []:
+        name = (getattr(p, "name", "") or "")
+        if name.lower() in sensitive:
+            label = getattr(p, "ui_label", "") or ""
+            if label:
+                sensitive.add(label.lower())
+    return [k for k in param_choices if str(k).lower() in sensitive]
+
+
 def primary_recipient_secret_fields(action: Any) -> List[Dict[str, Any]]:
     """The PRIMARY (username, password) recipient params to collect via the
     secure form — ``[{name, label, kind}]``.

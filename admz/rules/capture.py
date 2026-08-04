@@ -13,6 +13,18 @@ payload, the audit log, or any on-disk store. The pending rule *spec* (which
 carries no secret) crosses the MCP-subprocess → web-process boundary through the
 ordinary ``confirm_store`` (SQLite); the secret does not. Single-process web tier
 is assumed (same as the plan engine / scheduler singletons). See ADR-0043.
+
+**What enforces the "never reaches the payload" half** (#194): ``create_action_rule``
+refuses outright — it does not silently strip — any ``param_choices`` key that
+resolves to a sensitive param, matching by SOAP name *or* ``ui_label``,
+case-insensitively, exactly as the atlas resolver that consumes those keys does
+(``capabilities.secret_choice_keys``). The previous exact-name, case-sensitive
+``pop`` was narrower than both the resolver and the tool schema, so
+``{"Password": ...}`` survived it and was persisted verbatim. Note the guarantee is
+upheld by keeping secrets *out of* the payload — **not** by redacting the payload
+on the way to disk: ``redact_structure`` masks ``secret_fields`` too, and
+``routes/rule_capture.py`` reads that back to render the form, so redacting here
+would break this mechanism rather than protect it.
 """
 
 from __future__ import annotations
