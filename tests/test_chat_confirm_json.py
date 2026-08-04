@@ -409,6 +409,11 @@ class TestApproveOutcomeIdentityAudit:
         details = self._audit().list_recent(action="confirm.approve")[0].details
         assert details == {
             "confirmed_by": "chat",
+            # GH #178 — WHY this principal was allowed to approve. Recorded on
+            # every approval; "anonymous-no-identity" here because the test
+            # client runs with no auth backend, which is exactly the case that
+            # must stay visible in the audit log rather than silent.
+            "authz": "anonymous-no-identity",
             "risk_level": "dangerous",
             "confirmation_level": "url_only",
             "is_plan": False,

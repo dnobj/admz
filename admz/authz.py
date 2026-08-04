@@ -136,6 +136,108 @@ def principal_can_reveal(
     return False, "not-in-reveal-groups"
 
 
+# ---------------------------------------------------------------------------
+# Approve — who may approve a confirmation session (GH #178)
+# ---------------------------------------------------------------------------
+
+#: Fleet setting holding the comma-separated approver group list. Protected by
+#: the inverted policy in ``setting_policy`` (ADR-0053): absent from the
+#: LLM-writable allow-set, so the model can never widen who may approve.
+APPROVER_GROUPS_SETTING = "confirm_approver_groups"
+
+#: The floor. ``Administrators`` is the SAME name the reveal gate already
+#: defaults to, deliberately: if an operator can reveal a credential today,
+#: they can approve tomorrow, so shipping this cannot lock out an install where
+#: the stricter gate already works. (Bare NAMES, not SIDs, because
+#: ``NetUserGetLocalGroups`` returns ``lgrui0_name`` — see the localisation
+#: caveat in ``win_acl``: the *name* is localised, the SID is not. That limit is
+#: pre-existing and shared with reveal, not introduced here.)
+_DEFAULT_APPROVER_GROUPS = ("Administrators", "ADMZ-Admins")
+
+
+def approver_groups(configured: Optional[str] = None) -> List[str]:
+    """Group names that may approve a confirmation session.
+
+    Reads the ``confirm_approver_groups`` fleet setting; ``configured`` lets
+    tests pass a value without touching the store.
+
+    **Unset or empty falls back to the default, loudly.** An empty value is NOT
+    read as "no restriction": that is precisely the fail-open shape #178 was
+    filed for, where a missing ``confirm_password_hash`` silently turned
+    ``url_and_password`` into ``url_only``. Nor does it fail closed — the
+    fallback IS the documented floor and is itself a real restriction, so
+    refusing every approval because a text box was cleared would lock the
+    operator out of the very approval needed to fix it. Falling back is only
+    safe because it cannot be *weaker* than the floor; it is logged so the
+    divergence between configured and effective is never silent.
+    """
+    raw = configured
+    if raw is None:
+        try:
+            from admz.fleet_settings import fleet_settings
+            raw = fleet_settings.get(APPROVER_GROUPS_SETTING)
+        except Exception:  # noqa: BLE001 — a settings outage must not lock out
+            logger.warning("approver group lookup failed; using the default (%s)",
+                           ", ".join(_DEFAULT_APPROVER_GROUPS), exc_info=True)
+            return list(_DEFAULT_APPROVER_GROUPS)
+    if raw is None:
+        return list(_DEFAULT_APPROVER_GROUPS)          # never configured — the floor
+    parts = [p.strip() for p in str(raw).split(",") if p.strip()]
+    if not parts:
+        logger.warning(
+            "%s is configured but empty; falling back to the default approver "
+            "groups (%s). An empty value does NOT mean 'anyone may approve'.",
+            APPROVER_GROUPS_SETTING, ", ".join(_DEFAULT_APPROVER_GROUPS))
+        return list(_DEFAULT_APPROVER_GROUPS)
+    return parts
+
+
+def principal_can_approve(
+    principal: Optional[Principal],
+    *,
+    configured_groups: Optional[Sequence[str]] = None,
+) -> Tuple[bool, str]:
+    """Decide whether ``principal`` may approve a confirmation session.
+
+    Same membership rule as :func:`principal_can_reveal` — deliberately, and
+    via the same normalisation helpers. Two mechanisms for "is this principal
+    in a group" is how the ``_refresh`` sibling drift in #209/#255 happened.
+    """
+    if principal is None or getattr(principal, "is_anonymous", False):
+        return False, "anonymous"
+    pgroups = _group_set_normalized(principal.groups or [])
+    if not pgroups:
+        return False, "no-groups"
+    configured = configured_groups if configured_groups is not None else approver_groups()
+    matched = pgroups & _group_set_normalized(configured)
+    if matched:
+        return True, f"group:{sorted(matched)[0]}"
+    return False, "not-in-approver-groups"
+
+
+def require_approve_permission(principal: Optional[Principal]) -> str:
+    """Raise 403 unless ``principal`` may approve. Returns the reason tag so the
+    caller records *why* it was allowed in the audit row.
+
+    Before #178 the approve path made no authorization decision at all: it
+    resolved a principal solely to write audit rows, so any authenticated user
+    could approve anything — while *reading* a credential required group
+    membership. The gate guarding device writes was weaker than the one
+    guarding credential reads.
+    """
+    allowed, reason = principal_can_approve(principal)
+    if allowed:
+        return reason
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            "Approval denied: approving a confirmation requires membership in "
+            f"one of the approver groups ({', '.join(approver_groups())}). "
+            f"Decision: {reason}."
+        ),
+    )
+
+
 def require_reveal_permission(principal: Optional[Principal]) -> str:
     """FastAPI-friendly helper that raises 403 if the principal can't
     reveal. Returns the reason tag on success so the caller can record

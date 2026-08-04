@@ -98,6 +98,10 @@ KNOWN_SETTING_KEYS: FrozenSet[str] = frozenset({
     "default_username",
     # --- confirmation / credential gates (ADR-0006, ADR-0020) -------------
     "confirm_password_hash",
+    # Who may APPROVE a confirmation session (GH #178). Deliberately absent
+    # from the LLM-writable allow-set above: a model that could widen this
+    # could authorize its own pending actions.
+    "confirm_approver_groups",
     "tool_get_credentials_enabled",
     # --- chatbot (ADR-0025) ------------------------------------------------
     "gemini_api_key",

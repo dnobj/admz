@@ -844,15 +844,24 @@ def _build_confirm_settings_context(request: Request, **extra):
     gate policy could not see that ``confirm_level_action`` had been altered,
     which is half the severity of GH #152.
     """
+    from admz.authz import APPROVER_GROUPS_SETTING, approver_groups
+
     levels = {r: get_confirmation_level(r) for r in _DEFAULT_CONFIRMATION_LEVELS}
     has_password = bool(fleet_settings.get("confirm_password_hash"))
     get_creds_enabled = fleet_settings.get("tool_get_credentials_enabled") == "true"
+    # Show the EFFECTIVE list, not the raw setting: if the box is empty the
+    # default applies, and the page must say what is actually in force (GH #152
+    # is the same complaint about this page — it could not show what was really
+    # in effect).
     ctx = {
         "request": request,
         "title": "Confirmation Settings",
         "levels": levels,
         "has_password": has_password,
         "get_creds_enabled": get_creds_enabled,
+        "approver_groups": ", ".join(approver_groups()),
+        "approver_groups_configured": bool(
+            (fleet_settings.get(APPROVER_GROUPS_SETTING) or "").strip()),
     }
     ctx.update(extra)
     return ctx
@@ -961,6 +970,35 @@ async def confirm_settings_save(
             "confirm_settings.html",
             _build_confirm_settings_context(
                 request, success="Confirmation password updated."
+            ),
+        )
+
+    elif action == "approver_groups":
+        # GH #178. Blank clears the setting so the built-in default applies —
+        # `authz.approver_groups()` treats unset AND empty as "use the floor"
+        # and logs when it does, so an empty box can never mean "anyone".
+        form_data = await request.form()
+        raw = (form_data.get("approver_groups") or "").strip()
+        from admz.authz import APPROVER_GROUPS_SETTING, approver_groups
+        if raw:
+            fleet_settings.set(APPROVER_GROUPS_SETTING, raw)
+        else:
+            fleet_settings.delete(APPROVER_GROUPS_SETTING)
+        record_event(
+            principal, "fleet_setting.write",
+            resource="confirm_settings:approver_groups",
+            details={"op": "set" if raw else "reset-to-default",
+                     "effective": approver_groups()},
+        )
+        return templates.TemplateResponse(
+            request,
+            "confirm_settings.html",
+            _build_confirm_settings_context(
+                request,
+                success=("Approver groups saved: " + ", ".join(approver_groups())
+                         if raw else
+                         "Approver groups reset to the default: "
+                         + ", ".join(approver_groups())),
             ),
         )
 
