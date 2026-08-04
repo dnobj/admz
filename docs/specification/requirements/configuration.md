@@ -55,7 +55,9 @@ The version string lives in `admz/__init__.py::__version__`. `setup.py` reads it
 ### NFR-CFG-001 — Config files have predictable locations ✅
 All ADMZ state lives under `~/.admz/` by default:
 - `admz.db` — registry, capture sessions, confirm sessions, fleet settings (single SQLite, WAL mode)
-- `admz.key` — Fernet encryption key (mode 0o600 on Unix)
+- `admz.key` — Fernet encryption key (mode 0o600 on POSIX; protected owner-only
+  DACL on Windows, granting SYSTEM + Administrators + the creating account —
+  ADR-0010, issue #207)
 - `config-repo/` — git working tree for snapshots
 - `schedules.json` — scheduler state
 - `firmware/` — cached firmware binaries

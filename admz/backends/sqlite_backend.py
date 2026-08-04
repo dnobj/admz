@@ -22,8 +22,10 @@ Storage layout (two tables):
 """
 
 import json
+import logging
 import os
 import sqlite3
+import sys
 import time
 import base64
 from pathlib import Path
@@ -37,9 +39,63 @@ from admz.exceptions import (
     ConfigurationError,
 )
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Encryption helpers — thin wrapper around cryptography.fernet.Fernet
 # ---------------------------------------------------------------------------
+
+
+def _restrict_key_file(key_path: Path) -> None:
+    """Restrict a freshly-created Fernet key file to its owner (#207).
+
+    Two genuinely different mechanisms, because the platforms are not
+    variations on a theme:
+
+    * **POSIX** — ``chmod 0o600``. Correct and sufficient.
+    * **Windows** — an explicit, *protected* (non-inheriting) DACL via
+      :mod:`admz.win_acl`. ``os.chmod`` is deliberately NOT called here:
+      on Windows it is a complete no-op for access-control purposes. It
+      never touches the DACL, and since ``0o600`` carries the owner-write
+      bit it clears ``FILE_ATTRIBUTE_READONLY`` rather than setting it.
+      Calling it would only imply a protection that does not exist.
+
+    Failure is logged, never swallowed and never fatal. The previous
+    ``except OSError: pass`` meant a failure to protect the key that
+    encrypts every device credential in the fleet was completely silent.
+    Startup still proceeds: an unprotected key is bad, but a service that
+    refuses to boot on an exotic filesystem is worse, and the operator now
+    has a log line naming the file.
+    """
+    if sys.platform == "win32":
+        from admz.win_acl import WinAclError, harden_secret_file
+
+        try:
+            sddl = harden_secret_file(key_path)
+        except (WinAclError, OSError):
+            logger.error(
+                "Could not set an owner-only ACL on the new Fernet master "
+                "key %s — it may be readable by other local users. See "
+                "ADR-0010.",
+                key_path,
+                exc_info=True,
+            )
+        else:
+            logger.info(
+                "Created Fernet master key %s with owner-only ACL (%s)",
+                key_path,
+                sddl,
+            )
+    else:
+        try:
+            os.chmod(key_path, 0o600)
+        except OSError:
+            logger.error(
+                "Could not chmod 0o600 the new Fernet master key %s — it "
+                "may be readable by other users.",
+                key_path,
+                exc_info=True,
+            )
 
 
 def _build_fernet(key_path: Path):
@@ -58,10 +114,7 @@ def _build_fernet(key_path: Path):
         key = Fernet.generate_key()
         key_path.parent.mkdir(parents=True, exist_ok=True)
         key_path.write_bytes(key)
-        try:
-            os.chmod(key_path, 0o600)
-        except OSError:
-            pass
+        _restrict_key_file(key_path)
 
     return Fernet(key)
 

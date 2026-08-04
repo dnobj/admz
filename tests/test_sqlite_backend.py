@@ -1,6 +1,7 @@
 """Tests for the SQLite backend."""
 
 import os
+import subprocess
 import sys
 
 import pytest
@@ -348,7 +349,7 @@ class TestEncryption:
 
     @pytest.mark.skipif(
         sys.platform == "win32",
-        reason="Windows file ACLs don't map to Unix-style chmod 0o600",
+        reason="POSIX mode bits; Windows is covered by the DACL tests below",
     )
     def test_key_file_created_with_secure_permissions(self, tmp_path):
         db_path = str(tmp_path / "admz.db")
@@ -359,6 +360,117 @@ class TestEncryption:
         mode = os.stat(key_path).st_mode & 0o777
         # Should be 0o600 (owner read/write only)
         assert mode == 0o600
+
+    # -- Windows: the DACL, which is what actually governs access there ----
+    #
+    # These replace the blanket win32 skip that issue #207 filed against.
+    #
+    # Read this before adding to them. The OBVIOUS assertion — "no ACE
+    # grants read to BUILTIN\\Users or Everyone" — is VACUOUS here. A file
+    # created in an ordinary temp directory already has a DACL of
+    # SYSTEM / Administrators / OWNER RIGHTS and no Users ACE, so that
+    # assertion passes on a CI runner with the fix reverted. Measured, not
+    # assumed. An allowlist of {owner, Administrators, SYSTEM} is no better
+    # on its own: it trips over the unlisted OWNER RIGHTS (S-1-3-4) for a
+    # reason that has nothing to do with the code under test.
+    #
+    # SE_DACL_PROTECTED is what carries the weight. An ordinarily-created
+    # file ALWAYS inherits its parent's DACL, in every environment, so
+    # protected=True can only hold if code deliberately broke inheritance.
+    # The allowlist is then sound as a POST-condition, because after the
+    # fix the DACL is authored entirely by ADMZ.
+
+    @pytest.mark.skipif(
+        sys.platform != "win32", reason="Windows DACL semantics"
+    )
+    def test_key_file_dacl_is_protected_from_inheritance(self, tmp_path):
+        """The load-bearing assertion: inheritance was explicitly broken."""
+        from admz.win_acl import read_file_dacl
+
+        key_path = tmp_path / "admz.key"
+        SQLiteDeviceRegistry(
+            db_path=str(tmp_path / "admz.db"), key_path=str(key_path)
+        )
+
+        # Control: a file written the ordinary way inherits, always.
+        control = tmp_path / "control.bin"
+        control.write_bytes(b"x")
+        assert read_file_dacl(control).protected is False, (
+            "control file was already protected — this test can no longer "
+            "distinguish the fix from the environment"
+        )
+
+        assert read_file_dacl(key_path).protected is True
+
+    @pytest.mark.skipif(
+        sys.platform != "win32", reason="Windows DACL semantics"
+    )
+    def test_key_file_dacl_grants_read_only_to_owner_admins_system(
+        self, tmp_path
+    ):
+        """Post-condition on the DACL the fix authors."""
+        from admz.win_acl import (
+            SID_ADMINISTRATORS,
+            SID_SYSTEM,
+            current_user_sid,
+            read_file_dacl,
+        )
+
+        key_path = tmp_path / "admz.key"
+        SQLiteDeviceRegistry(
+            db_path=str(tmp_path / "admz.db"), key_path=str(key_path)
+        )
+
+        allowed = {SID_SYSTEM, SID_ADMINISTRATORS, current_user_sid()}
+        readers = set(read_file_dacl(key_path).read_trustees())
+
+        assert readers, "a DACL granting nobody read would lock ADMZ out"
+        assert readers <= allowed, (
+            f"key file readable by unexpected principals: "
+            f"{sorted(readers - allowed)}"
+        )
+
+    @pytest.mark.skipif(
+        sys.platform != "win32", reason="Windows DACL semantics"
+    )
+    def test_key_file_does_not_inherit_permissive_parent(self, tmp_path):
+        """The honest fresh-install simulation.
+
+        ``C:\\ProgramData`` grants ``BUILTIN\\Users:(OI)(CI)(RX)``, so a
+        newly-created ``ADMZ_HOME`` under it inherits that and every local
+        user can read the Fernet master key. ADR-0042 hardens ADMZ_HOME
+        with a *setup script*; this asserts the code does it too, for the
+        deployment that never ran the script.
+
+        Self-validating: it first proves the parent really is permissive,
+        so it cannot quietly degrade into a tautology.
+        """
+        from admz.win_acl import SID_USERS, read_file_dacl
+
+        home = tmp_path / "programdata-like"
+        home.mkdir()
+        granted = subprocess.run(
+            ["icacls", str(home), "/grant", f"*{SID_USERS}:(OI)(CI)(RX)"],
+            capture_output=True,
+            text=True,
+        )
+        if granted.returncode != 0:
+            pytest.skip(f"could not set up a permissive parent: {granted.stderr}")
+
+        # Control: an ordinary file here DOES inherit BUILTIN\Users.
+        control = home / "control.bin"
+        control.write_bytes(b"x")
+        assert SID_USERS in read_file_dacl(control).read_trustees(), (
+            "parent directory is not actually permissive — this test would "
+            "pass even with the fix reverted"
+        )
+
+        key_path = home / "admz.key"
+        SQLiteDeviceRegistry(
+            db_path=str(home / "admz.db"), key_path=str(key_path)
+        )
+
+        assert SID_USERS not in read_file_dacl(key_path).read_trustees()
 
     def test_two_instances_with_different_keys_dont_share(self, tmp_path):
         """Regression: previously a module-global Fernet meant the second
