@@ -338,6 +338,11 @@ can run as LocalSystem — no user profile, no service password. The specific
 overrides (`ADMZ_DB_PATH`, `ADMZ_KEY_PATH`, `ADMZ_CONFIG_REPO_PATH`,
 `ADMZ_REPO_PATH_ROOT`) still win over `ADMZ_HOME` when set.
 
+For every other `ADMZ_*` variable — and in particular for the ones that turn a
+guarantee off — see **[`ENVIRONMENT.md`](ENVIRONMENT.md)**. Note especially
+that `ADMZ_AUTO_PUSH` defaults **ON**, so an instance built from this guide
+alone will push its config repo to the configured origin.
+
 | File | Path (under `ADMZ_HOME`) | What |
 |---|---|---|
 | Encrypted device registry | `admz.db` | Devices, accounts, capture sessions, confirm sessions, fleet settings, **API keys**, **audit log** — one SQLite file, WAL mode |

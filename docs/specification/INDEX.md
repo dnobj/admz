@@ -9,6 +9,7 @@ Complete table of contents for the ADMZ specification.
 - **[orchestration.md](orchestration.md)** — the master-agent session model: who runs each loop, session naming/roles, `status:` labels, worktree safety, validation gates
 - **[00-overview.md](00-overview.md)** — mission, scope, non-goals
 - **[glossary.md](glossary.md)** — terms and abbreviations
+- **[../ENVIRONMENT.md](../ENVIRONMENT.md)** — every `ADMZ_*` environment variable, grouped by the decision it belongs to rather than alphabetically. Covers the three that define staging (`ADMZ_AUTO_PUSH` — **default ON** — `ADMZ_HEALTH_INTERVAL_SECONDS`, `ADMZ_PORT`), whose *effects* were documented while their names were not; and gives each switch that weakens a guarantee a plain statement of what it gives up. The capability registry (`admz/capabilities.py`, ADR-0052) remains the enforced source for classification; this is the human-facing half (#181)
 - **[../ACCEPTANCE.md](../ACCEPTANCE.md)** — the manual acceptance pass: twelve operator-visible checks to run before believing a release is sound. Derived from the user stories below, and deliberately scoped to what the ~3,700-test suite *structurally cannot* catch — a collapse that never reaches the rows (#263), a subresource loaded from a CDN (#200), a suite pointed at production (#180). Not a substitute for the suite, and it says so.
 
 ## Personas
