@@ -338,11 +338,49 @@ async def execute_gated_operation(
         cred_warning = missing_credentials_warning(registry, device_id, family)
         if cred_warning:
             reason = f"{reason} {cred_warning}".strip()
+
+        # #334: a gated op's params are persisted verbatim into
+        # confirm_sessions.params_json and rendered unmasked on the approval
+        # page — for an op like pwdgrp.cgi:update-user, one of those params is
+        # a new device password. Strip catalog-declared secret-shaped values
+        # (never the keys) before either happens; the approval page prompts
+        # for them separately (secret_fields) and the value is merged back in
+        # at execution time, never stored. VAPIX-only: no other family's
+        # Operation.request is known to use this placeholder convention, and
+        # secret_param_names degrades to "nothing to strip" for a shape it
+        # doesn't recognise, so this is additive, not a silent narrowing for
+        # families it doesn't apply to.
+        caller_params = dict(params or {})
+        stored_params = caller_params
+        secret_fields: list = []
+        if family == "vapix" and op is not None:
+            try:
+                from admz.executor.vapix import secret_param_names
+
+                secret_keys = secret_param_names(op, caller_params)
+            except Exception:  # noqa: BLE001
+                # A bug in detection must not crash the gate itself — but
+                # note this fails toward LEAVING params as given, not toward
+                # stripping everything: a value we failed to classify still
+                # reaches params_json unmasked, same as before this fix,
+                # rather than the gate silently blocking every operation in
+                # this family. Logged loudly so it doesn't fail silently too.
+                logger.warning(
+                    "secret_param_names failed for %s — leaving params as "
+                    "given", operation_id, exc_info=True)
+                secret_keys = set()
+            if secret_keys:
+                stored_params = {
+                    k: v for k, v in caller_params.items() if k not in secret_keys
+                }
+                secret_fields = sorted(secret_keys)
+
         session = store.create_session(
             device_id=device_id,
             operation_id=operation_id,
             family=family,
-            params=dict(params or {}),
+            params=stored_params,
+            secret_fields=secret_fields,
             risk_level=risk,
             confirmation_level=level,
             danger_description=reason,
@@ -352,6 +390,12 @@ async def execute_gated_operation(
         if cred_warning:
             env["credential_warning"] = cred_warning
             env["message"] = f"{env.get('message', '')} {cred_warning}".strip()
+        if secret_fields:
+            env["message"] = (
+                f"{env.get('message', '')} This operation needs "
+                f"{', '.join(secret_fields)} entered securely on the "
+                "confirmation page — it is not accepted here."
+            ).strip()
         return env
 
     result = await run_execution_tail(
@@ -402,6 +446,26 @@ async def consume_confirmation(
                 f"This operation requires '{session.confirmation_level}' "
                 f"confirmation, which must be completed via the web UI. "
                 f"Direct the user to /confirm/{token}."
+            ),
+            "confirm_url": f"/confirm/{token}",
+            "confirmation_level": session.confirmation_level,
+        }
+
+    # #334: this path (chat's confirm_dangerous_operation / the JSON REST
+    # endpoint) has no way to collect a secret value — accepting one here
+    # would just re-open the hole this fix closes, letting it arrive through
+    # a tool argument instead of params. So a session with unresolved secret
+    # fields is refused unconditionally, same shape as the url_* block above,
+    # even for an operator who has reconfigured this risk class to
+    # llm_confirm: a credential-bearing operation always needs the web form,
+    # regardless of what confirm_level_<risk> says for everything else.
+    if session.secret_fields:
+        return {
+            "success": False,
+            "error": (
+                f"This operation requires {', '.join(session.secret_fields)} "
+                "to be entered securely on the confirmation page — it cannot "
+                f"be supplied here. Direct the user to /confirm/{token}."
             ),
             "confirm_url": f"/confirm/{token}",
             "confirmation_level": session.confirmation_level,
@@ -1231,6 +1295,7 @@ async def execute_approved_session(
     executors: Mapping[str, Any],
     plan_engine: Any = None,
     git_repo: Any = None,
+    secret_values: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Run the op/plan/action held by an ALREADY-completed confirm session.
 
@@ -1238,6 +1303,14 @@ async def execute_approved_session(
     the password and complete the session themselves, then call this to
     actually perform the approved work — closing the gap where ``url_*`` ops
     were marked approved but never executed. Returns a normalized outcome dict.
+
+    ``secret_values`` (#334): values for ``session.secret_fields``, submitted
+    on the approval page and merged into ``params`` here — never persisted,
+    never logged, held only in this call's local scope. Refuses (rather than
+    executing with the field silently omitted or guessed at) if any
+    ``secret_fields`` name is absent from ``secret_values`` or empty — what a
+    device does with a credential-shaped VAPIX param it wasn't given is not
+    something to find out by sending the request anyway.
     """
     if session.is_action:
         action = dict(session.action)
@@ -1283,12 +1356,29 @@ async def execute_approved_session(
             **plan.to_results(),
         }
 
+    # #334: merge the operator-supplied secret values back in — never
+    # persisted, this dict lives only for the remainder of this call.
+    exec_params = session.params
+    if session.secret_fields:
+        supplied = secret_values or {}
+        missing = [f for f in session.secret_fields if not supplied.get(f)]
+        if missing:
+            return {
+                "success": False,
+                "error": (
+                    f"{', '.join(missing)} was not supplied — this operation "
+                    "cannot run without it. Nothing was sent to the device."
+                ),
+            }
+        exec_params = {**session.params,
+                       **{f: supplied[f] for f in session.secret_fields}}
+
     try:
         result = await run_execution_tail(
             device_id=session.device_id,
             operation_id=session.operation_id,
             family=session.family,
-            params=session.params,
+            params=exec_params,
             catalog=catalog,
             registry=registry,
             executors=executors,

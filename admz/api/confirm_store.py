@@ -44,7 +44,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 # ── Defaults ────────────────────────────────────────────────────────────
@@ -101,6 +101,12 @@ class ConfirmSession:
     # ADR-0034: registry-level actions (accept_baseline, delete_device)
     # gated through the same widget. JSON: {"action": "...", ...payload}.
     action_json: str = ""
+    # #334: names (never values) of params stripped from params_json before
+    # storage because admz.executor.vapix.secret_param_names identified them
+    # as catalog-declared secret-shaped fields (e.g. a new device password).
+    # The approval page prompts for these separately and merges the
+    # submitted value in at execution time — it is never written here.
+    secret_fields_json: str = "[]"
     created_at: float = field(default_factory=time.time)
     ttl: float = 300.0  # 5 minutes
     status: ConfirmStatus = ConfirmStatus.PENDING
@@ -127,6 +133,15 @@ class ConfirmSession:
             return json.loads(self.params_json)
         except (json.JSONDecodeError, TypeError):
             return {}
+
+    @property
+    def secret_fields(self) -> list:
+        """Names (never values — those were never stored) of params the
+        operator must supply separately on the approval page (#334)."""
+        try:
+            return json.loads(self.secret_fields_json) or []
+        except (json.JSONDecodeError, TypeError):
+            return []
 
     @property
     def is_plan(self) -> bool:
@@ -170,6 +185,7 @@ CREATE TABLE IF NOT EXISTS confirm_sessions (
     plan_summary_json   TEXT NOT NULL DEFAULT '',
     plan_steps_json     TEXT NOT NULL DEFAULT '',
     action_json         TEXT NOT NULL DEFAULT '',
+    secret_fields_json  TEXT NOT NULL DEFAULT '[]',
     created_at          REAL NOT NULL,
     ttl                 REAL NOT NULL DEFAULT 300.0,
     status              TEXT NOT NULL DEFAULT 'pending',
@@ -245,6 +261,7 @@ class ConfirmStore:
                 ("plan_summary_json", "TEXT NOT NULL DEFAULT ''"),
                 ("plan_steps_json",   "TEXT NOT NULL DEFAULT ''"),
                 ("action_json",       "TEXT NOT NULL DEFAULT ''"),
+                ("secret_fields_json", "TEXT NOT NULL DEFAULT '[]'"),
             ):
                 try:
                     conn.execute(
@@ -274,14 +291,23 @@ class ConfirmStore:
         plan_summary_json: str = "",
         plan_steps_json: str = "",
         action_json: str = "",
+        secret_fields: Optional[List[str]] = None,
         ttl: float = 300.0,
     ) -> ConfirmSession:
-        """Create a new confirmation session and return it."""
+        """Create a new confirmation session and return it.
+
+        ``secret_fields`` (#334): names of ``params`` keys the caller has
+        ALREADY stripped the values of before calling this — ``params``
+        itself must not contain them. Recorded so the approval page knows
+        which fields to prompt for and the approve handler knows which
+        submitted values to merge back in before executing.
+        """
         self._cleanup()
 
         token = secrets.token_urlsafe(32)
         now = time.time()
         params_json = json.dumps(params)
+        secret_fields_json = json.dumps(sorted(secret_fields or []))
 
         session = ConfirmSession(
             token=token,
@@ -296,6 +322,7 @@ class ConfirmStore:
             plan_summary_json=plan_summary_json,
             plan_steps_json=plan_steps_json,
             action_json=action_json,
+            secret_fields_json=secret_fields_json,
             created_at=now,
             ttl=ttl,
         )
@@ -307,12 +334,14 @@ class ConfirmStore:
                 "(token, device_id, operation_id, family, params_json, "
                 "risk_level, confirmation_level, danger_description, plan_id, "
                 "plan_summary_json, plan_steps_json, action_json, "
+                "secret_fields_json, "
                 "created_at, ttl, status, confirmed_by) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     token, device_id, operation_id, family, params_json,
                     risk_level, confirmation_level, danger_description, plan_id,
                     plan_summary_json, plan_steps_json, action_json,
+                    secret_fields_json,
                     now, ttl, "pending", "",
                 ),
             )
@@ -330,7 +359,7 @@ class ConfirmStore:
                 "SELECT token, device_id, operation_id, family, params_json, "
                 "risk_level, confirmation_level, danger_description, plan_id, "
                 "plan_summary_json, plan_steps_json, created_at, ttl, status, confirmed_by, "
-                "action_json "
+                "action_json, secret_fields_json "
                 "FROM confirm_sessions WHERE token=?",
                 (token,),
             ).fetchone()
@@ -357,6 +386,7 @@ class ConfirmStore:
             status=ConfirmStatus(row[13]),
             confirmed_by=row[14],
             action_json=row[15] or "",
+            secret_fields_json=row[16] or "[]",
         )
 
         if session.is_expired and session.status not in (

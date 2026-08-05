@@ -198,6 +198,19 @@
       </table>
     </div>
     {% endif %}
+    {% if session.secret_fields %}
+    <div class="kv-divider">
+      <p class="k" style="font-weight:600;color:var(--text)">Also required (enter below)</p>
+      <table style="width:100%;border-collapse:collapse;">
+        {% for name in session.secret_fields %}
+        <tr>
+          <td class="pk"><span class="mono">{{ name }}</span></td>
+          <td class="pv"><span class="mono text">never stored — you supply it below</span></td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+    {% endif %}
   </div>
   {% endif %}
 
@@ -208,6 +221,17 @@
   {% endif %}
 
   <form method="POST" action="/confirm/{{ token }}" autocomplete="off">
+    {% for name in session.secret_fields %}
+    <div class="pw-field">
+      <label for="secret__{{ name }}">{{ name }}</label>
+      <p class="page-sub" style="margin:0 0 8px">
+        This value is required to run the operation and is never stored or
+        shown again after you submit this form.
+      </p>
+      <input type="password" id="secret__{{ name }}" name="secret__{{ name }}" required autocomplete="off">
+    </div>
+    {% endfor %}
+
     {% if needs_password %}
     <div class="pw-field">
       <label for="confirm_password">Confirmation password</label>

@@ -43,7 +43,12 @@ def _session(**kw):
     base = dict(token="tok-abc123", device_id="cam-01",
                 operation_id="param.cgi:update", plan_id="",
                 risk_level="service-affecting", confirmation_level="url_only",
-                confirmed_by="")
+                confirmed_by="",
+                # #334 — _approve_session reads this before it reads
+                # anything else on the session; the stub must carry it like
+                # every other real accessor above, or it fails before the
+                # behavior this file actually tests is even reached.
+                secret_fields=[])
     base.update(kw)
     s = NS(**base)
     s.action_json = action_json

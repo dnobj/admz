@@ -128,7 +128,11 @@ def approve(monkeypatch):
                  token="t1", is_action=False, confirmed_by="",
                  # #270 — the approve row now describes WHAT was approved, so
                  # the stub needs the real session's payload accessors.
-                 params={}, action={}, plan_summary={})
+                 params={}, action={}, plan_summary={},
+                 # #334 — _approve_session reads this immediately after
+                 # fetching the session; an empty list matches every one of
+                 # these tests, none of which exercise a secret-bearing op.
+                 secret_fields=[])
     calls = {"completed": 0, "executed": 0}
 
     monkeypatch.setattr(C.confirm_store, "get_session", lambda t: session)

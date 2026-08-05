@@ -179,6 +179,13 @@ def _approved_work_fields(session) -> Dict[str, Any]:
     return fields
 
 
+#: Form-field name prefix for a secret field's value (#334) — e.g. a
+#: session with secret_fields=["password"] renders and expects a field
+#: named "secret__password". Prefixed (never the bare field name) so it can
+#: never collide with confirm_password or any other reserved form field.
+_SECRET_FIELD_PREFIX = "secret__"
+
+
 async def _approve_session(
     request: Request,
     token: str,
@@ -191,6 +198,23 @@ async def _approve_session(
     Writes audit rows for the two security-relevant outcomes: a failed
     password attempt and the approval itself (with the execution result).
     Never logs the submitted password.
+
+    #334: if the session has ``secret_fields`` (a catalog-declared
+    secret-shaped param, e.g. a new device password, that
+    ``execute_gated_operation`` stopped short of ever writing to
+    ``params_json``), read the submitted ``secret__<name>`` form field(s)
+    for each one and forward them to
+    :func:`admz.operations.execute_approved_session`, which merges them
+    into the operation's params in memory — never persisted, never logged.
+    This runs for BOTH the plain web form and the in-chat approval twin
+    (both POST as form data), but only the standalone ``/confirm/{token}``
+    page actually renders the per-field inputs — the in-chat card has none,
+    so a chat-approved session with unresolved ``secret_fields`` finds
+    nothing there, ``execute_approved_session`` refuses, and the operator
+    is directed to the web page. Deliberate, not an oversight: adding a
+    secret-entry field to the chat JSON endpoint would just relocate the
+    leak from the confirm-session row to the chat-approval request instead
+    of closing it.
     """
     from admz.audit import outcome_identity_fields, record_event
     from admz.auth import get_current_principal
@@ -203,6 +227,14 @@ async def _approve_session(
     session = confirm_store.get_session(token)
     if session is None or session.effective_status != ConfirmStatus.PENDING:
         return _Approval("expired")
+
+    secret_values: Optional[Dict[str, str]] = None
+    if session.secret_fields:
+        form = await request.form()
+        secret_values = {
+            name: (form.get(f"{_SECRET_FIELD_PREFIX}{name}") or "")
+            for name in session.secret_fields
+        }
 
     if _is_locked(token):
         return _Approval("locked", session=session)
@@ -288,6 +320,7 @@ async def _approve_session(
         executors=ctx.executors,
         plan_engine=ctx.plan_engine,
         git_repo=ctx.git_repo,
+        secret_values=secret_values,
     )
 
     # #281: strip the payload only now that the outcome is known, and only on
@@ -472,7 +505,13 @@ async def confirm_submit(
     confirm_password: Optional[str] = Form(None),
     ctx: AppContext = Depends(get_context),
 ):
-    """Process the confirmation form submission."""
+    """Process the confirmation form submission.
+
+    Any ``secret__<name>`` field (#334) is read inside ``_approve_session``
+    itself, against the session it already fetched — not here — since the
+    field set is per-session and FastAPI's ``Form(...)`` parameters must be
+    fixed in advance.
+    """
     result = await _approve_session(request, token, confirm_password, ctx, "web")
 
     if result.status == "rate_limited":
