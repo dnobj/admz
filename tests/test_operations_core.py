@@ -458,3 +458,186 @@ async def test_execute_approved_session_uses_in_memory_plan_when_present(store, 
     )
     assert outcome.get("success") is True
     assert outcome["steps_succeeded"] == 1
+
+
+# --- #334: catalog-declared secret params never reach params_json ----------
+# A confirm session for e.g. pwdgrp.cgi:update-user used to store the new
+# device password in plaintext in confirm_sessions.params_json AND render it
+# unmasked on the approval page. execute_gated_operation now strips any
+# catalog-declared secret-shaped VALUE before create_session ever sees it
+# (keeping the KEY, so the approval card still shows what's changing);
+# execute_approved_session merges the value back in from the approval POST,
+# in memory only, at execution time.
+
+
+class _FakeOpWithPasswordParam(_FakeOp):
+    """A pwdgrp.cgi:update-user-shaped operation: {"pwd": "{password}"} is
+    exactly the whole-value placeholder shape secret_param_names looks for."""
+    request = {"query": {"action": "update", "user": "{username}", "pwd": "{password}"}}
+
+
+class _FakeOpWithPresetToken(_FakeOp):
+    """A PTZ-preset-shaped operation. {PresetToken} is a legitimate resource
+    identifier, not a credential — this is the required negative pin for
+    #334 finding 6: a substring-based check (is_sensitive_key's "token" in k)
+    would misfire on this; the narrow, exact-match vocabulary must not."""
+    request = {"query": {"preset": "{PresetToken}"}}
+
+
+@pytest.mark.asyncio
+async def test_secret_param_value_stripped_from_stored_session(store, monkeypatch):
+    monkeypatch.setattr(operations, "resolve_confirmation", lambda r: "url_only")
+    result = await operations.execute_gated_operation(
+        device_id="dev", operation_id="pwdgrp.cgi:update-user", family="vapix",
+        params={"user": "root", "password": "hunter2SECRET"},
+        catalog=_FakeCatalog("service-affecting", op=_FakeOpWithPasswordParam()),
+        registry=_FakeRegistry(), executors=_executors(), store=store,
+    )
+    assert result["blocked"] is True
+    session = store.get_session(result["confirm_token"])
+    # The KEY is kept (so the approval card can still say what's changing)...
+    assert session.secret_fields == ["password"]
+    # ...but the VALUE never reaches params or params_json, at rest or in the
+    # blocked envelope.
+    assert "password" not in session.params
+    assert "hunter2SECRET" not in session.params_json
+    assert "hunter2SECRET" not in str(result)
+    # The unrelated ordinary param round-trips untouched — the OTHER
+    # direction this fix must not break.
+    assert session.params["user"] == "root"
+    # The operator is told a field must be entered on the confirm page.
+    assert "password" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_ordinary_operation_has_no_secret_fields_and_round_trips(store, monkeypatch):
+    """Pin the other direction explicitly (#334 ask): an operation with no
+    catalog-declared secret-shaped params is completely unaffected by this
+    fix — no stripping, no secret_fields, every param intact."""
+    monkeypatch.setattr(operations, "resolve_confirmation", lambda r: "url_only")
+    result = await operations.execute_gated_operation(
+        device_id="dev", operation_id="test:op", family="vapix",
+        params={"a": "1", "b": "2"},
+        catalog=_FakeCatalog("service-affecting"), registry=_FakeRegistry(),
+        executors=_executors(), store=store,
+    )
+    assert result["blocked"] is True
+    session = store.get_session(result["confirm_token"])
+    assert session.secret_fields == []
+    assert session.params == {"a": "1", "b": "2"}
+
+
+@pytest.mark.asyncio
+async def test_preset_token_param_is_not_treated_as_secret(store, monkeypatch):
+    """#334 finding 6, pinned at the execute_gated_operation level too (see
+    tests/test_vapix_secret_param_names.py for the unit-level pin): a
+    {PresetToken}-shaped param must never be stripped or listed as a secret
+    field — it's a resource identifier, not a credential."""
+    monkeypatch.setattr(operations, "resolve_confirmation", lambda r: "url_only")
+    result = await operations.execute_gated_operation(
+        device_id="dev", operation_id="ptz.cgi:gotoPreset", family="vapix",
+        params={"preset": "preset-42"},
+        catalog=_FakeCatalog("service-affecting", op=_FakeOpWithPresetToken()),
+        registry=_FakeRegistry(), executors=_executors(), store=store,
+    )
+    session = store.get_session(result["confirm_token"])
+    assert session.secret_fields == []
+    assert session.params == {"preset": "preset-42"}
+
+
+@pytest.mark.asyncio
+async def test_execute_approved_session_merges_secret_value_and_executes(store):
+    session = store.create_session(
+        device_id="dev", operation_id="test:op", family="vapix",
+        params={"user": "root"}, secret_fields=["password"],
+        risk_level="service-affecting", confirmation_level="url_only",
+    )
+    execs = _executors()
+    outcome = await operations.execute_approved_session(
+        session, catalog=_FakeCatalog(), registry=_FakeRegistry(), executors=execs,
+        secret_values={"password": "hunter2SECRET"},
+    )
+    assert outcome["success"] is True
+    # The executor actually received the TRUE value, merged in memory only.
+    assert execs["vapix"].calls == [
+        ("test:op", {"user": "root", "password": "hunter2SECRET"})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_execute_approved_session_refuses_if_secret_value_missing(store):
+    session = store.create_session(
+        device_id="dev", operation_id="test:op", family="vapix",
+        params={"user": "root"}, secret_fields=["password"],
+        risk_level="service-affecting", confirmation_level="url_only",
+    )
+    execs = _executors()
+    outcome = await operations.execute_approved_session(
+        session, catalog=_FakeCatalog(), registry=_FakeRegistry(), executors=execs,
+        secret_values=None,
+    )
+    assert outcome["success"] is False
+    assert "password" in outcome["error"]
+    assert execs["vapix"].calls == []  # nothing was ever sent to the device
+
+
+@pytest.mark.asyncio
+async def test_execute_approved_session_refuses_on_empty_secret_value(store):
+    """An explicitly-empty string must refuse the same as a wholly absent
+    key — an empty password field submitted is not a value."""
+    session = store.create_session(
+        device_id="dev", operation_id="test:op", family="vapix",
+        params={"user": "root"}, secret_fields=["password"],
+        risk_level="service-affecting", confirmation_level="url_only",
+    )
+    execs = _executors()
+    outcome = await operations.execute_approved_session(
+        session, catalog=_FakeCatalog(), registry=_FakeRegistry(), executors=execs,
+        secret_values={"password": ""},
+    )
+    assert outcome["success"] is False
+    assert execs["vapix"].calls == []
+
+
+@pytest.mark.asyncio
+async def test_execute_approved_session_without_secret_fields_unaffected(store):
+    """The other direction again, at the execute_approved_session layer: a
+    session with no secret_fields runs exactly as it always did, whether or
+    not a caller happens to pass secret_values."""
+    session = store.create_session(
+        device_id="dev", operation_id="test:op", family="vapix", params={"a": "1"},
+        risk_level="dangerous", confirmation_level="url_and_password",
+    )
+    execs = _executors()
+    outcome = await operations.execute_approved_session(
+        session, catalog=_FakeCatalog(), registry=_FakeRegistry(), executors=execs,
+    )
+    assert outcome["success"] is True
+    assert execs["vapix"].calls == [("test:op", {"a": "1"})]
+
+
+@pytest.mark.asyncio
+async def test_consume_confirmation_refuses_when_secret_fields_pending(store):
+    """#334: chat/MCP completion of a credential-bearing session is refused
+    unconditionally — even at llm_confirm level, i.e. even if an operator
+    has reconfigured this risk class away from a url_* flow — because
+    neither surface has a safe way to collect the value. Mirrors the
+    existing enforce_url_flow_block shape one check above this in
+    consume_confirmation."""
+    session = store.create_session(
+        device_id="dev", operation_id="test:op", family="vapix",
+        params={"user": "root"}, secret_fields=["password"],
+        risk_level="service-affecting", confirmation_level="llm_confirm",
+    )
+    execs = _executors()
+    result = await operations.consume_confirmation(
+        session.token, catalog=_FakeCatalog(), registry=_FakeRegistry(),
+        executors=execs, store=store, confirmed_by="chat",
+        enforce_url_flow_block=False,
+    )
+    assert result["success"] is False
+    assert "password" in result["error"]
+    assert "/confirm/" in result["confirm_url"]
+    assert execs["vapix"].calls == []
+    # The session must remain pending — the web form can still complete it.
+    assert store.get_session(session.token) is not None

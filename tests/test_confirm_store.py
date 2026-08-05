@@ -274,6 +274,47 @@ class TestConfirmStore:
         )
         assert session2.is_plan is False
 
+    def test_secret_fields_roundtrip(self, store):
+        """#334: secret_fields holds NAMES only — the caller (execute_gated_
+        operation) must have already stripped the corresponding values out
+        of params before calling create_session; this just persists and
+        returns the name list."""
+        session = store.create_session(
+            device_id="cam-01",
+            operation_id="pwdgrp.cgi:update-user",
+            family="vapix",
+            params={"user": "root"},
+            secret_fields=["password"],
+            risk_level="service-affecting",
+            confirmation_level="url_only",
+        )
+        assert session.secret_fields == ["password"]
+        assert "password" not in session.params
+
+        retrieved = store.get_session(session.token)
+        assert retrieved is not None
+        assert retrieved.secret_fields == ["password"]
+        assert retrieved.params == {"user": "root"}
+
+    def test_secret_fields_defaults_to_empty_list(self, store):
+        """Pin the other direction: a session created without secret_fields
+        (the overwhelming majority of ops) must not spuriously report any —
+        an implementation that always returned a non-empty list would fail
+        every downstream check requiring the secret-entry page."""
+        session = store.create_session(
+            device_id="cam-01",
+            operation_id="test.cgi:action",
+            family="vapix",
+            params={"a": "1"},
+            risk_level="normal",
+            confirmation_level="none",
+        )
+        assert session.secret_fields == []
+
+        retrieved = store.get_session(session.token)
+        assert retrieved.secret_fields == []
+        assert retrieved.params == {"a": "1"}
+
     def test_plan_summary_json_via_get_session_by_plan(self, store):
         """Plan summary is also available via get_session_by_plan."""
         plan_summary = {

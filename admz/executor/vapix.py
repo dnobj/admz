@@ -1311,3 +1311,140 @@ class VapixExecutor(BaseExecutor):
             warnings=warnings,
             duration_ms=elapsed,
         )
+
+
+# ---------------------------------------------------------------------------
+# Secret-shaped param detection (#334)
+# ---------------------------------------------------------------------------
+#
+# A gated `execute_operation` call persists its caller-supplied `params` verbatim
+# into `confirm_sessions.params_json` (admz/operations.py) before a human ever
+# approves it. For an operation like `pwdgrp.cgi:update-user`, one of those
+# params is a new device password — so it must never reach that row (or the
+# confirm page that renders it) in plaintext.
+#
+# admz/rules/capabilities.py::secret_choice_keys already solves the analogous
+# problem for the RULES catalog (#194) — but it is built against
+# Action.soap_params (SOAP params carrying .name / .ui_label / .capture_note),
+# which a VAPIX Operation's plain string-template `request` dict does not
+# have and cannot be coerced into. Its own vocabulary
+# (`_SECRET_HINTS = ("password", "passwd")`) is also a THIRD list, narrower
+# than and already drifted from admz.redact._SENSITIVE_KEY_PARTS. Reusing it
+# verbatim would both fail to apply (wrong shape) and propagate a known-
+# incomplete vocabulary if it somehow did.
+#
+# admz.redact.is_sensitive_key — the project's actual canonical predicate —
+# is ALSO the wrong tool for this specific job, for a more interesting reason
+# than "wrong shape": it matches by SUBSTRING (`"token" in k`), which is
+# correct for free-form dict/setting/argument names (`gemini_api_key`,
+# `acs_webhook_token`) but wrong for the VAPIX catalog's placeholder
+# vocabulary specifically. The pinned atlas catalog uses "*Token"-suffixed
+# and even bare `{token}`/`{Token}` placeholders throughout for legitimate,
+# NON-secret resource identifiers — `{PresetToken}`, `{RelayToken}`,
+# `{InputToken}`, `{VideoSourceConfigurationToken}` (PTZ/IO resource
+# references), and bare `{Token}`/`{token}` for ONVIF door-control operations
+# (AccessDoor, BlockDoor, LockDoor, ...) where it identifies WHICH door, not
+# a credential. Applying is_sensitive_key's substring rule to placeholder
+# names would flag every one of those as "secret" and silently strip a
+# legitimate door/preset identifier from a confirm session — a real
+# functional regression, not a safe overcaution, since the operator would
+# see the field vanish with no password-entry replacement to make sense of
+# why. A future reader who "helpfully" consolidates this vocabulary into
+# is_sensitive_key would reintroduce that regression, which is why this
+# comment says so here rather than only in a commit message.
+#
+# So: a fourth, deliberately NARROW, EXACT-MATCH vocabulary — not a
+# substring match — scoped to what the catalog actually declares. Grepped
+# the whole pinned atlas data tree for every `{placeholder}` name that looks
+# credential-shaped: only "password" and "pass" ever appear (pwdgrp.cgi's
+# `pwd: "{password}"`; networkshare-add.cgi's `pass: "{pass}"`). No "token",
+# "secret", or "api_key"-named placeholder is ever used for an actual
+# credential anywhere in the catalog today. If a future operation
+# introduces one, this list needs a new entry — the same "a name list must
+# be reviewed when it's wrong, not trusted forever" caveat every hand-
+# maintained vocabulary in this codebase carries, stated once here rather
+# than assumed.
+SECRET_PLACEHOLDER_NAMES = frozenset({"password", "pass"})
+
+#: The exact "whole-value placeholder" shape VapixExecutor._resolve_template
+#: resolves (its Case 1: "{name}", "{name:type}", "{name=default}",
+#: "{name:type=default}") — duplicated here as a plain module constant
+#: (rather than importing the class's inline regex, which isn't exposed as
+#: one) so this stays a pure function with no VapixExecutor instance
+#: required. Matched with ``fullmatch``, same as ``_resolve_template`` itself
+#: uses — not ``^...$`` with ``.match()``, which (in the absence of
+#: ``re.MULTILINE``) would also accept a trailing newline that ``fullmatch``
+#: rejects. Must be kept in sync with that regex if it ever changes; a test
+#: pins that they agree.
+_WHOLE_VALUE_PLACEHOLDER_RE = re.compile(r"\{(\w+)(?::\w+)?(?:=[^{}]*)?\}")
+
+
+def _collect_secret_candidates(node: Any, out: set) -> None:
+    """Recurse through a request template (a `query` or `body` dict from
+    ``Operation.request``), adding both the dict KEY and the PLACEHOLDER
+    NAME for every whole-value placeholder that names a secret-shaped
+    field (:data:`SECRET_PLACEHOLDER_NAMES`).
+
+    Both are added because the executor's own resolver accepts either as
+    the caller's params key: :meth:`VapixExecutor._resolve_template` looks
+    up ``params[placeholder_name]`` first, but ``_build_legacy_cgi`` has a
+    fallback loop that also accepts any caller-supplied ``params[wire_key]``
+    not already resolved from the template. Both conventions produce a
+    correct device request, so a caller-supplied ``params`` dict may be
+    keyed either way — this must recognise both, or one of the two working
+    conventions leaks past it silently.
+
+    Only whole-value placeholders are handled (matching #334's own
+    catalog-wide grep — every secret-shaped field found is a whole-value
+    template, never embedded in a larger string like ``"prefix-{password}"``).
+    An embedded secret placeholder would not be caught; none exist in the
+    catalog today, and this is a known, stated limit rather than a silent
+    gap.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(value, str):
+                m = _WHOLE_VALUE_PLACEHOLDER_RE.fullmatch(value)
+                if m and m.group(1).lower() in SECRET_PLACEHOLDER_NAMES:
+                    out.add(key)
+                    out.add(m.group(1))
+            _collect_secret_candidates(value, out)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            _collect_secret_candidates(item, out)
+
+
+def secret_param_names(operation: Any, params: Dict[str, Any]) -> set:
+    """Which keys in ``params`` (the caller-supplied ``execute_operation``
+    arguments) correspond to a catalog-declared secret-shaped field for
+    ``operation``.
+
+    Structural, not enumerated: derived from the catalog's OWN placeholder
+    annotation on this specific operation's request template, not from a
+    fixed name list checked against every possible operation. Walks both
+    ``request["query"]`` (legacy-cgi) and ``request["body"]``
+    (json-rpc / config-rest / soap) recursively, since
+    ``VapixExecutor._resolve_template`` resolves both the same way for
+    every VAPIX generation.
+
+    ``operation`` may be an ``axis_api_atlas`` ``Operation`` (the normal
+    case — ``admz/operations.py`` already holds one via
+    ``catalog.get_operation()``) or a plain dict with a ``"request"`` key
+    (accepted for callers/tests that only have the executor-dict shape).
+    Returns an empty set — never raises — for a malformed or unrecognised
+    operation shape, matching this module's existing degrade-safely
+    conventions; callers must treat "found nothing" as "nothing to strip",
+    not as "verified nothing secret is present" for a family this function
+    doesn't understand.
+    """
+    if isinstance(operation, dict):
+        request = operation.get("request") or {}
+    else:
+        request = getattr(operation, "request", None) or {}
+    if not isinstance(request, dict):
+        return set()
+
+    candidates: set = set()
+    _collect_secret_candidates(request.get("query"), candidates)
+    _collect_secret_candidates(request.get("body"), candidates)
+    return {k for k in params if k in candidates}

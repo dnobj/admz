@@ -356,6 +356,83 @@ noted in the PR): the field allow-list on `update_device`/`update_device_tags`
 — they still merge an arbitrary dict with no allow-list (#167's suggested
 fix item 4).
 
+### FR-SEC-016 — Catalog-declared secret params are never persisted or rendered in a confirm session ✅ (#334)
+A gated write whose catalog operation template declares a secret-shaped
+placeholder — today: a device password, e.g. `pwdgrp.cgi:update-user`'s
+`{"pwd": "{password}"}` — used to have that value written straight into
+`confirm_sessions.params_json` in plaintext, and from there rendered
+**unmasked, in HTML, to anyone who loaded the `/confirm/{token}` URL** —
+the reachable exposure is the rendered page, not merely "at rest in a
+SQLite row behind a directory ACL" (the row was already reachable; the page
+load is the easier and more likely path). #194 had already fixed the
+analogous hazard for rules-engine recipient credentials by failing closed;
+the VAPIX catalog execute path and the generic catalog path had no
+equivalent at all.
+
+Three-part fix, all in the existing confirm-session/template/approve-handler
+flow rather than a fourth parallel capture-session concept (the codebase
+already has three: OOB credential capture, rules-recipient capture, and this
+one):
+1. `execute_gated_operation` strips the secret-shaped **value** before
+   `ConfirmStore.create_session` is ever called — the **key name** is kept
+   (`ConfirmSession.secret_fields`), so the approval card can still say
+   *what* is changing, just not to *what*.
+2. `/confirm/{token}` renders a per-field masked `<input type="password"
+   name="secret__<name>">` for each entry in `secret_fields`, reusing the
+   existing `needs_password` confirmation-password pattern.
+3. On submit, the value is merged into the operation's params **in memory
+   only**, inside `execute_approved_session`, immediately before execution
+   — never written to `params_json`. Chat/MCP completion of a session with
+   unresolved `secret_fields` is refused unconditionally (even at
+   `llm_confirm` level, i.e. even if an operator has reconfigured that risk
+   class away from a `url_*` flow) because neither surface can collect the
+   value; the operator is directed to the web page.
+
+**What this does not close.** The value still transits the approval POST
+body and lives in process memory for the duration of executing the
+operation — this removes it from disk (the confirm-session row) and from
+the rendered page (the reachable exposure), it does not remove it from the
+process. See KG-SEC-006.
+
+**Structural, not enumerated**, the same shape as ADR-0053 and FR-SEC-015:
+`admz/executor/vapix.py::secret_param_names` derives which params are
+secret-shaped from the catalog operation's OWN request template for THIS
+operation, rather than a fixed key list checked against every operation.
+Deliberately **narrower** than the project's canonical sensitivity
+predicate, `admz/redact.py::is_sensitive_key` — that predicate matches by
+substring (`"token" in k`), correct for free-form setting/dict keys but
+wrong here: the catalog uses `*Token`-suffixed and bare `{token}`/`{Token}`
+placeholders throughout for legitimate, non-secret resource identifiers
+(`{PresetToken}`, `{RelayToken}`, `{InputToken}`,
+`{VideoSourceConfigurationToken}`, ONVIF door-control operations), and a
+substring match would strip and silently vanish one of those from the
+confirm session with no password-entry field to explain why. Also not
+reused: `admz.rules.capabilities.secret_choice_keys` (#194's predicate) —
+wrong shape (coupled to SOAP `Action.soap_params`, not the VAPIX catalog's
+string-templated `Operation.request`) and its own `_SECRET_HINTS =
+("password", "passwd")` is a third, already-drifted vocabulary. The
+reasoning for why *this* function's vocabulary must stay narrow and
+exact-match — not generalized into `is_sensitive_key` — is recorded next to
+`SECRET_PLACEHOLDER_NAMES` in `vapix.py` itself, not only here, so a future
+consolidation doesn't reintroduce the regression.
+
+**Enforced at:** `admz/executor/vapix.py::secret_param_names`,
+`admz/operations.py` (`execute_gated_operation`, `consume_confirmation`,
+`execute_approved_session`), `admz/api/confirm_store.py`
+(`ConfirmSession.secret_fields`), `admz/api/routes/confirm.py`
+(`_approve_session`), `admz/api/templates/confirm_form.html`. Tested in
+`tests/test_vapix_secret_param_names.py` (including the required negative
+pin for `{PresetToken}`-style placeholders), `tests/test_operations_core.py`
+(both the strip-at-creation and merge-at-approval paths, in both
+directions — secret-shaped stripped, ordinary param round-trips),
+`tests/test_confirm_store.py`, `tests/test_confirm_secret_fields.py`
+(full `/confirm/{token}` HTTP round-trip). Out of scope for this fix: a
+plan step (as opposed to a single gated operation) carrying a secret-shaped
+param — `execute_gated_plan` serializes plan steps directly and does not
+run them through `secret_param_names`; a plan containing a password-change
+step would still store it in plaintext. Not introduced by this PR, but not
+closed by it either.
+
 ## Non-functional requirements
 
 ### NFR-SEC-001 — Confirmation password is PBKDF2-hashed ✅
@@ -445,6 +522,16 @@ and a wrong confirmation password locks the token for 300 s
 
 ### KG-SEC-006 — No secret zeroization in memory ⚠️
 Python `str` is immutable and lives in the arena until GC. Memory dumps would expose credentials. Acceptable for the target threat model; switching to `bytearray` everywhere is out of proportion.
+
+**Narrowed by #334** for the confirm-approval path specifically: a
+catalog-declared secret param (e.g. a device password entered on
+`/confirm/{token}`) is no longer written to the confirm-session row or
+rendered on the page, so the persistent-storage and browser-history
+exposure this gap used to include there is closed (FR-SEC-016). What
+remains, and is *not* closed by that fix: the value still transits the
+approval POST body and lives as an ordinary (unzeroized) `str` in process
+memory for the duration of executing the operation — exactly the ⚠️ this
+entry has always described, just with a smaller surface than before.
 
 ## Conventions for new code
 
