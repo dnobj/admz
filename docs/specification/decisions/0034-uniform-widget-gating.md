@@ -58,7 +58,7 @@ widget path:
   **action sessions**: a nullable `action_json` column on
   `confirm_sessions` carries `{"action": ..., ...payload}`; the MCP handler
   validates the request, creates a **url_only** session via
-  `operations.create_action_session` (always url_only — fleet-level
+  `operations.create_action_session` (url_only by default — fleet-level
   overrides do not soften actions), and returns the standard blocked
   envelope. On approval, `operations.execute_approved_session` dispatches
   to a registered action executor (`_ACTION_EXECUTORS`) which performs the
@@ -76,6 +76,33 @@ widget path:
   `require_authenticated_principal` — deliberate API calls by an
   authenticated operator/agent remain direct; the widget unification
   targets the LLM/MCP surface where the model proposes actions.
+
+### Amendment (2026-08-04, #199) — the pin is a default, not an invariant
+
+The clause above originally read *"always url_only — fleet-level overrides do
+not soften actions"*. That is still the default and still what every action
+listed here uses. It is no longer absolute.
+
+`create_action_session` now takes `operator_configurable=True`, which resolves
+the level through the ordinary `service-affecting` row of
+`confirm_policy._DEFAULT_CONFIRMATION_LEVELS` instead of pinning it — so
+`/confirm-settings` can raise the action to `url_and_password` or lower it,
+exactly as for a catalog operation of that risk class. It is opt-in per action;
+nothing that omits it changes.
+
+Used by one thing today: discovery-driven provisioning (`start_demo_survey`,
+`register_discovered_device`), on an explicit operator decision recorded on
+#199. The reasoning for allowing it there — *"a click is proportionate,
+requiring the confirmation password by default is not, but let me change my
+mind in the UI"* — is a judgement about a specific operation's cost, which is
+precisely what the risk→level table exists to express. Pinning was protecting
+actions from being *softened*; here the operator asked for the ability to do
+both, and the override key (`confirm_level_service-affecting`) is already a
+protected setting that MCP and anonymous REST callers cannot write, so the
+model cannot lower its own gate.
+
+The invariant that survives unchanged: **there is exactly one risk→level table,
+and no action invents a level outside it.**
 
 ## Consequences
 

@@ -753,6 +753,69 @@ def _action_adopt_demo(
     return {"action": "adopt_demo", **result}
 
 
+async def _action_start_demo_survey(
+    action: Mapping[str, Any], registry: Any, git_repo: Any = None,
+) -> Dict[str, Any]:
+    """Approved deep survey: start the run the operator agreed to (#199).
+
+    Runs the SAME ``start_survey_core`` the ungated route would have called, so
+    an approved survey cannot drift from an unapproved one. The 409 for "one is
+    already running" is re-checked here rather than at approval time — minutes
+    can pass between the widget and the click.
+    """
+    from admz.api.context import get_context
+    from admz.demos.inference import collect
+
+    ctx = get_context()
+    try:
+        run = collect.start_survey_core(
+            ctx, ctx.inference_run_store,
+            register_new=bool(action.get("register_new", True)),
+            timeout=float(action.get("timeout") or 5.0),
+            subnet=action.get("subnet") or None,
+            proposal_store=ctx.proposal_store,
+            include_weak=bool(action.get("include_weak", True)),
+            principal=action.get("_confirmed_by") or "confirm-widget",
+        )
+    except collect.SurveyAlreadyRunningError as exc:
+        return {"success": False, "action": "start_demo_survey", "error": str(exc)}
+    return {"success": True, "action": "start_demo_survey", "started": True,
+            "run": run.header(),
+            "message": f"Deep survey started (run {run.id})."}
+
+
+async def _action_register_discovered_device(
+    action: Mapping[str, Any], registry: Any, git_repo: Any = None,
+) -> Dict[str, Any]:
+    """Approved register-and-onboard of one discovered device (#199).
+
+    Onboarding is what makes this more than a registry write: a factory-default
+    unit gets an admin account created on it. The registry add and the onboard
+    stay together here exactly as the tool does them — decoupling the two is
+    item 3 of #199 and deliberately not done under cover of this gate.
+    """
+    from admz.onboarding import onboard_device_credentials
+
+    device_id = action.get("device_id") or ""
+    info = dict(action.get("device_info") or {})
+    if not device_id:
+        return {"success": False, "action": "register_discovered_device",
+                "error": "device_id is required"}
+    registry.add_device(device_id, info)
+    from admz.api.context import get_context
+
+    ctx = get_context()
+    onboarding = await onboard_device_credentials(
+        device_id=device_id, registry=registry,
+        catalog=ctx.catalog, executors=ctx.executors)
+    return {
+        "success": True, "action": "register_discovered_device",
+        "device_id": device_id, "onboarding": onboarding,
+        "message": (f"Device '{device_id}' registered. "
+                    + str(onboarding.get("message", ""))).strip(),
+    }
+
+
 def _resolve_device_and_creds(registry: Any, device_id: str) -> Tuple[Dict[str, Any], Dict[str, str]]:
     """Device info dict (with ``device_id`` set) + credentials, mirroring
     ``run_execution_tail`` — empty creds if the device has no stored account."""
@@ -945,6 +1008,10 @@ _ACTION_EXECUTORS = {
     # counts as drift, so LLM/api-key callers hold them for the widget).
     "assign_demo_fragment": _action_assign_demo_fragment,
     "adopt_demo": _action_adopt_demo,
+    # #199: discovery-driven provisioning. A scan chooses the device set, so
+    # the operator approves a blast radius rather than a device.
+    "start_demo_survey": _action_start_demo_survey,
+    "register_discovered_device": _action_register_discovered_device,
 }
 
 
@@ -955,23 +1022,39 @@ def create_action_session(
     payload: Mapping[str, Any],
     reason: str,
     store: Any = None,
+    operator_configurable: bool = False,
 ) -> Any:
-    """Create a url_only confirm session holding a registry-level action.
+    """Create a confirm session holding a registry-level action.
 
-    Always ``url_only`` regardless of fleet overrides — the whole point of
+    ``url_only`` by default, regardless of fleet overrides — the whole point of
     ADR-0034 is that every destructive action takes the deterministic
-    human/widget path (parity with how reboots are approved).
+    human/widget path (parity with how reboots are approved). ADR-0034:60-62
+    states that pin explicitly ("fleet-level overrides do not soften actions").
+
+    ``operator_configurable=True`` resolves the level through the normal
+    ``service-affecting`` row of :data:`confirm_policy._DEFAULT_CONFIRMATION_LEVELS`
+    instead, so ``/confirm-settings`` can raise *or lower* it like any other
+    risk class. The risk class is unchanged either way — this selects how the
+    level is *resolved*, it does not invent a level or a second table.
+
+    That opt-out exists because an operator decision can ask for it, which is
+    the case for survey/discovery provisioning (#199): the operator's judgement
+    was "a click is proportionate, requiring the confirmation password by
+    default is not — but let me change my mind in the UI". Everything that does
+    not pass the flag keeps ADR-0034's pin, so this widens nothing by default.
     """
     if action not in _ACTION_EXECUTORS:
         raise ValueError(f"Unknown action: {action}")
+    risk = "service-affecting"
     store = _resolve_store(store)
     return store.create_session(
         device_id=device_id,
         operation_id=f"action:{action}",
         family="admz",
         params={},
-        risk_level="service-affecting",
-        confirmation_level="url_only",
+        risk_level=risk,
+        confirmation_level=(resolve_confirmation(risk) if operator_configurable
+                            else "url_only"),
         danger_description=reason,
         action_json=json.dumps({"action": action, **dict(payload)}),
         ttl=CONFIRM_TOKEN_TTL_SECONDS,
