@@ -199,6 +199,11 @@ class TestProbeAuthenticated:
         executor = MagicMock()
         result = MagicMock(
             success=True, status_code=200,
+            # `error` MUST be set: an unset attribute on a MagicMock is a child
+            # mock whose str() embeds `id='<address>'`, and probe_device reads
+            # this field. That is what made this test flaky (#291). None is what
+            # a real StepResult carries here (executor/models.py:38).
+            error=None,
             parsed_data={"systemready": "yes", "needsetup": "yes",
                          "uptime": 100, "bootid": "boot-abc"},
         )
