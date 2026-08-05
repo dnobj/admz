@@ -18,12 +18,21 @@ declared by a *sibling* rather than by its own name. ``set_fleet_setting``
 is that shape: ``key`` is exempt (it names a setting) and ``value`` never
 looks sensitive, so the secret was the one field no rule inspected. See
 :func:`sibling_masked_fields`.
+
+GH #157: a fourth surface — URLs reaching a log line, whether ADMZ's own
+(``admz/modules/acs_pro/firebird.py``) or a third-party library's
+(the ``httpx`` request logger, via ``admz/logging_config.py``). See
+:func:`redact_url`, which masks by *value*, not by enumerating key names —
+the query-key vocabulary a URL can carry is not closed, so a key-name list
+is the wrong shape here for the same reason it failed three times for
+fleet-setting keys (``admz/setting_policy.py``).
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 MASK = "***"
 
@@ -125,3 +134,63 @@ def redact_structure(obj: Any, *, _depth: int = 0, max_depth: int = 10) -> Any:
             for v in obj
         ]
     return obj
+
+
+# ---------------------------------------------------------------------------
+# URL redaction (#157)
+# ---------------------------------------------------------------------------
+#
+# Originally lived only in admz/modules/acs_pro/firebird.py, scoped to the ACS
+# webhook URL. Promoted here so a second implementation never has to be
+# written — and so it doesn't have to be, since #157's leak (VAPIX device
+# passwords reaching the log via httpx's INFO request line) needed the same
+# "mask a URL's secrets" operation from a call site that must not import an
+# optional, driver-dependent module (acs_pro/firebird.py pulls in
+# firebird-driver) just to redact a log line.
+
+
+def redact_url(url: Any, *, keys: Optional[Iterable[str]] = None) -> Optional[str]:
+    """Mask secrets a URL may carry: ``user:pass@`` userinfo, always; and
+    query-parameter values, either every one of them (``keys=None``, the
+    default) or only those whose key matches ``keys`` (case-insensitive).
+
+    ``keys=None`` — mask every query value — is the recommended mode for any
+    URL whose query vocabulary isn't closed. A fixed "these are the secret
+    key names" list cannot be complete by construction wherever a caller can
+    inject an arbitrary query parameter under any name — exactly what
+    ``admz/executor/vapix.py`` does for VAPIX operations, so a device
+    password can arrive at this function under any key. This project has
+    already reproduced that precise enumeration failure three times over,
+    for fleet-setting keys rather than query keys: three independent
+    enumeration methods returned 8, 10 and 18 "protected" keys, each missing
+    ones the others found (see ``admz/setting_policy.py``). Its fix was to
+    stop enumerating the unsafe set and change which way the default fails.
+    ``keys=None`` applies the same fix here: an unrecognised parameter is
+    hidden, not exposed.
+
+    Pass an explicit ``keys`` only where the caller can show the query
+    vocabulary is closed and the non-secret values are worth keeping — e.g.
+    the ACS webhook URL's own well-known parameters
+    (``admz/modules/acs_pro/firebird.py``).
+    """
+    if url in (None, ""):
+        return None
+    try:
+        text = str(url)
+        parts = urlsplit(text)
+        netloc = parts.netloc
+        if "@" in netloc:
+            netloc = "***@" + netloc.rsplit("@", 1)[1]
+        query = parts.query
+        if query:
+            pairs = parse_qsl(query, keep_blank_values=True)
+            if keys is None:
+                query = urlencode([(k, MASK) for k, _ in pairs])
+            else:
+                key_set = {k.lower() for k in keys}
+                query = urlencode([
+                    (k, MASK if k.lower() in key_set else v) for k, v in pairs
+                ])
+        return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
+    except Exception:  # noqa: BLE001 — never let redaction failure leak the raw URL
+        return "***"

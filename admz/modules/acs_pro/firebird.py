@@ -277,25 +277,19 @@ def _kind(discriminator: Any, suffix: str) -> str:
 
 def redact_url(url: Any) -> Optional[str]:
     """Mask secrets an ACS HTTP-notify URL may carry: ``user:pass@`` userinfo and
-    token-ish query parameters (the ADMZ webhook itself accepts ``?token=``)."""
-    if url in (None, ""):
-        return None
-    text = str(url)
-    try:
-        from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-        parts = urlsplit(text)
-        netloc = parts.netloc
-        if "@" in netloc:
-            netloc = "***@" + netloc.rsplit("@", 1)[1]
-        query = parts.query
-        if query:
-            pairs = parse_qsl(query, keep_blank_values=True)
-            query = urlencode([
-                (k, "***" if k.lower() in _SECRET_QUERY_KEYS else v) for k, v in pairs
-            ])
-        return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
-    except Exception:  # noqa: BLE001 — never let redaction failure leak the raw URL
-        return "***"
+    token-ish query parameters (the ADMZ webhook itself accepts ``?token=``).
+
+    Thin wrapper over the shared implementation in ``admz.redact`` (#157) —
+    scoped to ``_SECRET_QUERY_KEYS`` because the ACS webhook's query
+    vocabulary is closed and its non-secret params (``rule=``, etc.) are
+    worth keeping in the log. Contrast the VAPIX/httpx redaction filter
+    (``admz/logging_config.py``), which masks every query value
+    unconditionally because that vocabulary is *not* closed — a caller can
+    inject an arbitrary VAPIX query param under any name
+    (``admz/executor/vapix.py``).
+    """
+    from admz.redact import redact_url as _redact_url_shared
+    return _redact_url_shared(url, keys=_SECRET_QUERY_KEYS)
 
 
 def acs_id_int(value: Any) -> Optional[int]:
