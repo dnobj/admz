@@ -401,6 +401,35 @@ class TestFleetSettingsMasking:
         assert r.status_code == 200
         assert r.json()["value"] == "operator"
 
+    # -- #158: /fleet-settings (the HTML page) used its own hand-rolled
+    # "password" in key.lower() test instead of is_sensitive_setting_key, so
+    # a sensitive key not literally named "password" — gemini_api_key,
+    # acs_webhook_token — rendered in plaintext directly in the HTML with no
+    # gate at all (worse than the JSON siblings above, which were already
+    # correct: they call mask_settings_for_display / is_sensitive_setting_key).
+
+    def test_html_page_masks_non_password_sensitive_keys(self, client):
+        self._set_setting(client, "gemini_api_key", "AIzaSyLIVE_KEY_MATERIAL")
+        self._set_setting(client, "acs_webhook_token", "webhook-secret-value")
+        r = client.get("/fleet-settings")
+        assert r.status_code == 200
+        assert "AIzaSyLIVE_KEY_MATERIAL" not in r.text
+        assert "webhook-secret-value" not in r.text
+
+    def test_html_page_still_masks_password_keys(self, client):
+        """The pre-existing behavior for literally-named password keys
+        must survive the predicate swap."""
+        self._set_setting(client, "default_password", "supersecret123")
+        r = client.get("/fleet-settings")
+        assert r.status_code == 200
+        assert "supersecret123" not in r.text
+
+    def test_html_page_still_shows_non_sensitive_values(self, client):
+        self._set_setting(client, "default_username", "operator")
+        r = client.get("/fleet-settings")
+        assert r.status_code == 200
+        assert "operator" in r.text
+
 
 class TestCredentialsEndpointRemoved:
     """The device-credential reveal endpoint (GET

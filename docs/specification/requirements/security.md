@@ -47,9 +47,61 @@ write it; only the `/confirm-settings` web UI can.
 **Enforced at:** `mcp/server.py::_register_handlers` (filters tool out of `list_tools()`); the device-credential REST endpoint no longer exists. See [0020](../decisions/0020-protected-fleet-settings.md).
 
 ### FR-SEC-007 — Password values masked when listing fleet settings ✅
-`get_fleet_settings` (MCP) and `GET /api/fleet/settings` (REST) both mask secret-shaped settings — displayed as `****** (N chars)`, never plaintext. Shared helper `mask_settings_for_display` in `admz/fleet_settings.py` enforces a single rule across both surfaces; **which keys count is `admz/redact.py::is_sensitive_key`**, which covers `password`, `passwd`, `secret`, `token`, `api_key`, compound `*key*` and a discrete `pat` — not the `"password" in key` test this line used to name (#214). FR-SEC-007a below names `gemini_api_key` and `acs_webhook_token` as secrets, which the old wording would not have covered.
+`get_fleet_settings` (MCP), `GET /api/fleet/settings` (REST), **and the
+`/fleet-settings` HTML page** all mask secret-shaped settings — displayed
+as `****** (N chars)` (JSON) or a placeholder revealed on demand through
+the gated `GET /api/fleet/settings/{key}/reveal` fetch (HTML), never
+plaintext. Shared predicate `admz/redact.py::is_sensitive_key` (via
+`admz/fleet_settings.py::is_sensitive_setting_key` /
+`mask_settings_for_display`) decides for all three — which covers
+`password`, `passwd`, `secret`, `token`, `api_key`, compound `*key*` and a
+discrete `pat` — not the `"password" in key` test this line used to name
+(#214).
 
-**Enforced at:** `admz/fleet_settings.py::mask_settings_for_display`. Tested in `tests/test_fleet_settings.py` and `tests/test_api_routes.py::TestFleetSettingsMasking`.
+**This line's own history is the cautionary tale it should have been read
+as.** #214 corrected it to say the MCP tool and REST endpoint use the
+canonical predicate — true, and still true — but the correction was scoped
+to those two surfaces and never mentioned the HTML page, which had its
+*own*, separately hand-rolled `"password" in key.lower()` test in both
+`admz/api/routes/web.py` and `admz/api/templates/fleet_settings.html`
+(#158). `gemini_api_key` and `acs_webhook_token` — named in FR-SEC-007a
+below as secrets since #214 — rendered in plaintext directly in that page's
+HTML, no gate at all, the whole time #214's corrected wording sat one
+paragraph above describing a *different* route as fixed. The doc was
+locally accurate and globally misleading — precisely the shape CLAUDE.md's
+own "not live" incident (#214, a different one) warns every session to
+watch for: a true sentence about the part that was checked, read as a
+claim about the whole.
+
+`admz/mcp/server.py::_set_fleet_setting`'s own tool-result echo carried a
+**fourth**, independent copy of the identical hand-rolled test (#158) —
+currently unreachable with a real secret only because of the ADR-0053
+allow-list gate above it, not because the predicate itself was correct.
+Fixed the same way.
+
+**Structural guard against a fifth:** `tests/test_sensitivity_predicate_completeness.py`
+scans `admz/**/*.py` and `admz/api/templates/**/*.html` for the narrow shape
+of this anti-pattern (a sensitive substring tested via `in` against a
+lowered key) outside `redact.py`, against an explicit, justified allowlist
+for the one legitimate different-shaped match
+(`admz/backends/sqlite_backend.py`'s fixed-schema dict-key presence check).
+It also asserts every key `admz/setting_policy.py` declares encrypted at
+rest is recognized by `is_sensitive_key` — the store encrypting a key and
+the display layer masking it are two decisions that could drift from each
+other exactly like this issue's two predicates did. **Stated honestly, not
+oversold:** unlike the prompt-section completeness guard (#320), this one
+cannot mechanically discover a brand-new *surface* — sensitivity-masking
+decisions have no shared architectural seam (no `build_*`-style naming
+convention) the way prompt sections do — so a genuinely new display surface
+still needs a human to add it to the behavioral leak-sweep in the same test
+file. It reliably catches a new instance of the *hand-rolled-predicate
+shape*, wherever in `admz/` it's written.
+
+**Enforced at:** `admz/fleet_settings.py::mask_settings_for_display`,
+`admz/api/routes/web.py::fleet_settings_page`,
+`admz/mcp/server.py::_set_fleet_setting`. Tested in
+`tests/test_fleet_settings.py`, `tests/test_api_routes.py::TestFleetSettingsMasking`,
+and `tests/test_sensitivity_predicate_completeness.py`.
 
 ### FR-SEC-007a — Fleet-setting secrets encrypted at rest ✅
 Masking (FR-SEC-007) governs what a *caller* is shown; this governs what is in

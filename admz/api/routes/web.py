@@ -17,7 +17,7 @@ from admz.exceptions import (
 )
 from admz.device_registry import DeviceRegistry
 from admz.api.context import AppContext, get_context
-from admz.fleet_settings import fleet_settings
+from admz.fleet_settings import fleet_settings, is_sensitive_setting_key
 from admz.api.confirm_store import (
     get_confirmation_level,
     hash_confirm_password,
@@ -813,15 +813,24 @@ async def configuration_redirect(request: Request):
 
 @router.get("/fleet-settings", response_class=HTMLResponse)
 async def fleet_settings_page(request: Request):
-    """Fleet settings page — view fleet-wide configuration."""
+    """Fleet settings page — view fleet-wide configuration.
+
+    Sensitive values (``is_sensitive_setting_key`` — the same predicate the
+    JSON API and the MCP tool use, admz/redact.py's D-2 consolidation) are
+    never put in the template context at all (#158): the initial render
+    shows a placeholder, and the page's own JS fetches the real value on
+    demand from the already-gated ``GET /api/fleet/settings/{key}/reveal``,
+    same as before. What changed is *which* keys get that treatment — this
+    used to be decided by a hand-rolled ``"password" in key.lower()`` test
+    that missed anything not literally named "password"
+    (``gemini_api_key``, ``acs_webhook_token``), so those rendered in
+    plaintext directly in the HTML response with no gate at all.
+    """
     settings = fleet_settings.list_all()
-    # Mask password values for initial render (revealed client-side)
     display = {}
     for k, v in settings.items():
-        if "password" in k.lower():
-            display[k] = f"({'*' * min(len(v), 8)})"
-        else:
-            display[k] = v
+        sensitive = is_sensitive_setting_key(k)
+        display[k] = {"value": None if sensitive else v, "sensitive": sensitive}
 
     return templates.TemplateResponse(
         request,
