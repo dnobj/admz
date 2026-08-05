@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from admz.api.context import AppContext, get_context
 from admz.discovery import discover_devices as run_network_discovery
+from admz.validators import validate_scan_subnet
 
 router = APIRouter()
 
@@ -45,6 +46,13 @@ async def scan_network(
     from admz.auth import get_current_principal
 
     principal = await get_current_principal(request)
+    # A bad subnet is a 400, not a 500 (#199). The authoritative check lives in
+    # `discover_devices`; this only chooses the status code and surfaces the
+    # reason, so the two cannot disagree about what is valid.
+    try:
+        validate_scan_subnet(req.subnet)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     devices = await run_network_discovery(
         timeout=req.timeout,
         axis_only=req.axis_only,

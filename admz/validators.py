@@ -92,7 +92,77 @@ def validate_git_ref(value: object) -> str:
     return value
 
 
+# ── Scan scope ──────────────────────────────────────────────────────────────
+
+#: Smallest prefix an ARP sweep may be asked for. /16 is 65,534 hosts — already
+#: generous for any site LAN — and it rejects the case that motivated this:
+#: a ``/8`` is 16,777,214 ARP packets, which is a network flood, not a scan.
+#: Deliberately a REJECT and not a clamp: silently scanning something narrower
+#: than asked would report "no devices found" for addresses never probed, which
+#: is indistinguishable from a clean result.
+MIN_SCAN_PREFIXLEN = 16
+
+
+def validate_scan_subnet(value):
+    """Validate a subnet destined for an ARP sweep. Returns the canonical form.
+
+    ``None`` passes through — it means "auto-detect the local /24", which is
+    the documented default and involves no caller-supplied string.
+
+    This exists because the subnet is **model-supplied free text** that reaches
+    ``scapy``'s ``ARP(pdst=...)`` untouched (#199). The confirmation gate added
+    in #299 makes the scan *deliberate*; it does nothing about what is in the
+    string. ``ipaddress.ip_network`` was already imported one function away in
+    ``arp_scanner._parse_arp_table`` — but only to filter results, and it
+    swallows ``ValueError``, so it never validated anything.
+
+    Enforced in :func:`admz.discovery.orchestrator.discover_devices`, the one
+    function all five callers funnel through (REST scan, the demo-inference
+    survey, two MCP tools, and the CLI) — rather than at those five call sites.
+    Validating per-entry-point is how you miss the sixth.
+    """
+    import ipaddress
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(
+            f"subnet must be a string in CIDR form (got {type(value).__name__})"
+        )
+    text = value.strip()
+    if not text:
+        raise ValueError("subnet must not be empty — omit it to auto-detect")
+    try:
+        # strict=False so "192.168.1.42/24" is accepted and normalised to
+        # "192.168.1.0/24"; an operator naming a host on the target network is
+        # being helpful, not wrong.
+        network = ipaddress.ip_network(text, strict=False)
+    except ValueError as exc:
+        raise ValueError(
+            f"subnet {text!r} is not valid CIDR ({exc}). Expected e.g. "
+            f"'192.168.1.0/24'."
+        ) from exc
+
+    if network.version != 4:
+        raise ValueError(
+            f"subnet {text!r} is IPv6. An ARP sweep is IPv4-only — ARP has no "
+            f"IPv6 equivalent (neighbour discovery is a different protocol "
+            f"ADMZ does not implement)."
+        )
+    if network.prefixlen < MIN_SCAN_PREFIXLEN:
+        raise ValueError(
+            f"subnet {str(network)!r} is {network.num_addresses - 2:,} hosts. "
+            f"The limit is /{MIN_SCAN_PREFIXLEN} "
+            f"({2 ** (32 - MIN_SCAN_PREFIXLEN) - 2:,} hosts) — an ARP sweep "
+            f"sends one packet per host, so a wider range floods the network "
+            f"rather than scanning it. Name the subnet you actually mean."
+        )
+    return str(network)
+
+
 __all__ = [
     "validate_identifier",
     "validate_git_ref",
+    "validate_scan_subnet",
+    "MIN_SCAN_PREFIXLEN",
 ]
