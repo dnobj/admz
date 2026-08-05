@@ -214,8 +214,10 @@ ADMZ is configured via environment variables:
 
 Additional env vars exist for finer control (auth proxy trust, LDAP
 connection details, Gemini retry/thinking budget, git timeouts, fleet-health
-intervals, survey mode). They are documented at their point of use in the
-code and in the relevant `docs/specification/requirements/` files.
+intervals, survey mode). Every one of them is in
+**[`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md)**, grouped by the decision it
+belongs to — including the switches that weaken a guarantee and a plain
+statement of what each gives up.
 
 ## Architecture
 
