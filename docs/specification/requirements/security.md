@@ -69,11 +69,28 @@ against the raw file bytes, with a control proving it was findable beforehand.
 A value that will not decrypt is reported unset and **left untouched**, so a
 rotated key cannot destroy the secret.
 
-**Enforced at:** `admz/setting_crypto.py`, `admz/fleet_settings.py::get`/`set`/`list_all`,
-key inventory in `admz/setting_policy.py`. Tested in
-`tests/test_setting_encryption.py`, whose
-`test_the_partition_covers_every_sensitive_key` fails if a new sensitive
-setting is added without deciding how it is stored (#296 part 1).
+**Migration also runs eagerly, not only on a lucky read (#307).** A key read
+rarely — `acs_webhook_token` is touched only when ACS fires a webhook or an
+operator opens its settings page — could sit in plaintext indefinitely under
+read-triggered-only migration, even though `setting_policy.py` declares it
+encrypted; measured on the live database after #302 shipped, this was true
+for `acs_webhook_token` while `default_password` and `gemini_api_key` had
+already converted. `FleetSettings.migrate_encrypted_settings()` sweeps every
+key in `STORE_ENCRYPTED_SETTING_KEYS` once, reusing `get()`'s own
+migration path, and is called on every startup (`admz/api/main.py::lifespan`)
+the same best-effort, never-fatal way the other one-time startup migrations
+there are. A per-key failure is counted and skipped, not raised, so this
+cannot make startup depend on a writable database.
+
+**Enforced at:** `admz/setting_crypto.py`,
+`admz/fleet_settings.py::get`/`set`/`list_all`/`migrate_encrypted_settings`,
+key inventory in `admz/setting_policy.py`, startup wiring in
+`admz/api/main.py::lifespan`. Tested in `tests/test_setting_encryption.py`,
+whose `test_the_partition_covers_every_sensitive_key` fails if a new
+sensitive setting is added without deciding how it is stored (#296 part 1),
+and whose "eager sweep" tests assert the *database*, not the policy — a
+declared key must actually be stored encrypted after the migration path
+runs, regardless of whether anything ever reads it (#307).
 
 ### FR-SEC-008 — Per-protocol device authentication ✅
 ADMZ probes each device's `WWW-Authenticate` header on HTTP and HTTPS, persists the detected scheme per-protocol in `device_info["auth"]`, and uses the scheme-appropriate auth handler at request time. Supported schemes: `digest`, `basic`, `bearer`, `none`.

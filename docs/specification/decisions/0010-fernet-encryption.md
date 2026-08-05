@@ -143,6 +143,42 @@ private `encrypt`/`decrypt` pair. They now delegate to `admz/setting_crypto.py`,
 so one Fernet path serves every fleet-setting secret rather than a third copy
 appearing. Their stored ciphertext is unaffected — same key, same tokens.
 
+### Amendment 2026-08-04 — read-triggered migration left cold keys plaintext indefinitely (#307)
+
+The paragraph above says migration happens "on first `get`." That is true and
+was also the whole problem: it happens *only* on a `get`. Verified against the
+live production database after the #302 deploy — `default_password` and
+`gemini_api_key`, both read constantly (onboarding, health checks, every chat
+turn), had converted; `acs_webhook_token`, read only when ACS fires a webhook
+or an operator opens its settings page, had not. Neither had happened since
+deploy, so it sat in plaintext with no error, no drift signal, and nothing in
+`setting_policy.py` to say so — the policy module claims the key is encrypted
+regardless of what the database actually holds.
+
+That inverts the property #296 wanted: the secrets an operator is *least*
+likely to notice or rotate are exactly the ones that stay exposed longest.
+
+**Fix: an eager sweep, not a better read hook.** `FleetSettings.migrate_encrypted_settings()`
+walks every key in `STORE_ENCRYPTED_SETTING_KEYS` once and drives each one
+through the same read/decrypt/migrate-in-place path `get()` already uses —
+no second implementation of the migration logic, no new failure modes beyond
+the ones already proven safe there. `admz/api/main.py::lifespan` calls it on
+every startup, wrapped the same way every other one-time idempotent startup
+migration in that function is (`tasks.migrate.migrate_legacy`,
+`snapshot.ignore.seed_default_rules`): best-effort, logged, never fatal. A
+per-key read or write failure (locked DB, missing key file) is counted and
+skipped rather than raised, so one bad key cannot block the rest of the sweep
+or block the process from starting — the same "a read must still succeed"
+contract `get()` already had, extended to "and starting up must still
+succeed."
+
+Idempotent: a key with nothing left to convert costs one extra read per
+startup and changes nothing. See `tests/test_setting_encryption.py`'s
+"eager sweep" tests, which plant plaintext and sweep *without* ever calling
+`get()` on the planted keys — reading the raw row afterward, not the policy
+module — which is the shape of guard `test_the_partition_covers_every_sensitive_key`
+could not provide: it proves a key is *declared* encrypted, not that it *is*.
+
 ## Consequences
 
 **Positive:**

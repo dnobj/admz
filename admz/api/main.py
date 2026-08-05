@@ -169,6 +169,29 @@ async def lifespan(app: FastAPI):
         import logging
         logging.getLogger(__name__).warning("ignore-rule seeding failed", exc_info=True)
 
+    # GH #307: eagerly convert any STORE_ENCRYPTED_SETTING_KEYS row still at
+    # legacy plaintext. fleet_settings.get() only migrates a key when
+    # something reads it, so a cold secret — the ACS webhook token is read
+    # only when ACS fires a rule or an operator opens its settings page — can
+    # sit in plaintext indefinitely even though it is declared encrypted.
+    # Idempotent (nothing left to convert on a later run) and does exactly
+    # what an ordinary read already does, so this is safe on every startup;
+    # per-key failures (locked/read-only DB) are counted and logged, never
+    # fatal to startup.
+    try:
+        from admz.fleet_settings import fleet_settings
+        _sweep = fleet_settings.migrate_encrypted_settings()
+        if _sweep["migrated"] or _sweep["failed"]:
+            import logging
+            logging.getLogger(__name__).info(
+                "eager encryption sweep (#307): checked %d, migrated %d, failed %d",
+                _sweep["checked"], _sweep["migrated"], _sweep["failed"],
+            )
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning(
+            "eager encryption sweep failed", exc_info=True)
+
     await ctx.scheduler.start()
 
     # Device health monitor: opt-in via the health_monitor_enabled

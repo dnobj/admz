@@ -32,7 +32,7 @@ import os
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from admz.confirm_policy import (
     _DEFAULT_CONFIRMATION_LEVELS,
@@ -42,6 +42,7 @@ from admz.confirm_policy import (
 from admz.setting_policy import (  # noqa: F401 — re-exported for callers
     KNOWN_SETTING_KEYS,
     LLM_WRITABLE_SETTING_KEYS,
+    STORE_ENCRYPTED_SETTING_KEYS,
     is_capture_only,
     is_llm_writable,
     is_store_encrypted,
@@ -249,16 +250,38 @@ class FleetSettings:
         existing rather than merely being superseded. Migration failure is
         swallowed — a read-only or locked DB must not break a read that
         otherwise succeeded; the value is simply migrated on a later read.
+
+        That last sentence is also the gap GH #307 found: "on a later read"
+        assumes a later read happens. A key nothing reads — the ACS webhook
+        token is only touched when ACS fires or an operator opens its settings
+        page — can sit in plaintext indefinitely even though it is declared
+        encrypted. See :meth:`migrate_encrypted_settings` for the eager sweep
+        that closes that gap; it shares this method's migration logic rather
+        than reimplementing it.
+        """
+        plain, _ = self._get_with_migration_flag(key)
+        return plain
+
+    def _get_with_migration_flag(self, key: str) -> Tuple[Optional[str], bool]:
+        """Do what :meth:`get` does, and also report whether migration ran.
+
+        Split out so :meth:`migrate_encrypted_settings` (GH #307) can drive
+        the exact same read/decrypt/migrate-in-place path — including the
+        undecryptable-vs-legacy-plaintext distinction and the swallow-on-
+        write-failure behavior — without a second copy of this logic to keep
+        in sync. ``get()`` is unchanged for its ~120 existing call sites.
         """
         raw = self._raw_get(key)
         if not is_store_encrypted(key):
-            return raw
+            return raw, False
         from admz import setting_crypto
 
         plain, needs_migration = setting_crypto.read_stored(key, raw)
+        migrated = False
         if needs_migration:
             try:
                 self._raw_set(key, setting_crypto.encrypt(plain or ""))
+                migrated = True
                 logger.info(
                     "Migrated fleet setting %r to encrypted storage (#296).", key)
             except Exception:  # noqa: BLE001 — a read must still succeed
@@ -266,7 +289,47 @@ class FleetSettings:
                     "Could not migrate fleet setting %r to encrypted storage; "
                     "it stays plaintext and will be retried on the next read.",
                     key, exc_info=True)
-        return plain
+        return plain, migrated
+
+    def migrate_encrypted_settings(self) -> Dict[str, int]:
+        """Eagerly convert every declared secret key still at legacy plaintext.
+
+        GH #307: :meth:`get` only migrates a key when something reads it, so a
+        cold key stays plaintext forever if nothing ever does — measured on the
+        live database, where ``default_password`` and ``gemini_api_key`` (read
+        constantly) converted and ``acs_webhook_token`` (read only when ACS
+        fires a rule, or an operator opens its settings page) did not. This
+        makes "declared encrypted" and "stored encrypted" the same claim for
+        *every* key in :data:`admz.setting_policy.STORE_ENCRYPTED_SETTING_KEYS`,
+        not just the popular ones.
+
+        Calls :meth:`_get_with_migration_flag` once per declared key — the same
+        path an ordinary read already takes, so there is no second migration
+        implementation to drift from the tested one. A key whose read or write
+        fails (locked DB, missing key file) is counted and logged, never
+        raised: intended to run unattended at startup, where one bad key must
+        not block the others or the process coming up. Idempotent — running it
+        again finds nothing left to convert.
+
+        Returns a summary dict (``checked`` / ``migrated`` / ``failed`` counts)
+        for the caller to log; see ``admz/api/main.py::lifespan``.
+        """
+        checked = 0
+        migrated = 0
+        failed = 0
+        for key in sorted(STORE_ENCRYPTED_SETTING_KEYS):
+            checked += 1
+            try:
+                _, was_migrated = self._get_with_migration_flag(key)
+            except Exception:  # noqa: BLE001 — one bad key must not stop the sweep
+                failed += 1
+                logger.warning(
+                    "eager encryption sweep (#307): could not check %r",
+                    key, exc_info=True)
+                continue
+            if was_migrated:
+                migrated += 1
+        return {"checked": checked, "migrated": migrated, "failed": failed}
 
     def _raw_set(self, key: str, value: str) -> None:
         conn = self._connect()
