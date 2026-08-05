@@ -409,14 +409,49 @@ class ConfirmStore:
         try:
             cursor = conn.execute(
                 "UPDATE confirm_sessions "
-                "SET status=?, confirmed_by=?, "
+                "SET status=?, confirmed_by=? "
+                "WHERE token=? AND status='pending'",
+                ("completed", confirmed_by, token),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def strip_payload(self, token: str) -> bool:
+        """Clear the four payload columns of a COMPLETED session (GH #281).
+
+        Split out of :meth:`complete_session` so the strip can wait for the
+        *outcome*, which is not known at completion time — completion happens
+        before execution. A successful write is stripped immediately by
+        ``_approve_session``; a failed one keeps its payload so the value that
+        was requested is still recoverable, because there is no device state to
+        consult for a write that did not land (ADR-0056 makes drift the source
+        of truth only for writes that succeeded).
+
+        **Guarded to ``status='completed'``, and that guard is load-bearing.**
+        #266 put the clear in the same UPDATE as the status flip precisely so it
+        could never fire on a *pending* row: ``plan_steps_json`` is the
+        cross-process transport — the approving uvicorn process may not be the
+        MCP subprocess that built the plan, and it reconstructs the plan from
+        this row — so stripping early breaks execution outright. Splitting the
+        statement loses the atomicity but not that invariant, which is why this
+        method refuses anything not already completed rather than trusting its
+        caller to sequence correctly.
+
+        Returns True when a row was actually cleared.
+        """
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE confirm_sessions "
                 # params_json keeps a valid empty JSON object; the other three
                 # are '' — the schema default for each, and what their accessors
                 # already treat as "nothing stored".
-                "    params_json='{}', action_json='', "
+                "SET params_json='{}', action_json='', "
                 "    plan_summary_json='', plan_steps_json='' "
-                "WHERE token=? AND status='pending'",
-                ("completed", confirmed_by, token),
+                "WHERE token=? AND status='completed'",
+                (token,),
             )
             conn.commit()
             return cursor.rowcount > 0
@@ -521,12 +556,63 @@ class ConfirmStore:
                 "WHERE status != 'completed' AND (created_at + ttl) < ?",
                 (cutoff,),
             )
+            # #281: and no COMPLETED row keeps a payload past the window.
+            #
+            # Stated as an invariant rather than "a TTL on failed sessions",
+            # because it has to hold for any reason a payload survives, not just
+            # the intended one. Two get caught here:
+            #
+            #   1. A failed write, kept deliberately so the requested value is
+            #      recoverable — there is no device state to consult for a write
+            #      that did not land. That is the forensic window #281 wants,
+            #      and this is what closes it.
+            #   2. A SUCCESSFUL write whose strip never ran because the process
+            #      died between complete_session and strip_payload. #266 made
+            #      that impossible by doing both in one statement; splitting
+            #      them reintroduces the gap, and this sweep is what bounds it.
+            #      A second mechanism for (2) alone would be a second thing to
+            #      keep in step.
+            #
+            # Deliberately NOT contingent on activity — not "strip on the next
+            # write to this device", not "strip on read". A device never touched
+            # again is exactly the device whose failed password change is still
+            # on disk, and reactive cleanup that silently depends on something
+            # else happening is how #314 and #170 both failed.
+            conn.execute(
+                "UPDATE confirm_sessions "
+                "SET params_json='{}', action_json='', "
+                "    plan_summary_json='', plan_steps_json='' "
+                "WHERE status='completed' AND created_at < ? "
+                "  AND (params_json NOT IN ('{}', '') OR action_json != '' "
+                "       OR plan_summary_json != '' OR plan_steps_json != '')",
+                (time.time() - PAYLOAD_RETENTION_SECONDS,),
+            )
             conn.commit()
         finally:
             conn.close()
 
 
 # ── Password hashing helpers ────────────────────────────────────────────
+
+#: How long a COMPLETED session may keep its payload (GH #281).
+#:
+#: Only a *failed* write keeps one at all — a successful write is stripped the
+#: moment its outcome is known — so this is the window in which the value that
+#: was requested is still recoverable for a write that did not land.
+#:
+#: 24 hours: long enough to investigate a failure the next morning, short enough
+#: that ``admz.db`` is not a rolling store of rejected device passwords. That is
+#: not hypothetical — ``params_json`` is written by ``json.dumps(params)`` with
+#: no redaction, and ``pwdgrp.cgi:update-user`` is ``service-affecting`` (so it
+#: gates) and takes a ``pwd`` param, which means a failed password change puts a
+#: plaintext device password in this table.
+#:
+#: A constant rather than a fleet setting on purpose: a config surface the model
+#: cannot write and an operator would rarely touch has no demonstrated demand,
+#: and a number nobody maintains is worse than a number in one place (#303).
+#: Promoting it to a setting later is a one-line change.
+PAYLOAD_RETENTION_SECONDS = 24 * 60 * 60
+
 
 _HASH_ALGO = "sha256"
 _HASH_ITERATIONS = 600_000

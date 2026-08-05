@@ -93,7 +93,12 @@ class TestTheReceiptSurvives:
                 plan_id="p1",
                 plan_summary_json=json.dumps({"step_count": 1, "note": MARKER}),
                 plan_steps_json=json.dumps([{"op": "x", "params": {"k": MARKER}}]))
+        # #281 split the strip out of the status flip so it can wait for the
+        # OUTCOME. Completion alone no longer clears anything.
         store.complete_session(s.token)
+        assert _row(store, s.token)["action_json"] != "", (
+            "completion stripped on its own — the outcome is not known yet")
+        assert store.strip_payload(s.token) is True
 
         row = _row(store, s.token)
         assert row["params_json"] == "{}"          # still valid JSON
@@ -110,6 +115,7 @@ class TestTheReceiptSurvives:
         # Present before — otherwise this test proves nothing.
         assert MARKER in json.dumps(_row(store, s.token))
         store.complete_session(s.token)
+        store.strip_payload(s.token)          # #281: two steps, not one
         assert MARKER not in json.dumps(_row(store, s.token))
 
     def test_the_stripped_row_still_reads_back_cleanly(self, store):
@@ -117,6 +123,7 @@ class TestTheReceiptSurvives:
         s = _mk(store, params={"a": MARKER},
                 action_json=json.dumps({"action": "x"}), plan_id="p1")
         store.complete_session(s.token)
+        store.strip_payload(s.token)
         got = store.get_session(s.token)
         assert got.params == {} and got.action == {} and got.plan_summary == {}
         assert got.is_plan is True                 # plan_id is NOT cleared
@@ -212,9 +219,16 @@ class TestCallerOrderingIsPinned:
         assert seen["action"]["url"] == MARKER, (
             "the executor got an empty payload — the session was re-fetched "
             "AFTER completion, which the strip makes unsafe")
-        # 2. ...while the persisted row was already stripped by then.
-        assert seen["row_at_exec"]["action_json"] == ""
-        # 3. And it stays stripped afterwards.
+        # 2. ...and since #281 the persisted row STILL HAD IT at that moment.
+        #    Under #266 the strip rode the status flip, so the row was already
+        #    empty here; moving it after the outcome necessarily moves this too.
+        #    That is strictly safer for the caller-ordering hazard this class
+        #    exists to pin — a re-fetch during execution now gets real data —
+        #    but it is a behaviour change and is asserted rather than assumed.
+        assert seen["row_at_exec"]["action_json"] != ""
+        # 3. And it is stripped once the outcome is known, because this one
+        #    succeeded. A FAILED outcome keeps it; see
+        #    tests/test_confirm_payload_failed_retention.py.
         assert MARKER not in json.dumps(_row(real, s.token))
 
     def test_the_approve_audit_row_still_describes_the_work(
