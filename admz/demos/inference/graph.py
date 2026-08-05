@@ -42,8 +42,19 @@ Distinctiveness is **self-calibrating**, never a hardcoded list: both name token
 (E5) and ACAPs (E6) are filtered by their document frequency across *this run's*
 fleet, so a bundled app or a house-style naming prefix that sits on every device
 carries no signal, while an unusual one does. An empty ``applications`` facet
-means **unknown**, not "no apps" (``rules/capabilities.py:150-165`` is explicit),
-and unknown never creates or suppresses an edge.
+means **unknown**, not "no apps" (``rules/capabilities.py:150-165`` is explicit).
+
+**That exclusion is not neutral, and three comments in a row used to claim it
+was (#189).** ``total`` in :func:`_acap_distinctive` is the shared denominator
+for *every* app's ratio — a device dropping out of it shifts ``df / total``
+for every app on every OTHER device too, and can flip whether two devices that
+never had anything wrong with them still share an edge. That is an accepted
+property of a self-calibrating statistic measured against a population that
+can change between runs, not a defect in the ratio itself; the defect was
+three copies of a comment asserting the exclusion "can neither create nor
+suppress" anything. See :func:`_acap_distinctive` for the corrected
+reasoning, and ``cluster.py``'s ``FLAG_ACAP_INVENTORY_PARTIAL`` for how the
+sensitivity is now surfaced to an operator instead of hidden from one.
 
 Clustering, scoring and proposals are deliberately **not** here — that is slice 3.
 This module outputs the graph plus per-rule detail and stops.
@@ -204,6 +215,13 @@ def build_nodes(devices: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "tags": sorted({str(t) for t in (d.get("tags") or []) if t}),
             "host": (d.get("host") or d.get("ip_address") or "") or "",
             "acaps_known": bool(acaps),
+            # True iff the registry has a snapshot ref for this device at all
+            # (``collect.py``'s ``has_snapshot_ref``, from
+            # ``capabilities.device_applications_detail``). Distinguishes
+            # "never snapshotted" from "has a snapshot, empty inventory" —
+            # deliberately WITHOUT claiming which of those the latter is
+            # (#189). Both are still excluded from ``acaps_known`` alike.
+            "has_snapshot_ref": bool(d.get("has_snapshot_ref")),
             "acaps": [
                 {"name": str(name), "status": str(status),
                  "device_count": app_df.get(str(name), 0),
@@ -221,14 +239,45 @@ def known_app_total(nodes: Sequence[Dict[str, Any]]) -> int:
     return sum(1 for n in nodes if n.get("acaps_known"))
 
 
+def app_inventory_breakdown(nodes: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+    """How the fleet splits across the three app-inventory states (#189).
+
+    ``known`` devices are what :func:`known_app_total` counts. The other two
+    are both "unknown" to the ratio in exactly the same way — this function
+    exists purely to make that unknown population legible, not to treat its
+    two halves differently: ``never_snapshotted`` devices have no registry
+    snapshot ref at all (the ordinary, expected state for a device that
+    hasn't been surveyed); ``empty_inventory`` devices DO have a snapshot ref,
+    but their ``applications`` facet came back empty anyway — which may mean
+    a genuinely app-free device or a failed read, and this deliberately does
+    not guess which (see ``capabilities.device_applications_detail``).
+    """
+    known = never = empty = 0
+    for n in nodes:
+        if n.get("acaps_known"):
+            known += 1
+        elif n.get("has_snapshot_ref"):
+            empty += 1
+        else:
+            never += 1
+    return {"known": known, "never_snapshotted": never, "empty_inventory": empty}
+
+
 def _acap_distinctive(df: int, total: int) -> bool:
     """Self-calibrating: shared by at least two devices, but not by most of them.
 
     No hardcoded default-app list — a bundled ACAP is identified by being
     *everywhere*, which is firmware- and model-independent by construction.
-    ``total`` counts only devices with a known app inventory (an empty facet is
-    unknown, never "no apps"), so a missing snapshot can neither create nor
-    suppress distinctiveness.
+    ``total`` counts only devices with a known app inventory (an empty facet
+    is unknown, never "no apps") — but that exclusion is NOT neutral (#189).
+    ``total`` is the shared denominator for every app's ratio, so a device
+    leaving it shifts ``df / total`` for every app on every OTHER device too,
+    and can flip distinctiveness for a pair that has nothing to do with the
+    excluded device. That sensitivity is real and stays real however cleanly
+    "unknown" is computed — it is a property of measuring a ratio against a
+    population that can change between runs, not a bug in the ratio. See the
+    module docstring and ``cluster.py``'s ``FLAG_ACAP_INVENTORY_PARTIAL`` for
+    how that is now surfaced rather than asserted away.
     """
     if total <= 0 or df < ACAP_MIN_DEVICES:
         return False
@@ -640,8 +689,12 @@ def build_edges(nodes: Sequence[Dict[str, Any]],
                           source=f"tag:{tag}", tag=tag)
 
     # ── E6: shared distinctive ACAP ─────────────────────────────────────────
-    #     An empty facet is UNKNOWN, so such a device simply contributes no app
-    #     rows here — it can neither create nor suppress an edge.
+    #     An empty facet is UNKNOWN (not "no apps" — rules/capabilities.py),
+    #     so such a device contributes no app ROWS here. But it still leaves
+    #     app_total's denominator, and that alone is enough to create or
+    #     suppress an edge between two OTHER devices that had nothing wrong
+    #     with them (#189) — see _acap_distinctive's docstring for why, and
+    #     cluster.py's FLAG_ACAP_INVENTORY_PARTIAL for how it is surfaced.
     app_total = known_app_total(nodes)
     app_devices: Dict[str, List[str]] = {}
     for node in nodes:
@@ -843,6 +896,7 @@ def summarize(nodes: Sequence[Dict[str, Any]], rules: Sequence[Dict[str, Any]],
 
     linked = {d for e in edges for d in (e["a"], e["b"])}
     grounding = [g for r in rules for g in (r.get("app_grounding") or [])]
+    app_inventory = app_inventory_breakdown(nodes)
     return {
         "device_count": len(nodes),
         "rule_count": len(rules),
@@ -861,7 +915,12 @@ def summarize(nodes: Sequence[Dict[str, Any]], rules: Sequence[Dict[str, Any]],
         "acs": {"available": bool(acs.get("available")),
                 "reason": str(acs.get("reason") or "")},
         "acaps": {
-            "devices_with_app_inventory": known_app_total(nodes),
+            "devices_with_app_inventory": app_inventory["known"],
+            # The rest of the fleet, split honestly rather than lumped
+            # together (#189) — see app_inventory_breakdown's docstring for
+            # why "empty_inventory" is not further classified as a failure.
+            "devices_never_snapshotted": app_inventory["never_snapshotted"],
+            "devices_with_empty_inventory": app_inventory["empty_inventory"],
             "distinct_apps": len(app_rows),
             "distinctive_apps": sorted(a["name"] for a in app_rows.values()
                                        if a["distinctive"]),

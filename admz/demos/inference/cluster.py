@@ -65,6 +65,30 @@ that *fails* the run when its data source is missing would make the whole
 feature depend on the most fragile input it has. Missing data degrades the term
 to 0 and raises the ``firing_unknown`` flag, so a reader can tell "not seen"
 from "not looked".
+
+``acap_inventory_partial`` does **not** mean a read failed (#189)
+-------------------------------------------------------------------
+Any proposal whose evidence includes an E6 (shared-ACAP) edge is flagged
+``acap_inventory_partial`` whenever the graph's known-app-inventory population
+(``graph.known_app_total``) is smaller than the full device count — computed
+fresh here from ``graph["nodes"]``, unconditionally, every run where that is
+true.
+
+It is tempting to read that flag as "something broke." **It does not mean
+that.** ``graph.py``'s E6 distinctiveness test divides by the size of the
+*known* population, and any device outside it — for ANY reason — shifts that
+ratio for every other app. Two of the possible reasons are ordinary and
+expected: a device that has never been snapshotted, or one that snapshotted
+fine and genuinely has no installed ACAPs. A third reason, a failed facet
+read, looks IDENTICAL to the second at every layer ADMZ has today (see
+``capabilities.device_applications_detail``'s docstring). There is no
+reliable way to tell a facet that failed to read apart from one that read
+successfully and found nothing — inventing one would trade a false "unknown"
+claim for a false "failed" or false "empty" one, so this flag does not try.
+It reports only the one fact that is actually knowable: the population this
+run's ACAP evidence was measured against was not the whole fleet, so an E6
+edge here can look different on a re-run even if nothing about these specific
+devices changed.
 """
 
 from __future__ import annotations
@@ -74,7 +98,7 @@ import re
 from typing import (AbstractSet, Any, Dict, Iterable, List, Optional, Sequence,
                     Set, Tuple)
 
-from admz.demos.inference.graph import TOPOLOGY_EDGES, name_tokens
+from admz.demos.inference.graph import TOPOLOGY_EDGES, known_app_total, name_tokens
 
 # ── split guard ─────────────────────────────────────────────────────────────
 #: More members than this and the component is a hub blob, not a demo.
@@ -129,6 +153,7 @@ FLAG_OVERLAP = "overlaps_another_proposal"
 FLAG_FIRING_UNKNOWN = "firing_unknown"
 FLAG_NAMES_ONLY_RULES = "names_only_rules"
 FLAG_BLIND_RULES = "blind_rules"
+FLAG_ACAP_INVENTORY_PARTIAL = "acap_inventory_partial"
 
 #: Corroborating-edge id → the flag a cluster built from *only* that id earns.
 _ONLY_FLAG = {"E5": FLAG_NAME_ONLY, "E6": FLAG_ACAP_ONLY, "E4": FLAG_TAG_ONLY}
@@ -803,6 +828,11 @@ def propose(graph: Dict[str, Any], *, run_id: str = "",
     acs_available = bool(acs.get("available"))
     by_id = {str(n["device_id"]): n for n in nodes}
     pairs = _pairs(edges)
+    # Computed once, from the graph's own nodes — not from `graph["summary"]`,
+    # which a caller (or a test fixture) may not have populated. Whether this
+    # is < len(nodes) is the one fact the acap_inventory_partial flag reports;
+    # see the module docstring for why it is unconditional on that alone.
+    acap_known_total = known_app_total(nodes)
 
     skipped: List[Dict[str, Any]] = []
     weak_hidden = 0
@@ -890,6 +920,25 @@ def propose(graph: Dict[str, Any], *, run_id: str = "",
                 source="acs"))
             if not topo:
                 confidence = _cap(confidence, MEDIUM)
+
+        # Unconditional on whether the known population is partial — NOT on
+        # detecting why (#189; see the module docstring). Present exactly
+        # when it is true, absent exactly when the fleet's app inventory is
+        # complete — it does not fire just because this cluster has an E6
+        # edge, and it does not fire on every cluster just because SOME
+        # device's inventory is unknown elsewhere in the fleet.
+        if "E6" in edge_ids and acap_known_total < len(nodes):
+            flags.append(FLAG_ACAP_INVENTORY_PARTIAL)
+            evidence.append(_evidence(
+                "degradation",
+                f"only {acap_known_total} of {len(nodes)} fleet devices have a "
+                "known application inventory this run — the shared-app "
+                "evidence above is measured against that population, not the "
+                "whole fleet, and can look different on a re-run if it "
+                "changes. This does not mean a read failed — ADMZ cannot "
+                "currently tell that apart from a device that was never "
+                "snapshotted or one that genuinely has no apps installed.",
+                source="applications"))
 
         if not breakdown["firing_known"]:
             flags.append(FLAG_FIRING_UNKNOWN)

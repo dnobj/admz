@@ -17,10 +17,10 @@ from admz.demos.inference import cluster as cl
 # Fixtures — the smallest graphs that make each behaviour visible
 # ═══════════════════════════════════════════════════════════════════════════
 
-def node(device_id, name=None, model="P1234", tags=(), mac=None):
+def node(device_id, name=None, model="P1234", tags=(), mac=None, acaps_known=True):
     return {"device_id": device_id, "name": name or device_id, "model": model,
             "tags": list(tags), "mac": mac or device_id.upper(),
-            "host": "", "acaps_known": True, "acaps": []}
+            "host": "", "acaps_known": acaps_known, "acaps": []}
 
 
 def edge(edge_id, a, b, weight=None, detail="because", source="src"):
@@ -364,6 +364,41 @@ class TestPropose:
                   [device_rule("a", "1", "Play")])
         p = cl.propose(g, run_id="r")["proposals"][0]
         assert cl.FLAG_ACAP_ONLY in p["flags"]
+
+    # --- acap_inventory_partial (#189) — pinned in both directions ---------
+
+    def test_acap_inventory_partial_flag_present_when_population_is_partial(self):
+        """a/b's E6 evidence was measured against 2 of 3 known devices — c's
+        inventory is unknown, and that's the one fact the flag reports."""
+        g = graph([node("a", "One"), node("b", "Two"),
+                   node("c", "Three", acaps_known=False)],
+                  [edge("E6", "a", "b", detail="both run AudioManagerPro")],
+                  [device_rule("a", "1", "Play")])
+        p = cl.propose(g, run_id="r")["proposals"][0]
+        assert cl.FLAG_ACAP_INVENTORY_PARTIAL in p["flags"]
+        assert any("2 of 3" in e["detail"] for e in p["evidence"]
+                   if e.get("source") == "applications")
+
+    def test_acap_inventory_partial_flag_absent_when_population_is_complete(self):
+        """Same E6 evidence, but every fleet device has a known inventory —
+        the flag must NOT fire just because the cluster happens to use E6."""
+        g = graph([node("a", "One"), node("b", "Two")],
+                  [edge("E6", "a", "b", detail="both run AudioManagerPro")],
+                  [device_rule("a", "1", "Play")])
+        p = cl.propose(g, run_id="r")["proposals"][0]
+        assert cl.FLAG_ACAP_INVENTORY_PARTIAL not in p["flags"]
+
+    def test_acap_inventory_partial_flag_absent_without_an_e6_edge(self):
+        """The population IS partial (c's inventory is unknown) — but this
+        proposal's evidence is pure topology, nothing here rests on ACAP
+        distinctiveness, so the flag must not fire just because SOME device
+        elsewhere in the fleet has an unknown inventory."""
+        g = graph([node("a", "Alpha"), node("b", "Bravo"),
+                   node("c", "Charlie", acaps_known=False)],
+                  [edge("E1", "a", "b", detail="ACS rule triggers on a, acts on b")],
+                  [acs_rule(1, "r", triggers=["a"], actions=["b"])])
+        p = cl.propose(g, run_id="r")["proposals"][0]
+        assert cl.FLAG_ACAP_INVENTORY_PARTIAL not in p["flags"]
 
     def test_no_acs_flags_the_degradation_and_names_the_reason(self):
         g = graph([node("a", "Alpha"), node("b", "Bravo")],

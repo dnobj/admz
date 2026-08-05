@@ -289,6 +289,8 @@
     firing_unknown: 'no firing history — that score term is 0, not zero-activity',
     names_only_rules: 'some rules are name-only (AXIS OS < 12)',
     blind_rules: 'some rules have no observable firing channel',
+    acap_inventory_partial: 'app inventory is unknown for some fleet devices — ' +
+      'shared-app evidence above may look different on a re-run',
   };
 
   function scoreBar(p) {
@@ -335,7 +337,8 @@
     if ((p.flags || []).length) {
       out.push('<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">' +
         p.flags.map((f) => '<span class="badge ' +
-          (f === 'no_topology' || f === 'acs_absent' ? 'amber' : 'grey') + '">' +
+          (f === 'no_topology' || f === 'acs_absent' || f === 'acap_inventory_partial'
+            ? 'amber' : 'grey') + '">' +
           esc(FLAG_LABEL[f] || f) + '</span>').join('') + '</div>');
     }
 
