@@ -12,6 +12,7 @@ dicts. Audit rows are written HERE so every surface gets them for free.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from admz.demos import service
@@ -22,6 +23,35 @@ logger = logging.getLogger(__name__)
 # The only demo fields a caller may set/patch — everything else is computed.
 DEMO_FIELDS = ("name", "narrative", "tag", "device_ids", "roles",
                "config_source", "signals", "enabled")
+
+# #191: a demo name is written by an ungated MCP tool (create_demo,
+# confirm_demo_proposal) and rendered into EVERY future chat/voice system
+# prompt via admz/chatbot/context.py:build_demos_section — no confirmation
+# gate stands between a caller and every future principal's prompt. Reject
+# the shapes that let a name masquerade as prompt structure rather than a
+# label: control characters/newlines (the concrete #167/#191 exploit — a
+# newline lets a name split into extra lines once rendered) and unbounded
+# length (an unbounded name is also a per-turn token amplifier). This is a
+# reject-at-the-door check, not the render-time sanitizer in
+# admz/chatbot/context.py: a caller naming a demo gets a clear error rather
+# than a silently mangled name, and the render-time sanitizer stays as a
+# backstop for any name that reached storage before this existed.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_MAX_NAME_LENGTH = 80
+
+
+def _validate_demo_name(name: str) -> None:
+    if _CONTROL_CHARS_RE.search(name):
+        raise DemoActionError(
+            "name cannot contain control characters or newlines — a "
+            "newline would let the name masquerade as extra lines once "
+            "it's rendered into every future chat's system prompt (#191)"
+        )
+    if len(name) > _MAX_NAME_LENGTH:
+        raise DemoActionError(
+            f"name is too long ({len(name)} chars, max {_MAX_NAME_LENGTH}) "
+            "— it is rendered into every future chat's system prompt (#191)"
+        )
 
 
 class DemoActionError(ValueError):
@@ -78,6 +108,7 @@ def create_demo_core(ctx, spec: Dict[str, Any], principal) -> Demo:
     name = (spec.get("name") or "").strip()
     if not name:
         raise DemoActionError("name is required")
+    _validate_demo_name(name)
     demo = ctx.demo_store.create(Demo(
         id="", name=name, narrative=spec.get("narrative") or "",
         tag=spec.get("tag") or None, device_ids=spec.get("device_ids") or [],
@@ -105,6 +136,8 @@ def update_demo_core(ctx, demo: Demo, body: Dict[str, Any], principal) -> Demo:
         setattr(demo, f, body[f])
     if not (demo.name or "").strip():
         raise DemoActionError("name cannot be empty")
+    if "name" in touched:
+        _validate_demo_name(demo.name)
     ctx.demo_store.update(demo)
     record_event(principal, "demo.update", resource=f"demo:{demo.id}",
                  details={"fields": touched})
