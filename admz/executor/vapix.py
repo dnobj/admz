@@ -72,6 +72,35 @@ def _upload_path_allowed(file_path: str) -> bool:
 
     Resolves symlinks and ``..`` segments before comparing, so neither
     traversal nor a symlink planted in the cache can escape the root.
+
+    **This is CONTAINMENT, not AUTHENTICATION, and on its own it is not
+    sufficient (GH #188).** It answers "is this path inside the cache?" — it
+    says nothing about how the bytes got there or what they are. The guard is
+    therefore only as strong as the doors into that directory, and it does not
+    control them:
+
+    * ``firmware/downloader.py::import_firmware_files`` copies caller-named
+      files **into** the cache. Until #188 that was reachable from an ungated
+      MCP tool whose ``directory`` argument was unconstrained and defaulted to
+      ``~/Downloads``.
+    * The attack that makes this concrete is **not** about firmware. Rename
+      ``admz.key`` — the Fernet key protecting every stored device credential —
+      to ``X.bin``, import it, then ask the executor to "upload firmware" to a
+      device the attacker controls. The file is inside the cache, so this guard
+      says yes, and the very host secret H-3 was written to protect leaves the
+      machine. ``scan_directory`` globs ``*.bin`` (``downloader.py:284``), so
+      the rename is required — that is a speed bump, not a control.
+
+    So: **do not read a passing check here as "this file is safe to send."**
+    It means only "this file is inside the directory ADMZ treats as staged".
+    The import door is gated as of #188; the artifact itself is unverified
+    until #188's second half lands, and even then TOFU-pinning detects
+    substitution after entry rather than authenticating the artifact. What
+    stops a genuinely malicious *firmware image* flashing is the device's own
+    mandatory signature check (VAPIX ``422``), which belongs to the device.
+
+    Anyone adding another writer into the firmware cache is adding a door into
+    the trusted side of this boundary and must gate it.
     """
     try:
         resolved = Path(file_path).resolve()

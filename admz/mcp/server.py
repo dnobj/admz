@@ -4660,7 +4660,53 @@ class ADMZMCPServer:
                 ],
             }
 
-        # Import mode
+        # ---- #188: the import is a WRITE into a trusted directory ----------
+        # `scan_only` above copies nothing and stays ungated — the model must
+        # still be able to tell an operator what is available.
+        #
+        # This branch copies caller-named files into the firmware cache, which
+        # `executor/vapix.py::_upload_path_allowed` treats as staged-and-safe.
+        # That guard is containment, not authentication, so an ungated write
+        # into it defeats its purpose: rename `admz.key` to `X.bin`, import it,
+        # then "upload firmware" to a device you control, and the Fernet key
+        # protecting every stored device credential leaves the host through the
+        # guard built to prevent exactly that.
+        #
+        # The level is INHERITED from the operation the import stages for
+        # (`firmwaremanagement.cgi:upgrade`), never hardcoded — one
+        # classification, no second opinion to keep in step (#255). An
+        # unreadable catalog fails CLOSED.
+        from admz import operations
+        from admz.operations import FIRMWARE_IMPORT_STAGES_FOR
+
+        try:
+            risk = self.catalog.get_risk_level("vapix", FIRMWARE_IMPORT_STAGES_FOR)
+        except Exception:  # noqa: BLE001 — never let a catalog error open the gate
+            risk = "dangerous"
+        level = operations.resolve_confirmation(risk)
+
+        if level != "none":
+            session = operations.create_action_session(
+                action="import_firmware",
+                device_id=device_id or "fleet",
+                payload={"directory": directory, "device_id": device_id},
+                reason=(
+                    f"Import firmware files from '{directory}' into ADMZ's "
+                    "firmware cache. Files placed there are treated as staged "
+                    "and may be uploaded to a device without a further content "
+                    "check, so this approves the CONTENTS of that directory, "
+                    "not just the act of copying. Anything named *.bin is "
+                    "copied — ADMZ does not verify it is genuine firmware."
+                ),
+                risk=risk,
+                operator_configurable=True,
+            )
+            env = operations.blocked_envelope(
+                session, reason=session.danger_description)
+            env["success"] = False
+            return env
+        # ---- end gate ------------------------------------------------------
+
         result = await import_firmware_files(directory)
 
         # Filter results if device_id was provided

@@ -999,6 +999,41 @@ async def _action_set_event_ingest(
 #: gate and the executor cannot drift onto different operations.
 TEMP_CREDENTIAL_OP = "pwdgrp.cgi:add-user"
 
+#: The operation a firmware import STAGES FOR. The import itself touches no
+#: device — it copies bytes into the directory ``executor/vapix.py``'s
+#: ``_upload_path_allowed`` vouches for, and the executor will later upload
+#: whatever is in there with no content check. So an import is in effect a
+#: pre-authorisation of that upload, and inherits its classification rather
+#: than asserting a second opinion about how risky it is (#188, #313's shape).
+FIRMWARE_IMPORT_STAGES_FOR = "firmwaremanagement.cgi:upgrade"
+
+
+async def _action_import_firmware(
+    action: Mapping[str, Any], registry: Any, git_repo: Any = None,
+) -> Dict[str, Any]:
+    """Approved copy of caller-named files into the firmware cache (#188).
+
+    Runs after a human approves the widget. Pure filesystem work with no
+    per-process state, so it is safe in whichever process consumes the session.
+    """
+    from admz.firmware.downloader import import_firmware_files
+
+    directory = str(action.get("directory") or "")
+    if not directory:
+        return {"success": False, "action": "import_firmware",
+                "error": "directory is required"}
+
+    result = await import_firmware_files(directory)
+    return {
+        "success": True, "action": "import_firmware", "directory": directory,
+        "imported": [{"source": s, "cached_at": d} for s, d in result.imported],
+        "skipped": [{"source": s, "reason": r} for s, r in result.skipped],
+        "errors": [{"source": s, "error": e} for s, e in result.errors],
+        "summary": (f"Imported {len(result.imported)}, "
+                    f"skipped {len(result.skipped)}, "
+                    f"errors {len(result.errors)}"),
+    }
+
 #: permissions → VAPIX group mapping. Mirrors the MCP tool's table; kept beside
 #: the executor because this is now where the account is created.
 _TEMP_PERM_MAP = {
@@ -1100,6 +1135,9 @@ _ACTION_EXECUTORS = {
     # the confirmation gate entirely — the catalog risk_level was never
     # consulted on that path, so #165's reclassification did not reach it.
     "create_temp_credentials": _action_create_temp_credentials,
+    # #188: copying files into the firmware cache is a write into the trusted
+    # side of _upload_path_allowed's boundary, so it takes the widget.
+    "import_firmware": _action_import_firmware,
 }
 
 
