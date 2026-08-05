@@ -51,6 +51,30 @@ write it; only the `/confirm-settings` web UI can.
 
 **Enforced at:** `admz/fleet_settings.py::mask_settings_for_display`. Tested in `tests/test_fleet_settings.py` and `tests/test_api_routes.py::TestFleetSettingsMasking`.
 
+### FR-SEC-007a — Fleet-setting secrets encrypted at rest ✅
+Masking (FR-SEC-007) governs what a *caller* is shown; this governs what is in
+the *file*. `default_password`, `gemini_api_key` and `acs_webhook_token` are
+encrypted with the registry's Fernet key (ADR-0010), joining
+`survey_github_pat` and the two `github_app_*` secrets which already were. The
+value is **recoverable, not hashed** — ADMZ has to send it to a device — which
+is the opposite of `confirm_password_hash`, deliberately left as a hash.
+
+Encryption lives in the store (`fleet_settings.get`/`set`), not at the call
+sites: `default_password` has three readers with no accessor between them, and
+they already shared that one path. Callers see plaintext and are unchanged.
+
+A legacy plaintext value is migrated in place on first read, and the plaintext
+is *gone* from the database file afterwards rather than superseded — asserted
+against the raw file bytes, with a control proving it was findable beforehand.
+A value that will not decrypt is reported unset and **left untouched**, so a
+rotated key cannot destroy the secret.
+
+**Enforced at:** `admz/setting_crypto.py`, `admz/fleet_settings.py::get`/`set`/`list_all`,
+key inventory in `admz/setting_policy.py`. Tested in
+`tests/test_setting_encryption.py`, whose
+`test_the_partition_covers_every_sensitive_key` fails if a new sensitive
+setting is added without deciding how it is stored (#296 part 1).
+
 ### FR-SEC-008 — Per-protocol device authentication ✅
 ADMZ probes each device's `WWW-Authenticate` header on HTTP and HTTPS, persists the detected scheme per-protocol in `device_info["auth"]`, and uses the scheme-appropriate auth handler at request time. Supported schemes: `digest`, `basic`, `bearer`, `none`.
 
