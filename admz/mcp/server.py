@@ -3894,9 +3894,21 @@ class ADMZMCPServer:
             }
 
         fleet_settings.set(key, value)
-        display_value = value
-        if "password" in key.lower():
-            display_value = f"{'*' * min(len(value), 8)} ({len(value)} chars)"
+        # #158: this line was its own hand-rolled "password" in key.lower()
+        # test — a fourth instance of the same drift admz/redact.py exists to
+        # stop (D-2). Currently only default_username can ever reach here
+        # with a real value (default_password is capture-only and returns
+        # above; everything else is refused by is_protected_setting before
+        # this point) so nothing sensitive echoes back today — but that was
+        # true only because of the allow-list, not because this predicate
+        # was correct, and the allow-list is exactly the kind of thing that
+        # grows. Use the canonical predicate/formatter so it can't drift
+        # again if it ever does.
+        from admz.fleet_settings import is_sensitive_setting_key, mask_setting_value
+
+        display_value = (
+            mask_setting_value(value) if is_sensitive_setting_key(key) else value
+        )
         return {
             "success": True,
             "action": "set",
