@@ -768,12 +768,25 @@ def build_system_prompt(
     # ADR-0051: the narration guidance rides on the live-state block. No ACS,
     # no run and no open proposal → the builder returns "" and this whole
     # section (guidance included) vanishes, like every other conditional slot.
+    #
+    # #320: proposal names in this block derive from device tags and rule
+    # names — the same class of partially-attacker-influenceable content the
+    # roster/demos fences close, just reached less directly. Fenced the same
+    # way; see FENCED_SECTIONS in tests/test_prompt_fencing_completeness.py
+    # for why this whole block (including ADMZ's own "ACS Pro is connected"/
+    # "Last run" narration lines, not just the proposal names) is inside the
+    # fence rather than just the proposal-list lines: the roster/demos
+    # precedent already fences ADMZ-computed content that's interleaved with
+    # device-sourced content in the same block (e.g. the demos section's own
+    # "readiness" state), and splitting this block in two to fence only the
+    # proposal lines would add real complexity for a labeling nicety, not a
+    # security difference — over-fencing ADMZ's own narration costs nothing.
     inference_section_text = ""
     if inference_section and inference_section.strip():
         inference_section_text = (
             f"\n{_INFERENCE_GUIDANCE.rstrip()}\n\n"
             "## Where this deployment stands right now\n\n"
-            f"{inference_section.strip()}\n"
+            f"{_fence('INFERENCE PROPOSALS DATA', inference_section.strip())}\n"
         )
 
     # ADR-0052: the guidance rides on the live list, exactly like ADR-0051's

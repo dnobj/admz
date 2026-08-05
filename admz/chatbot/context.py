@@ -294,7 +294,13 @@ def build_demos_section() -> str:
 
 
 #: Bound the proposal list the same way the roster is bounded — a noisy site
-#: must not balloon the per-turn token cost.
+#: must not balloon the per-turn token cost. Unlike the demos section before
+#: #191, this already bounds what's RENDERED, not just what's queried (#320
+#: checked): the query at :func:`build_inference_section` fetches
+#: ``_MAX_INFERENCE_PROPOSALS + 1`` rows (one extra, to detect "more" without
+#: a second count query), and the render loop re-slices to exactly
+#: ``rows[:_MAX_INFERENCE_PROPOSALS]`` before iterating — so no second cap
+#: is needed here.
 _MAX_INFERENCE_PROPOSALS = 8
 
 
@@ -383,7 +389,13 @@ def build_inference_section() -> str:
             "see them. Each name below is the DETERMINISTIC placeholder, not a "
             "good name:")
         for p in shown:
-            parts = [f"{p.name} ({p.id}) — {p.confidence}",
+            # p.name derives from device tags and rule names — partially
+            # device/operator-influenceable, the same class of field as the
+            # roster's nickname and the demos section's name (#320). Less
+            # direct than either (an attacker shapes it via tags/rule names,
+            # not by setting it outright), but the render is identical.
+            name = sanitize_display_text(p.name, max_length=_MAX_FIELD_LEN)
+            parts = [f"{name} ({p.id}) — {p.confidence}",
                      f"{len(p.device_ids)} device(s)"]
             if p.flags:
                 parts.append("flags: " + ", ".join(str(f) for f in p.flags[:4]))

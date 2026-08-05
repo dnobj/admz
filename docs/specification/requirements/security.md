@@ -263,17 +263,46 @@ model. `admz/chatbot/client.py::_build_contents` now neutralizes the literal
 past output) before that flattening happens, so only a genuine server-written
 note can ever carry it.
 
+**The demo-inference proposal-names section is fenced too** (#320): proposal
+names derive from device tags and rule names, so they're partially
+attacker-influenceable the same way — reached less directly than
+`update_device`'s nickname field, but rendered identically. Sanitized the
+same way and wrapped in the same fence; unlike the demos section before
+#191, `_MAX_INFERENCE_PROPOSALS` already bounded what's *rendered* (not just
+queried — the render loop re-slices to it independently), so no second cap
+was needed.
+
+**Structural guard, not just three more instances of the same fix** (#320's
+own question): #167, #191 and #320 are the identical failure shape
+`admz/setting_policy.py:10-17` documents for fleet-setting keys — three
+independent attempts at enumerating "which keys are sensitive" found 8, 10,
+and 18 keys, each missing ones the others found, because remembering to
+classify a new call site doesn't scale. Applied here:
+`tests/test_prompt_fencing_completeness.py` enumerates every `build_*`
+section builder `admz/chatbot/context.py` defines and cross-checks it
+against two closed, exhaustive registries — `FENCED_SECTIONS` and
+`TRUSTED_SECTIONS` — behaviorally (each is checked by actually calling
+`build_system_prompt` with a marker payload and asserting the fence is or
+isn't there), not by reading source text. A new section builder that's in
+neither registry fails the suite immediately; this doesn't classify it
+correctly on its own — a human still decides which bucket — but it makes
+the *decision* impossible to skip silently, which is the property "one more
+manual audit" doesn't have. Stated limit: the scanner only reaches
+`context.py`'s own top-level functions — `build_module_prompt_sections`
+delegates to per-module prompt contributors (ADR-0039) it cannot see inside
+of, so a module rendering device data through its own section would need
+its own guard.
+
 **Enforced at:** `admz/validators.py::sanitize_display_text`,
-`admz/chatbot/context.py` (roster/demos builders),
+`admz/chatbot/context.py` (roster/demos/inference-proposal builders),
 `admz/demos/actions.py::_validate_demo_name`,
 `admz/chatbot/system_prompt.py::_fence`, `admz/chatbot/client.py::_build_contents`.
-Tested in `tests/test_prompt_injection_fencing.py`, `tests/test_demos_routes.py`,
-`tests/test_chat_event_notes.py`. Not addressed here (tracked separately,
+Tested in `tests/test_prompt_injection_fencing.py`,
+`tests/test_prompt_fencing_completeness.py`, `tests/test_demos_routes.py`,
+`tests/test_chat_event_notes.py`. Still not addressed (tracked separately,
 noted in the PR): the field allow-list on `update_device`/`update_device_tags`
-(they still merge an arbitrary dict with no allow-list — #167's suggested
-fix item 4), and the same fencing/cap treatment for the demo-inference
-proposal names section, which shares the same rendering shape but wasn't
-named by either filed issue.
+— they still merge an arbitrary dict with no allow-list (#167's suggested
+fix item 4).
 
 ## Non-functional requirements
 
