@@ -16,7 +16,7 @@ around. See ADR-0043.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Param-name hints. ``password``-family values must never reach chat/logs;
 # ``login``-family values are usernames but are collected together with the
@@ -163,6 +163,45 @@ def device_applications(git_repo: Any, registry: Any, device_id: str) -> Dict[st
         }
     except Exception:  # noqa: BLE001 — grounding is best-effort, never fatal
         return {}
+
+
+def device_applications_detail(
+    git_repo: Any, registry: Any, device_id: str
+) -> Tuple[Dict[str, str], bool]:
+    """Like :func:`device_applications`, plus whether this device has ever
+    been snapshotted at all — ``(apps, has_snapshot)``.
+
+    ``has_snapshot`` is the ONE thing that can be told apart reliably: it is
+    True iff the registry has a ``latest_observed_sha`` or ``baseline_sha``
+    for this device, False otherwise. That is a plain registry-field check,
+    not an inference, so it costs nothing to get right.
+
+    What it deliberately does **not** attempt: when ``has_snapshot`` is True
+    and ``apps`` is still empty, that is NOT further classified as "the read
+    failed" or "the device genuinely has no apps" — ADMZ cannot currently
+    tell those apart, and guessing would trade one false claim for another
+    (#189):
+
+    * a device with no ACAP support snapshots successfully and legitimately
+      writes an **empty** ``applications`` facet
+      (``snapshot/facets/applications.py``: "on a product without ACAP the
+      op just fails and the engine yields an empty facet, gracefully") — so
+      "empty" is not evidence of failure;
+    * a failed read looks identical: ``GitRepo.get_file`` collapses *any*
+      non-zero ``git show`` exit — corrupt object, unreadable
+      ``.git/objects``, a ref that no longer resolves — into a bare
+      ``None``, with no exception and no distinguishing detail.
+
+    Naming this limit honestly (this function) is the alternative to a
+    heuristic that would be wrong in one direction or the other.
+    """
+    has_snapshot = False
+    try:
+        info = registry.get_device_info(device_id) or {}
+        has_snapshot = bool(info.get("latest_observed_sha") or info.get("baseline_sha"))
+    except Exception:  # noqa: BLE001 — grounding is best-effort, never fatal
+        pass
+    return device_applications(git_repo, registry, device_id), has_snapshot
 
 
 def publisher_app_for(condition: Any) -> Optional[str]:

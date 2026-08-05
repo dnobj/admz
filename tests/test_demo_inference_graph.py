@@ -40,10 +40,16 @@ def _isolate_admz_home(tmp_path, monkeypatch):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def dev(device_id, *, name=None, model="AXIS TEST", tags=(), host="", acaps=None,
-        mac=None):
+        mac=None, has_snapshot_ref=None):
+    """``has_snapshot_ref`` defaults to True when ``acaps`` is given (a device
+    with a known inventory obviously has a snapshot) and False otherwise (the
+    ordinary "never snapshotted" case) — pass it explicitly to build the third
+    state: a device WITH a snapshot ref whose inventory reads empty (#189)."""
+    if has_snapshot_ref is None:
+        has_snapshot_ref = bool(acaps)
     return {"device_id": device_id, "nickname": name or device_id, "model": model,
             "tags": list(tags), "host": host, "mac_address": mac or device_id,
-            "acaps": dict(acaps or {})}
+            "acaps": dict(acaps or {}), "has_snapshot_ref": has_snapshot_ref}
 
 
 def acs_rule(rid, name, *, triggers=(), actions=(), enabled=True):
@@ -119,6 +125,34 @@ class TestNodesAndParams:
         nodes = G.build_nodes([dev("A"), dev("B", acaps={"vmd": "Running"})])
         assert nodes[0]["acaps_known"] is False and nodes[0]["acaps"] == []
         assert nodes[1]["acaps_known"] is True
+
+    def test_has_snapshot_ref_distinguishes_never_from_empty(self):
+        """#189: a device that was never snapshotted and one that has a
+        snapshot but an empty inventory both carry ``acaps_known: False`` —
+        but they are not the same fleet state, and ``has_snapshot_ref`` is
+        the (honest, ref-presence-only) distinction between them."""
+        nodes = G.build_nodes([
+            dev("never", has_snapshot_ref=False),
+            dev("empty", acaps={}, has_snapshot_ref=True),
+            dev("known", acaps={"vmd": "Running"}),
+        ])
+        by_id = {n["device_id"]: n for n in nodes}
+        assert by_id["never"]["acaps_known"] is False
+        assert by_id["never"]["has_snapshot_ref"] is False
+        assert by_id["empty"]["acaps_known"] is False
+        assert by_id["empty"]["has_snapshot_ref"] is True
+        assert by_id["known"]["has_snapshot_ref"] is True
+
+    def test_app_inventory_breakdown_splits_the_fleet_three_ways(self):
+        nodes = G.build_nodes([
+            dev("never1", has_snapshot_ref=False),
+            dev("never2", has_snapshot_ref=False),
+            dev("empty1", acaps={}, has_snapshot_ref=True),
+            dev("known1", acaps={"vmd": "Running"}),
+        ])
+        assert G.app_inventory_breakdown(nodes) == {
+            "known": 1, "never_snapshotted": 2, "empty_inventory": 1,
+        }
 
     def test_params_are_echoed_into_the_graph(self):
         g = G.build_graph([dev("A")])
@@ -390,15 +424,47 @@ class TestAcapEdges:
         # rarer than the threshold → strictly above the floor
         assert w > G.E6_WEIGHT_FLOOR
 
-    def test_unknown_application_facets_neither_create_nor_suppress_an_edge(self):
+    def test_unknown_application_facets_are_excluded_from_the_known_denominator(self):
         """Devices with no ``applications`` snapshot are out of the denominator,
         so a bundled app can't be mistaken for a rare one (and no edge is made
-        for the unknown devices themselves)."""
+        for the unknown devices themselves). Renamed from a name that claimed
+        this exclusion "neither creates nor suppresses" an edge (#189) — that
+        claim was false; see the next test."""
         with_apps = [dev(x, acaps={"vmd": "Running"}) for x in "ABCD"]
         unknown = [dev(x) for x in "EFGHIJKLMN"]      # 10 devices, facet missing
         g = G.build_graph(with_apps + unknown)
         assert edges_of(g, "E6") == []                 # vmd = 4/4 known → ubiquitous
         assert g["summary"]["acaps"]["devices_with_app_inventory"] == 4
+
+    def test_one_unrelated_devices_missing_inventory_flips_other_devices_edges(self):
+        """The actual #189 scenario: A/B/C share ``sfh_detector`` (a real,
+        rare app). Six devices total, all with known inventory, gives
+        3/6 = 0.50 < 0.60 — distinctive, edges exist. Take ONE more device
+        (F) from "known, doesn't run it" to "unknown" and NOTHING about
+        A, B or C changed — yet total drops from 6 to 5, 3/5 = 0.60 is NOT
+        < 0.60, and every A-B/A-C/B-C edge disappears. This is the
+        cross-contamination the corrected comments now describe honestly
+        instead of denying."""
+        base = [
+            dev("A", acaps={"sfh_detector": "Running"}),
+            dev("B", acaps={"sfh_detector": "Running"}),
+            dev("C", acaps={"sfh_detector": "Running"}),
+            # Each on exactly one device — below ACAP_MIN_DEVICES, so neither
+            # forms its own edge; they exist only to pad the fleet to six.
+            dev("D", acaps={"d_only_app": "Running"}),
+            dev("E", acaps={"e_only_app": "Running"}),
+        ]
+        healthy = base + [dev("F", acaps={"unrelated": "Running"})]
+        g_healthy = G.build_graph(healthy)
+        assert g_healthy["summary"]["acaps"]["devices_with_app_inventory"] == 6
+        healthy_pairs = {pair(e) for e in edges_of(g_healthy, "E6")}
+        assert healthy_pairs == {("A", "B"), ("A", "C"), ("B", "C")}
+
+        # F's read now fails/never happened — F itself is untouched otherwise.
+        degraded = base + [dev("F", has_snapshot_ref=False)]
+        g_degraded = G.build_graph(degraded)
+        assert g_degraded["summary"]["acaps"]["devices_with_app_inventory"] == 5
+        assert edges_of(g_degraded, "E6") == []   # A-B, A-C, B-C ALL vanished
 
     def test_acap_only_pair_is_labelled_so_slice_3_can_cap_it(self):
         g = G.build_graph(self._fleet())
@@ -411,6 +477,17 @@ class TestAcapEdges:
         g = G.build_graph([dev("A", acaps={"rare": "Running"}),
                            dev("B", acaps={"other": "Running"})])
         assert edges_of(g, "E6") == []
+
+    def test_summary_breaks_down_the_unknown_population_honestly(self):
+        g = G.build_graph([
+            dev("known", acaps={"vmd": "Running"}),
+            dev("never", has_snapshot_ref=False),
+            dev("empty", acaps={}, has_snapshot_ref=True),
+        ])
+        acaps = g["summary"]["acaps"]
+        assert acaps["devices_with_app_inventory"] == 1
+        assert acaps["devices_never_snapshotted"] == 1
+        assert acaps["devices_with_empty_inventory"] == 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════

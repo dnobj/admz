@@ -329,6 +329,73 @@ def test_device_applications_degrades_to_empty():
     assert capabilities.device_applications(object(), registry, "dev1") == {}
 
 
+# --- device_applications_detail (#189) --------------------------------------
+
+
+def test_detail_reports_apps_and_has_snapshot_true():
+    registry = SimpleNamespace(
+        get_device_info=lambda did: {"latest_observed_sha": "abc123"})
+
+    class Repo:
+        def read_facet(self, device_id, facet, ref):
+            return {"vmd": {"status": "Running"}}
+
+    apps, has_snapshot = capabilities.device_applications_detail(Repo(), registry, "dev1")
+    assert apps == {"vmd": "Running"}
+    assert has_snapshot is True
+
+
+def test_detail_has_snapshot_true_via_baseline_sha_fallback():
+    """``baseline_sha`` counts as a snapshot ref too, same as ``device_applications``
+    itself falls back to it."""
+    registry = SimpleNamespace(
+        get_device_info=lambda did: {"baseline_sha": "base1"})
+
+    class Repo:
+        def read_facet(self, device_id, facet, ref):
+            return {}
+
+    apps, has_snapshot = capabilities.device_applications_detail(Repo(), registry, "dev1")
+    assert apps == {} and has_snapshot is True
+
+
+def test_detail_has_snapshot_false_when_registry_has_no_ref_at_all():
+    """No ``latest_observed_sha`` and no ``baseline_sha`` — never snapshotted,
+    the one case that IS reliably distinguishable."""
+    registry = SimpleNamespace(get_device_info=lambda did: {})
+
+    class Repo:
+        def read_facet(self, device_id, facet, ref):
+            raise AssertionError("must not read a facet with no ref to read")
+
+    apps, has_snapshot = capabilities.device_applications_detail(Repo(), registry, "dev1")
+    assert apps == {} and has_snapshot is False
+
+
+def test_detail_ref_present_but_apps_empty_is_still_has_snapshot_true():
+    """The exact ambiguous case the docstring names: a ref exists, but the
+    facet reads back empty. ``has_snapshot`` is True — this function makes NO
+    claim about whether that's a genuinely-empty inventory or a failed read."""
+    registry = SimpleNamespace(
+        get_device_info=lambda did: {"latest_observed_sha": "sha-that-may-be-stale"})
+
+    class Repo:
+        def read_facet(self, device_id, facet, ref):
+            return None   # what a failed `git show` AND a legitimately-empty
+                          # facet both look like — see GitRepo.get_file
+
+    apps, has_snapshot = capabilities.device_applications_detail(Repo(), registry, "dev1")
+    assert apps == {} and has_snapshot is True
+
+
+def test_detail_degrades_has_snapshot_to_false_when_registry_read_fails():
+    registry = SimpleNamespace(
+        get_device_info=lambda did: (_ for _ in ()).throw(RuntimeError("boom")))
+    apps, has_snapshot = capabilities.device_applications_detail(
+        object(), registry, "dev1")
+    assert apps == {} and has_snapshot is False
+
+
 def test_publisher_app_for_topic_matrix():
     cases = [
         ("tnsaxis:CameraApplicationPlatform/VMD/Camera1ProfileANY", "vmd"),

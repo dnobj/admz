@@ -74,14 +74,20 @@ class CollectionError(RuntimeError):
 def _registry_nodes(ctx: Any) -> List[Dict[str, Any]]:
     """Registry rows enriched with each device's installed ACAPs (cache-only).
 
-    ``device_applications`` returns ``{}`` for a device with no snapshot; that
-    is **unknown**, not "no apps", and the graph treats it as such.
+    ``device_applications_detail`` returns ``({}, has_snapshot)`` for a device
+    with no known app inventory; that is **unknown**, not "no apps", and the
+    graph treats it as such either way. ``has_snapshot`` is carried through as
+    ``has_snapshot_ref`` so the graph can at least tell "never snapshotted"
+    apart from "has a snapshot, but this facet came back empty" — without
+    claiming to know *why* the latter happened (#189; see
+    ``capabilities.device_applications_detail``'s docstring for why that
+    can't be done reliably).
 
     An unreadable registry raises :class:`CollectionError`: there is no honest
     graph to build without the node set, and an empty one would be a lie a
     caller cannot detect.
     """
-    from admz.rules.capabilities import device_applications
+    from admz.rules.capabilities import device_applications_detail
 
     try:
         rows = ctx.registry.list_devices() or []
@@ -100,9 +106,11 @@ def _registry_nodes(ctx: Any) -> List[Dict[str, Any]]:
         entry = dict(row)
         entry["device_id"] = did
         try:
-            entry["acaps"] = device_applications(ctx.git_repo, ctx.registry, did)
+            apps, has_snapshot = device_applications_detail(ctx.git_repo, ctx.registry, did)
         except Exception:  # noqa: BLE001 — grounding is best-effort, never fatal
-            entry["acaps"] = {}
+            apps, has_snapshot = {}, False
+        entry["acaps"] = apps
+        entry["has_snapshot_ref"] = has_snapshot
         out.append(entry)
     return out
 
