@@ -118,18 +118,49 @@ async def provision_factory_default(
     host: str,
     username: str = "root",
     password: Optional[str] = None,
+    allow_fleet_default: bool = True,
 ) -> Dict[str, Any]:
     """Provision a FACTORY-DEFAULT device: create the admin user (no auth
     needed), store the credential, mark the device digest-authed. The password
-    comes from ``password`` > fleet ``default_password`` > a generated one (the
-    value is never returned). Returns a result dict.
+    comes from ``password`` > fleet ``default_password`` (if
+    ``allow_fleet_default``) > a generated one (the value is never returned).
+    Returns a result dict.
 
     Used by the MCP tool's factory-default path and the deferred ``reprovision``
-    recovery handler — the device must actually be factory-default (needsetup)."""
+    recovery handler — the device must actually be factory-default (needsetup).
+
+    ``allow_fleet_default=False`` (GH #185): the deferred/scheduled reprovision
+    path calls with this set. ``needsetup=yes`` — the only signal this whole
+    call exists to respond to — is read from an unauthenticated device response
+    (``fleet/health.py``'s own comment calls it "a definitive, auth-free
+    signal"), and the task that authorizes this call can fire up to 24h after
+    an operator approved it, unattended, against whatever host answers at the
+    device's registered address at that later moment. ADMZ cannot authenticate
+    a peer that (by definition of ``needsetup=yes``) has no account yet, and no
+    other identity check exists on this path (see GH #185's investigation).
+    Sending the *shared fleet-wide* password there means a spoofed peer — a
+    reassigned DHCP lease, ARP spoofing, the port a decommissioned camera
+    vacated — walks away with a credential valid on every other device ADMZ
+    manages. Sending a freshly generated one instead does not verify the peer
+    (nothing here does), but it makes **who the peer turns out to be matter
+    much less**: the disclosed value is reused nowhere else in the fleet, and
+    is not even valid against the real device at this `device_id` — that
+    device was never actually contacted, since the spoofed peer answered in
+    its place, and is still sitting factory-default. This does not close the
+    disclosure or the fact that ADMZ's registry now (wrongly) believes it
+    holds a working credential for hardware it never touched — see GH #185's
+    handoff for that residual gap. The interactive `provision_device` MCP tool
+    path is unaffected (still defaults `allow_fleet_default=True`): a human is
+    driving that write at the moment it happens, a materially different threat
+    shape, and changing its default is the operator's own open call on #296
+    part 2, not something to fold in here.
+    """
     if password:
         new_password, source = password, "provided"
     else:
-        fleet_default = fleet_settings.get("default_password")
+        fleet_default = (
+            fleet_settings.get("default_password") if allow_fleet_default else None
+        )
         if fleet_default:
             new_password, source = fleet_default, "fleet_default"
         else:
