@@ -63,13 +63,38 @@ switch, which answers HTTP in ~80 ms with an HTML login page and had logged
 On some Axis firmware `systemready.cgi:systemReady` answers `200` **without
 validating credentials**, so a device with a wrong/stale stored password would
 otherwise show a misleading `online`. After a successful systemready, the probe
-issues one **auth-required** call (`basicdeviceinfo.cgi:getAllProperties`,
-`_confirm_credentials`): a `401`/`403` flips the status to `auth_failed`
-(reachable, but credentials rejected); a `2xx` (or any non-auth answer) keeps
-it `online`. The extra call fires only for already-reachable devices, and is
-skippable via the `health_verify_credentials` fleet setting (default on) for
-fleets of intentionally low-privilege accounts. This is the gap that masked the
+issues an **auth-required** call (`AUTH_CHECK_OP`,
+`basicdeviceinfo.cgi:getAllProperties`, via `_confirm_credentials`). The extra
+call fires only for already-reachable devices, and is skippable via the
+`health_verify_credentials` fleet setting (default on) for fleets of
+intentionally low-privilege accounts. This is the gap that masked the
 real-world I8016 case (right IP, stale password — was shown "online").
+
+**A `401` from that one call is not proof of bad credentials** (GH #149). It is
+corroborated against a second, independent auth-required op
+(`CORROBORATION_OP`, `param.cgi:list`) before the password is condemned, so
+`_confirm_credentials` is **tri-state**, not a boolean:
+
+| Both ops refuse | → `auth_failed`, error naming *both* ops |
+| The corroborator authenticates (2xx) | → stays **`online`**; a `health_probe` marker records which op works here, so it is preferred next probe |
+| The corroborator errors or answers oddly | → **status is not moved at all** |
+
+> **Corrected 2026-08-04 (#214).** This requirement was marked ✅ while
+> describing the **pre-#154 rule** — *"a `401`/`403` flips the status to
+> `auth_failed`"* — which is the single-401 condemnation that PR #154 replaced,
+> and the exact behaviour that parked an AXIS P8815-2 at `auth_failed` with
+> 18,004 consecutive failures while it was fully manageable. A reader
+> "restoring" the documented rule would reintroduce that bug. `CORROBORATION_OP`,
+> `AUTH_CHECK_OP` and the `health_probe` marker appeared **zero** times in
+> `docs/` before this correction.
+>
+> The marker itself selects probe **order only** — it never skips verification.
+> A marker meaning "trust this device without an auth check" would make a stale
+> password on a marked device invisible, which is #149's own complaint inverted.
+
+**The implementation is the source of truth for the outcome table**
+(`admz/fleet/health.py`, `_corroborate_rejection`); when it and this paragraph
+disagree, believe the code.
 
 ### FR-HLT-004 — Single background loop, opt-in ✅
 `HealthMonitor` is one async loop per process (shared between the MCP and

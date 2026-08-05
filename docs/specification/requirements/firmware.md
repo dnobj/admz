@@ -66,8 +66,11 @@ The CLI and MCP wrap these to surface actionable messages.
 - MCP: `download_firmware(model, version?)`,
   `import_firmware(path, model, version)`,
   `list_cached_firmware()`
-- REST: `GET /api/v2/firmware`, `POST /api/v2/firmware/download`,
-  `POST /api/v2/firmware/import`
+- REST: 📋 — an `/api/v2/firmware*` surface was specified here and **never
+  shipped**; `api/v2` has zero occurrences in `admz/`. The MCP tools above are
+  the shipped surface.
+
+> **Corrected 2026-08-04 (#214).** Marked ✅ while naming three REST endpoints that do not exist. A ✅ on an absent artifact is worse than a 📋 on a present one: it invites a reader to depend on something that was never built.
 
 Upgrade itself goes through the plan engine
 (`create_plan(template="firmware_upgrade", device=..., target=...)`)

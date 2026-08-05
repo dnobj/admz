@@ -4,6 +4,12 @@
 **Tracking started:** 2026-05-18
 **Status legend:** ✅ done · 🔄 in progress · 📝 deferred · ⏭ skipped (with reason)
 
+> **Note (2026-08-04, #214).** Tied to a dated review, but this is a **live
+> tracker, not a dated record**: its Status column asserts present state, so it
+> goes stale like any current-state doc. Rows 4.6 and 4.7 sat at 📝 *deferred*
+> after both shipped. Keep it current or retire it; a stale tracker is read as
+> a work queue.
+
 This document tracks the per-issue follow-up for the production-quality review of ADMZ. Each row is one finding from the review with a concrete fix, a status, and pointers to the commit / file changes that addressed it.
 
 ---
@@ -131,8 +137,8 @@ This document tracks the per-issue follow-up for the production-quality review o
 | 4.3 | Add structured logging (JSON formatter option) | 🟡 | 📝 |
 | 4.4 | Implement `requester` parameter — now carries the authenticated principal's identity through to the registry's `get_credentials` call, recorded in the audit log. | 🟡 | ✅ |
 | 4.5 | Enforce `0o700` permissions on `~/.admz/` directory — landed in Phase 3A (`SQLiteDeviceRegistry.__init__` chmods the parent dir). | 🟡 | ✅ |
-| 4.6 | Add rate limiting on `/capture/{token}` and `/confirm/{token}` POSTs | 🟡 | 📝 |
-| 4.7 | Add password attempt lockout for `url_and_password` confirms | 🟡 | 📝 |
+| 4.6 | Add rate limiting on `/capture/{token}` and `/confirm/{token}` POSTs — shipped: `rate_limiter.check` at `admz/api/routes/confirm.py:200`, `:687` and `admz/api/routes/capture.py:200`. | 🟡 | ✅ |
+| 4.7 | Add password attempt lockout for `url_and_password` confirms — shipped: `_PW_LOCKOUT_SECONDS = 300.0` with `_record_password_failure` / `_is_locked` (`admz/api/routes/confirm.py:41-57`). | 🟡 | ✅ |
 | 4.8 | Document network egress (Axis FTP, Vault) for air-gapped deployments | 🟢 | 📝 |
 
 ---

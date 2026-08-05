@@ -47,7 +47,7 @@ write it; only the `/confirm-settings` web UI can.
 **Enforced at:** `mcp/server.py::_register_handlers` (filters tool out of `list_tools()`); the device-credential REST endpoint no longer exists. See [0020](../decisions/0020-protected-fleet-settings.md).
 
 ### FR-SEC-007 — Password values masked when listing fleet settings ✅
-`get_fleet_settings` (MCP) and `GET /api/fleet/settings` (REST) both mask any setting whose key contains "password" — displayed as `****** (N chars)` — never plaintext. Shared helper `mask_settings_for_display` in `admz/fleet_settings.py` enforces a single rule across both surfaces.
+`get_fleet_settings` (MCP) and `GET /api/fleet/settings` (REST) both mask secret-shaped settings — displayed as `****** (N chars)`, never plaintext. Shared helper `mask_settings_for_display` in `admz/fleet_settings.py` enforces a single rule across both surfaces; **which keys count is `admz/redact.py::is_sensitive_key`**, which covers `password`, `passwd`, `secret`, `token`, `api_key`, compound `*key*` and a discrete `pat` — not the `"password" in key` test this line used to name (#214). FR-SEC-007a below names `gemini_api_key` and `acs_webhook_token` as secrets, which the old wording would not have covered.
 
 **Enforced at:** `admz/fleet_settings.py::mask_settings_for_display`. Tested in `tests/test_fleet_settings.py` and `tests/test_api_routes.py::TestFleetSettingsMasking`.
 
@@ -274,8 +274,15 @@ See `admz/audit.py` and [authentication.md](authentication.md) FR-AUTH-011.
 ### KG-SEC-004 — Fernet key has no rotation path ⚠️
 Losing `~/.admz/admz.key` means losing all encrypted credentials. There is no master-key wrap or envelope encryption. Joint backup of `admz.db` + `admz.key` is documented in `README.md::Backup`.
 
-### KG-SEC-005 — No rate limiting on `/capture` and `/confirm` POSTs ⚠️
-A determined attacker with the token URL can hit the POST handler repeatedly. Tokens are single-use so they're effectively neutralized after the first attempt, but pre-attempt brute-force is unbounded. (Tokens are 256-bit, so brute-force is theoretical, but lockout on the `url_and_password` confirm level is a reasonable hardening.)
+### KG-SEC-005 — Rate limiting on `/capture` and `/confirm` POSTs ✅ (closed)
+Both halves of this gap shipped. The POST handlers rate-limit per client
+(`admz/api/routes/confirm.py:200`, `:687`; `admz/api/routes/capture.py:200`),
+and a wrong confirmation password locks the token for 300 s
+(`admz/api/routes/confirm.py:41`, `_PW_LOCKOUT_SECONDS`).
+
+> **Corrected 2026-08-04 (#214).** Kept as ⚠️ after both were implemented. A
+> known-gap list is read to decide what to build next, so a ⚠️ on closed work
+> invites someone to build it twice — the same cost as a 📋 on shipped code.
 
 ### KG-SEC-006 — No secret zeroization in memory ⚠️
 Python `str` is immutable and lives in the arena until GC. Memory dumps would expose credentials. Acceptable for the target threat model; switching to `bytearray` everywhere is out of proportion.

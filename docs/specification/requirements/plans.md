@@ -91,11 +91,12 @@ Each plan records `created_by` (the principal that called
 execute / complete / rollback. Audit log lives at
 `~/.admz/audit.log` (Phase 4D).
 
-### FR-PLN-012 — Plan templates for common patterns ✅
-The MCP `create_plan` tool accepts a `template:` parameter that
-expands a known pattern (e.g. "configure ntp + timezone +
-verify") into a multi-step plan without the LLM having to assemble
-the operations. Templates live in `admz/plans/templates.py`.
+### FR-PLN-012 — Plan templates for common patterns 📋
+A `template:` parameter on `create_plan` that expands a known pattern (e.g.
+"configure ntp + timezone + verify") into a multi-step plan without the LLM
+having to assemble the operations.
+
+> **Corrected 2026-08-04 (#214).** Marked ✅ while pointing at `admz/plans/templates.py`, which does not exist — `admz/plans/` holds `__init__`, `completion`, `engine` and `models` only. A ✅ on an absent artifact is worse than a 📋 on a present one: it invites a reader to depend on something that was never built.
 
 ## Non-functional requirements
 

@@ -66,10 +66,17 @@ Module-level singleton `fleet_settings`. Per-call connections, WAL mode.
 
 ### FR-CORE-005 — Sensitive-value masking helpers ✅
 `is_sensitive_setting_key(key)` and `mask_setting_value(value)` in
-`admz/fleet_settings.py`. Same rule (`"password" in key.lower()`)
-applied uniformly by the MCP tool and the REST endpoint — ADR-0020's
-protected-keys list + this masking are why fleet-password values
-never leak to either surface.
+`admz/fleet_settings.py`, applied uniformly by the MCP tool and the REST
+endpoint. **The rule itself lives in `admz/redact.py::is_sensitive_key`** —
+named rather than restated here, because restating it is what made this
+paragraph wrong.
+
+> **Corrected 2026-08-04 (#214).** This said the rule was
+> `"password" in key.lower()`. It has since widened to cover `secret`, `token`,
+> `api_key`, compound `*key*` and a discrete `pat`. A reader auditing "are our
+> API keys masked?" against the documented rule would have concluded that
+> `gemini_api_key`, `acs_webhook_token` and `survey_github_pat` are returned in
+> plaintext. They are masked — the docs understated the protection.
 
 ### FR-CORE-006 — Components builder ✅ (Phase 3B)
 `admz/components.py::build_components(registry, ...)` returns a

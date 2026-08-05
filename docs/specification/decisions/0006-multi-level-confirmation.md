@@ -86,13 +86,30 @@ without an import cycle (GH #152).
 
 ## Status
 
-The `ConfirmStore` (SQLite-backed, multi-level) is implemented and
-unified with MCP/REST via Phase 2E. `dangerous` operations route
-through it. `service-affecting` operations are currently always
-`llm_confirm` regardless of the fleet setting — the per-risk lookup
-exists in `confirm_store.get_confirmation_level()` but the
-`execute_operation` paths don't consult it yet for non-dangerous
-risk levels. Closing this gap is a small Phase-4-stretch follow-up.
+Fully implemented; see the header. **Closed 2026-06-08** (the shared-gated-core
+update above): every risk class now resolves its level through
+`operations.resolve_confirmation` → `confirm_policy.get_confirmation_level`,
+not just `dangerous`.
+
+> **Corrected 2026-08-04 (#214).** This section used to read *"`service-affecting`
+> operations are currently always `llm_confirm` regardless of the fleet setting
+> … closing this gap is a small Phase-4-stretch follow-up."* That was true when
+> written and had been false since 2026-06-08 — it contradicted this ADR's own
+> header, its Decision table, and the 2026-06-09 update three paragraphs above.
+> It is corrected rather than deleted because the gap is part of the record; what
+> was wrong was stating it in the present tense.
+>
+> The stale reading mattered: it described the gate as **weaker than it is**. A
+> reader checking "can the model self-approve a service-affecting write?" would
+> have concluded yes. It cannot — `url_only` is a human-only widget approval,
+> and `llm_confirm` is not the default for any risk class.
+
+**The enforced mapping is `_DEFAULT_CONFIRMATION_LEVELS` in
+[`admz/confirm_policy.py`](../../../admz/confirm_policy.py), with per-fleet
+overrides.** The table in the Decision section above is the record of what was
+decided; that dict is what runs. When they disagree, the dict is right — check
+it rather than trusting this page, which is exactly the drift that produced
+this correction.
 
 ## Consequences
 

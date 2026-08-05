@@ -60,10 +60,10 @@ The git-backed configuration management workflow — the original Experience Cen
 **As an** operator concerned about unauthorized changes, **I want** ADMZ to tell me which devices have diverged from their committed configuration.
 
 **Acceptance criteria:**
-1. `check_drift(device_id)` reads the device's current state (in-memory snapshot, not committed), diffs against the latest git HEAD.
+1. `check_drift(device_id)` reads the device's current state and diffs it against the latest git HEAD.
 2. The response includes `has_drift`, `facets_checked`, `facets_drifted`, and a list of `DriftField(facet, path, expected, actual)`.
 3. `check_drift()` with no `device_id` scans the entire fleet; `check_drift(tag_filter=…)` scans a subset.
-4. Drift detection never modifies the device or the git repo.
+4. Drift detection never modifies the device. It **does** commit the observation it took to the config repo — see [US-DM-001](drift-and-monitoring.md) criterion 4 for what and why, rather than a second copy of the rule here (#214).
 
 **Related requirements:** [drift-detection](../requirements/drift-detection.md).
 

@@ -89,8 +89,36 @@ Per issue:
 3. Add/adjust tests.
 4. In the same PR: flip the referenced `📋/🚧` markers to `✅`, and fix
    any inaccuracy you discover in those docs.
-5. Reference the issue number in the PR and in commits.
-6. Merge → the issue closes.
+5. **Ask: what else does this change make false?** Not "which doc did I
+   edit" — *"which sentence somewhere now describes a system that no longer
+   behaves that way."* A behaviour change routinely falsifies a user story's
+   **Known gaps** entry, an ADR's **Status** section, a runbook, and the
+   requirement describing the same behaviour *from the other side* — none of
+   which the issue referenced. This step exists because step 4 was reliably
+   applied to the one requirement the author knew about and to nothing else
+   (#214).
+
+   Two rules learned from the sweep that closed #214:
+
+   - **Do not rewrite a dated record.** An ADR's Context and Decision, a
+     `review-<date>` document, a migration guide and a plan are *supposed* to
+     say what was true then; editing them falsifies the record. Half the
+     corpus (71 of 143 files) is this class. What *can* go stale inside one is
+     its **Status** section and its header — those claim present tense. Correct
+     those, dated, and leave the body alone.
+   - **Prefer deleting the paraphrase to updating it.** A document that points
+     at the enforced source cannot drift; one that restates it will. This is
+     the same move #303 made for counts — stop stating the number rather than
+     policing it. ADR-0006 now says "the enforced mapping is
+     `_DEFAULT_CONFIRMATION_LEVELS`; when this page and that dict disagree,
+     the dict is right", which is a sentence that stays true by construction.
+
+   **There is deliberately no guard test for this.** A test can check that a
+   path resolves or a count matches; it cannot check that a paragraph still
+   means what it says. This step is a habit, not a gate — pretending otherwise
+   would be the wrong lesson.
+6. Reference the issue number in the PR and in commits.
+7. Merge → the issue closes.
 
 ## How this maps to this repo
 
