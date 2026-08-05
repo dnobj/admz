@@ -81,10 +81,17 @@ def _pool_idle_seconds() -> Optional[float]:
     Read through ``chatbot.mcp_pool`` so there is one resolver for this value
     rather than a second copy of the env parsing to keep in step (#255). The
     import is lazy and failure-tolerant: ``admz.mcp`` must not hard-depend on
-    ``admz.chatbot``, and a standalone ``python -m admz mcp`` has no pool at
-    all — in which case there is no reaper to outlive and no ceiling to apply.
+    ``admz.chatbot``.
+
+    "Am I a pool subprocess?" is answered by ``ADMZ_MCP_NO_SCHEDULER``, which
+    ``chatbot/mcp_pool.py`` and ``chatbot/voice.py`` already set on exactly the
+    processes the reaper owns. A first draft invented a second env var for this
+    and the capability drift guard rejected it as unclassified — correctly,
+    since it was a new signal for a question an existing one already answers
+    (#255). A standalone ``python -m admz mcp`` has no reaper to outlive, so no
+    ceiling applies.
     """
-    if os.getenv("ADMZ_MCP_STANDALONE"):
+    if not os.getenv("ADMZ_MCP_NO_SCHEDULER"):
         return None
     try:
         from admz.chatbot.mcp_pool import _resolve_idle_seconds

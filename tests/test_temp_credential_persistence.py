@@ -206,6 +206,7 @@ def test_cleanup_failures_accumulate_across_processes(db):
 
 def test_ttl_ceiling_is_reconciled_against_the_pool_reaper(monkeypatch):
     """A credential must not outlive the process that cleans it up."""
+    monkeypatch.setenv("ADMZ_MCP_NO_SCHEDULER", "1")   # i.e. a pool subprocess
     monkeypatch.setenv("ADMZ_MCP_POOL_IDLE_SECONDS", "300")
     assert max_ttl_seconds() == 300
     assert clamp_ttl(3600) == 300, (
@@ -213,6 +214,7 @@ def test_ttl_ceiling_is_reconciled_against_the_pool_reaper(monkeypatch):
 
 
 def test_a_longer_reaper_permits_a_longer_ttl(monkeypatch):
+    monkeypatch.setenv("ADMZ_MCP_NO_SCHEDULER", "1")
     monkeypatch.setenv("ADMZ_MCP_POOL_IDLE_SECONDS", "7200")
     assert max_ttl_seconds() == MAX_TTL_SECONDS, "capped by the nominal ceiling"
     assert clamp_ttl(3600) == 3600
@@ -221,19 +223,26 @@ def test_a_longer_reaper_permits_a_longer_ttl(monkeypatch):
 def test_the_ceiling_never_falls_below_the_floor(monkeypatch):
     """A tiny idle timeout must shorten credentials, not make every request
     fail by producing a ceiling under the minimum."""
+    monkeypatch.setenv("ADMZ_MCP_NO_SCHEDULER", "1")
     monkeypatch.setenv("ADMZ_MCP_POOL_IDLE_SECONDS", "5")
     assert max_ttl_seconds() == MIN_TTL_SECONDS
     assert clamp_ttl(300) == MIN_TTL_SECONDS
 
 
 def test_ttl_floor_still_applies(monkeypatch):
+    monkeypatch.setenv("ADMZ_MCP_NO_SCHEDULER", "1")
     monkeypatch.setenv("ADMZ_MCP_POOL_IDLE_SECONDS", "3600")
     assert clamp_ttl(1) == MIN_TTL_SECONDS
 
 
 def test_no_pool_means_no_ceiling(monkeypatch):
-    """Standalone `python -m admz mcp` has no reaper to outlive."""
-    monkeypatch.setenv("ADMZ_MCP_STANDALONE", "1")
+    """Standalone `python -m admz mcp` has no reaper to outlive.
+
+    Absence of ADMZ_MCP_NO_SCHEDULER is what says "nothing spawned me" —
+    the pool and the voice host both set it on the processes the reaper owns.
+    """
+    monkeypatch.delenv("ADMZ_MCP_NO_SCHEDULER", raising=False)
+    monkeypatch.setenv("ADMZ_MCP_POOL_IDLE_SECONDS", "60")
     assert max_ttl_seconds() == MAX_TTL_SECONDS
 
 
