@@ -698,6 +698,15 @@ async def chat_confirm_deny(
     if not confirm_store.deny_session(token, denied_by="chat"):
         return JSONResponse(status_code=410, content={"status": "expired"})
 
+    # GH #170: denial is a terminal outcome for a captured rule-recipient
+    # secret too, same as a successful approval consuming it. This is the
+    # only deny path that exists (the plain web /confirm/{token} form has no
+    # deny action), so this is the only place that needs the call. A no-op,
+    # not an error, when this token never had a rule-secret stash — most
+    # denials don't.
+    from admz.rules.capture import discard_rule_secrets
+    discard_rule_secrets(token)
+
     record_event(
         principal, "confirm.deny",
         resource=_session_resource(session),

@@ -286,6 +286,61 @@ def test_capture_store_unknown_token():
 
 
 # ---------------------------------------------------------------------------
+# GH #170: discard on every terminal path, not just success
+# ---------------------------------------------------------------------------
+
+
+def test_has_rule_secrets_purges_an_expired_entry_as_a_side_effect(monkeypatch):
+    """A caller that only ever CHECKS (never stashes or consumes again) must
+    still keep the dict bounded -- has_rule_secrets must not just report an
+    expired stash as absent, it must remove it."""
+    clock = [1_000_000.0]
+    monkeypatch.setattr(capture.time, "time", lambda: clock[0])
+
+    capture.stash_rule_secrets("tok-expiring", {"password": "x"})
+    assert "tok-expiring" in capture._SECRETS
+
+    clock[0] += capture._TTL_SECONDS + 1  # past expiry
+    assert capture.has_rule_secrets("tok-expiring") is False
+    assert "tok-expiring" not in capture._SECRETS, (
+        "has_rule_secrets reported the entry gone but left it in the dict")
+
+
+def test_sweep_once_purges_a_token_nothing_else_ever_touches_again(monkeypatch):
+    """The scenario purge-on-access structurally cannot reach: an abandoned
+    token that nothing reads or writes again after it expires. Only a
+    time-triggered sweep closes this -- drive one pass directly rather than
+    waiting on the real 60s loop interval."""
+    clock = [2_000_000.0]
+    monkeypatch.setattr(capture.time, "time", lambda: clock[0])
+
+    capture.stash_rule_secrets("tok-orphan", {"password": "x"})
+    clock[0] += capture._TTL_SECONDS + 1
+    assert "tok-orphan" in capture._SECRETS, (
+        "control failed: the entry must still be present (just expired) "
+        "before the sweep runs, or its removal below proves nothing")
+
+    capture._sweep_once()
+
+    assert "tok-orphan" not in capture._SECRETS
+
+
+@pytest.mark.asyncio
+async def test_background_purge_start_stop_is_idempotent_and_does_not_raise():
+    """start/stop must tolerate being called more than once (a lifespan that
+    restarts without a clean shutdown) and must not error when stop is called
+    before start."""
+    capture.stop_background_purge()  # stop before start: must not raise
+    capture.start_background_purge()
+    capture.start_background_purge()  # second start: must not spawn a second task
+    task = capture._sweep_task
+    assert task is not None and not task.done()
+    capture.stop_background_purge()
+    capture.stop_background_purge()  # second stop: must not raise
+    assert capture._sweep_task is None
+
+
+# ---------------------------------------------------------------------------
 # Condition grounding: survey notes, device applications, publisher lint
 # ---------------------------------------------------------------------------
 
