@@ -54,9 +54,20 @@ the gated `GET /api/fleet/settings/{key}/reveal` fetch (HTML), never
 plaintext. Shared predicate `admz/redact.py::is_sensitive_key` (via
 `admz/fleet_settings.py::is_sensitive_setting_key` /
 `mask_settings_for_display`) decides for all three — which covers
-`password`, `passwd`, `secret`, `token`, `api_key`, compound `*key*` and a
-discrete `pat` — not the `"password" in key` test this line used to name
-(#214).
+`password`, `passwd`, `secret`, `token`, `api_key`, compound `*key*`, and
+the discrete delimiter-bounded tokens `pat`, `pwd`, `pass` — not the
+`"password" in key` test this line used to name (#214).
+
+**#336/#337:** `pwd` and `pass` are the actual VAPIX wire keys carrying a
+device password (`pwdgrp.cgi:add-user`/`update-user`, `networkshare-add.cgi:add`)
+and were missing from this predicate — neither is a substring of anything
+it checked, so a value under either key reached the MCP audit sanitizer
+(and every other one of this predicate's callers) unmasked. Fixed the same
+way `pat` already was: a delimiter-bounded discrete-token match, not a bare
+substring — `pass` as a substring would mask `bypass`/`passive`/`compass`.
+`admz/redact.py`'s own module docstring records why this predicate,
+`admz/executor/vapix.py::secret_param_names`, and `redact_url` stay three
+separate answers rather than being consolidated into one.
 
 **This line's own history is the cautionary tale it should have been read
 as.** #214 corrected it to say the MCP tool and REST endpoint use the
@@ -96,6 +107,19 @@ convention) the way prompt sections do — so a genuinely new display surface
 still needs a human to add it to the behavioral leak-sweep in the same test
 file. It reliably catches a new instance of the *hand-rolled-predicate
 shape*, wherever in `admz/` it's written.
+
+**Structural guard against a sixth (#336):** the two guards above check
+whether the predicate is *hand-rolled* or *stale relative to this repo's own
+declarations*. Neither checks it against the vocabulary that actually
+matters most for a device credential: what the atlas catalog itself puts on
+the wire. `TestCatalogDeclaredSecretsAreRecognized` walks every VAPIX
+operation's request template (the same walk `admz/executor/vapix.py::secret_param_names`
+performs per-operation, run catalog-wide) and asserts every wire key it
+finds secret-shaped is also recognized by `is_sensitive_key` — the guard
+that would have caught `pwd`/`pass` going unmasked before an audit pass had
+to find it by executing the code. Mutation-checked: removing `pwd` from the
+predicate's discrete-token regex fails this test, naming the exact key and
+the two operations that declare it.
 
 **Enforced at:** `admz/fleet_settings.py::mask_settings_for_display`,
 `admz/api/routes/web.py::fleet_settings_page`,
@@ -409,12 +433,18 @@ substring match would strip and silently vanish one of those from the
 confirm session with no password-entry field to explain why. Also not
 reused: `admz.rules.capabilities.secret_choice_keys` (#194's predicate) —
 wrong shape (coupled to SOAP `Action.soap_params`, not the VAPIX catalog's
-string-templated `Operation.request`) and its own `_SECRET_HINTS =
-("password", "passwd")` is a third, already-drifted vocabulary. The
-reasoning for why *this* function's vocabulary must stay narrow and
-exact-match — not generalized into `is_sensitive_key` — is recorded next to
-`SECRET_PLACEHOLDER_NAMES` in `vapix.py` itself, not only here, so a future
-consolidation doesn't reintroduce the regression.
+string-templated `Operation.request`). It used to keep its own private,
+narrower vocabulary too (`_SECRET_HINTS = ("password", "passwd")`,
+missing `secret`/`token`/`api_key`/`apikey`) — **removed in #336**, once
+established that the gap wasn't live against any currently-surveyed device
+but had no `capture_note` safety net either, so `param_is_secret` now calls
+`is_sensitive_key` directly rather than hand-maintaining a third copy. That
+leaves exactly two secret-classification vocabularies for VAPIX/rules
+content, not three, and the reasoning for why they stay two rather than
+merging into one is recorded next to `SECRET_PLACEHOLDER_NAMES` in
+`vapix.py` and in `admz/redact.py`'s own module docstring, not only here,
+so a future consolidation doesn't reintroduce the `{PresetToken}`
+regression.
 
 **Enforced at:** `admz/executor/vapix.py::secret_param_names`,
 `admz/operations.py` (`execute_gated_operation`, `consume_confirmation`,

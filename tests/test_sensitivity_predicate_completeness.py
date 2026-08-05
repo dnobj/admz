@@ -36,6 +36,16 @@ What IS built, in decreasing order of how "self-maintaining" each part is:
    key ``admz/setting_policy.py`` already declares encrypted-at-rest is
    checked against ``is_sensitive_setting_key``. Adding a new encrypted key
    requires no test edit; this keeps checking it.
+
+1b. ``TestCatalogDeclaredSecretsAreRecognized`` (GH #336) — the same shape,
+   one layer further out: every wire key/placeholder the atlas catalog
+   itself declares secret-shaped (``admz.executor.vapix``'s own walk over
+   ``Operation.request``, #334) is checked against ``is_sensitive_key``.
+   This is the guard that would have caught ``pwd``/``pass`` going unmasked
+   before an audit pass had to find it by executing the code. Also fully
+   self-maintaining — a new catalog operation with a differently-spelled
+   secret placeholder fails this without a test edit, because the source of
+   truth is the catalog file, not a list copied from it.
 2. ``TestNoHandRolledSensitivityPredicate`` — a narrow, calibrated source
    scanner (the shape the issue itself suggested): flags any
    ``"password"/"secret"/"token"/"api_key"/"apikey" in <expr>`` substring
@@ -366,3 +376,97 @@ class TestLeakSweepAcrossKnownSurfaces:
         r = client.get("/api/fleet/settings/gemini_api_key/reveal")
         assert r.status_code == 200
         assert r.json()["value"] == _MARKER_SECRET
+
+
+# ---------------------------------------------------------------------------
+# 5. GH #336: the atlas catalog itself declares which VAPIX wire keys are
+#    secret-shaped (admz.executor.vapix._collect_secret_candidates, #334).
+#    Cross-check that declaration against is_sensitive_key so the two
+#    cannot silently drift apart the way they already had — pwd/pass went
+#    unmasked in the audit log for as long as pwdgrp.cgi/networkshare-add.cgi
+#    have existed in the catalog, found only because a human went looking
+#    and executed the code (#337).
+#
+#    Deliberately NOT redundant with TestKnownSensitiveKeysAreRecognized
+#    above: that guards fleet-setting keys against the encrypted-at-rest
+#    declaration in admz/setting_policy.py, a source of truth inside this
+#    repo. This guards VAPIX wire keys against the atlas catalog's OWN
+#    declaration — an external source of truth, and the one the MCP audit
+#    sanitizer (is_sensitive_key's highest-stakes caller: mcp/server.py::
+#    _sanitize_tool_args, every tool call, every audit row) actually needs.
+# ---------------------------------------------------------------------------
+
+
+def _catalog_declared_secret_keys() -> dict:
+    """Every wire key / placeholder name the atlas catalog declares
+    secret-shaped, mapped to the operation id(s) that declare it (for an
+    actionable failure message — not just "something is wrong").
+
+    Reuses ``admz.executor.vapix._collect_secret_candidates`` — the exact
+    function ``secret_param_names`` calls per already-resolved operation —
+    run catalog-wide instead of against one. Not a second implementation of
+    the walk; the real one, over every operation instead of one.
+    """
+    import glob
+
+    import axis_api_atlas
+    import yaml
+
+    from admz.executor.vapix import _collect_secret_candidates
+
+    found: dict = {}
+    data_path = str(axis_api_atlas.default_data_path())
+    for path in glob.glob(f"{data_path}/**/*.yaml", recursive=True):
+        try:
+            doc = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — a malformed file isn't this guard's job
+            continue
+        if not isinstance(doc, dict):
+            continue
+        request = doc.get("request")
+        if not isinstance(request, dict):
+            continue
+        candidates: set = set()
+        _collect_secret_candidates(request.get("query"), candidates)
+        _collect_secret_candidates(request.get("body"), candidates)
+        for key in candidates:
+            found.setdefault(key, set()).add(str(doc.get("id") or path))
+    return found
+
+
+class TestCatalogDeclaredSecretsAreRecognized:
+    def test_every_catalog_declared_secret_is_recognized(self):
+        from admz.redact import is_sensitive_key
+
+        declared = _catalog_declared_secret_keys()
+        missed = {k: sorted(ops) for k, ops in declared.items()
+                  if not is_sensitive_key(k)}
+        assert not missed, (
+            "The atlas catalog declares the following wire key(s) as "
+            "secret-shaped — a whole-value {placeholder} the VAPIX executor "
+            "resolves for a password/pass-named field, see "
+            "admz.executor.vapix.SECRET_PLACEHOLDER_NAMES — but "
+            "admz.redact.is_sensitive_key does not recognize "
+            f"{'it' if len(missed) == 1 else 'them'}: {missed} "
+            "(value is the declaring operation id(s)). For each missing "
+            "key: add it to admz.redact._SENSITIVE_KEY_PARTS if it is "
+            "long/distinctive enough that a bare substring match is safe, "
+            "or to the delimiter-bounded _DISCRETE_SENSITIVE_TOKENS_RE "
+            "instead if it is short/ambiguous like pwd/pass/pat — a "
+            "substring match on a short token over-matches ordinary words "
+            "(bypass, compass, file_path); see GH #310/#336 for why that "
+            "trade was refused."
+        )
+
+    def test_the_catalog_walk_is_not_vacuous(self):
+        """#212's own lesson: a guard that silently finds nothing passes for
+        the wrong reason. Prove the walk actually finds the two known wire
+        keys before trusting a green result on the assertion above."""
+        declared = _catalog_declared_secret_keys()
+        assert declared, (
+            "the catalog walk found zero secret-shaped params — check the "
+            "walk itself (axis_api_atlas.default_data_path() / the glob "
+            "pattern / _collect_secret_candidates) before trusting a green "
+            "result on the completeness assertion")
+        assert "pwd" in declared, declared
+        assert "pass" in declared, declared

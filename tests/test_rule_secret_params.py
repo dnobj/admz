@@ -46,6 +46,40 @@ ACTION = NS(soap_params=[_param("login"), _param("password"),
                          _param("proxy_password"), _param("message")])
 
 
+# ── GH #336 item 2: param_is_secret now uses the canonical vocabulary ────────
+class TestParamIsSecretUsesCanonicalVocabulary:
+    """param_is_secret used to check a private _SECRET_HINTS = ("password",
+    "passwd") tuple, narrower than admz.redact.is_sensitive_key. Not
+    reachable against any currently-surveyed device (see
+    test_union_keeps_what_the_old_exact_strip_removed and the ACTION fixture
+    above — every real recipient credential is password-family), but a
+    predicate whose correctness depends on which devices happen to be
+    surveyed is not a control. Pins both directions."""
+
+    def test_previously_missed_spellings_are_now_recognized(self):
+        from admz.rules import capabilities as C
+        for name in ("secret", "token", "api_key", "apikey", "pwd", "pass",
+                     "webhook_secret", "api_token", "bearer_token",
+                     "PWD", "old_pass"):
+            assert C.param_is_secret(_param(name)) is True, name
+
+    def test_ordinary_names_are_still_not_swept_up(self):
+        """The other direction — otherwise 'we widened it' is trivially
+        true for a predicate that now flags everything."""
+        from admz.rules import capabilities as C
+        for name in ("message", "topic", "device_id", "bypass", "passive",
+                     "compass", "passthrough"):
+            assert C.param_is_secret(_param(name)) is False, name
+
+    def test_capture_note_still_wins_regardless_of_name(self):
+        from admz.rules import capabilities as C
+        assert C.param_is_secret(_param("message", capture_note="flagged")) is True
+
+    def test_empty_name_is_not_secret(self):
+        from admz.rules import capabilities as C
+        assert C.param_is_secret(_param("")) is False
+
+
 # ── the matcher ──────────────────────────────────────────────────────────────
 class TestSecretChoiceKeys:
     def test_matches_the_way_the_atlas_resolver_does(self):
