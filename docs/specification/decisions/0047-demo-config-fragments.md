@@ -95,6 +95,16 @@ device implicitly binds it (records its role, pulls it into scope).
    silently bake the demo's config into base — after which deactivation pushes
    nothing and the demo config survives forever, labelled "baseline". Single
    accept → 409 naming the demos; bulk accept → skip-and-report.
+
+   **Fails closed when the guard itself can't be evaluated** (#174) — a
+   `DemoStore.list()` lock or a `git show` timeout used to be swallowed and
+   treated as "no demo owns anything," permitting exactly the silent,
+   irreversible corruption this guard exists to prevent. Now both call sites
+   refuse (single: 503; bulk: skip-and-report with a distinct
+   `demo-guard-unavailable` reason, so an operator doesn't go looking for a
+   demo to deactivate that was never found to own anything) and retry is the
+   correct response. The asymmetry driving this: over-refusing costs a
+   retry; under-refusing costs a permanent, silent baseline corruption.
 2. **No same-key overlap between active demos, even equal values** (409 at
    adopt, naming the holder). Makes future deactivation trivially "push base";
    key-level exclusivity still beats ADR-0046's whole-device "on loan".

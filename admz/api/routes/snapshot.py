@@ -1,6 +1,8 @@
 """REST routes for config snapshot, restore, diff, and drift."""
 
 import logging
+import sqlite3
+import subprocess
 import time as _t
 from typing import List, Optional
 
@@ -134,16 +136,43 @@ def _reject_accept_with_active_demos(ctx, device_id: str, device_info: dict) -> 
     value an active demo set. Blessing it would silently bake the demo's config
     into the base — after which deactivating the demo pushes nothing and the
     demo config survives forever, labelled "baseline". Refuse with names.
+
+    #174: this guard must fail CLOSED, not open. It used to swallow every
+    exception and return as if no demo owned anything — on an irreversible,
+    silent write, indistinguishable from "verified clean". The asymmetry that
+    settles it: a transient sqlite lock or git timeout blocking a legitimate
+    accept costs one retry; the same failure permitting the accept costs a
+    permanent, undetected corruption of the baseline (the demo's config,
+    labelled "baseline" forever, discoverable only by hand-diffing config
+    afterwards). Over-refusing is recoverable; under-refusing is not.
+
+    Narrowed to the realistic infrastructure failures — a `DemoStore.list()`
+    lock/corruption (`sqlite3.Error`) or a `git show` hang
+    (`subprocess.SubprocessError` — `owning_demos` -> `_set_map_for` ->
+    `load_fragment` -> `GitRepo.get_file` -> `_run_git`, which re-raises
+    `TimeoutExpired` by design — see its own docstring) or git itself being
+    unreachable (`OSError`, e.g. the binary missing) — rather than bare
+    `Exception`, so a genuine bug inside `owning_demos` still surfaces as a
+    bug (a 500), not as "guard unavailable" (a misleadingly specific 503).
     """
     try:
         from admz.demos.fragments import owning_demos
 
         owners = owning_demos(
             ctx.git_repo, ctx.demo_store.list(), device_id, device_info)
-    except Exception:  # noqa: BLE001 — guard failure must not block accepts
+    except (sqlite3.Error, subprocess.SubprocessError, OSError) as exc:
         logger.warning("accept-baseline demo guard unavailable for %s",
                        device_id, exc_info=True)
-        return
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Cannot verify whether an active demo owns config on "
+                f"{device_id} right now, and accepting without that check "
+                "could permanently bake demo config into the baseline "
+                "(ADR-0047 H1). Retry in a moment — this is a transient "
+                "check failure, not a refusal."
+            ),
+        ) from exc
     if owners:
         names = ", ".join(
             f"'{d.name}' ({n} key{'s' if n != 1 else ''})" for d, n in owners)
@@ -570,8 +599,16 @@ async def accept_baseline_bulk(
         try:
             _reject_accept_with_active_demos(ctx, did, info)
         except HTTPException as e:
-            # Bulk semantics: skip-and-report rather than fail the whole set.
-            skipped.append({"device_id": did, "reason": "active-demo-config",
+            # Bulk semantics: skip-and-report rather than fail the whole set —
+            # one device's git/sqlite hiccup must not abort a 40-device batch.
+            # #174: the guard now raises for TWO different reasons (a genuine
+            # active demo, 409; an unverifiable guard, 503) — report which one
+            # actually happened rather than collapsing both into
+            # "active-demo-config", which would tell the operator to
+            # deactivate a demo that was never found to own anything.
+            reason = ("active-demo-config" if e.status_code == 409
+                      else "demo-guard-unavailable")
+            skipped.append({"device_id": did, "reason": reason,
                             "detail": e.detail})
             continue
         target = info.get("latest_observed_sha")
