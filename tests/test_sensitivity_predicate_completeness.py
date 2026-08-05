@@ -294,8 +294,20 @@ def client(tmp_path, monkeypatch):
     set_active_backend(NoAuth())
 
     from admz.api.main import app
-    with TestClient(app) as c:
-        yield c
+    try:
+        with TestClient(app) as c:
+            yield c
+    finally:
+        # admz.auth._ACTIVE_BACKEND is a bare module-level global with no
+        # per-test reset (get_active_backend() only rebuilds it when it's
+        # None) — a test that swaps it (the positive-control reveal test
+        # below does, to drive an authorized principal) leaks a fake
+        # identity into every later test in the SAME pytest process
+        # otherwise. This is exactly the #257/#260 shape and is what broke
+        # tests/test_tasks_routes.py the first time this file ran before it
+        # in a session: reset unconditionally on teardown, regardless of
+        # what the test body did to the backend.
+        set_active_backend(NoAuth())
 
 
 @pytest.fixture(autouse=True)
