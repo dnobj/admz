@@ -4704,7 +4704,10 @@ class ADMZMCPServer:
         permissions = arguments["permissions"]
 
         # Validate TTL
-        ttl = max(60, min(3600, int(ttl)))
+        # #314: the ceiling is reconciled against ADMZ_MCP_POOL_IDLE_SECONDS,
+        # because a credential must not outlive the process that cleans it up.
+        from admz.mcp.temp_credentials import clamp_ttl
+        ttl = clamp_ttl(ttl)
 
         # Validate permissions
         if permissions not in self._PERM_MAP:
@@ -4883,31 +4886,123 @@ class ADMZMCPServer:
             )
             return False
 
+    async def _reconcile_temp_credentials(self) -> Dict[str, int]:
+        """Startup sweep over records this process did not create (#314).
+
+        The record now outlives the process, which is what makes this possible
+        at all: before persistence there was nothing to reconcile, because a
+        dead process took its only knowledge of the account with it.
+
+        This is what turns "we lost it" into "we retry it". Any *active* record
+        past its TTL — typically one whose creating subprocess was reaped by the
+        pool before it expired — gets a fresh removal attempt here rather than
+        waiting for a coincidence.
+
+        Deliberately best-effort and never fatal: a device that is offline at
+        startup must not stop the MCP server from starting. Failures increment
+        the attempt counter and are retried by the loop, and only the counter
+        running out marks a record orphaned.
+
+        Orphaned records are **not** retried automatically — they exhausted
+        their attempts already, and silently re-attempting would re-hide the
+        thing this issue exists to surface. They stay listed for a human.
+        """
+        counts = {"checked": 0, "removed": 0, "failed": 0}
+        try:
+            pending = [c for c in self.temp_creds.get_all() if c.is_expired]
+        except Exception:  # noqa: BLE001 — an unreadable store must not block boot
+            logger.warning(
+                "temp-credential reconciliation could not read the store; "
+                "skipping (#314)", exc_info=True)
+            return counts
+
+        for cred in pending:
+            counts["checked"] += 1
+            try:
+                removed = await self._remove_temp_user(cred)
+            except Exception:  # noqa: BLE001
+                removed = False
+            if removed:
+                self.temp_creds.remove(cred.device_id, cred.username)
+                counts["removed"] += 1
+            else:
+                counts["failed"] += 1
+                self.temp_creds.record_cleanup_failure(
+                    cred.device_id, cred.username,
+                    error="startup reconciliation could not remove it",
+                )
+
+        if counts["checked"]:
+            logger.info(
+                "temp-credential reconciliation: %d expired record(s) found "
+                "from a previous process, %d removed, %d still pending",
+                counts["checked"], counts["removed"], counts["failed"],
+            )
+        orphaned = self.temp_creds.list_orphaned()
+        if orphaned:
+            logger.error(
+                "%d ORPHANED temp account(s) exist on devices and could not be "
+                "removed: %s. These have group-level access and Axis devices do "
+                "not expire accounts — remove them by hand (#314).",
+                len(orphaned),
+                ", ".join(f"{c.username}@{c.device_id}" for c in orphaned[:10]),
+            )
+        return counts
+
+    async def _cleanup_expired_temp_credentials(self) -> Dict[str, int]:
+        """One cleanup pass over expired temp credentials.
+
+        Extracted from the loop below so it can be tested (#314). It was inline
+        in a ``while True: await sleep(30)`` body, which no test could drive —
+        and that is exactly why the give-up branch, the single most important
+        line in this area, had no coverage while it was deleting records.
+        """
+        counts = {"removed": 0, "failed": 0, "orphaned": 0}
+        for cred in self.temp_creds.get_expired():
+            if not cred.should_retry_cleanup:
+                # #314: give up REMOVING, never give up RECORDING. This used to
+                # call temp_creds.remove(), which deleted ADMZ's only evidence
+                # of an account it created and could not remove — destroying
+                # the information in exactly the case a human most needs it.
+                # The row now transitions to `orphaned` and is surfaced.
+                self.temp_creds.mark_orphaned(
+                    cred.device_id, cred.username,
+                    error=cred.last_error or "cleanup attempts exhausted",
+                )
+                counts["orphaned"] += 1
+                continue
+
+            try:
+                removed = await self._remove_temp_user(cred)
+            except Exception:  # noqa: BLE001 — one bad device must not stop the pass
+                removed = False
+            if removed:
+                # Only now is deletion correct: the device account is confirmed
+                # gone, so the record has nothing left to describe.
+                self.temp_creds.remove(cred.device_id, cred.username)
+                counts["removed"] += 1
+                logger.info(
+                    "Cleaned up temp user %s from %s",
+                    cred.username, cred.device_id,
+                )
+            else:
+                self.temp_creds.record_cleanup_failure(
+                    cred.device_id, cred.username,
+                    error="removal call did not succeed",
+                )
+                counts["failed"] += 1
+        return counts
+
     async def _temp_credential_cleanup_loop(self):
         """Background loop that removes expired temp credentials from devices."""
         try:
+            # Reconcile first: records left behind by a previous process are
+            # already overdue, so waiting a full tick before looking is pure
+            # added exposure.
+            await self._reconcile_temp_credentials()
             while True:
                 await asyncio.sleep(30)
-                expired = self.temp_creds.get_expired()
-                for cred in expired:
-                    if not cred.should_retry_cleanup:
-                        # Give up after max attempts
-                        logger.warning(
-                            "Giving up on temp user %s@%s after %d cleanup attempts",
-                            cred.username, cred.device_id, cred.cleanup_attempts,
-                        )
-                        self.temp_creds.remove(cred.device_id, cred.username)
-                        continue
-
-                    removed = await self._remove_temp_user(cred)
-                    if removed:
-                        self.temp_creds.remove(cred.device_id, cred.username)
-                        logger.info(
-                            "Cleaned up temp user %s from %s",
-                            cred.username, cred.device_id,
-                        )
-                    else:
-                        cred.cleanup_attempts += 1
+                await self._cleanup_expired_temp_credentials()
         except asyncio.CancelledError:
             # Server shutting down — attempt final cleanup of all active creds
             logger.info("Shutting down: cleaning up all temp credentials...")

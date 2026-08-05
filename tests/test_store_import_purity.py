@@ -136,6 +136,13 @@ CONVERTED: dict[str, StoreSpec] = {
         cls="InferenceRunStore", exercise="s.list()"),
     "admz.session_store": StoreSpec(
         cls="SessionStore", exercise="s.purge_expired()"),
+    # Store #18, added by #314 rather than converted by #258 — and the reason
+    # this inventory exists. It was an in-memory dict; making it persistent
+    # created a new store, and the latch caught it on the first run before any
+    # human looked. Built to the call-time contract from the start.
+    "admz.mcp.temp_credentials": StoreSpec(
+        cls="TempCredentialManager",
+        exercise="s.count_active_for_device('probe-device')"),
 }
 
 #: Modules whose *import* provably creates nothing.
@@ -228,8 +235,11 @@ class TestInventory:
         """
         discovered = _discover_store_modules()
         assert discovered == set(CONVERTED)
-        assert len(discovered) == 17, (
-            f"expected 17 stores, found {len(discovered)} — if a store was "
+        # 17 at the end of #258; 18 since #314 made temp credentials
+        # persistent. Updated deliberately, which is what this assertion is
+        # for — it fired on the new store before any human looked at the diff.
+        assert len(discovered) == 18, (
+            f"expected 18 stores, found {len(discovered)} — if a store was "
             "added or removed, update this number deliberately"
         )
 
