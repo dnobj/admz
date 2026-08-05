@@ -58,14 +58,18 @@ class TestSessionDeadDetection:
 class TestPoolEvict:
     @pytest.mark.asyncio
     async def test_evict_known_principal_returns_true(self):
-        from admz.chatbot.mcp_pool import McpSessionPool, PoolEntry
-        from contextlib import AsyncExitStack
+        from admz.chatbot.mcp_pool import (McpSessionPool, PoolEntry,
+                                           _SessionOwner)
 
         pool = McpSessionPool()
+        # #302: an entry now holds a _SessionOwner, not an AsyncExitStack, so
+        # the session's context is entered and exited by ONE task. A
+        # never-started owner closes to a no-op, which is all these
+        # key-bookkeeping assertions need.
         entry = PoolEntry(
             principal="alice",
             session=MagicMock(),
-            stack=AsyncExitStack(),
+            owner=_SessionOwner("alice", {}),
         )
         pool._entries["alice"] = entry
 
@@ -83,15 +87,17 @@ class TestPoolEvict:
 
     @pytest.mark.asyncio
     async def test_evict_only_affects_target_principal(self):
-        from admz.chatbot.mcp_pool import McpSessionPool, PoolEntry
-        from contextlib import AsyncExitStack
+        from admz.chatbot.mcp_pool import (McpSessionPool, PoolEntry,
+                                           _SessionOwner)
 
         pool = McpSessionPool()
         pool._entries["alice"] = PoolEntry(
-            principal="alice", session=MagicMock(), stack=AsyncExitStack()
+            principal="alice", session=MagicMock(),
+            owner=_SessionOwner("alice", {}),
         )
         pool._entries["bob"] = PoolEntry(
-            principal="bob", session=MagicMock(), stack=AsyncExitStack()
+            principal="bob", session=MagicMock(),
+            owner=_SessionOwner("bob", {}),
         )
 
         await pool.evict("alice")
