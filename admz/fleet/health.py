@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -769,6 +770,40 @@ async def _probe_sd_card(
         return None, None
 
 
+#: The two shapes a VAPIX StepResult uses to report an actual 401, anchored at
+#: the start of the message (``executor/vapix.py:1112`` and the generic
+#: ``f"HTTP {status_code}: {body[:500]}"`` at ``:1123``).
+_REPORTED_401 = re.compile(r"^(?:HTTP 401\b|Authentication failed \(401\))")
+
+
+def _reports_401(error: Any) -> bool:
+    """Does this StepResult error actually say the device answered 401?
+
+    Anchored on purpose. This used to be ``"401" in str(error)``, and `error`
+    carries **up to 500 characters of the device's own response body** for any
+    status >= 400 (``executor/vapix.py:1123``) — so a 500 whose body happened to
+    contain ``401`` anywhere (a request id, a byte count, an error code) was
+    reported as AUTH_FAILED. On a factory-defaulted unit that is precisely the
+    #149/#154 misclassification this path exists to prevent: *needs setup* read
+    as *your credentials are wrong*.
+
+    The loose form also had **no true-positive value here**. Every genuine 401
+    from the VAPIX executor sets ``status_code=401`` (``vapix.py:1105-1114``),
+    which the caller's first clause already catches; an AST sweep of every
+    ``StepResult`` in ``admz/`` whose error mentions 401 found exactly one, and
+    it sets ``status_code``. So the substring branch could only ever fire on a
+    false positive.
+
+    It was also what made ``test_needsetup_marks_needs_setup_not_auth_failed``
+    flaky (#291): the test's mock never set ``error``, so ``str()`` of the
+    auto-created child mock embedded ``id='<address>'`` — and ~1 run in 110,
+    that address contains ``401``. Anchoring makes the mock's repr unmatchable
+    whatever its address, so the flake cannot recur even if a mock is unfaithful
+    again.
+    """
+    return bool(error) and bool(_REPORTED_401.match(str(error)))
+
+
 async def probe_device(
     *,
     device_id: str,
@@ -849,7 +884,7 @@ async def probe_device(
             elapsed_ms = int((time.monotonic() - started) * 1000)
 
             status_code = getattr(result, "status_code", None)
-            if status_code == 401 or "401" in str(getattr(result, "error", "")):
+            if status_code == 401 or _reports_401(getattr(result, "error", None)):
                 return DeviceHealthRecord(
                     device_id=device_id,
                     status=DeviceHealthStatus.AUTH_FAILED,
