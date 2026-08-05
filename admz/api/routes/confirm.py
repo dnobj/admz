@@ -290,6 +290,20 @@ async def _approve_session(
         git_repo=ctx.git_repo,
     )
 
+    # #281: strip the payload only now that the outcome is known, and only on
+    # success. A failed write keeps the value that was requested: there is no
+    # device state to consult for a write that did not land, so this row is the
+    # only remaining record of what was asked for. ADR-0056 makes drift the
+    # source of truth for writes that SUCCEEDED, which is why the success case
+    # can drop it immediately.
+    #
+    # Bounded, not indefinite: ConfirmStore._cleanup strips any completed row
+    # older than PAYLOAD_RETENTION_SECONDS, so the forensic window closes on its
+    # own. That sweep also covers a process death between complete_session and
+    # here, which would otherwise leave a successful write's payload behind.
+    if outcome.get("success"):
+        confirm_store.strip_payload(token)
+
     record_event(
         principal, "confirm.approve",
         resource=_session_resource(session),
