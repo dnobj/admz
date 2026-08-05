@@ -36,6 +36,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+
+import httpx
 from types import SimpleNamespace as NS
 
 import pytest
@@ -298,6 +300,98 @@ class TestTheCheckIsAtTheChokepoint:
         block = src[i:i + 1200]
         assert "Read-only except for correcting" not in block
         assert "WRITES to the registry" in block
+
+
+# ── the cross-module invariant this fix rests on ─────────────────────────────
+class TestThisDependsOnTheBasicDowngradeRefusal:
+    """`reconcile` is only safe while `vapix` refuses Basic over plaintext.
+
+    **Why a reconcile test asserts something about the executor.** The identity
+    proof above deliberately sends the device's stored credentials to an address
+    chosen by an *unauthenticated mDNS claim*. That is the mechanism, not an
+    oversight — it is safe because HTTP Digest never puts the password on the
+    wire, and because `executor/vapix.py` refuses to relearn Basic on a
+    plaintext channel (GH #171 / PR #292).
+
+    Relax that branch and this file's fix silently becomes a **plaintext
+    credential disclosure**: the claimant answers `401 WWW-Authenticate: Basic`,
+    the executor retries with `httpx.BasicAuth` — which sends
+    `Authorization: Basic base64(user:pass)` preemptively — and the password
+    crosses in the clear to whoever won the race.
+
+    `test_executor_self_healing.py` already pins the executor's own behaviour,
+    and that is the right home for it. This exists for a different reason: so a
+    revert fails **here**, in the file named for the dependent feature, and the
+    person relaxing the branch is told *which caller they just broke* rather
+    than only that an executor test went red. The invariant was prose-only —
+    a PR body and a handoff — until this test existed.
+
+    Deliberately not asserting on source text: this drives the real request
+    path through a mock transport and checks what actually reached the wire, so
+    a refactor that preserves the behaviour keeps it green.
+    """
+
+    def _recording_device(self):
+        """A host that 401s with a Basic challenge until Basic arrives —
+        exactly what an attacker at the new address would do."""
+        seen: list = []
+
+        def handler(request):
+            seen.append(request.headers.get("authorization"))
+            if (request.headers.get("authorization") or "").startswith("Basic "):
+                return httpx.Response(200, json={"ok": True})
+            return httpx.Response(401,
+                                  headers={"WWW-Authenticate": 'Basic realm="x"'})
+        return handler, seen
+
+    async def _probe(self, handler, scheme, port):
+        from admz.executor.models import ExecutionRequest
+        from admz.executor.vapix import VapixExecutor
+
+        exe = VapixExecutor(timeout=2.0, retries=0,
+                            transport=httpx.MockTransport(handler))
+        return await exe._send_self_healing(
+            request=ExecutionRequest(
+                method="POST", path="/axis-cgi/systemready.cgi",
+                json_body={"apiVersion": "1.0", "method": "systemReady"}),
+            host="192.0.2.1",
+            device={"auth": {scheme: "digest", "scheme": scheme},
+                    "device_id": "DEV"},
+            credentials={"username": "root", "password": "pw"},
+            scheme=scheme, port=port, timeout=2.0,
+        )
+
+    def test_a_hostile_basic_challenge_over_http_spends_no_password(self):
+        """THE invariant. If this fails, do not merge — the identity probe in
+        `reconcile.py` is handing the password to an unverified host."""
+        handler, seen = self._recording_device()
+        resp, learned = asyncio.run(self._probe(handler, "http", 80))
+
+        basic = [a for a in seen if a and a.startswith("Basic ")]
+        assert basic == [], (
+            "a Basic credential reached the wire over plaintext http. "
+            "reconcile.py's identity probe sends credentials to an address "
+            "asserted by an unauthenticated mDNS claim and is only safe while "
+            "this refusal holds (GH #171/#292, GH #193)")
+        assert learned is None, "a plaintext Basic downgrade was persisted"
+
+    def test_and_not_because_nothing_was_sent(self):
+        """Anti-vacuity, the same control the executor's own test uses: "no
+        Basic on the wire" is trivially true for a test that makes no request.
+        Exactly one attempt must have happened, and it must be the Digest one."""
+        handler, seen = self._recording_device()
+        asyncio.run(self._probe(handler, "http", 80))
+        assert len(seen) == 1, f"expected exactly the digest attempt, saw {seen!r}"
+
+    def test_the_rule_does_not_over_fire_on_tls(self):
+        """The refusal is narrow on purpose — the same challenge over HTTPS is
+        legitimate and must still relearn. A test that passed by refusing
+        everything would be pinning the wrong invariant."""
+        handler, seen = self._recording_device()
+        resp, learned = asyncio.run(self._probe(handler, "https", 443))
+        assert [a for a in seen if a and a.startswith("Basic ")], (
+            "Basic over TLS was refused too — the guard is over-firing")
+        assert resp.status_code == 200
 
 
 def test_normalize_mac_is_unchanged():

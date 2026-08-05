@@ -97,6 +97,23 @@ async def _identity_proven(
         # onboarding, which sends the fleet default password (#185).
         return False, "device has no stored credentials, so identity cannot be proven"
 
+    # ── DEPENDS ON GH #171 / PR #292 ────────────────────────────────────────
+    # This probe DELIBERATELY sends the device's credentials to an address we
+    # have not yet verified — that is the whole mechanism. It is safe only
+    # because HTTP Digest never puts the password on the wire, and because
+    # `executor/vapix.py` REFUSES to relearn Basic over a plaintext channel
+    # (the `offered == "basic" and _is_plaintext_channel(scheme)` branch).
+    #
+    # If that refusal is ever relaxed, this line silently becomes a PLAINTEXT
+    # CREDENTIAL DISCLOSURE to an attacker-chosen host: the claimant answers
+    # `401 WWW-Authenticate: Basic`, the executor retries with `httpx.BasicAuth`
+    # — which sends `Authorization: Basic base64(user:pass)` preemptively — and
+    # the password crosses in the clear to whoever won the mDNS race.
+    #
+    # The coupling is pinned by
+    # `tests/test_reconcile_requires_proof.py::TestThisDependsOnTheBasicDowngradeRefusal`,
+    # which fails here rather than in the executor's own tests, so anyone
+    # relaxing that branch is told which caller they just broke.
     from admz.fleet.health import _confirm_credentials
 
     probe_info = {**device_info, "host": new_ip, "ip_address": new_ip,
