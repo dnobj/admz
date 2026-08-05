@@ -4728,9 +4728,56 @@ class ADMZMCPServer:
                 ),
             }
 
-        # Get admin credentials from registry (never returned to LLM)
         if not self.registry.device_exists(device_id):
             raise DeviceNotFoundError(f"Device not found: {device_id}")
+
+        # ---- #313: the confirmation gate --------------------------------
+        # This tool creates a REAL account on a REAL camera. It reached the
+        # executor through _execute_on_host directly, so `resolve_confirmation`
+        # was never consulted and the catalog's risk_level for the operation it
+        # performs did not apply — which is why #165's reclassification of
+        # pwdgrp.cgi:add-user closed the generic path and left this one open.
+        #
+        # The level is INHERITED from the catalog's classification of the
+        # operation actually performed, never hardcoded: one classification
+        # governs both paths, so there is no second opinion to keep in step
+        # (#255). A catalog that has not yet picked up #165's atlas change
+        # resolves to `none` and behaves exactly as before — deliberately, so
+        # this does not depend on an atlas pull the operator has not made.
+        from admz import operations
+        from admz.operations import TEMP_CREDENTIAL_OP
+
+        try:
+            risk = self.catalog.get_risk_level("vapix", TEMP_CREDENTIAL_OP)
+        except Exception:  # noqa: BLE001 — an unreadable catalog must not open the gate
+            risk = "service-affecting"
+        level = operations.resolve_confirmation(risk)
+
+        if level != "none":
+            session = operations.create_action_session(
+                action="create_temp_credentials",
+                device_id=device_id,
+                # No secret in the payload: the password is generated at
+                # execution time, so nothing credential-shaped is written into
+                # confirm_sessions.action_json (#194/#276).
+                payload={"device_id": device_id, "permissions": permissions,
+                         "ttl_seconds": ttl},
+                reason=(
+                    f"Create a temporary '{permissions}' account on device "
+                    f"'{device_id}'. This creates a REAL user account on the "
+                    f"camera with {self._PERM_MAP[permissions]['group']}-level "
+                    f"access, valid for {ttl}s. Axis devices do not expire "
+                    "accounts — ADMZ removes it, and records it until it does."
+                ),
+                risk=risk,
+                operator_configurable=True,
+            )
+            env = operations.blocked_envelope(session, reason=session.danger_description)
+            env["success"] = False
+            return env
+        # ---- end gate ----------------------------------------------------
+
+        # Get admin credentials from registry (never returned to LLM)
 
         device_info = self.registry.get_device_info(device_id)
         host = device_info.get("host") or device_info.get("ip_address")
