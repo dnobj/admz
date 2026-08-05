@@ -167,6 +167,68 @@ KNOWN_SETTING_KEYS: FrozenSet[str] = frozenset({
 
 
 # ---------------------------------------------------------------------------
+# Encryption at rest (GH #296 part 1)
+# ---------------------------------------------------------------------------
+#
+# Every device-account credential ADMZ stores goes through Fernet — that is what
+# ``admz.key`` exists for and what #252's DACL protects. Some fleet settings hold
+# secrets too, and they were not all covered.
+#
+# The three sets below partition **every** sensitive key. That partition is
+# enforced by a test, and the test is the point: a new secret added to
+# ``KNOWN_SETTING_KEYS`` and declared in none of them fails CI rather than
+# sitting in plaintext until somebody notices. Fixing one key and calling it
+# done is the shape that left three of four subresources unpinned in #200.
+
+#: Encrypted transparently by the ``fleet_settings`` store itself.
+#:
+#: Keyed on the store rather than on each caller deliberately. ``default_password``
+#: alone has three readers (``mcp/server.py``, ``onboarding.py``,
+#: ``provisioning.py``) and no dedicated accessor between them; they already
+#: share exactly one path — ``fleet_settings.get`` — so encryption belongs
+#: there. Patching three call sites instead would be the divergence of #255.
+STORE_ENCRYPTED_SETTING_KEYS: FrozenSet[str] = frozenset({
+    "default_password",
+    "gemini_api_key",
+    "acs_webhook_token",
+})
+
+#: Already encrypted by their owning module, which called Fernet itself before
+#: the store could. Excluded from the store layer so they are not encrypted
+#: TWICE — see ``admz/survey/secrets.py`` and ``admz/github_app/secrets.py``,
+#: which now share the store's ``encrypt``/``decrypt`` rather than keeping
+#: their own copies.
+#:
+#: Two tiers is not the end state; unifying them means migrating live
+#: ciphertext, which is a separate change from making plaintext stop.
+MODULE_ENCRYPTED_SETTING_KEYS: FrozenSet[str] = frozenset({
+    "survey_github_pat",
+    "github_app_private_key",
+    "github_app_client_secret",
+})
+
+#: Sensitive-looking, deliberately NOT encrypted. Both need a reason on record,
+#: because "why is this one plaintext?" is exactly the question the partition
+#: test provokes.
+NOT_ENCRYPTED_SENSITIVE_KEYS: FrozenSet[str] = frozenset({
+    # A password HASH, never recovered — only compared. Encrypting it would buy
+    # nothing and put the confirmation gate behind key availability. #296 warns
+    # specifically against copying this pattern for ``default_password``, which
+    # must stay recoverable because ADMZ sends it to a device.
+    "confirm_password_hash",
+    # A NUMBER. It is only in this list at all because ``redact.is_sensitive_key``
+    # matches the token "token"; there is no secret here. (It is consequently
+    # also masked in the settings UI, which is cosmetic and pre-existing.)
+    "chat_daily_token_budget",
+})
+
+
+def is_store_encrypted(key: str) -> bool:
+    """True iff ``fleet_settings`` encrypts this key's value at rest itself."""
+    return key in STORE_ENCRYPTED_SETTING_KEYS
+
+
+# ---------------------------------------------------------------------------
 # Predicates
 # ---------------------------------------------------------------------------
 

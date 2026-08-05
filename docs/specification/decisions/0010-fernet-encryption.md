@@ -100,9 +100,48 @@ was an explicit fix: the original implementation had a global
 `_FERNET` that meant the second-built registry silently reused the
 first's key.
 
-What gets encrypted: just the `password` field in `accounts.data_json`.
+What gets encrypted: the `password` field in `accounts.data_json`.
 Everything else (device IDs, hostnames, models, usernames) is plain
 JSON. The threshold: we encrypt secrets, not metadata.
+
+### Amendment 2026-08-04 — the same key also covers fleet-setting secrets (#296 part 1)
+
+The threshold above was applied only to credentials ADMZ stores **about** a
+device. `fleet_settings.default_password` — the credential ADMZ **writes to**
+devices — sat in the settings table as a plain value, protected only by the
+directory ACL added in #252. So did `gemini_api_key` and `acs_webhook_token`.
+That was an inconsistency, not an exploit, and it is now closed: the same
+Fernet key encrypts them.
+
+Three things worth recording, because each was a decision:
+
+- **Recoverable, not hashed.** ADMZ has to send these values somewhere, so they
+  are encrypted and decrypted. `confirm_password_hash` is the opposite — only
+  ever compared — and is deliberately left alone. Copying the hash pattern here
+  would break provisioning.
+- **The store encrypts, not the callers.** `default_password` alone has three
+  readers with no accessor between them; they already shared exactly one path,
+  `fleet_settings.get`, so that is where it goes. Patching each call site would
+  have been the divergence of #255. One consequence worth knowing: the value a
+  caller sees is unchanged, so nothing downstream needed editing.
+- **The scope is a checked partition, not a list someone maintains.** Every
+  sensitive key must be declared store-encrypted, module-encrypted, or
+  deliberately plaintext-with-a-reason (`admz/setting_policy.py`), and a test
+  fails if one is not. Encrypting a single key and calling it done is the shape
+  that left three of four subresources unpinned in #200.
+
+Migration is read-old-write-new on first `get`, and the trap is that a value
+which will not decrypt is **not** necessarily legacy plaintext — it is also what
+a rotated or missing key looks like. Migrating that would hand a caller
+ciphertext as a password and re-encrypt it, destroying the secret. The two are
+told apart structurally (`setting_crypto.looks_encrypted`) before anything is
+written; an unreadable value is reported as unset and left untouched, so
+restoring the correct key recovers it.
+
+`survey/secrets.py` and `github_app/secrets.py` had each grown an identical
+private `encrypt`/`decrypt` pair. They now delegate to `admz/setting_crypto.py`,
+so one Fernet path serves every fleet-setting secret rather than a third copy
+appearing. Their stored ciphertext is unaffected — same key, same tokens.
 
 ## Consequences
 

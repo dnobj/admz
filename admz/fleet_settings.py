@@ -18,8 +18,16 @@ The two it may write are the fleet credential pair:
 
 Every other key is refused from MCP; an operator sets it from the web UI or
 with ``python -m admz settings set``.
+
+**Secret values are encrypted at rest** (GH #296, ADR-0010). The store — not
+each caller — encrypts the keys in
+:data:`admz.setting_policy.STORE_ENCRYPTED_SETTING_KEYS`, so every reader and
+writer above is unchanged and none of them can forget. Legacy plaintext is
+migrated in place on first :meth:`FleetSettings.get`. See
+:mod:`admz.setting_crypto`.
 """
 
+import logging
 import os
 import sqlite3
 import threading
@@ -36,7 +44,10 @@ from admz.setting_policy import (  # noqa: F401 — re-exported for callers
     LLM_WRITABLE_SETTING_KEYS,
     is_capture_only,
     is_llm_writable,
+    is_store_encrypted,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def is_sensitive_setting_key(key: str) -> bool:
@@ -215,8 +226,7 @@ class FleetSettings:
         inside :meth:`_connect`."""
         self._connect().close()
 
-    def get(self, key: str) -> Optional[str]:
-        """Get a setting value by key. Returns None if not set."""
+    def _raw_get(self, key: str) -> Optional[str]:
         conn = self._connect()
         try:
             row = conn.execute(
@@ -226,10 +236,46 @@ class FleetSettings:
             conn.close()
         return row[0] if row else None
 
-    def set(self, key: str, value: str) -> None:
-        """Set a setting value. Creates or updates the key."""
+    def get(self, key: str) -> Optional[str]:
+        """Get a setting value by key. Returns None if not set.
+
+        Secrets (GH #296) are decrypted here rather than at each call site.
+        ``default_password`` alone has three readers with no accessor between
+        them, and they already share this one path — so this is where a caller
+        cannot forget to decrypt. Callers see plaintext and are unchanged.
+
+        A legacy plaintext value is **migrated in place on first read**: it is
+        re-written encrypted before being returned, so the plaintext stops
+        existing rather than merely being superseded. Migration failure is
+        swallowed — a read-only or locked DB must not break a read that
+        otherwise succeeded; the value is simply migrated on a later read.
+        """
+        raw = self._raw_get(key)
+        if not is_store_encrypted(key):
+            return raw
+        from admz import setting_crypto
+
+        plain, needs_migration = setting_crypto.read_stored(key, raw)
+        if needs_migration:
+            try:
+                self._raw_set(key, setting_crypto.encrypt(plain or ""))
+                logger.info(
+                    "Migrated fleet setting %r to encrypted storage (#296).", key)
+            except Exception:  # noqa: BLE001 — a read must still succeed
+                logger.warning(
+                    "Could not migrate fleet setting %r to encrypted storage; "
+                    "it stays plaintext and will be retried on the next read.",
+                    key, exc_info=True)
+        return plain
+
+    def _raw_set(self, key: str, value: str) -> None:
         conn = self._connect()
         try:
+            # ON CONFLICT DO UPDATE rewrites the row's value in place. Measured
+            # on the real file: a plaintext value present in the .db before this
+            # runs is absent afterwards (the ciphertext is always longer, so the
+            # record is rewritten rather than partially overwritten). That is
+            # what makes migration "gone", not merely "superseded".
             conn.execute(
                 "INSERT INTO fleet_settings (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -238,6 +284,19 @@ class FleetSettings:
             conn.commit()
         finally:
             conn.close()
+
+    def set(self, key: str, value: str) -> None:
+        """Set a setting value. Creates or updates the key.
+
+        Secret keys are encrypted here, so every writer — the out-of-band
+        capture form, the settings UI, ``python -m admz settings set`` and the
+        MCP tool — stores ciphertext without knowing it needs to.
+        """
+        if is_store_encrypted(key) and value:
+            from admz import setting_crypto
+
+            value = setting_crypto.encrypt(value)
+        self._raw_set(key, value)
 
     def delete(self, key: str) -> bool:
         """Delete a setting. Returns True if the key existed."""
@@ -252,7 +311,17 @@ class FleetSettings:
             conn.close()
 
     def list_all(self) -> Dict[str, str]:
-        """Return all settings as a dict."""
+        """Return all settings as a dict, secrets decrypted.
+
+        Decrypting here keeps this consistent with :meth:`get` — every caller
+        masks via ``mask_settings_for_display`` before showing anything, and
+        that mask reports a length, which would otherwise describe the
+        ciphertext rather than the secret.
+
+        Does **not** migrate: a bulk listing is a display path, and a settings
+        page render is the wrong moment to start rewriting rows. Migration
+        happens on :meth:`get`, which is the path that actually uses a value.
+        """
         conn = self._connect()
         try:
             rows = conn.execute(
@@ -260,7 +329,16 @@ class FleetSettings:
             ).fetchall()
         finally:
             conn.close()
-        return {k: v for k, v in rows}
+        from admz import setting_crypto
+
+        out: Dict[str, str] = {}
+        for k, v in rows:
+            if is_store_encrypted(k):
+                plain, _ = setting_crypto.read_stored(k, v)
+                out[k] = plain if plain is not None else ""
+            else:
+                out[k] = v
+        return out
 
 
 # Module-level singleton.

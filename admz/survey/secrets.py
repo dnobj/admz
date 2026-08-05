@@ -37,18 +37,13 @@ def _key_path() -> Path:
     return key_path()
 
 
-def _fernet():
-    # reuse the registry's key helper so there's exactly one key file
-    from admz.backends.sqlite_backend import _build_fernet
-    return _build_fernet(_key_path())
-
-
-def encrypt(plain: str) -> str:
-    return _fernet().encrypt(plain.encode()).decode()
-
-
-def decrypt(token: str) -> str:
-    return _fernet().decrypt(token.encode()).decode()
+# Re-exported from admz.setting_crypto, which owns the one Fernet path for
+# fleet-setting secrets (#296). This module and admz/github_app/secrets.py each
+# had an identical private copy; a third was about to appear for
+# default_password, so they were collapsed instead. Same key file, same tokens —
+# names and behaviour here are unchanged, and existing ciphertext still
+# decrypts. ``_key_path`` stays because ``hmac_key`` below reads the key bytes.
+from admz.setting_crypto import decrypt, encrypt  # noqa: E402,F401
 
 
 # ---------------------------------------------------------------------------
