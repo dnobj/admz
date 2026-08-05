@@ -143,6 +143,13 @@ CONVERTED: dict[str, StoreSpec] = {
     "admz.mcp.temp_credentials": StoreSpec(
         cls="TempCredentialManager",
         exercise="s.count_active_for_device('probe-device')"),
+    # Store #19, added by #188 part 2. The firmware artifact digests live in
+    # the database rather than in a sidecar beside the artifact, because a
+    # sidecar would sit in the very directory the threat model says an attacker
+    # can write — a trust anchor must not live inside the zone it vouches for.
+    "admz.firmware.pinning": StoreSpec(
+        cls="ArtifactStore",
+        exercise="s.get('probe-artifact.bin')"),
 }
 
 #: Modules whose *import* provably creates nothing.
@@ -238,8 +245,8 @@ class TestInventory:
         # 17 at the end of #258; 18 since #314 made temp credentials
         # persistent. Updated deliberately, which is what this assertion is
         # for — it fired on the new store before any human looked at the diff.
-        assert len(discovered) == 18, (
-            f"expected 18 stores, found {len(discovered)} — if a store was "
+        assert len(discovered) == 19, (
+            f"expected 19 stores, found {len(discovered)} — if a store was "
             "added or removed, update this number deliberately"
         )
 

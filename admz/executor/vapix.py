@@ -22,6 +22,7 @@ import httpx
 
 from admz.executor.base import BaseExecutor
 from admz.executor.models import ExecutionRequest, StepResult
+from admz.firmware.pinning import FirmwareIntegrityError
 from admz.ssl_config import verify_ssl_default
 
 logger = logging.getLogger(__name__)
@@ -93,11 +94,21 @@ def _upload_path_allowed(file_path: str) -> bool:
 
     So: **do not read a passing check here as "this file is safe to send."**
     It means only "this file is inside the directory ADMZ treats as staged".
-    The import door is gated as of #188; the artifact itself is unverified
-    until #188's second half lands, and even then TOFU-pinning detects
-    substitution after entry rather than authenticating the artifact. What
-    stops a genuinely malicious *firmware image* flashing is the device's own
-    mandatory signature check (VAPIX ``422``), which belongs to the device.
+
+    Two separate controls now stand behind it, and neither is this function:
+
+    * the import door is **gated** (#188 part 1), so bytes no longer enter the
+      cache unapproved; and
+    * the artifact is **pinned at entry and verified at the read** (#188 part 2,
+      ``firmware/pinning.py``) — the check sits next to ``open()`` below, not
+      here, because a digest verified at containment-check time describes a file
+      that could differ from the one uploaded.
+
+    Even together those are **trust-on-first-use**: they detect substitution
+    *after* entry, and assert nothing about whether the artifact was ever
+    genuine. What stops a genuinely malicious *firmware image* flashing is the
+    device's own mandatory signature check (VAPIX ``422``), which belongs to the
+    device.
 
     Anyone adding another writer into the firmware cache is adding a door into
     the trusted side of this boundary and must gate it.
@@ -379,6 +390,21 @@ class VapixExecutor(BaseExecutor):
                 result.learned_auth = learned_auth
             return result
 
+        except FirmwareIntegrityError as e:
+            # #188: also a deliberate refusal, and the message is the whole
+            # deliverable — an operator meeting this mid-maintenance-window
+            # needs to know whether to retry, re-download, or suspect the host.
+            # Must precede the catch-all, which would file it as "Unexpected
+            # error" behind a stack trace.
+            elapsed = (time.monotonic() - start) * 1000
+            logger.error("Refused %s on %s: %s", op_id, device_id, e)
+            return StepResult(
+                operation_id=op_id,
+                device_id=device_id,
+                success=False,
+                error=str(e),
+                duration_ms=elapsed,
+            )
         except PathParamRejected as e:
             # A deliberate refusal, not a surprise — log it at WARNING with
             # the operation and device so the attempt is attributable, and
@@ -466,18 +492,43 @@ class VapixExecutor(BaseExecutor):
             transport=self._make_transport(), timeout=timeout
         ) as client:
             if request.file_path:
-                with open(request.file_path, "rb") as f:
-                    files = {
-                        request.file_field_name: (
-                            os.path.basename(request.file_path),
-                            f,
-                            "application/octet-stream",
-                        )
-                    }
-                    return await client.request(
-                        method=request.method, url=url,
-                        data=request.form_data or {}, files=files, auth=auth,
+                # #188: verification happens HERE, at the read, and the bytes
+                # verified are the bytes sent — they are the same object.
+                #
+                # Placement is the whole point. Containment is checked ~160
+                # lines above (`_upload_path_allowed`), and the human approval
+                # happens before the executor is entered at all. A digest
+                # checked at either of those moments describes a file that
+                # could differ from the one uploaded; only a check adjacent to
+                # the read has no window.
+                #
+                # This reads the artifact into memory rather than streaming the
+                # file handle, which is a deliberate trade: firmware runs to
+                # ~104 MB, and the alternative — hashing while httpx streams —
+                # can only detect a mismatch *after* bytes have reached the
+                # device. A half-flashed image is worse than a refused one.
+                from admz.firmware import pinning
+
+                payload = Path(request.file_path).read_bytes()
+                state, _digest = pinning.verify_bytes(request.file_path, payload)
+                if state != pinning.STATE_UPSTREAM_VERIFIED:
+                    logger.warning(
+                        "Uploading firmware %s with integrity state %r — this "
+                        "is trust-on-first-use, NOT verification against Axis "
+                        "(#188).",
+                        os.path.basename(request.file_path), state,
                     )
+                files = {
+                    request.file_field_name: (
+                        os.path.basename(request.file_path),
+                        payload,
+                        "application/octet-stream",
+                    )
+                }
+                return await client.request(
+                    method=request.method, url=url,
+                    data=request.form_data or {}, files=files, auth=auth,
+                )
             if request.raw_body is not None:
                 return await client.request(
                     method=request.method, url=url, content=request.raw_body,
