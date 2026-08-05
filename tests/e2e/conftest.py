@@ -1,13 +1,19 @@
 """Pytest config for the E2E suite.
 
-These tests hit a LIVE running ADMZ server at ``localhost:4242``
-and consume real Gemini API credits. They're opt-in:
+These tests hit a LIVE running ADMZ server — by default the staging
+instance at ``localhost:4243`` — and consume real Gemini API credits.
+They're opt-in:
 
     pytest tests/e2e --run-e2e
 
 Without the flag they're skipped (so the normal test suite stays
 fast + free). The flag also widens timeouts and asserts the server
 is reachable before any test starts.
+
+**Never production.** ``:4242`` is the live production instance
+(CLAUDE.md). ``_ensure_server_alive`` below refuses outright — raises,
+does not skip — if the resolved base URL is production; see
+``admz.target_guard`` for the shape of that check and its escape hatch.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ import httpx
 import pytest
 
 
-DEFAULT_BASE_URL = "http://127.0.0.1:4242"
+DEFAULT_BASE_URL = "http://127.0.0.1:4243"
 
 
 @functools.lru_cache(maxsize=1)
@@ -90,13 +96,24 @@ def _server_alive() -> bool:
 
 @pytest.fixture(scope="session", autouse=True)
 def _ensure_server_alive(request):
-    """Skip the whole suite if no server is reachable."""
+    """Refuse if the target is production, then skip the whole suite if no
+    server is reachable.
+
+    The production check runs first and *before any request goes out* —
+    ``refuse_if_production`` raises rather than skipping, so a misconfigured
+    ``ADMZ_E2E_BASE_URL`` (or an inherited one, left set from another shell)
+    stops the session instead of quietly proceeding (#180).
+    """
     if not request.config.getoption("--run-e2e"):
         return
+    from admz.target_guard import refuse_if_production
+    refuse_if_production(
+        _base_url(), source="ADMZ_E2E_BASE_URL (or the :4243 default)"
+    )
     if not _server_alive():
         pytest.skip(
             f"E2E tests need a live ADMZ server at {_base_url()}. "
-            "Start it with: python -m admz api --host 127.0.0.1 --port 4242"
+            "Start it with: python -m admz api --host 127.0.0.1 --port 4243"
         )
 
 

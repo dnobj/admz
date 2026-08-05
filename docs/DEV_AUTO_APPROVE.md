@@ -1,6 +1,10 @@
 # Dev auto-approver — end-to-end testing of approval-gated flows
 
 > ⚠️ **Development only. Never run this against a production ADMZ.**
+> CLAUDE.md is explicit: *"Never point tests, agents, or experiments at
+> :4242 or `C:\ProgramData\admz`."* `tools/dev_auto_approve.py` now refuses
+> outright — raises, doesn't just print a warning — if `--base-url` resolves
+> to `:4242` (see [`admz/target_guard.py`](../admz/target_guard.py), #180).
 
 ## The problem it solves
 
@@ -74,7 +78,8 @@ which verifies it normally.
 
 ## Usage
 
-Run from `C:\admz\admz` with the API server up on `:4242`:
+Run from `C:\admz\admz` with the API server up on `:4243` (staging —
+never `:4242`, which is production on this machine):
 
 ```bash
 # One-shot: approve everything currently pending and in-scope, then exit
@@ -91,9 +96,10 @@ ADMZ_DEV_AUTO_APPROVE=1 .venv/Scripts/python.exe tools/dev_auto_approve.py <toke
 ADMZ_DEV_AUTO_APPROVE=1 .venv/Scripts/python.exe tools/dev_auto_approve.py --watch --allow-tags lab,test,bench
 ```
 
-Flags: `--base-url` (default `$ADMZ_BASE_URL` or `http://localhost:4242`),
-`--allow-tags`, `--all` + `--i-understand-this-is-not-production`,
-`--watch`, `--interval`.
+Flags: `--base-url` (default `$ADMZ_E2E_BASE_URL`, then `$ADMZ_BASE_URL` as a
+deprecated alias, then `http://localhost:4243`; refuses if it resolves to
+`:4242` — see the warning above), `--allow-tags`, `--all` +
+`--i-understand-this-is-not-production`, `--watch`, `--interval`.
 
 ## Typical agent workflow
 
@@ -114,8 +120,14 @@ This sequence was run end-to-end against a real device (P8815-2,
 whole chain — gate → unattended approval → real reboot → recovery → audit.
 Run it against any `lab`-tagged, reachable device.
 
+**The original run predates the staging split** (ADR-0054, landed
+2026-08-04) and used what was then a shared dev/test instance on `:4242` —
+that history is unchanged below for accuracy. `:4242` is production today.
+The commands below are updated to target staging (`:4243`); do not
+substitute `:4242` when repeating this test.
+
 ```bash
-# 0. Servers up on :4242 (.venv); pick a lab-tagged device id.
+# 0. Servers up on :4243 (staging, .venv); pick a lab-tagged device id.
 DID=ACCC8EE6E7EE
 
 # 1. Capture the baseline bootid (also confirms it's online + creds work).
@@ -132,11 +144,11 @@ PY
 
 # 2. Start the auto-approver in watch mode (background), scoped to lab.
 ADMZ_DEV_AUTO_APPROVE=1 .venv/Scripts/python.exe tools/dev_auto_approve.py \
-    --watch --base-url http://127.0.0.1:4242 --allow-tags lab &
+    --watch --base-url http://127.0.0.1:4243 --allow-tags lab &
 
 # 3. Trip the gate: a service-affecting reboot. Returns blocked + a token;
 #    the op does NOT run yet.
-curl -s -X POST http://127.0.0.1:4242/api/catalog/execute \
+curl -s -X POST http://127.0.0.1:4243/api/catalog/execute \
   -H "Content-Type: application/json" \
   -d "{\"device_id\":\"$DID\",\"operation_id\":\"restart.cgi:restart\",\"family\":\"vapix\",\"params\":{}}"
 

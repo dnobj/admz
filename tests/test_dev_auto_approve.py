@@ -102,6 +102,87 @@ def test_main_all_requires_acknowledgement(monkeypatch):
     assert daa.main(["--all"]) == 2
 
 
+# --- target guard (#180) ----------------------------------------------
+
+
+@pytest.mark.parametrize("env,expected", [
+    ({}, daa.DEFAULT_BASE_URL),
+    ({"ADMZ_BASE_URL": "http://x:1"}, "http://x:1"),
+    ({"ADMZ_E2E_BASE_URL": "http://y:2"}, "http://y:2"),
+    # ADMZ_E2E_BASE_URL wins when both are set.
+    ({"ADMZ_E2E_BASE_URL": "http://y:2", "ADMZ_BASE_URL": "http://x:1"}, "http://y:2"),
+])
+def test_default_base_url_precedence(env, expected):
+    assert daa._default_base_url(env) == expected
+
+
+def test_default_base_url_default_is_staging_not_production():
+    assert daa.DEFAULT_BASE_URL == "http://127.0.0.1:4243"
+
+
+def test_main_refuses_when_target_is_production(monkeypatch, capsys):
+    """With the dev-auto-approve guard on but --base-url pointed at :4242,
+    main() must refuse before ever importing admz.factory / ConfirmStore —
+    i.e. before anything that could touch a real registry or DB."""
+    monkeypatch.setenv(daa.GUARD_ENV, "1")
+    rc = daa.main(["--base-url", "http://127.0.0.1:4242"])
+    assert rc == 2
+    assert "4242" in capsys.readouterr().err
+
+
+def test_main_refuses_production_via_default_base_url_env(monkeypatch):
+    """Same, but via the env var rather than an explicit flag — this is
+    the "left set from an earlier session" shape the review called out."""
+    monkeypatch.setenv(daa.GUARD_ENV, "1")
+    monkeypatch.setenv("ADMZ_E2E_BASE_URL", "http://127.0.0.1:4242")
+    assert daa.main([]) == 2
+
+
+def test_main_calls_target_guard_with_the_resolved_base_url(monkeypatch):
+    """Proves the wiring — main() calls the *shared* admz.target_guard
+    function with args.base_url, not a re-implemented check of its own —
+    by substituting a stub and observing it was called with the right URL."""
+    import admz.target_guard as tg
+
+    monkeypatch.setenv(daa.GUARD_ENV, "1")
+    calls = []
+
+    def fake_refuse(url, *, source, env=None):
+        calls.append(url)
+        raise RuntimeError("stubbed refusal")
+
+    monkeypatch.setattr(tg, "refuse_if_production", fake_refuse)
+    rc = daa.main(["--base-url", "http://127.0.0.1:9999"])
+    assert rc == 2
+    assert calls == ["http://127.0.0.1:9999"]
+
+
+def test_main_proceeds_when_target_guard_does_not_raise(monkeypatch):
+    """The positive path: when the shared guard doesn't raise (e.g. the
+    escape hatch is satisfied — see test_target_guard.py for that logic
+    directly), main() must actually continue rather than refusing anyway.
+    Stubs the registry/store so this stays a unit test with no real DB or
+    network touched."""
+    import admz.target_guard as tg
+    import admz.factory as factory
+    import admz.api.confirm_store as confirm_store_mod
+
+    monkeypatch.setenv(daa.GUARD_ENV, "1")
+    monkeypatch.setattr(tg, "refuse_if_production", lambda *a, **k: None)
+    monkeypatch.setattr(factory, "create_device_registry", lambda: _Registry({}))
+
+    class _StubStore:
+        _db_path = "/nonexistent/path/does/not/exist.db"
+
+        def get_session(self, token):
+            return None
+
+    monkeypatch.setattr(confirm_store_mod, "ConfirmStore", _StubStore)
+
+    rc = daa.main(["--base-url", "http://127.0.0.1:4242"])
+    assert rc == 0  # reached the end of the one-shot run, not refused
+
+
 # --- scope -----------------------------------------------------------------
 
 
