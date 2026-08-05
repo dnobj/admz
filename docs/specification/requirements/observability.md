@@ -72,6 +72,18 @@ names), or Fernet bytes. The masking helpers in
 `admz/fleet_settings.py` are used everywhere fleet settings get
 written to logs.
 
+A third-party library can still bypass ADMZ's own logging calls
+entirely: httpx logs the fully assembled request URL — query string
+included — at INFO on every request, and VAPIX operations that set a
+device password put that password in the query string (the CGI's own
+wire format). `configure_logging()` (`admz/logging_config.py`) installs
+a `logging.Filter` on the `httpx` logger that masks every query
+*value* unconditionally, keeping keys/method/host/path/status intact —
+deliberately not a fixed "these are the secret key names" list, since
+`admz/executor/vapix.py` lets a caller inject an arbitrary query
+parameter under any name. See `admz/redact.py`'s `redact_url` and
+#157.
+
 ## Known limitations
 
 ### KL-OBS-001 — No metrics endpoint ⚠️

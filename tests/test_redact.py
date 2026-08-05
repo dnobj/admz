@@ -14,6 +14,7 @@ from admz.redact import (
     MASK,
     is_sensitive_key,
     redact_structure,
+    redact_url,
     sibling_masked_fields,
 )
 from tests import mcp_harness
@@ -133,6 +134,56 @@ class TestRedactStructureSiblings:
         assert out["writes"][0]["key"] == "survey_github_pat"
 
 
+class TestRedactUrl:
+    """#157: the shared URL redactor. ``keys=None`` (mask every query value)
+    is the fail-closed default; ``keys=<names>`` is the narrower mode kept
+    for callers with a closed query vocabulary (admz/modules/acs_pro/firebird.py)."""
+
+    def test_none_and_empty_pass_through(self):
+        assert redact_url(None) is None
+        assert redact_url("") is None
+
+    def test_plain_url_without_query_is_unchanged(self):
+        assert redact_url("https://plain.example/hook") == "https://plain.example/hook"
+
+    def test_userinfo_always_masked_regardless_of_mode(self):
+        raw = "https://user:s3cret@admz.local/api/acs/rule-fired"
+        expected = "https://***@admz.local/api/acs/rule-fired"
+        assert redact_url(raw) == expected
+        assert redact_url(raw, keys=("token",)) == expected
+
+    def test_default_mode_masks_every_query_value(self):
+        """The fail-closed default: no key list to fall behind, because
+        VAPIX callers can inject a query param under any name
+        (admz/executor/vapix.py:696-698)."""
+        raw = "http://192.168.1.50/axis-cgi/pwdgrp.cgi?action=add&user=admz_tmp&pwd=hunter2&grp=users"
+        out = redact_url(raw)
+        assert "hunter2" not in out
+        assert "admz_tmp" not in out
+        assert "add" not in out  # action's value is masked too — the whole point
+        assert out == (
+            "http://192.168.1.50/axis-cgi/pwdgrp.cgi"
+            "?action=%2A%2A%2A&user=%2A%2A%2A&pwd=%2A%2A%2A&grp=%2A%2A%2A"
+        )
+
+    def test_keys_mode_masks_only_named_keys(self):
+        """The narrower mode: only listed keys are masked, others survive —
+        used where the query vocabulary is known and closed."""
+        raw = "https://admz.local/hook?rule=Front+Door&apikey=xyz"
+        out = redact_url(raw, keys=("apikey", "token"))
+        assert out == "https://admz.local/hook?rule=Front+Door&apikey=%2A%2A%2A"
+
+    def test_keys_mode_is_case_insensitive(self):
+        raw = "https://admz.local/hook?TOKEN=xyz"
+        assert redact_url(raw, keys=("token",)) == "https://admz.local/hook?TOKEN=%2A%2A%2A"
+
+    def test_unparseable_input_fails_closed(self):
+        class Unparseable:
+            def __str__(self):
+                raise ValueError("boom")
+        assert redact_url(Unparseable()) == "***"
+
+
 class TestCrossSurfaceDelegation:
     """The three surfaces must apply the same rules."""
 
@@ -150,6 +201,16 @@ class TestCrossSurfaceDelegation:
         assert out == {"username": "u", "password": MASK}
         assert _sanitize_tool_args("plain") == "plain"
         assert _sanitize_tool_args(None) is None
+
+    def test_firebird_redact_url_delegates(self):
+        """#157: firebird.py's redact_url is now a thin wrapper over the
+        shared implementation, scoped to its own closed key list — the
+        existing behavior asserted in test_acs_rule_anatomy.py must survive
+        the refactor unchanged."""
+        from admz.modules.acs_pro.firebird import redact_url as fb_redact_url
+        assert fb_redact_url("https://admz.local/hook?rule=Front+Door&apikey=xyz") == (
+            "https://admz.local/hook?rule=Front+Door&apikey=%2A%2A%2A"
+        )
 
     def test_fleet_settings_delegates(self):
         from admz.fleet_settings import is_sensitive_setting_key

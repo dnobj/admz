@@ -19,13 +19,23 @@ aggregators (Splunk, Loki, ELK, Datadog, CloudWatch):
 ``logger.info("hi %s", name, extra={"device_id": "cam-01"})`` —
 anything in ``extra=`` is merged into the JSON object verbatim, so
 operational logs can carry structured fields alongside the message.
+
+``configure_logging()`` also installs :class:`_HttpxUrlRedactingFilter`
+on the ``httpx`` logger (#157): httpx logs the full request URL —
+query string included — at INFO, and VAPIX credential-setting
+operations put the plaintext password in that query string. See the
+filter's docstring for why every query *value* is masked rather than
+matching against a fixed set of "secret" key names.
 """
 
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Optional
+
+from admz.redact import redact_url
 
 
 _VALID_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
@@ -112,6 +122,73 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
+_URL_TOKEN_RE = re.compile(r"\S+://\S+")
+
+
+class _HttpxUrlRedactingFilter(logging.Filter):
+    """Masks query-parameter values in the URL httpx logs at INFO for every
+    request (#157).
+
+    Installed httpx (0.28.1) logs the fully assembled request URL —
+    including its query string — via ``logging.getLogger("httpx").info(...)``
+    on every request/response pair (``httpx/_client.py``). VAPIX operations
+    that set a device password put the plaintext password in that query
+    string, by the CGI's own wire format (the atlas ``pwdgrp.cgi`` catalog
+    entries), and ``admz/executor/vapix.py`` also lets a caller inject
+    arbitrary extra query parameters under any name — so no fixed "these are
+    the secret key names" list can be complete. This filter sidesteps that by
+    not trying: it redacts every query VALUE unconditionally
+    (``admz.redact.redact_url(..., keys=None)``), keeping keys, method, host,
+    path and status intact. See ``admz/redact.py`` for the full reasoning.
+
+    Attached to the ``httpx`` *logger* (not to root's handler): httpx always
+    logs through ``logging.getLogger("httpx")`` directly
+    (``httpx/_client.py:117``), and a logger-level filter runs once in
+    ``Logger.handle()`` before the record is handed to any handler — so it
+    redacts the record before it reaches root's single ``StreamHandler``,
+    regardless of whether that handler's formatter is the plain-text
+    ``Formatter`` or ``JsonFormatter`` (``ADMZ_LOG_FORMAT``); both read the
+    same already-redacted ``record.msg``. A filter attached to the handler
+    instead would not survive this module's own handler-rebuild:
+    ``configure_logging()`` discards and recreates that handler on every
+    call, silently dropping any filter attached to it — the ``httpx`` logger
+    object, by contrast, persists across calls, which is why the guard below
+    only adds this filter once.
+
+    Operates on the fully rendered message text (``record.getMessage()``)
+    rather than assuming a specific ``record.args`` shape, so it survives an
+    httpx release that reorders or adds arguments to its log call — it only
+    needs a bare ``scheme://`` token to appear somewhere in the line, which
+    any URL httpx logs will produce (URLs cannot contain a literal space).
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            rendered = record.getMessage()
+        except Exception:  # noqa: BLE001 — never let a formatting quirk crash logging
+            return True
+        match = _URL_TOKEN_RE.search(rendered)
+        if not match:
+            return True
+        redacted = redact_url(match.group(0))
+        if redacted is None:
+            return True
+        record.msg = rendered[: match.start()] + redacted + rendered[match.end() :]
+        record.args = ()
+        return True
+
+
+def _ensure_httpx_redaction_filter() -> None:
+    """Idempotently attach :class:`_HttpxUrlRedactingFilter` to the ``httpx``
+    logger. Safe to call every time :func:`configure_logging` runs — unlike
+    the root handler, the ``httpx`` logger object is not recreated, so a
+    naive unconditional ``addFilter`` would stack a duplicate on every call.
+    """
+    httpx_logger = logging.getLogger("httpx")
+    if not any(isinstance(f, _HttpxUrlRedactingFilter) for f in httpx_logger.filters):
+        httpx_logger.addFilter(_HttpxUrlRedactingFilter())
+
+
 def configure_logging(
     level: Optional[int] = None,
     fmt: Optional[str] = None,
@@ -147,3 +224,11 @@ def configure_logging(
     handler.setFormatter(formatter)
     root.addHandler(handler)
     root.setLevel(level)
+
+    # #157: httpx logs the full assembled request URL (query string
+    # included) at INFO, and ADMZ never otherwise touches the "httpx"
+    # logger — so without this, a VAPIX device password set via
+    # pwdgrp.cgi:add-user/update-user lands in plaintext in this same
+    # handler. See _HttpxUrlRedactingFilter for why it must attach to the
+    # logger rather than to `handler` above.
+    _ensure_httpx_redaction_filter()
