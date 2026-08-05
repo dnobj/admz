@@ -133,7 +133,7 @@ Same `ADMZ_LOG_LEVEL` + `ADMZ_LOG_FORMAT` env vars.
 ## Known limitations
 
 ### KL-MCP-001 — Tool surface lives in one 3,400-line file ⚠️
-`admz/mcp/server.py` registers all 52 tools in a single class. The
+`admz/mcp/server.py` registers the whole tool surface in a single class. The
 list_tools dispatcher is a giant if/elif chain. Refactor into a
 `tools/` package (one module per tool group) is deferred to the
 chatbot work, which will need the same extraction for its

@@ -120,7 +120,9 @@ registry.add_account("camera-lobby-01", "default", {
 python -m admz mcp
 ```
 
-The server exposes 52 tools across these areas:
+The server exposes tools across these areas — the full catalogue, kept in step
+with the code by `tests/test_doc_inventories.py`, is
+[`docs/MCP_TOOLS_REFERENCE.md`](docs/MCP_TOOLS_REFERENCE.md):
 
 | Area | Tools |
 |---|---|
@@ -277,7 +279,7 @@ The `docs/` folder contains:
 pytest tests/ --ignore=tests/test_vault_backend.py
 ```
 
-~1,600 tests across the executor, plans, operations gate, snapshots,
+Several thousand tests across the executor, plans, operations gate, snapshots,
 scheduler, discovery, capture, confirm-store, redaction, firmware, auth,
 chatbot, survey, API routes, and SQLite backend. (Vault backend tests and a
 handful of live-device tests are skipped unless their target is reachable.)

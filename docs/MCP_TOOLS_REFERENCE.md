@@ -484,7 +484,9 @@ no device traffic, no commits.
 
 ## ⏰ Scheduled snapshots
 
-Schedules persist to `~/.admz/schedules.json` and survive server restarts.
+Schedules persist as rows in the unified `tasks` table (ADR-0037) and survive
+server restarts. The pre-ADR-0037 `~/.admz/schedules.json` is legacy: it is read
+once by the migration (`admz/paths.py::schedules_path`) and never written.
 
 ### `create_snapshot_schedule`
 Create a recurring snapshot schedule.

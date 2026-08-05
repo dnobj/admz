@@ -105,7 +105,7 @@ admz/
 │   ├── bundle.py, diff.py, github.py — bundle schema, diffing, fork-and-PR
 │
 ├── mcp/                   — MCP server (the primary entry point)
-│   ├── server.py          — 67 tools wiring everything together
+│   ├── server.py          — the tool handlers, wiring everything together
 │   ├── tools/             — extracted tool-schema modules (firmware, fleet,
 │   │                         knowledge, provision, schedules)
 │   └── temp_credentials.py — short-lived device user accounts manager
@@ -264,7 +264,7 @@ two-gate safety for free.
 | Capture sessions | SQLite | CaptureStore |
 | Confirmation sessions (multi-level, password-protected; single-source for both single ops and plans, cross-process) | SQLite | ConfirmStore |
 | Audit log (who did what, when — incl. confirm approvals) | SQLite | AuditLog |
-| Snapshot schedules | JSON in `~/.admz/schedules.json` | SnapshotScheduler |
+| Recurring tasks (snapshots, audits, survey) | SQLite `tasks` table | TaskStore (ADR-0037) |
 | Temp credentials (live device users with TTL) | In-memory dict on MCP server | TempCredentialManager |
 | Cached firmware binaries | `~/.admz/firmware/*.bin` | firmware.downloader |
 
