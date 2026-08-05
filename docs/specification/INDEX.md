@@ -9,6 +9,7 @@ Complete table of contents for the ADMZ specification.
 - **[orchestration.md](orchestration.md)** — the master-agent session model: who runs each loop, session naming/roles, `status:` labels, worktree safety, validation gates
 - **[00-overview.md](00-overview.md)** — mission, scope, non-goals
 - **[glossary.md](glossary.md)** — terms and abbreviations
+- **[../ACCEPTANCE.md](../ACCEPTANCE.md)** — the manual acceptance pass: twelve operator-visible checks to run before believing a release is sound. Derived from the user stories below, and deliberately scoped to what the ~3,700-test suite *structurally cannot* catch — a collapse that never reaches the rows (#263), a subresource loaded from a CDN (#200), a suite pointed at production (#180). Not a substitute for the suite, and it says so.
 
 ## Personas
 
@@ -186,3 +187,4 @@ Point-in-time production-readiness reviews and their follow-up trackers.
 - **"I'm adding a new device family"** → extensibility requirement → decisions 0011, 0015, 0027 → multi-target-support requirement.
 - **"I'm building demo / activity tracking or monitoring/reporting"** → ADR-0028 → multi-target-support (FR-MT-013 spike) → personas/experience-center-operator → observability requirement → hierarchy requirement.
 - **"I'm hardening security"** → security requirement → decisions 0005, 0006, 0009, 0010, 0014, 0020.
+- **"I'm about to accept a release"** → [ACCEPTANCE.md](../ACCEPTANCE.md) → the user story behind any check that fails → file the issue with a regression test the suite would have caught it with.
