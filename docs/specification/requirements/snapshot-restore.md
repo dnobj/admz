@@ -68,12 +68,13 @@ that, when executed, brings the device to the configuration in the
 target commit. Restore is not a special path — it reuses the plan
 engine, so the same confirmation gates apply.
 
-### FR-SNP-008 — Cross-device clone ✅
-`build_clone_plan(source_device_id, target_device_id,
-source_git_sha=None)` produces a plan that applies one device's
-config to another. Per-device fields (IP address, hostname, MAC)
-are filtered out; the rest copies. Used in Experience Center
-"replicate this camera" demos.
+### FR-SNP-008 — Cross-device clone 📋
+`build_clone_plan(source_device_id, target_device_id, source_git_sha=None)`
+would produce a plan applying one device's config to another, filtering
+per-device fields (IP, hostname, MAC). For Experience Center "replicate this
+camera" demos.
+
+> **Corrected 2026-08-04 (#214).** Marked ✅ while `build_clone_plan` has zero occurrences in `admz/`. The user story for the same capability ([US-SR-007](../user-stories/snapshot-and-restore.md)) already marked it 📋, so the two documents disagreed. A ✅ on an absent artifact is worse than a 📋 on a present one: it invites a reader to depend on something that was never built.
 
 ### FR-SNP-009 — Snapshots before plan execution ✅
 The plan engine calls `snapshot_engine.snapshot_device` before any

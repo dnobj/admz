@@ -50,9 +50,12 @@ Callers narrow the result by `topic` (exact match) and `tags`
 (any-of). Returned hints carry `source_level` so the LLM can tell
 whether a recommendation is product-specific or generic.
 
-### FR-KNW-007 — Knowledge exposed via MCP and REST ✅
-- MCP: `query_knowledge(device_id, topic?, tags?)`
-- REST: `GET /api/v2/devices/{id}/knowledge?topic=...`
+### FR-KNW-007 — Knowledge exposed via MCP 🚧
+- MCP: `query_knowledge(device_id, topic?, tags?)` ✅
+- REST: 📋 — `GET /api/v2/devices/{id}/knowledge` **never shipped**; `api/v2`
+  has zero occurrences in `admz/`.
+
+> **Corrected 2026-08-04 (#214).** Marked ✅ while claiming a REST endpoint that does not exist. A ✅ on an absent artifact is worse than a 📋 on a present one: it invites a reader to depend on something that was never built.
 
 LLM agents typically call knowledge before planning a write — the
 hints often warn about combinations the catalog risk-level alone

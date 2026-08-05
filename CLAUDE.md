@@ -72,9 +72,17 @@ it does not. `sc.exe config` also fails on this service's 401-character binPath
 (`1639`, invalid command line) — use `Invoke-CimMethod -MethodName Change`, which passes
 the string as a parameter rather than a command line.
 
-**It is not live.** Repointing the service is the remaining step and needs an *elevated*
-shell — changing service configuration requires Administrator, unlike stop/start. Until
-then the table above is accurate and the hazard above is real.
+**It is live.** The service was repointed on **2026-08-04** and ADR-0054 records the
+verification: the service configuration, production holding
+`admz-prod\.venv\Scripts\python.exe` open while the dev interpreter is unlocked, and the
+fleet poll resuming against live devices. So the split above is in effect, and the
+shared-tree hazard it describes is **historical** — a dev `pull` or `pip install` can no
+longer reach production.
+
+> This paragraph said *"It is not live … the hazard above is real"* for most of a day
+> after the split shipped, contradicting the ADR **and line 38 of this same file**
+> (#214). It is the highest-cost staleness in the repo: every session reads this file
+> first, and it told each one that the thing protecting production was not switched on.
 
 Staging exists so UI and behavior can be exercised without touching production. It carries a **copy** of the real device data (so it has real credentials — treat its `ADMZ_HOME` as secret-bearing) and runs with health polling turned down and GitHub config-push disabled.
 
@@ -85,8 +93,8 @@ C:/admz/admz/.venv/Scripts/python.exe -m pytest -q
 ```
 
 - **Always use the `.venv` interpreter.** The base conda environment has an old `google-genai` that 400s on Gemini 3.x tool turns.
-- The full suite is **~3,000 tests and takes 10–12 minutes**. Run it in the **foreground with a long timeout** — a two-minute default will kill it, and a partial run is not a green run.
-- **Test isolation matters more than usual here.** Several singletons (tasks store, confirm store, audit) bind their DB path at *import*. A test that doesn't isolate `ADMZ_HOME` will write into the operator's real database. If you add a writer, prove it cannot reach a real DB from a test run.
+- The full suite takes **10–12 minutes**. Run it in the **foreground with a long timeout** — a two-minute default will kill it, and a partial run is not a green run. (The test *count* is deliberately not stated: it changes every merge, and a number nobody updates is worse than no number — the #303 rule.)
+- **Test isolation matters more than usual here.** A test that doesn't isolate `ADMZ_HOME` will write into the operator's real database. If you add a writer, prove it cannot reach a real DB from a test run. (The stores no longer bind their path at *import* — #258 moved all 17 to a call-time `_db_path` property with schema-ensure inside `_connect()`. The isolation requirement is unchanged; the mechanism this warning used to name is not, and a reader debugging it would have looked in the wrong place.)
 
 ## Worktrees
 
@@ -133,7 +141,7 @@ For private repos this machine's default identity cannot see, credentials can al
 
 Load-bearing invariants worth knowing before you start:
 
-- **The confirmation gate** (ADR-0034): risk → level (`none` / `llm_confirm` / `url_only` / `url_and_password`), single-sourced in `operations.py` + `confirm_store`. Capabilities may change *who may approve*; they never remove a gate.
+- **The confirmation gate** (ADR-0034): risk → level (`none` / `llm_confirm` / `url_only` / `url_and_password`), single-sourced in `admz/confirm_policy.py` (`_DEFAULT_CONFIRMATION_LEVELS`, with per-fleet overrides) and resolved through `operations.resolve_confirmation`. `confirm_store` re-exports the table but no longer defines it. Capabilities may change *who may approve*; they never remove a gate.
 - **Modules add zero footprint until enabled** (ADR-0039/0040) — one predicate, consulted everywhere.
 - **Demo fragments are captured, never authored** (ADR-0047): capture only accepts keys currently *drifted* from baseline.
 - **Advanced capability switches are declared in one registry** (`admz/capabilities.py`) — new dangerous or privileged features register there rather than inventing another env var.

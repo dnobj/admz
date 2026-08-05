@@ -253,10 +253,18 @@ Add a discovered device to the registry.
 - **Args:** `device_id`, `ip_address`, `mac_address` (optional),
   `model` (optional), `hostname` (optional), `device_type` (optional),
   `tags` (array, optional)
-- **Returns:** `{success, device_id, onboarding: {status, …}}`
-- Credential onboarding runs automatically after registration (same flow
-  as `onboard_device`); a capture session is opened only when the
-  automatic resolution fails.
+- **Returns:** a **blocked envelope** — `{success: false, blocked: true,
+  risk_level, confirmation_level, confirm_token, confirm_url}`. Since #199 this
+  tool registers nothing on its own: a scan chose the device, so the operator
+  approves a blast radius rather than a device.
+- On approval the registration **and** credential onboarding run together — and
+  onboarding is the part that writes: a factory-defaulted unit gets an admin
+  account created on it (`pwdgrp.cgi:add-user`, `group=root`).
+
+> **Corrected 2026-08-04 (#214).** This entry documented the pre-gate return
+> shape and said onboarding "runs automatically after registration". An agent
+> written against it would treat the blocked envelope as a failure and retry,
+> rather than surfacing the approval link to the operator.
 
 ### `reconcile_device_addresses`
 Run a discovery scan and update any registered device whose **MAC** now

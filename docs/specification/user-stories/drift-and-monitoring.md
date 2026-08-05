@@ -29,7 +29,16 @@ only in US-DM-006 (attribution).
 1. `check_drift(device_id)` reads live device state via the same facet adapters that snapshot uses (no separate "drift code path").
 2. Live state is diffed against the latest snapshot at git HEAD for that device.
 3. The response is a `DriftReport` with `has_drift` (bool), `facets_checked`, `facets_drifted`, and a flat list of `DriftField(facet, path, expected, actual)` entries.
-4. Drift detection never modifies the device or the git repo — pure read.
+4. Drift detection never modifies **the device**. It is *not* a pure read of
+   the **git repo**: every call records the observation it just took — an
+   `Audit: <device_id>` commit plus the device's `latest_observed_sha`
+   (`admz/snapshot/drift.py`). That write is the point of ADR-0031's audit
+   trail, and it is best-effort: if it fails, the drift check still proceeds.
+   > **Corrected 2026-08-04 (#214).** This criterion read *"never modifies the
+   > device or the git repo — pure read"* long after the audit-observation
+   > commit shipped. Stated here rather than deleted because an operator plans
+   > around it: a fleet-wide sweep of N devices leaves up to N commits, so
+   > "drift check" is not a no-op against a repo you are mid-operation on.
 5. If a facet has no committed state (never snapshotted), it's skipped (logged), not flagged as drift.
 
 **Related requirements:** [drift-detection](../requirements/drift-detection.md).
@@ -103,7 +112,7 @@ Once the chatbot exists:
 **Acceptance criteria:**
 1. A natural-language audit request resolves to `check_drift` on the chosen scope — one device, a tag, or (hierarchy-aware) a Group / Site — through the MCP / chatbot surface.
 2. The result distinguishes three outcomes clearly: **clean** (no drift), **drifted** (with the per-field diff), and **no baseline** (device never snapshotted — so the honest answer is "I can't audit this yet," not "clean").
-3. The audit is pure-read — it never modifies the device or the repo (same guarantee as US-DM-001).
+3. The audit never modifies the device. It **does** write to the config repo — the same audit-observation commit as US-DM-001 criterion 4; see there rather than restating the guarantee here.
 4. When drift is found, the operator can pivot in the same conversation to reconcile it (US-DM-004) — accept-as-baseline or revert — without leaving chat.
 5. This is the **just-in-time** counterpart to US-DM-003's scheduled audit: same `DriftDetector` engine, operator-initiated and LLM-mediated rather than timer-driven.
 
