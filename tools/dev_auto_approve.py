@@ -30,7 +30,12 @@ setting, ADMZ already downgrades `url_and_password` -> `url_only`, so no
 password is needed. To exercise the password path, set a known dev password
 as the fleet setting and pass it here via `ADMZ_DEV_CONFIRM_PASSWORD`.
 
-Usage (run from C:\\admz\\admz with the API server up on :4242):
+Never point this at production (:4242) — CLAUDE.md: "Never point tests,
+agents, or experiments at :4242." ``main()`` refuses outright (raises, not a
+silent no-op) if ``--base-url`` resolves there; see ``admz.target_guard``
+for the check and its escape hatch (#180).
+
+Usage (run from C:\\admz\\admz with the API server up on :4243, staging):
 
     # one-shot: approve everything currently pending and in-scope
     ADMZ_DEV_AUTO_APPROVE=1 .venv/Scripts/python.exe tools/dev_auto_approve.py
@@ -66,6 +71,29 @@ GUARD_ENV = "ADMZ_DEV_AUTO_APPROVE"
 PASSWORD_ENV = "ADMZ_DEV_CONFIRM_PASSWORD"
 DEFAULT_ALLOW_TAGS = {"lab", "test"}
 DEV_CONFIRMED_BY = "dev-auto-approver"
+
+#: Staging, not production (#180). This is the same instance
+#: tests/e2e/conftest.py talks to by default.
+DEFAULT_BASE_URL = "http://127.0.0.1:4243"
+
+#: Legacy name for the base-url override. Kept working for scripts that
+#: already export it; ADMZ_E2E_BASE_URL below is preferred.
+LEGACY_BASE_URL_ENV = "ADMZ_BASE_URL"
+
+
+def _default_base_url(env: Optional[dict] = None) -> str:
+    """Resolve the default ``--base-url`` the same way
+    ``tests/e2e/conftest.py`` resolves its base URL, so the two tools that
+    both talk to a live ADMZ instance don't drift onto different env var
+    names (#180 review: "Two names is how one of them gets a guard and the
+    other doesn't").
+
+    ``ADMZ_E2E_BASE_URL`` is the canonical name going forward and wins if
+    both are set. ``ADMZ_BASE_URL`` (this tool's original name) keeps
+    working as a deprecated alias — nothing that already exports it breaks.
+    """
+    env = env if env is not None else os.environ
+    return env.get("ADMZ_E2E_BASE_URL") or env.get(LEGACY_BASE_URL_ENV) or DEFAULT_BASE_URL
 
 
 # --------------------------------------------------------------------------
@@ -315,7 +343,7 @@ def _banner(base_url: str, allow_tags: Set[str], scope_all: bool, watch: bool) -
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Dev-only ADMZ confirmation auto-approver.")
     parser.add_argument("tokens", nargs="*", help="Specific tokens to approve (default: all pending).")
-    parser.add_argument("--base-url", default=os.getenv("ADMZ_BASE_URL", "http://localhost:4242"))
+    parser.add_argument("--base-url", default=_default_base_url())
     parser.add_argument("--allow-tags", default=None, help="Comma list of device tags in scope (default: lab,test).")
     parser.add_argument("--all", action="store_true", help="Approve regardless of device tags (requires the next flag).")
     parser.add_argument("--i-understand-this-is-not-production", action="store_true")
@@ -329,6 +357,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "This tool is for development only and never runs in production.",
             file=sys.stderr,
         )
+        return 2
+
+    from admz.target_guard import refuse_if_production
+    try:
+        refuse_if_production(
+            args.base_url,
+            source="--base-url (ADMZ_E2E_BASE_URL / ADMZ_BASE_URL)",
+        )
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
         return 2
 
     scope_all = bool(args.all)

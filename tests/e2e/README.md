@@ -5,24 +5,35 @@ with the ADMZ MCP toolbox. They simulate real user interactions — they
 spend real Gemini API credits and they touch the live SQLite registry +
 config-repo git tree.
 
-**Don't run in normal CI.** They're opt-in via `--run-e2e`. The flag is
-the only safety latch.
+> ⚠️ **Never point this at production.** CLAUDE.md: *"Never point tests,
+> agents, or experiments at `:4242` or `C:\ProgramData\admz`."* The suite
+> defaults to staging (`:4243`) and refuses outright — raises, not a skip
+> — if the resolved target is `:4242` (see
+> [`admz/target_guard.py`](../../admz/target_guard.py), #180).
+
+**Don't run in normal CI.** They're opt-in via `--run-e2e`. The flag gates
+*whether* the suite runs; the target guard above gates *where* — the flag
+alone was previously the only safety latch, which is what #180 fixed.
 
 ## Running
 
 ```
 cd C:\admz\admz
-# 1. Make sure a fresh server is running:
-.venv\Scripts\python.exe -m admz api --host 127.0.0.1 --port 4242
+# 1. Make sure a fresh staging server is running:
+.venv\Scripts\python.exe -m admz api --host 127.0.0.1 --port 4243
 
 # 2. In another shell, run the suite:
 .venv\Scripts\python.exe -m pytest tests/e2e --run-e2e -v --no-cov
 ```
 
-If the server isn't reachable at `localhost:4242`, the suite skips itself
+If the server isn't reachable at `localhost:4243`, the suite skips itself
 with a clear message.
 
-Override the base URL via `ADMZ_E2E_BASE_URL=http://...`.
+Override the base URL via `ADMZ_E2E_BASE_URL=http://...`. Pointing it at
+`:4242` refuses (see the warning above) unless
+`ADMZ_E2E_ALLOW_PRODUCTION_URL` is set to that *exact* URL — a deliberate,
+loud, single-purpose opt-in, not a boolean flag left on from an earlier
+session.
 
 ## Cost + duration
 

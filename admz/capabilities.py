@@ -357,6 +357,35 @@ CAPABILITIES: Tuple[Capability, ...] = (
 #: leave every dev box permanently chipped and train operators to ignore the
 #: chip. ``ADMZ_VERIFY_SSL`` defaults to False, so turning it *on* raises
 #: safety; a capability it is not.
+#:
+#: A fourth is worth arguing explicitly rather than just listing, because it
+#: reads exactly like a capability candidate (#180 review): ``ADMZ_E2E_
+#: ALLOW_PRODUCTION_URL`` exists solely to unlock pointing destructive E2E/dev
+#: tooling at the live production fleet. It still doesn't fit here, on two
+#: independent grounds, either one sufficient on its own:
+#:
+#: 1. **Never read by the running install.** Every CAPABILITIES row is
+#:    surfaced through the *server's* five channels (startup WARNING,
+#:    ``/api/health``, the topbar chip, a boot ``capability.active`` audit
+#:    row, ``/settings/advanced``) because :func:`source_of` reads
+#:    ``os.environ`` in the ADMZ **service** process. This variable is read
+#:    only by ``admz/target_guard.py``, called from ``tests/e2e/conftest.py``
+#:    and ``tools/dev_auto_approve.py`` — both separate client processes that
+#:    send requests *to* an install, never code that runs inside one. There is
+#:    no server state for any of the five channels to report; forcing an entry
+#:    would make the chip and the health check lie about what the running
+#:    process actually knows.
+#: 2. **Not truthy-shaped.** :func:`source_of` has exactly one predicate,
+#:    ``truthy(os.environ.get(cap.env_var))``. This variable is deliberately
+#:    *not* boolean — its value must equal the exact URL being targeted, not
+#:    ``"1"``/``"true"`` (see ``admz/target_guard.py``: a boolean-shaped value
+#:    left in a shell from an earlier session must NOT satisfy it). Running it
+#:    through ``truthy()`` would make ``is_active()`` return False even when
+#:    the hatch is genuinely and correctly set — silently wrong in the one
+#:    surface a capability row exists to keep honest.
+#:
+#: ``ADMZ_E2E_BASE_URL`` beside it is unremarkable — a target address, same
+#: shape as ``ADMZ_BASE_URL`` two lines below.
 ORDINARY_CONFIG: Tuple[str, ...] = (
     "ADMZ_ALLOWED_ORIGINS",
     "ADMZ_AUTH_BACKEND",
@@ -371,6 +400,8 @@ ORDINARY_CONFIG: Tuple[str, ...] = (
     "ADMZ_CONFIG_REPO_PATH",
     "ADMZ_CONFIG_REPO_REMOTE",
     "ADMZ_DB_PATH",
+    "ADMZ_E2E_ALLOW_PRODUCTION_URL",
+    "ADMZ_E2E_BASE_URL",
     "ADMZ_GEMINI_API_KEY",
     "ADMZ_GEMINI_DEFAULT_MODEL",
     "ADMZ_GEMINI_EMPTY_RETRIES",
