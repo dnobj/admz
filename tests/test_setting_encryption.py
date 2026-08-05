@@ -278,6 +278,122 @@ def test_one_fernet_implementation(store):
     assert gh.decrypt(sv.encrypt(SECRET)) == SECRET
 
 
+# --- eager sweep: storage must match declaration, regardless of read traffic
+# ----------------------------------------------------------------------------
+# GH #307. ``test_the_partition_covers_every_sensitive_key`` above guards the
+# *policy* — a sensitive key must be declared store-encrypted, module-
+# encrypted, or plaintext-with-a-reason. It says nothing about the *database*.
+# That gap is exactly what #307 found on the live DB: ``acs_webhook_token``
+# was correctly declared in STORE_ENCRYPTED_SETTING_KEYS and was still
+# plaintext at rest, because nothing had called ``get()`` on it since deploy
+# — migration only ran, and runs, on read. These tests read the RAW row, and
+# deliberately never call ``get()`` on the planted keys before sweeping, so a
+# regression that makes the sweep a no-op (or that quietly reverts it to
+# "only migrates keys someone happens to read") shows up here.
+
+
+def test_eager_sweep_converts_a_key_nothing_ever_reads(store):
+    """The storage-level guard: sweep alone, no read, must still convert."""
+    for key in STORE_ENCRYPTED_SETTING_KEYS:
+        _plant_plaintext(store, key, SECRET)
+
+    summary = store.migrate_encrypted_settings()
+
+    assert summary == {
+        "checked": len(STORE_ENCRYPTED_SETTING_KEYS),
+        "migrated": len(STORE_ENCRYPTED_SETTING_KEYS),
+        "failed": 0,
+    }
+    for key in STORE_ENCRYPTED_SETTING_KEYS:
+        raw = _raw(store, key)
+        assert raw is not None and raw != SECRET, (
+            f"{key} is still plaintext after the eager sweep")
+        assert setting_crypto.looks_encrypted(raw), (
+            f"{key} was not converted to a Fernet token by the sweep")
+        assert store.get(key) == SECRET, f"{key} did not round-trip"
+
+
+def test_eager_sweep_is_idempotent(store):
+    for key in STORE_ENCRYPTED_SETTING_KEYS:
+        _plant_plaintext(store, key, SECRET)
+    store.migrate_encrypted_settings()
+    once = {key: _raw(store, key) for key in STORE_ENCRYPTED_SETTING_KEYS}
+
+    summary = store.migrate_encrypted_settings()
+
+    assert summary["migrated"] == 0, "re-encrypted values that were already ciphertext"
+    for key in STORE_ENCRYPTED_SETTING_KEYS:
+        assert _raw(store, key) == once[key], f"{key} was rewritten on a second sweep"
+
+
+def test_eager_sweep_skips_unset_keys(store):
+    """Nothing planted, nothing to convert — and no row is created out of thin air."""
+    summary = store.migrate_encrypted_settings()
+    assert summary == {
+        "checked": len(STORE_ENCRYPTED_SETTING_KEYS), "migrated": 0, "failed": 0}
+    for key in STORE_ENCRYPTED_SETTING_KEYS:
+        assert _raw(store, key) is None
+
+
+def test_eager_sweep_does_not_touch_an_already_encrypted_row(store):
+    store.set("default_password", SECRET)
+    before = _raw(store, "default_password")
+
+    summary = store.migrate_encrypted_settings()
+
+    assert summary["migrated"] == 0
+    assert _raw(store, "default_password") == before
+
+
+def test_eager_sweep_survives_a_readonly_db(store, monkeypatch):
+    """A locked/read-only DB must not fail startup or stop the rest of the
+    sweep — same contract as a single ``get()``
+    (``test_a_failed_migration_still_returns_the_value``), extended to the
+    multi-key sweep."""
+    _plant_plaintext(store, "acs_webhook_token", SECRET)
+    _plant_plaintext(store, "default_password", SECRET)
+
+    real_raw_set = FleetSettings._raw_set
+
+    def _boom(self, key, value):
+        if key == "acs_webhook_token":
+            raise sqlite3.OperationalError("attempt to write a readonly database")
+        return real_raw_set(self, key, value)
+
+    monkeypatch.setattr(FleetSettings, "_raw_set", _boom)
+
+    summary = store.migrate_encrypted_settings()  # must not raise
+
+    assert summary["failed"] == 0, (
+        "a write failure is swallowed by get()'s own migration path, same as "
+        "an ordinary read — it should count as 'not migrated', not as an error")
+    assert summary["migrated"] == 1  # default_password converted; acs_webhook_token could not
+    assert _raw(store, "acs_webhook_token") == SECRET, "left untouched, still readable"
+    assert store.get("acs_webhook_token") == SECRET, "value must still be usable"
+    assert setting_crypto.looks_encrypted(_raw(store, "default_password"))
+
+
+def test_eager_sweep_one_unreadable_key_does_not_sink_the_others(store, monkeypatch):
+    """One key's read blowing up entirely must not stop the sweep for the rest."""
+    _plant_plaintext(store, "acs_webhook_token", SECRET)
+    _plant_plaintext(store, "default_password", SECRET)
+
+    real = FleetSettings._get_with_migration_flag
+
+    def _boom(self, key):
+        if key == "acs_webhook_token":
+            raise sqlite3.OperationalError("database is locked")
+        return real(self, key)
+
+    monkeypatch.setattr(FleetSettings, "_get_with_migration_flag", _boom)
+
+    summary = store.migrate_encrypted_settings()  # must not raise
+
+    assert summary["failed"] == 1
+    assert summary["migrated"] == 1
+    assert setting_crypto.looks_encrypted(_raw(store, "default_password"))
+
+
 # --- display surfaces ------------------------------------------------------
 
 
