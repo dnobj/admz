@@ -118,6 +118,54 @@ async def get_latest_version(
         return None
 
 
+async def _pin_downloaded(client, bin_url: str, local_path, sha256: str) -> None:
+    """Record a freshly-downloaded artifact, upgrading to upstream-verified
+    when Axis actually published a digest for it (#188).
+
+    Axis ships ``.bin.sha256`` sidecars for the **oldest PACS models only** —
+    "not observed" for MPQT, per the 2026-02-15 crawl in
+    ``docs/AXIS_FTP_STRUCTURE.md``. So this is opportunistic by nature: the
+    common case is a plain pin, and that difference is recorded rather than
+    smoothed over, because "we checked it against Axis" and "we wrote down what
+    we received" are different claims.
+
+    A missing sidecar is not a failure — it is the norm. A sidecar that is
+    *present and does not match* is: that means the bytes are not what Axis
+    published, and the artifact is refused rather than pinned.
+    """
+    from admz.firmware import pinning
+
+    published = None
+    try:
+        resp = await client.get(f"{bin_url}.sha256", timeout=30.0)
+        if resp.status_code == 200:
+            # "<hex>  <filename>" or a bare hex digest.
+            first = (resp.text or "").strip().split()
+            if first and len(first[0]) == 64:
+                published = first[0].lower()
+    except Exception:  # noqa: BLE001 — absent sidecar is the common case
+        published = None
+
+    if published and published != sha256.lower():
+        try:
+            Path(local_path).unlink()
+        except OSError:
+            pass
+        raise FirmwareDownloadError(
+            f"Downloaded firmware does not match the SHA-256 Axis published "
+            f"for it (expected {published[:16]}…, got {sha256[:16]}…). The "
+            f"file has been discarded. Do not retry blindly — this means the "
+            f"bytes served were not the bytes Axis signed for. (#188)"
+        )
+
+    pinning.record_entry(
+        local_path, sha256,
+        state=(pinning.STATE_UPSTREAM_VERIFIED if published
+               else pinning.STATE_PINNED),
+        source=pinning.SOURCE_DOWNLOAD,
+    )
+
+
 async def download_firmware(
     model: str,
     version: Optional[str] = None,
@@ -220,16 +268,24 @@ async def download_firmware(
                     downloaded = 0
 
                     temp_path = local_path.with_suffix(".tmp")
+                    # #188: hash AS WE WRITE. Digesting the file afterwards
+                    # would describe whatever is on disk a moment later, which
+                    # is the substitution this exists to catch.
+                    from admz.firmware import pinning
+                    hasher = pinning.new_hasher()
                     with open(temp_path, "wb") as f:
                         async for chunk in response.aiter_bytes(
                             chunk_size=65536
                         ):
                             f.write(chunk)
+                            hasher.update(chunk)
                             downloaded += len(chunk)
                             if progress_callback and total:
                                 progress_callback(downloaded, total)
 
                     temp_path.rename(local_path)
+                    await _pin_downloaded(
+                        client, bin_url, local_path, hasher.hexdigest())
 
                     file_size = local_path.stat().st_size
                     logger.info(
@@ -599,7 +655,22 @@ async def import_firmware_files(
                     (item.filename, f"already cached as {dest_name}")
                 )
                 continue
-            shutil.copy2(item.file_path, dest)
+            # #188: copy through a hasher rather than shutil.copy2 + re-read.
+            # Digesting the destination afterwards would describe whatever is
+            # on disk a moment later, and the point of pinning is to catch
+            # exactly that substitution. These are the bytes written.
+            from admz.firmware import pinning
+
+            hasher = pinning.new_hasher()
+            with open(item.file_path, "rb") as src, open(dest, "wb") as out:
+                for chunk in iter(lambda: src.read(65536), b""):
+                    out.write(chunk)
+                    hasher.update(chunk)
+            shutil.copystat(item.file_path, dest)
+            pinning.record_entry(
+                dest, hasher.hexdigest(),
+                state=pinning.STATE_PINNED, source=pinning.SOURCE_IMPORT,
+            )
             result.imported.append((item.filename, str(dest)))
         except OSError as e:
             result.errors.append((item.filename, str(e)))
