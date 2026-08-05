@@ -995,6 +995,90 @@ async def _action_set_event_ingest(
     }
 
 
+#: The device operation a temp credential actually performs. Named here so the
+#: gate and the executor cannot drift onto different operations.
+TEMP_CREDENTIAL_OP = "pwdgrp.cgi:add-user"
+
+#: permissions → VAPIX group mapping. Mirrors the MCP tool's table; kept beside
+#: the executor because this is now where the account is created.
+_TEMP_PERM_MAP = {
+    "admin": {"group": "root", "sgrp": "admin:operator:viewer:ptz"},
+    "operator": {"group": "users", "sgrp": "operator:viewer:ptz"},
+    "viewer": {"group": "users", "sgrp": "viewer"},
+}
+
+
+async def _action_create_temp_credentials(
+    action: Mapping[str, Any], registry: Any, git_repo: Any = None,
+) -> Dict[str, Any]:
+    """Approved creation of a short-lived device account (#313).
+
+    Runs **after** a human approves the widget, in whichever process consumes
+    the confirm session. That is only safe because #314 made the temp-credential
+    record a shared SQLite store: while it was per-process memory, creating the
+    account here would have registered it in a tracker the MCP process could
+    never see, orphaning it on every use.
+
+    The temp password is **generated here**, at execution time, and returned in
+    the outcome. It is deliberately not part of the session payload, so no
+    credential is written into ``confirm_sessions.action_json`` — the invariant
+    #194/#276 exist to protect.
+    """
+    from admz.mcp.temp_credentials import TempCredential, TempCredentialManager
+    from admz.provisioning import execute_on_host
+
+    device_id = str(action.get("device_id") or "")
+    permissions = str(action.get("permissions") or "")
+    ttl = int(action.get("ttl_seconds") or 300)
+    perm = _TEMP_PERM_MAP.get(permissions)
+    if not device_id or perm is None:
+        return {"success": False, "action": "create_temp_credentials",
+                "error": f"invalid device_id/permissions ({permissions!r})"}
+
+    from admz.api.context import get_context
+    ctx = get_context()
+
+    info = registry.get_device_info(device_id) or {}
+    host = info.get("host") or info.get("ip_address")
+    if not host:
+        return {"success": False, "action": "create_temp_credentials",
+                "error": f"Device '{device_id}' has no host/IP configured."}
+    try:
+        admin_creds = registry.get_credentials(device_id, "default")
+    except Exception:  # noqa: BLE001
+        return {"success": False, "action": "create_temp_credentials",
+                "error": f"No admin credentials stored for '{device_id}'."}
+
+    mgr = TempCredentialManager()
+    username = mgr.generate_username()
+    password = mgr.generate_password()
+
+    ok, error = await execute_on_host(
+        ctx.catalog, ctx.executors, host, TEMP_CREDENTIAL_OP,
+        {"user": username, "pwd": password, "grp": perm["group"],
+         "sgrp": perm["sgrp"], "comment": "ADMZ temp account"},
+        credentials=admin_creds,
+    )
+    if not ok:
+        return {"success": False, "action": "create_temp_credentials",
+                "error": f"Failed to create temp user on device: {error}"}
+
+    cred = TempCredential(
+        device_id=device_id, username=username, password=password,
+        group=perm["group"], ttl_seconds=ttl,
+    )
+    # Register BEFORE returning. If this raised, the account would exist with
+    # no record — the #314 failure, reintroduced at a new site.
+    mgr.register(cred)
+
+    return {
+        "success": True, "action": "create_temp_credentials",
+        "device_id": device_id, "username": username, "password": password,
+        "permissions": permissions, "ttl_seconds": ttl,
+        "expires_at": cred.expires_at_iso,
+    }
+
+
 _ACTION_EXECUTORS = {
     "accept_baseline": _action_accept_baseline,
     "delete_device": _action_delete_device,
@@ -1012,6 +1096,10 @@ _ACTION_EXECUTORS = {
     # the operator approves a blast radius rather than a device.
     "start_demo_survey": _action_start_demo_survey,
     "register_discovered_device": _action_register_discovered_device,
+    # #313: creating a device account through create_temp_credentials bypassed
+    # the confirmation gate entirely — the catalog risk_level was never
+    # consulted on that path, so #165's reclassification did not reach it.
+    "create_temp_credentials": _action_create_temp_credentials,
 }
 
 
@@ -1023,8 +1111,16 @@ def create_action_session(
     reason: str,
     store: Any = None,
     operator_configurable: bool = False,
+    risk: str = "service-affecting",
 ) -> Any:
     """Create a confirm session holding a registry-level action.
+
+    ``risk`` lets a caller hand in a classification it read from the **catalog**
+    rather than accepting this default, so a gate can inherit the same
+    risk_level the generic execution path would apply to the same device
+    operation instead of asserting a second, parallel opinion (#313). Callers
+    that do not pass it keep the historical ``service-affecting``, so nothing
+    that existed before changes.
 
     ``url_only`` by default, regardless of fleet overrides — the whole point of
     ADR-0034 is that every destructive action takes the deterministic
@@ -1045,7 +1141,6 @@ def create_action_session(
     """
     if action not in _ACTION_EXECUTORS:
         raise ValueError(f"Unknown action: {action}")
-    risk = "service-affecting"
     store = _resolve_store(store)
     return store.create_session(
         device_id=device_id,
