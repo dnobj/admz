@@ -18,10 +18,25 @@ import logging
 import time
 from typing import Any, List, Optional
 
+from admz.validators import sanitize_display_text
+
 logger = logging.getLogger(__name__)
 
 # Bound the roster so a huge fleet can't balloon the per-turn token cost.
 _MAX_ROSTER_DEVICES = 60
+
+#: Cap on free-text device/demo fields rendered into the roster or the demos
+#: section (#167, #191) — long enough for a real label, short enough that a
+#: value can't paint several lines' worth of fake prompt structure. Applied
+#: on top of admz.validators.sanitize_display_text's control-char stripping,
+#: which is what actually closes the "\n breaks out of its line" exploit;
+#: the length cap is defense-in-depth against a value that stays on one
+#: line but is otherwise enormous.
+_MAX_FIELD_LEN = 80
+
+#: Hostnames/IPs are legitimately longer than a label but still bounded —
+#: the DNS ceiling, well above any real IP or hostname.
+_MAX_HOST_LEN = 253
 
 
 def _resolve_registry() -> Optional[Any]:
@@ -147,28 +162,40 @@ def build_device_roster(registry: Optional[Any] = None) -> str:
     lines: List[str] = []
     for d in devices[:_MAX_ROSTER_DEVICES]:
         did = d.get("device_id") or "?"
-        model = d.get("model") or "?"
+        # model, like nickname/friendly_name below, is copied straight from
+        # the device's own probe response during auto-registration
+        # (admz/mcp/server.py's provision_device path: "model": (probe.
+        # device_info or {}).get("model", "")) — same exploit surface as
+        # nickname, so it gets the same sanitizer.
+        model = sanitize_display_text(d.get("model") or "?", max_length=_MAX_FIELD_LEN)
         parts: List[str] = [f"{model} ({did})"]
 
         # A real operator-set nickname is worth showing; the stock
         # "AXIS <model>" friendly_name is not (it just repeats the model,
         # so skip any friendly_name that merely contains the model string).
-        nick = (d.get("nickname") or "").strip()
-        fn = (d.get("friendly_name") or "").strip()
+        # Both fields are device- or model-supplied and reach here unvetted
+        # (#167: nickname is writable via the ungated update_device MCP tool,
+        # and friendly_name is copied from the device's own probe response
+        # during auto-registration) — sanitize before they're rendered into
+        # the roster line.
+        nick = sanitize_display_text(d.get("nickname"), max_length=_MAX_FIELD_LEN)
+        fn = sanitize_display_text(d.get("friendly_name"), max_length=_MAX_FIELD_LEN)
         if not nick and fn and model != "?" and model.lower() not in fn.lower():
             nick = fn
         if nick:
             parts.append(f'"{nick}"')
 
         if d.get("host"):
-            parts.append(str(d["host"]))
+            parts.append(sanitize_display_text(d["host"], max_length=_MAX_HOST_LEN))
         rec = health.get(did)
         try:
             parts.append(rec.status.value if rec is not None else "unknown")
         except Exception:  # noqa: BLE001
             parts.append("unknown")
         if d.get("firmware_version"):
-            parts.append(f"fw {d['firmware_version']}")
+            # Also device-probe-supplied (basicdeviceinfo.cgi), same reasoning.
+            fw = sanitize_display_text(d["firmware_version"], max_length=_MAX_FIELD_LEN)
+            parts.append(f"fw {fw}")
         if rec is not None:
             sd = _sd_label(rec)
             if sd:
@@ -178,7 +205,10 @@ def build_device_roster(registry: Optional[Any] = None) -> str:
             parts.append(drift)
         tags = d.get("tags") or []
         if tags:
-            parts.append("tags: " + ", ".join(str(t) for t in tags))
+            clean_tags = [
+                sanitize_display_text(t, max_length=_MAX_FIELD_LEN) for t in tags
+            ]
+            parts.append("tags: " + ", ".join(clean_tags))
 
         lines.append("- " + " · ".join(parts))
 
@@ -209,6 +239,12 @@ _COMMON_INTENTS = (
 # when a model is added/removed, so it costs nothing on a normal turn.
 _common_ops_cache: dict = {}
 
+#: Bound the demos section the same way the roster is bounded (#191 — this
+#: loop had no cap at all while both its siblings, _MAX_ROSTER_DEVICES and
+#: _MAX_INFERENCE_PROPOSALS below, do; the absence was an inconsistency,
+#: not house style, and an unbounded per-turn token amplifier besides).
+_MAX_DEMOS_SECTION = 60
+
 
 def build_demos_section() -> str:
     """A compact one-line-per-demo readiness list for the system prompt, or "".
@@ -233,20 +269,27 @@ def build_demos_section() -> str:
         return ""
 
     lines: List[str] = []
-    for v in views:
+    # Demo names are free text the model itself can write, ungated, via
+    # create_demo / confirm_demo_proposal (#191) — sanitize the same way
+    # the roster's device-supplied fields are (#167).
+    for v in views[:_MAX_DEMOS_SECTION]:
         r = v.get("readiness") or {}
-        parts = [f"{v.get('name')} — {r.get('state', '?')}"]
+        name = sanitize_display_text(v.get("name"), max_length=_MAX_FIELD_LEN)
+        parts = [f"{name} — {r.get('state', '?')}"]
         n = len(r.get("devices") or [])
         parts.append(f"{n} device{'s' if n != 1 else ''}")
         if v.get("active"):
             parts.append("ACTIVE")
         if v.get("scenario_name"):
-            parts.append(f"scenario:{v['scenario_name']}")
+            scenario = sanitize_display_text(v["scenario_name"], max_length=_MAX_FIELD_LEN)
+            parts.append(f"scenario:{scenario}")
         blockers = r.get("blockers") or []
         if blockers:
             parts.append("blockers: " + "; ".join(str(b) for b in blockers[:3])
                          + ("; …" if len(blockers) > 3 else ""))
         lines.append(" · ".join(parts))
+    if len(views) > _MAX_DEMOS_SECTION:
+        lines.append(f"…and {len(views) - _MAX_DEMOS_SECTION} more (call list_demos)")
     return "\n".join(lines)
 
 

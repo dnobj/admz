@@ -160,9 +160,53 @@ def validate_scan_subnet(value):
     return str(network)
 
 
+# ── Display text destined for a rendered list line / system-prompt block ────
+
+#: C0 controls, DEL, and C1 controls. Newline/carriage-return above all: a
+#: value containing one breaks out of its single rendered "- " line and
+#: injects sibling lines into the block it's rendered into (#167 — a device
+#: nickname containing "\n" did exactly this in admz/chatbot/context.py's
+#: device roster).
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def sanitize_display_text(value: object, *, max_length: int = 80) -> str:
+    """Make free-text device/demo metadata safe to interpolate into a
+    rendered list line or a system-prompt block (#167, #191).
+
+    Strips every control character (newlines/carriage-returns are the
+    concrete exploit — see :data:`_CONTROL_CHARS_RE` — but the whole class
+    is excluded on the same reasoning) and collapses runs of whitespace,
+    then truncates to ``max_length`` characters with a visible ``…``
+    marker so truncation is never silent. ``None`` becomes ``""``.
+
+    Deliberately about *shape*, not *meaning*: this does not try to detect
+    or block instruction-like phrasing — there is no reliable way to do
+    that from a string alone — only the structural tricks (embedded
+    newlines, unbounded length) that let a value impersonate prompt
+    structure rather than just describe a device or a demo. Provenance
+    fencing (``admz/chatbot/system_prompt.py``) is what tells the model
+    the surviving text is data, never instructions.
+
+    A silent, non-raising helper by design — it feeds
+    ``admz/chatbot/context.py``, whose every builder must degrade rather
+    than break a chat turn. Callers that can reject outright and give the
+    caller a clear error (e.g. ``admz/demos/actions.py`` at write time)
+    should do that *in addition*, not instead — this is the last-resort
+    backstop for data that reached the render path some other way.
+    """
+    text = "" if value is None else str(value)
+    text = _CONTROL_CHARS_RE.sub(" ", text)
+    text = " ".join(text.split())
+    if len(text) > max_length:
+        text = text[: max(max_length - 1, 0)].rstrip() + "…"
+    return text
+
+
 __all__ = [
     "validate_identifier",
     "validate_git_ref",
     "validate_scan_subnet",
+    "sanitize_display_text",
     "MIN_SCAN_PREFIXLEN",
 ]

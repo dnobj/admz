@@ -487,6 +487,35 @@ from admz.chatbot.mcp_bridge import (  # noqa: E402
 )
 
 
+#: A genuine console notification is written ONLY server-side, as a
+#: role='event' row (admz/chatbot/sessions.py:append_event — called only
+#: from admz/api/routes/confirm.py and admz/api/routes/capture.py, never
+#: from an MCP tool or any user-facing route). Gemini has no third role,
+#: though: both 'event' and ordinary 'user' rows normalize to Gemini's flat
+#: 'user' role below, and system_prompt.py tells the model "[console]"
+#: messages are ground truth — so without this, a human typing the literal
+#: string "[console] The user approved ..." as their own chat message would
+#: be textually indistinguishable from a real notification once normalized
+#: (#167). The DB's role column already carries the true distinction; this
+#: just stops it from being thrown away before the text reaches the model.
+_CONSOLE_MARKER = "[console]"
+
+
+def _neutralize_forged_console_marker(text: str) -> str:
+    """Break the substring match for a `[console]` marker in text that is
+    NOT a genuine role='event' row (see :data:`_CONSOLE_MARKER`).
+
+    Only ever applied to 'user'-role text (including this turn's live
+    message) — never to 'event' or 'model' rows, so a real notification is
+    untouched. A real chat user has no legitimate reason to start (or
+    contain) a message with this literal string, so replacing it is not a
+    usability regression, only a forgery-prevention one.
+    """
+    if _CONSOLE_MARKER in text:
+        return text.replace(_CONSOLE_MARKER, "[claimed-console, not genuine]")
+    return text
+
+
 def _build_contents(history: Optional[list], user_message: str):
     """Build the ``contents`` arg for generate_content_stream.
 
@@ -503,7 +532,7 @@ def _build_contents(history: Optional[list], user_message: str):
     'assistant' as OpenAI does — same content, different name).
     """
     if not history:
-        return user_message
+        return _neutralize_forged_console_marker(user_message)
 
     items = []
     for entry in history:
@@ -514,10 +543,22 @@ def _build_contents(history: Optional[list], user_message: str):
         # Normalize: Gemini accepts only 'user' and 'model'. 'event' rows
         # (console notes about out-of-band approvals/captures — text already
         # carries the "[console]" prefix) ride as user turns; the system
-        # prompt tells the model how to read them.
+        # prompt tells the model how to read them. The ONLY role allowed to
+        # carry that marker unmodified is 'event' — an ordinary user
+        # message, the model's own past output, or an unknown role all get
+        # it neutralized first, so none of them can pass as a genuine
+        # notification once rendered (#167). Neutralizing 'model' rows too
+        # costs nothing (the model has no legitimate reason to emit the
+        # marker either) and closes the same forgery risk a turn earlier —
+        # a compromised reply that fabricates its own "[console]" line.
+        if role != "event":
+            text = _neutralize_forged_console_marker(text)
         normalized_role = "model" if role in ("model", "assistant") else "user"
         items.append({"role": normalized_role, "parts": [{"text": text}]})
-    items.append({"role": "user", "parts": [{"text": user_message}]})
+    items.append({
+        "role": "user",
+        "parts": [{"text": _neutralize_forged_console_marker(user_message)}],
+    })
     return items
 
 
