@@ -99,6 +99,23 @@ class TestProvisionFactoryDefault:
         assert reg.accounts[("cam-1", "default")]["password"] == "FleetPass123"
 
     @pytest.mark.asyncio
+    async def test_allow_fleet_default_false_never_uses_fleet_default(self, monkeypatch):
+        """GH #185: the unattended-caller contract. ``allow_fleet_default=False``
+        must skip the shared fleet password entirely and generate a fresh one,
+        even when a fleet default IS configured — that's the whole point."""
+        monkeypatch.setattr(
+            "admz.fleet_settings.fleet_settings.get", lambda k: "FleetPass123"
+        )
+        execr = _Executor()
+        reg = _Registry()
+        res = await provisioning.provision_factory_default(
+            _Catalog(), {"vapix": execr}, reg, device_id="cam-1", host="1.2.3.4",
+            allow_fleet_default=False,
+        )
+        assert res["password_source"] == "generated"
+        assert reg.accounts[("cam-1", "default")]["password"] != "FleetPass123"
+
+    @pytest.mark.asyncio
     async def test_vapix_failure_returns_error_no_creds(self, monkeypatch):
         monkeypatch.setattr("admz.fleet_settings.fleet_settings.get", lambda k: None)
         execr = _Executor(result=_Result(success=False, status_code=500, error="boom"))
@@ -120,8 +137,10 @@ class TestReprovisionHandler:
 
         called = {}
 
-        async def fake_provision(catalog, executors, registry, *, device_id, host, username="root"):
+        async def fake_provision(catalog, executors, registry, *, device_id, host,
+                                  username="root", allow_fleet_default=True):
             called["args"] = (device_id, host, username)
+            called["allow_fleet_default"] = allow_fleet_default
             return {"success": True}
 
         monkeypatch.setattr(
@@ -136,6 +155,9 @@ class TestReprovisionHandler:
         register_recovery_handlers(_Ctx())
         await execute_pending_action({"action": "reprovision"}, "cam-1")
         assert called["args"] == ("cam-1", "1.2.3.4", "root")
+        # GH #185: the unattended handler must explicitly opt out of the
+        # shared fleet default at the call site.
+        assert called["allow_fleet_default"] is False
 
     @pytest.mark.asyncio
     async def test_handler_raises_on_provision_failure(self, monkeypatch):
@@ -157,3 +179,42 @@ class TestReprovisionHandler:
         register_recovery_handlers(_Ctx())
         with pytest.raises(RuntimeError):
             await execute_pending_action({"action": "reprovision"}, "cam-1")
+
+    @pytest.mark.asyncio
+    async def test_unattended_reprovision_never_sends_the_fleet_default(
+        self, monkeypatch
+    ):
+        """GH #185, end to end through the REAL provision_factory_default (not
+        mocked) — unlike the two tests above, which stub it out entirely and
+        so cannot see what password actually reaches the (fake) device.
+
+        This is deliberately an outcome test, not an implementation test: it
+        does not assert anything about ``allow_fleet_default`` by name. If a
+        future change "simplifies" the interactive and unattended call sites
+        back into one path — reintroducing the fleet-default fallback here —
+        this goes red on the observable fact that matters: the shared secret
+        left the process bound for an address ADMZ cannot verify.
+        """
+        from admz.fleet.pending_actions import execute_pending_action
+        from admz.recovery_actions import register_recovery_handlers
+
+        FLEET_SECRET = "FLEET-WIDE-SHARED-SECRET-9f3a1c"
+        monkeypatch.setattr(
+            "admz.fleet_settings.fleet_settings.get", lambda k: FLEET_SECRET
+        )
+        execr = _Executor()
+        reg = _Registry()
+
+        class _Ctx:
+            registry = reg
+            catalog = _Catalog()
+            executors = {"vapix": execr}
+
+        register_recovery_handlers(_Ctx())
+        await execute_pending_action({"action": "reprovision"}, "cam-1")
+
+        sent_password = execr.last[3]["password"]
+        assert sent_password != FLEET_SECRET, (
+            "the unattended reprovision handler sent the shared fleet-wide "
+            "default password to an unverified peer (GH #185 regression)")
+        assert reg.accounts[("cam-1", "default")]["password"] == sent_password

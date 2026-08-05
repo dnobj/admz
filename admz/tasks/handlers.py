@@ -210,9 +210,36 @@ async def _run_acs_action(task: Task, ctx: TaskContext) -> Dict[str, Any]:
 
 @register_task_handler("reprovision")
 async def _run_reprovision(task: Task, ctx: TaskContext) -> Dict[str, Any]:
-    """Re-provision a factory-defaulted device — create the admin from the fleet
-    default password (never logged/returned). Moved from recovery_actions.py;
-    now reads deps from ``ctx`` instead of a startup closure."""
+    """Re-provision a factory-defaulted device — create the admin account with
+    a freshly generated, per-call password (never logged/returned). Moved from
+    recovery_actions.py; now reads deps from ``ctx`` instead of a startup
+    closure.
+
+    ``allow_fleet_default=False`` (GH #185) — deliberate, not an oversight.
+    This handler fires unattended, on the health sweep's schedule, up to 24h
+    after an operator approved the task — against whatever host answers at
+    the device's registered address *at that later moment*. The trigger
+    (``needsetup=yes``) is itself an unauthenticated device response, and
+    nothing on this path re-verifies the peer before firing (that's the whole
+    of GH #185's investigation — no verifiable identity exists here; see the
+    handoff for why). Sending the shared fleet-wide ``default_password`` to
+    an unverified peer hands a fleet-wide credential to whoever answered.
+    Sending a fresh generated one instead doesn't verify the peer either —
+    nothing here can — but it makes who the peer turns out to be matter much
+    less: see :func:`admz.provisioning.provision_factory_default`'s
+    ``allow_fleet_default`` docstring for the full reasoning. The interactive
+    ``provision_device`` MCP path is untouched — a human drives that write at
+    the moment it happens, a different threat shape.
+
+    **What this does NOT fix, on purpose — do not read a green test suite as
+    "GH #185 closed":** ADMZ's registry still ends up believing it holds a
+    working credential for a device it may never have actually contacted (the
+    real device, still factory-default, was simply never reached), and *some*
+    secret is still sent in cleartext to an unverified peer. Both need either
+    real peer identity (unverified as buildable today) or deferring this
+    action to an attended flow — a real trade, not a bug fix. Tracked as a
+    separate, harder issue referencing #185 and this fix.
+    """
     from admz.provisioning import provision_factory_default
 
     device_id = task.device_id or (task.device_ids or [""])[0]
@@ -226,6 +253,7 @@ async def _run_reprovision(task: Task, ctx: TaskContext) -> Dict[str, Any]:
         ctx.catalog, ctx.executors, ctx.registry,
         device_id=device_id, host=host,
         username=(task.action_params or {}).get("username", "root"),
+        allow_fleet_default=False,
     )
     if not result.get("success"):
         raise RuntimeError(result.get("error") or "provision failed")
