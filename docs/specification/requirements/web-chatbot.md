@@ -37,7 +37,7 @@ channel; all logic lives in `admz/chatbot/`.
 ### FR-CB-003 — Native MCP tool surface (no re-translation) ✅
 The chatbot passes the running ADMZ MCP server directly to the
 `google-genai` SDK as a tool source. No hand-translation of the
-19 MCP tools into Gemini `FunctionDeclaration` objects. New MCP
+MCP tools into Gemini `FunctionDeclaration` objects. New MCP
 tools become available in chat the moment they land in
 `mcp/server.py`. See
 [ADR-0025](../decisions/0025-gemini-chatbot-mcp-native.md).
@@ -227,7 +227,7 @@ calls via the flag.
 ### KL-CB-001 — Native MCP support in google-genai is experimental ⚠️
 The Gemini Interactions API's native-MCP feature is marked
 experimental. If the API breaks, the fallback is hand-translating
-the 19 MCP tools into Gemini `FunctionDeclaration` objects. The
+the MCP tools into Gemini `FunctionDeclaration` objects. The
 fallback path isn't built yet — it's contingency.
 
 **Specific observed regression** (May 2026, google-genai 2.5.0):
