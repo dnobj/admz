@@ -12,6 +12,22 @@ from admz.mcp.temp_credentials import (
 from admz.api.confirm_store import PROTECTED_SETTING_KEYS
 
 
+@pytest.fixture(autouse=True)
+def _isolated_temp_cred_db(tmp_path, monkeypatch):
+    """Every manager in this file gets its own database.
+
+    Since #314 the manager is SQLite-backed, so a bare
+    ``TempCredentialManager()`` resolves the shared ADMZ database at call time
+    and every test in this file would see the previous test's rows — six of
+    them failed that way on the first run. ``ADMZ_HOME`` and ``ADMZ_DB_PATH``
+    are both redirected so nothing can reach a real database even if a test
+    constructs a manager with no explicit path.
+    """
+    monkeypatch.setenv("ADMZ_HOME", str(tmp_path))
+    monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
+    yield
+
+
 # ── TempCredential dataclass ─────────────────────────────────────────────
 
 
@@ -127,7 +143,17 @@ class TestTempCredentialManager:
         cred = TempCredential("cam-01", "at_aabbccdd", "pw", "users")
         mgr.register(cred)
         removed = mgr.remove("cam-01", "at_aabbccdd")
-        assert removed is cred
+
+        # Identity (`is cred`) was the pre-#314 assertion and a store cannot
+        # honour it: the row is reconstructed, not handed back. Assert the
+        # identifying fields instead — those are what cleanup uses.
+        assert removed is not None
+        assert (removed.device_id, removed.username) == ("cam-01", "at_aabbccdd")
+        assert removed.group == "users"
+        # And the deliberate omission: the temp password is never persisted, so
+        # a stolen database yields no live device credential. Cleanup
+        # authenticates as the admin from the registry, never as the temp user.
+        assert removed.password == "", "the temp password was written to the DB"
         assert len(mgr.list_active()) == 0
 
     def test_remove_nonexistent(self):
