@@ -1327,11 +1327,10 @@ class VapixExecutor(BaseExecutor):
 # problem for the RULES catalog (#194) — but it is built against
 # Action.soap_params (SOAP params carrying .name / .ui_label / .capture_note),
 # which a VAPIX Operation's plain string-template `request` dict does not
-# have and cannot be coerced into. Its own vocabulary
-# (`_SECRET_HINTS = ("password", "passwd")`) is also a THIRD list, narrower
-# than and already drifted from admz.redact._SENSITIVE_KEY_PARTS. Reusing it
-# verbatim would both fail to apply (wrong shape) and propagate a known-
-# incomplete vocabulary if it somehow did.
+# have and cannot be coerced into. (Its own param_is_secret used to keep a
+# private, narrower vocabulary too — GH #336 fixed that by having it call
+# admz.redact.is_sensitive_key directly instead, so this is now a two-way
+# rather than three-way comparison.)
 #
 # admz.redact.is_sensitive_key — the project's actual canonical predicate —
 # is ALSO the wrong tool for this specific job, for a more interesting reason
@@ -1353,7 +1352,7 @@ class VapixExecutor(BaseExecutor):
 # is_sensitive_key would reintroduce that regression, which is why this
 # comment says so here rather than only in a commit message.
 #
-# So: a fourth, deliberately NARROW, EXACT-MATCH vocabulary — not a
+# So: a separate, deliberately NARROW, EXACT-MATCH vocabulary — not a
 # substring match — scoped to what the catalog actually declares. Grepped
 # the whole pinned atlas data tree for every `{placeholder}` name that looks
 # credential-shaped: only "password" and "pass" ever appear (pwdgrp.cgi's
@@ -1363,7 +1362,17 @@ class VapixExecutor(BaseExecutor):
 # introduces one, this list needs a new entry — the same "a name list must
 # be reviewed when it's wrong, not trusted forever" caveat every hand-
 # maintained vocabulary in this codebase carries, stated once here rather
-# than assumed.
+# than assumed. That "needs a new entry" risk is exactly what
+# tests/test_sensitivity_predicate_completeness.py::TestCatalogDeclaredSecretsAreRecognized
+# (GH #336) now guards mechanically: it cross-checks every key this walk
+# would find, catalog-wide, against admz.redact.is_sensitive_key, so a new
+# catalog operation introducing a differently-spelled secret placeholder
+# fails CI here instead of waiting for an audit pass to notice.
+#
+# admz/redact.py's own module docstring carries the fuller version of this
+# same argument — why this predicate, is_sensitive_key, and redact_url stay
+# three separate answers rather than one consolidated list — for a reader
+# who lands there first instead of here.
 SECRET_PLACEHOLDER_NAMES = frozenset({"password", "pass"})
 
 #: The exact "whole-value placeholder" shape VapixExecutor._resolve_template

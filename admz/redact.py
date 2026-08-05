@@ -38,6 +38,52 @@ other one of this predicate's ~12 callers) unmasked. Added the same way
 ``pat`` already was: a delimiter-bounded discrete-token match, not a bare
 substring — ``pass`` as a substring would mask ``bypass``/``passive``/
 ``compass``, the exact leak/noise trade #310 already refused for httpx URLs.
+
+GH #336 items 2/3 — why THIS is still the one canonical predicate, and two
+close-looking relatives are not folded in here. There are three places in
+this codebase that answer "is this value a secret?", and after fixing the
+gap above it would be easy to read the remaining two as further drift that
+should be consolidated into this one. It would be a mistake to do that.
+
+* **This module** answers it for a bare key-name string, from call sites —
+  the MCP audit sanitizer, chat display, fleet-settings masking, the CLI,
+  snapshot facets — that mostly have **no catalog operation to resolve at
+  all**. What VAPIX operation does a fleet-setting name or a chat-display
+  dict key correspond to? None; the question doesn't parse. So this
+  predicate has to stay general-purpose and catalog-agnostic — a bare
+  string in, a yes/no out, no other context assumed or required.
+* **``admz/executor/vapix.py::secret_param_names`` / ``SECRET_PLACEHOLDER_NAMES``**
+  (#334) answers it for one **already-resolved catalog operation**'s own
+  request template, at a point deep inside ``execute_gated_operation`` where
+  exactly that context — and nothing else — is available. It is
+  deliberately narrower and exact-match rather than substring, because the
+  VAPIX catalog uses ``*Token``-suffixed and bare ``{Token}`` placeholders
+  throughout for legitimate non-secret resource identifiers
+  (``{PresetToken}``, ``{RelayToken}``, ONVIF door references) that this
+  predicate's substring rule on ``token`` would wrongly flag and silently
+  strip from a confirm session with no password-entry field to explain why.
+  That file's own module comment works through this in full, including the
+  same "a future reader who helpfully consolidates this would reintroduce
+  the regression" warning this paragraph is making from the other side.
+* **``redact_url``** below answers it for a URL string with **no key names
+  at all**, by masking every query value unconditionally rather than
+  enumerating anything (#310) — the URL vocabulary isn't closed, so there
+  is nothing here to consolidate with either.
+
+Consolidating any pair makes the absorbing predicate wrong for cases the
+other exists to handle: making this module structural breaks it for fleet
+settings and chat display (nothing to resolve); making the VAPIX predicate
+a substring match reopens the ``{PresetToken}`` regression #334 was written
+to prevent. Three lists that don't drift into each other is not an
+accident here — it's three domains that only look like one from a
+distance. What DOES need to hold, and is guarded by
+``tests/test_sensitivity_predicate_completeness.py::TestCatalogDeclaredSecretsAreRecognized``:
+every wire key the VAPIX predicate derives from the catalog must also be
+recognised by this one — not because they should be the same list, but
+because a value this predicate misses is a value the audit log, chat
+display, and every other general-purpose surface above will show in the
+clear, regardless of what the narrower catalog-structural predicate got
+right closer to the wire.
 """
 
 from __future__ import annotations

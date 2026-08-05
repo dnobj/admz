@@ -18,10 +18,9 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
-# Param-name hints. ``password``-family values must never reach chat/logs;
-# ``login``-family values are usernames but are collected together with the
-# password via the widget so the whole recipient credential is entered at once.
-_SECRET_HINTS = ("password", "passwd")
+# ``login``-family values are usernames, not secrets — collected together
+# with the password via the widget so the whole recipient credential is
+# entered at once (see param_is_secret / capture_param_names below).
 _LOGIN_HINTS = ("login",)
 
 
@@ -283,11 +282,38 @@ def action_for(model: str, action_token: str) -> Any:
 
 def param_is_secret(p: Any) -> bool:
     """True if a param's VALUE must never appear in chat/logs — the survey flags
-    it for secure capture (``capture_note``) or its name is password-family."""
+    it for secure capture (``capture_note``) or its name matches the canonical
+    sensitive-key vocabulary (``admz.redact.is_sensitive_key``).
+
+    GH #336: this used to check a private ``_SECRET_HINTS = ("password",
+    "passwd")`` tuple — narrower than the canonical predicate, missing
+    ``secret``/``token``/``api_key``/``apikey`` (and, until #337 fixed the
+    canonical predicate itself, ``pwd``/``pass`` too). Checked reachability
+    before widening this: every recipient-credential param name across every
+    currently-surveyed device is password-family (``login``/``password``/
+    ``proxy_password``/``pop_password``), so this changes behavior for zero
+    devices today. It still needed fixing — ``capture_note`` (the only other
+    signal this function has) is never set by any shipped survey, so a
+    private, narrower vocabulary here was the *only* thing standing between
+    the next surveyed device's modern (``api_token``/``bearer_token``-shaped)
+    notification credential and it being typed directly into chat instead of
+    the out-of-band capture widget (ADR-0043) — a predicate whose
+    correctness depends on which devices happen to be in the survey
+    population is not a control.
+
+    Delegates to ``is_sensitive_key`` rather than growing its own wider copy
+    of the same list — see that function's module docstring for why THIS
+    predicate reuses the canonical one while ``admz.executor.vapix.secret_param_names``
+    (a different secret-classification job, over VAPIX operations rather
+    than SOAP rule params) deliberately does not.
+    """
     if getattr(p, "capture_note", ""):
         return True
-    name = (getattr(p, "name", "") or "").lower()
-    return any(h in name for h in _SECRET_HINTS)
+    name = getattr(p, "name", "") or ""
+    if not name:
+        return False
+    from admz.redact import is_sensitive_key
+    return is_sensitive_key(name)
 
 
 def capture_param_names(action: Any) -> List[str]:
