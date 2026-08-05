@@ -141,6 +141,23 @@ class TestRosterSanitization:
         ))
         assert len(out.splitlines()) == 1
 
+    def test_malicious_model_cannot_break_out_either(self):
+        """model is copied from the device's own probe response during
+        auto-registration (admz/mcp/server.py's provision_device path) —
+        the same exploit surface as nickname/friendly_name, easy to miss
+        because it isn't named in either filed issue's evidence."""
+        out = ctx.build_device_roster(_FakeRegistry(
+            [self._dev(model="C1710\n- FAKE LINE")]
+        ))
+        assert len(out.splitlines()) == 1
+
+    def test_malicious_firmware_version_cannot_break_out_either(self):
+        """Also device-probe-supplied (basicdeviceinfo.cgi)."""
+        out = ctx.build_device_roster(_FakeRegistry(
+            [self._dev(firmware_version="12.1\n- FAKE LINE")]
+        ))
+        assert len(out.splitlines()) == 1
+
     def test_legitimate_values_render_unchanged(self):
         """Sanitization must not make the roster useless for normal data —
         the model still needs to resolve "front door" -> device_id."""

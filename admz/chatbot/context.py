@@ -162,7 +162,12 @@ def build_device_roster(registry: Optional[Any] = None) -> str:
     lines: List[str] = []
     for d in devices[:_MAX_ROSTER_DEVICES]:
         did = d.get("device_id") or "?"
-        model = d.get("model") or "?"
+        # model, like nickname/friendly_name below, is copied straight from
+        # the device's own probe response during auto-registration
+        # (admz/mcp/server.py's provision_device path: "model": (probe.
+        # device_info or {}).get("model", "")) — same exploit surface as
+        # nickname, so it gets the same sanitizer.
+        model = sanitize_display_text(d.get("model") or "?", max_length=_MAX_FIELD_LEN)
         parts: List[str] = [f"{model} ({did})"]
 
         # A real operator-set nickname is worth showing; the stock
@@ -188,7 +193,9 @@ def build_device_roster(registry: Optional[Any] = None) -> str:
         except Exception:  # noqa: BLE001
             parts.append("unknown")
         if d.get("firmware_version"):
-            parts.append(f"fw {d['firmware_version']}")
+            # Also device-probe-supplied (basicdeviceinfo.cgi), same reasoning.
+            fw = sanitize_display_text(d["firmware_version"], max_length=_MAX_FIELD_LEN)
+            parts.append(f"fw {fw}")
         if rec is not None:
             sd = _sd_label(rec)
             if sd:
