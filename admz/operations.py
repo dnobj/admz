@@ -972,11 +972,22 @@ async def _action_set_event_ingest(
     """Approved set-event-ingest (ADR-0050 Phase C): flip the fleet capture flag
     and start/stop + reconcile the WS supervisor in the web process — mirrors
     ``POST /api/events/control``. Ingest is prompted, never auto (user decision)."""
+    from admz import capabilities
     from admz.api.context import get_context
-    from admz.fleet_settings import fleet_settings
 
     enabled = bool(action.get("enabled"))
-    fleet_settings.set("event_ingest_enabled", "true" if enabled else "false")
+    # #164: through the sanctioned writer, not `fleet_settings.set` directly.
+    # This caller is ALREADY approved, and needs no bypass token to say so —
+    # `set_enabled` sits BELOW the approval boundary (it audits and enforces
+    # toggleability; the reveal ceremony lives in the route), so an approved
+    # caller simply uses it. That is the structural difference from ADR-0059,
+    # where the proposed chokepoint IS the gate and an approved caller would
+    # re-trigger it.
+    capabilities.set_enabled(
+        "events.device_ingest", enabled,
+        action.get("_confirmed_by") or "confirm-widget",
+        reason="approved via the confirmation widget",
+    )
     try:
         ctx = get_context()
         if enabled:

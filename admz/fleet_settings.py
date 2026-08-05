@@ -354,7 +354,36 @@ class FleetSettings:
         Secret keys are encrypted here, so every writer — the out-of-band
         capture form, the settings UI, ``python -m admz settings set`` and the
         MCP tool — stores ciphertext without knowing it needs to.
+
+        Raises:
+            capabilities.CapabilityWriteBypass: ``key`` is a declared advanced
+                capability's ``setting_key`` and the write did not come through
+                ``capabilities.set_enabled`` (#164).
         """
+        # #164: a declared capability's setting_key may only be written by
+        # `capabilities.set_enabled`, which enforces toggleability and writes
+        # the audit row. Four routes wrote those keys directly — no principal,
+        # no reason, no audit — so the registry's guarantees held for one
+        # caller out of five.
+        #
+        # NOT a lock on settings. The vocabulary is exactly the four declared
+        # `setting_key`s (ADR-0052's registry is the single declared source),
+        # so the ~35 other callers of this method are unaffected by design —
+        # `test_the_untouched_writers_still_work` pins that, because a guard
+        # that refused everything would look identical to a working one.
+        #
+        # Imported lazily: `capabilities` is leaf-light and lazy-imports THIS
+        # module, so a module-scope import here would be a cycle.
+        from admz import capabilities as _caps
+
+        if key in _caps.capability_setting_keys() and                 not _caps.is_sanctioned_capability_write():
+            raise _caps.CapabilityWriteBypass(
+                f"{key!r} is the setting key of a declared advanced capability "
+                f"and cannot be written directly. Call "
+                f"capabilities.set_enabled(<cap_id>, on, principal, "
+                f"reason=...) so the change is attributed, reasoned and "
+                f"audited (#164)."
+            )
         if is_store_encrypted(key) and value:
             from admz import setting_crypto
 

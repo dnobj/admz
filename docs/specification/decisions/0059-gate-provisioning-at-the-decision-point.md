@@ -197,6 +197,41 @@ operator approved *that survey*, including every device it provisions.
 > `execute_approved_session` returns, **including on the exception path**, and
 > `_APPROVED` must never be `set()` anywhere outside the context manager.
 
+## Contrast: when the chokepoint move is cheap (#164)
+
+> **Added 2026-08-05 with #164. This does not change the decision above, which
+> remains Proposed and unruled-on — it records the boundary condition that
+> makes the decision above expensive, by showing a case where it is not.**
+
+#164 is the same family: a four-part gate enforced in one route
+(`POST /api/capabilities/{cap_id}`), while `fleet_settings.set()` stayed public
+and four other routes wrote the same declared capability keys directly. The
+obvious fix is the one this ADR argues for — move the check to where the write
+happens.
+
+There it was **cheap**, and shipped the same day. The difference is one
+structural fact:
+
+**When the chokepoint sits BELOW the approval boundary you need no context
+token. When it IS the approval boundary, you do.**
+
+- #164's chokepoint is `capabilities.set_enabled`. It enforces toggleability
+  and writes the audit row; the *ceremony* (reveal-group membership, typed
+  capability id, mandatory reason) lives in the route above it. So
+  `operations.py::_action_set_event_ingest` — an ADR-0034 approval executor,
+  structurally the twin of row 5 in the table above — simply **calls
+  `set_enabled`** and inherits the audit without re-triggering anything.
+- This ADR's chokepoint is `onboard_device_credentials`, which **is** the gate.
+  An approved caller passing through it raises a second widget for work the
+  operator already approved, which is why the `ContextVar` is needed here and
+  nowhere in #164.
+
+The practical test when this pattern recurs: *does an already-approved caller
+have to pass through the proposed chokepoint, and does that chokepoint decide
+whether to gate?* Two yeses mean an approved-context notion is unavoidable. One
+yes means the approved caller can just use the sanctioned function, and the
+move costs nothing.
+
 ## Why #313's refutation does not apply
 
 [GH #313](https://github.com/dnobj/admz/issues/313) proposed, as its option 2,

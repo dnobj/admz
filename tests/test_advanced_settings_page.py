@@ -17,6 +17,12 @@ the fixture repoints ``ADMZ_HOME``/``ADMZ_DB_PATH`` at ``tmp_path`` and swaps
 the ``fleet_settings`` singleton before the app is built.
 """
 
+# #164: `set()` refuses a declared capability key so no route can
+# bypass `capabilities.set_enabled`. These tests arrange LEGACY
+# on-disk spellings ("yes", "on", "1") that `set_enabled` cannot
+# produce — they exercise the READER's tolerance — so they use the
+# private `_raw_set` door deliberately.
+
 from __future__ import annotations
 
 import pytest
@@ -443,7 +449,7 @@ class TestTopbarChip:
         assert "advanced-capability-chip" not in self._page(client)
 
     def test_a_setting_enabled_capability_chips_too(self, client, clean_caps):
-        client.settings_store.set("survey_mode_enabled", "true")
+        client.settings_store._raw_set("survey_mode_enabled", "true")
         text = self._page(client)
         assert 'data-severity="amber"' in text
         assert "survey.contributor" in text

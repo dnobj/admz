@@ -20,6 +20,12 @@ sets two capability env vars process-wide for the whole suite, so "clean env"
 here means explicitly deleting them.
 """
 
+# #164: `set()` refuses a declared capability key so no route can
+# bypass `capabilities.set_enabled`. These tests arrange LEGACY
+# on-disk spellings ("yes", "on", "1") that `set_enabled` cannot
+# produce — they exercise the READER's tolerance — so they use the
+# private `_raw_set` door deliberately.
+
 from __future__ import annotations
 
 import logging
@@ -235,15 +241,15 @@ class TestResolution:
         """The setting stays the authoritative knob — it is what
         ``/settings/survey`` writes and what existed before the env alias."""
         assert capabilities.is_active("survey.contributor") is False
-        isolated_settings.set("survey_mode_enabled", "true")
+        isolated_settings._raw_set("survey_mode_enabled", "true")
         assert capabilities.is_active("survey.contributor") is True
         assert capabilities.source_of("survey.contributor") == "setting"
 
     def test_hybrid_capability_resolves_from_either(self, clean_env, isolated_settings):
         assert capabilities.is_active("events.device_ingest") is False
-        isolated_settings.set("event_ingest_enabled", "yes")
+        isolated_settings._raw_set("event_ingest_enabled", "yes")
         assert capabilities.source_of("events.device_ingest") == "setting"
-        isolated_settings.set("event_ingest_enabled", "")
+        isolated_settings._raw_set("event_ingest_enabled", "")
         assert capabilities.is_active("events.device_ingest") is False
         clean_env.setenv("ADMZ_EVENT_INGEST", "1")
         assert capabilities.source_of("events.device_ingest") == "env"
@@ -251,14 +257,14 @@ class TestResolution:
     def test_env_beats_setting(self, clean_env, isolated_settings):
         """A setting can never turn off an env-forced capability — the
         semantics ``events/config.py`` already has."""
-        isolated_settings.set("event_ingest_enabled", "false")
+        isolated_settings._raw_set("event_ingest_enabled", "false")
         clean_env.setenv("ADMZ_EVENT_INGEST", "1")
         assert capabilities.is_active("events.device_ingest") is True
         assert capabilities.source_of("events.device_ingest") == "env"
 
     def test_garbage_setting_values_are_off(self, clean_env, isolated_settings):
         for raw in ("maybe", "", "0", "false"):
-            isolated_settings.set("event_ingest_enabled", raw)
+            isolated_settings._raw_set("event_ingest_enabled", raw)
             assert capabilities.is_active("events.device_ingest") is False, raw
 
     def test_survey_contributor_gained_its_env_alias(

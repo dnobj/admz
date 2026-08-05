@@ -17,6 +17,12 @@ suite-wide suppressor env vars are explicitly deleted before "clean env" means
 anything.
 """
 
+# #164: `set()` refuses a declared capability key so no route can
+# bypass `capabilities.set_enabled`. These tests arrange LEGACY
+# on-disk spellings ("yes", "on", "1") that `set_enabled` cannot
+# produce — they exercise the READER's tolerance — so they use the
+# private `_raw_set` door deliberately.
+
 from __future__ import annotations
 
 import asyncio
@@ -259,13 +265,13 @@ class TestFirebird:
     ):
         from admz.modules.acs_pro import firebird as fb
 
-        isolated_settings.set("acs_firebird_enabled", raw)
+        isolated_settings._raw_set("acs_firebird_enabled", raw)
         assert fb.firebird_enabled() is True
 
     def test_env_beats_a_disabled_setting(self, clean_env, isolated_settings):
         from admz.modules.acs_pro import firebird as fb
 
-        isolated_settings.set("acs_firebird_enabled", "false")
+        isolated_settings._raw_set("acs_firebird_enabled", "false")
         clean_env.setenv("ADMZ_ACS_FIREBIRD", "1")
         assert fb.firebird_enabled() is True
 
@@ -283,7 +289,7 @@ class TestEventIngest:
     def test_device_ingest_setting(self, clean_env, isolated_settings):
         from admz.events import config as cfg
 
-        isolated_settings.set("event_ingest_enabled", "true")
+        isolated_settings._raw_set("event_ingest_enabled", "true")
         assert cfg.event_ingest_enabled() is True
 
     def test_acs_poll_env(self, clean_env, isolated_settings):
@@ -296,7 +302,7 @@ class TestEventIngest:
     def test_acs_poll_setting(self, clean_env, isolated_settings):
         from admz.events import config as cfg
 
-        isolated_settings.set("acs_event_ingest_enabled", "on")
+        isolated_settings._raw_set("acs_event_ingest_enabled", "on")
         assert cfg.acs_event_ingest_enabled() is True
 
     def test_a_broken_settings_store_still_answers_false(
@@ -321,7 +327,7 @@ class TestSurveyMode:
         from admz.survey import secrets
 
         assert secrets.is_enabled() is False
-        isolated_settings.set(secrets.KEY_ENABLED, "true")
+        isolated_settings._raw_set(secrets.KEY_ENABLED, "true")
         assert secrets.is_enabled() is True
 
     @pytest.mark.parametrize("raw", ["1", "true", "yes", "on", "True"])
@@ -330,14 +336,14 @@ class TestSurveyMode:
     ):
         from admz.survey import secrets
 
-        isolated_settings.set(secrets.KEY_ENABLED, raw)
+        isolated_settings._raw_set(secrets.KEY_ENABLED, raw)
         assert secrets.is_enabled() is True
 
     @pytest.mark.parametrize("raw", ["", "0", "false", "no", "maybe"])
     def test_every_spelling_it_rejected(self, raw, clean_env, isolated_settings):
         from admz.survey import secrets
 
-        isolated_settings.set(secrets.KEY_ENABLED, raw)
+        isolated_settings._raw_set(secrets.KEY_ENABLED, raw)
         assert secrets.is_enabled() is False
 
     def test_the_new_env_alias_is_additive(self, clean_env, isolated_settings):
