@@ -17,6 +17,8 @@ from admz.discovery.ping_sweep import PingSweep
 from admz.discovery.http_probe import HTTPProbe
 from admz.discovery.snmp_query import SNMPQuery
 
+from admz.validators import validate_scan_subnet
+
 logger = logging.getLogger(__name__)
 
 
@@ -190,7 +192,19 @@ async def discover_devices(
 
     Returns:
         List of DiscoveredDevice, sorted with Axis devices first.
+
+    Raises:
+        ValueError: ``subnet`` is not IPv4 CIDR, or is wider than
+            ``validators.MIN_SCAN_PREFIXLEN``.
     """
+    # #199: the subnet is model-supplied free text and reaches scapy's
+    # `ARP(pdst=...)` untouched. Validated HERE rather than at the five call
+    # sites (REST scan, the demo-inference survey, two MCP tools, the CLI)
+    # because per-entry-point enforcement is how the sixth caller gets missed —
+    # which is exactly what happened to #299's gate. Every present and future
+    # caller inherits this.
+    subnet = validate_scan_subnet(subnet)
+
     orch = DiscoveryOrchestrator(
         timeout=timeout,
         axis_only=axis_only,

@@ -3584,6 +3584,13 @@ class ADMZMCPServer:
     async def _discover_network_devices(
         self, arguments: Dict[str, Any]
     ) -> Dict[str, Any]:
+        # #199: give the model the reason instead of a traceback, so it can
+        # correct the subnet rather than retry the same one.
+        from admz.validators import validate_scan_subnet
+        try:
+            validate_scan_subnet(arguments.get("subnet"))
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
         devices = await run_network_discovery(
             timeout=arguments.get("timeout", 5.0),
             axis_only=arguments.get("axis_only", False),

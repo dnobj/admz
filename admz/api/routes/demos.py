@@ -449,6 +449,16 @@ async def start_inference_run(req: InferenceRunRequest, request: Request,
         raise HTTPException(
             409, f"a deep survey is already running (run {already.id})")
 
+    # Also before the gate (#199): a survey runs in the background, so an
+    # invalid subnet would otherwise be approved by the operator and only fail
+    # minutes later inside the run, where nobody is looking. Reject it while
+    # someone is still on the page.
+    from admz.validators import validate_scan_subnet
+    try:
+        validate_scan_subnet(req.subnet)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     if req.register_new:
         from admz.discovery.gated import (ACTION_SURVEY, gate_scan_write,
                                           survey_reason)
