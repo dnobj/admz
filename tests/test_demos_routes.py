@@ -562,10 +562,94 @@ class TestFragmentCapture:
 
         # Deactivated -> accept proceeds past the guard (fails later only on
         # no-observation, which is fine — the guard is what we're testing).
+        # This is the OTHER direction #174 asked to be pinned alongside the
+        # failure-mode tests below: the guard must not just refuse
+        # everything — a normal accept with no active demo owning config
+        # must still succeed.
         client.post(f"/api/demos/{demo['id']}/deactivate")
         res = client.post("/api/snapshot/accept-baseline",
                           json={"device_id": "cam-1"})
         assert res.status_code != 409
+
+    # -- #174: the guard must fail CLOSED, not open, when it cannot itself be
+    # evaluated (a git timeout, a sqlite lock) — it used to swallow every
+    # exception and proceed as if no demo owned anything, on an irreversible
+    # write. These pin the NEW failure-mode behavior; the two tests above
+    # already pin "blocks when a demo owns keys" and "a normal accept still
+    # succeeds", so together all three shapes the guard can produce are
+    # covered — otherwise "fails closed" would be trivially true for a guard
+    # that simply refuses every request.
+
+    def test_accept_baseline_refuses_when_the_guard_cannot_be_evaluated(
+            self, client, registry, fake_drift, monkeypatch):
+        import sqlite3
+        import admz.demos.fragments as fragments_mod
+
+        def _boom(*a, **kw):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(fragments_mod, "owning_demos", _boom)
+
+        _add_device(registry, "cam-1", tags=["speakers"])
+        before = registry.get_device_info("cam-1").get("baseline_sha")
+
+        res = client.post("/api/snapshot/accept-baseline",
+                          json={"device_id": "cam-1"})
+        assert res.status_code == 503
+        # Actionable, not "error" — a message that just says "error" teaches
+        # people to bypass the gate next time.
+        assert "retry" in res.json()["detail"].lower()
+        assert "cam-1" in res.json()["detail"]
+
+        # The whole point: the irreversible write must NOT have happened.
+        assert registry.get_device_info("cam-1").get("baseline_sha") == before
+
+    def test_accept_baseline_bulk_skips_the_unverifiable_device_and_continues(
+            self, client, registry, fake_drift, monkeypatch):
+        """One device's git/sqlite hiccup must not abort a multi-device
+        batch — matching the existing skip-and-report semantics for a
+        genuine active-demo 409 (test_accept_baseline_guard above)."""
+        import subprocess
+        import admz.demos.fragments as fragments_mod
+
+        real_owning_demos = fragments_mod.owning_demos
+
+        def _flaky(git, demos, device_id, device_info):
+            if device_id == "cam-broken":
+                raise subprocess.TimeoutExpired(cmd=["git", "show"], timeout=30)
+            return real_owning_demos(git, demos, device_id, device_info)
+
+        monkeypatch.setattr(fragments_mod, "owning_demos", _flaky)
+
+        _add_device(registry, "cam-broken", tags=["speakers"])
+        _add_device(registry, "cam-ok", tags=["speakers"])
+        before = registry.get_device_info("cam-broken").get("baseline_sha")
+
+        # Give cam-ok a real-enough observation to actually succeed with, so
+        # "the batch continued" means "the other device was truly accepted",
+        # not just "didn't raise".
+        from admz.api.context import get_context
+        ctx = get_context()
+        monkeypatch.setattr(
+            ctx.git_repo, "list_facets_at",
+            lambda did, sha: {"other": {}} if did == "cam-ok" else {})
+        registry.set_config_pointers("cam-ok", latest_observed_sha="a" * 40)
+
+        res = client.post("/api/snapshot/accept-baseline-bulk",
+                          json={"device_ids": ["cam-broken", "cam-ok"]})
+        assert res.status_code == 200
+        body = res.json()
+
+        # The broken device is reported distinctly from a genuine active-demo
+        # refusal — an operator seeing "active-demo-config" would look for a
+        # demo to deactivate, which doesn't exist here and wastes their time.
+        [skip] = body["skipped"]
+        assert skip["device_id"] == "cam-broken"
+        assert skip["reason"] == "demo-guard-unavailable"
+        assert registry.get_device_info("cam-broken").get("baseline_sha") == before
+
+        # The batch continued — the other device's accept still went through.
+        assert [a["device_id"] for a in body["accepted"]] == ["cam-ok"]
 
     def test_detail_page_shows_owned_config(self, client, registry, fake_drift):
         _add_device(registry, "cam-1", tags=["speakers"])
