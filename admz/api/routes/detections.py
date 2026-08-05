@@ -36,11 +36,22 @@ class CreateDetectionRequest(BaseModel):
     cooldown_seconds: int = 0
 
 
-async def _ensure_ingest(ctx: AppContext) -> None:
-    """Turn live ingest on (a rule is useless if nothing is streaming)."""
-    from admz.fleet_settings import fleet_settings
+async def _ensure_ingest(ctx: AppContext, principal) -> None:
+    """Turn live ingest on (a rule is useless if nothing is streaming).
 
-    fleet_settings.set("event_ingest_enabled", "true")
+    #164: goes through `capabilities.set_enabled` rather than writing
+    `event_ingest_enabled` directly, so enabling a declared capability as a
+    *side effect* of creating a rule is attributed and reasoned rather than
+    silent. Only flips when it is not already active — otherwise every rule
+    create would write an audit row for a no-op.
+    """
+    from admz import capabilities
+
+    if not capabilities.source_of("events.device_ingest"):
+        capabilities.set_enabled(
+            "events.device_ingest", True, principal,
+            reason="enabling ingest so a new detection rule can fire",
+        )
     try:
         await ctx.event_supervisor.start()
         await ctx.event_supervisor.reconcile()
@@ -97,7 +108,7 @@ async def create_detection(req: CreateDetectionRequest, request: Request,
         created_by=str(principal),
     )
     did = ctx.detection_store.create(det)
-    await _ensure_ingest(ctx)
+    await _ensure_ingest(ctx, principal)
     record_event(principal, "detection.create", resource=f"detection:{did}",
                  details={"name": det.name, "action": at,
                           "scope": det.device_id or det.tag or "all",
@@ -125,7 +136,7 @@ async def update_detection(det_id: str, request: Request,
     if not ctx.detection_store.update(det_id, **fields):
         raise HTTPException(404, "detection not found")
     if body.get("enabled"):
-        await _ensure_ingest(ctx)
+        await _ensure_ingest(ctx, principal)
     record_event(principal, "detection.update", resource=f"detection:{det_id}",
                  details={"fields": list(fields)})
     return {"success": True, "detection": ctx.detection_store.get(det_id).to_dict()}

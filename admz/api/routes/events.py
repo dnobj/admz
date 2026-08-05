@@ -129,12 +129,27 @@ async def events_control(request: Request):
     Pass ``{"enabled": bool}`` for the device WS ingest, and/or
     ``{"acs_enabled": bool}`` for the ACS Pro action-rule poller (independent)."""
     body = await request.json()
-    from admz.fleet_settings import fleet_settings
+    # #164: this route wrote three declared capability keys directly — no
+    # principal resolved, no reason, no audit row. It now resolves the caller
+    # and goes through `capabilities.set_enabled`, which enforces toggleability
+    # and audits WHO flipped WHAT and WHY.
+    #
+    # It does NOT add the four-part reveal ceremony (reveal-group membership +
+    # a typed capability id) that `/settings/advanced` requires. That is an
+    # open product decision (#164), not an omission.
+    from admz import capabilities
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
 
     ctx = get_context()
     if "enabled" in body:
         enabled = bool(body.get("enabled"))
-        fleet_settings.set("event_ingest_enabled", "true" if enabled else "false")
+        capabilities.set_enabled(
+            "events.device_ingest", enabled, principal,
+            reason="toggled from the events control endpoint")
         if enabled:
             await ctx.event_supervisor.start()
             await ctx.event_supervisor.reconcile()
@@ -142,7 +157,9 @@ async def events_control(request: Request):
             await ctx.event_supervisor.stop()
     if "acs_enabled" in body:
         acs_on = bool(body.get("acs_enabled"))
-        fleet_settings.set("acs_event_ingest_enabled", "true" if acs_on else "false")
+        capabilities.set_enabled(
+            "events.acs_poll", acs_on, principal,
+            reason="toggled from the events control endpoint")
         if acs_on:
             await ctx.acs_event_poller.stop()   # re-seed (next poll fires nothing) + restart cleanly
             await ctx.acs_event_poller.start()
@@ -150,7 +167,9 @@ async def events_control(request: Request):
             await ctx.acs_event_poller.stop()
     if "firebird_enabled" in body:
         fb_on = bool(body.get("firebird_enabled"))
-        fleet_settings.set("acs_firebird_enabled", "true" if fb_on else "false")
+        capabilities.set_enabled(
+            "acs.firebird_read", fb_on, principal,
+            reason="toggled from the events control endpoint")
         if fb_on:
             await ctx.acs_firebird_poller.stop()   # reset high-water + restart cleanly
             await ctx.acs_firebird_poller.start()

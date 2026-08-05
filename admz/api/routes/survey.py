@@ -117,7 +117,13 @@ async def survey_settings_action(
 
     try:
         if action == "save_config":
-            fleet_settings.set(secrets.KEY_ENABLED, "true" if enabled else "false")
+            # #164: survey_mode_enabled is a declared capability; the write
+            # goes through the audited setter. This route already had a
+            # principal — what it lacked was a reason and an audit row.
+            from admz import capabilities
+            capabilities.set_enabled(
+                "survey.contributor", bool(enabled), principal,
+                reason="saved from the survey settings page")
             if repo:
                 fleet_settings.set(secrets.KEY_REPO, repo.strip())
             if redaction_profile in ("hash-serial", "keep-serial"):

@@ -55,6 +55,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -689,6 +691,61 @@ def is_toggleable(cap_id: str) -> bool:
     return bool(cap and "setting" in cap.enable_via and cap.setting_key)
 
 
+
+# ── The write chokepoint (#164) ─────────────────────────────────────────────
+#
+# `set_enabled` below is the sanctioned writer for a declared capability's
+# `setting_key`: it enforces toggleability and writes the audit row. But
+# `fleet_settings.set()` is public, so four other routes wrote those same keys
+# directly — no principal, no reason, no audit — and the registry's guarantees
+# quietly applied to one caller out of five.
+#
+# `fleet_settings.set()` now refuses a declared capability key unless the write
+# arrived through here. The flag is **one function wide**, not process-wide:
+# it is raised immediately before the store write and dropped immediately
+# after, with no `await` in between (`set_enabled` is synchronous), so it
+# cannot leak across requests. `threading.local` rather than a plain module
+# bool because FastAPI runs sync endpoints on a worker threadpool.
+#
+# Keyed on the ADR-0052 registry, deliberately: only the four declared
+# `setting_key`s are protected, so the other ~35 `fleet_settings.set()` callers
+# in the tree are untouched. This is a guard on *capability* writes, not a
+# lock on settings.
+
+_sanctioned = threading.local()
+
+
+class CapabilityWriteBypass(PermissionError):
+    """A declared capability's setting key was written outside `set_enabled`.
+
+    Raised by `fleet_settings.set()`. The fix at a call site is to call
+    :func:`set_enabled` with a principal and a reason, not to widen this.
+    """
+
+
+def capability_setting_keys() -> frozenset:
+    """Every declared capability `setting_key`. The guard's whole vocabulary."""
+    return frozenset(
+        c.setting_key for c in CAPABILITIES if c.setting_key
+    )
+
+
+def is_sanctioned_capability_write() -> bool:
+    """True only inside :func:`set_enabled`'s store write."""
+    return bool(getattr(_sanctioned, "active", False))
+
+
+@contextmanager
+def _sanctioned_capability_write():
+    _sanctioned.active = True
+    try:
+        yield
+    finally:
+        # try/finally is load-bearing: a leaked flag would silently disable the
+        # guard for everything later on this thread.
+        _sanctioned.active = False
+
+
 def set_enabled(
     cap_id: str,
     on: bool,
@@ -724,7 +781,8 @@ def set_enabled(
             f"class '{cap.danger}'."
         )
 
-    _settings().set(cap.setting_key, "true" if on else "false")
+    with _sanctioned_capability_write():
+        _settings().set(cap.setting_key, "true" if on else "false")
     source = source_of(cap.id)
 
     from admz.audit import record_event
