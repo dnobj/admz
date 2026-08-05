@@ -215,10 +215,20 @@ async def run_schedule_now(
 
     principal = await get_current_principal(request)
     resource = f"schedule:{schedule_id}"
-    result = await ctx.scheduler.run_now(schedule_id)
+    # #156: see the note on the /tasks/{id}/run route — a pause is "do not run
+    # automatically", and only a console operator can override it deliberately.
+    from admz.tasks.gated import is_interactive
+
+    result = await ctx.scheduler.run_now(
+        schedule_id, allow_paused=is_interactive(principal))
     if not result.get("success"):
         record_event(principal, "schedule.run", resource=resource,
                      success=False, error_message=result.get("error", "failed"))
-        raise HTTPException(status_code=404, detail=result.get("error", "Failed"))
+        # 409, not 404: a paused schedule exists and was found. Reporting it as
+        # missing would send an operator looking for a deletion that never
+        # happened (#156).
+        raise HTTPException(
+            status_code=409 if result.get("paused") else 404,
+            detail=result.get("error", "Failed"))
     record_event(principal, "schedule.run", resource=resource)
     return result

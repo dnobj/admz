@@ -290,10 +290,53 @@ class SnapshotScheduler:
             self._cancel_task(sid)
             logger.info("Dropped schedule task %s", sid)
 
-    async def run_now(self, schedule_id: str) -> Dict[str, Any]:
+    async def run_now(self, schedule_id: str, *,
+                      allow_paused: bool = False) -> Dict[str, Any]:
+        """Fire a schedule on demand (GH #156).
+
+        ``enabled`` means **"do not run automatically"**, not "do not run at
+        all". Three things in the code say so, and none of them is about
+        on-demand runs: :meth:`update_schedule` cancels and restarts the
+        *timer* and nothing else; FR-SCH-008 says a paused schedule is
+        "skipped", which is what a loop does with its turn; and the UI toggle
+        reads "Paused", a scheduler word. A maintenance window exists to stop
+        *unattended* work, which is not what an operator deliberately pressing
+        a button is doing.
+
+        So a pause does not revoke an operator's ability to run the thing —
+        but an on-demand fire still needs **someone to have expressed that
+        override**, and only one caller has anyone who could. Hence
+        ``allow_paused`` rather than a blanket ``and task.enabled``:
+
+        * ``POST /api/tasks/{id}/run`` and ``POST /api/schedules/{id}/run``
+          pass ``is_interactive(principal)``. A console operator clicking ▶ on
+          a row labelled "Paused" *is* the expression of intent. Refusing them
+          teaches un-pause → run → re-pause, and the last step is the one
+          people forget — which leaves the schedule live, the opposite of what
+          the refusal was protecting.
+        * The MCP tool passes nothing. The model calling ``run_snapshot_schedule``
+          has no way to mean "I know it is paused, do it anyway", because
+          nobody expressed that. It gets the default.
+
+        **Default False on purpose.** A caller added later is refused until it
+        deliberately opts in, which is the failure direction ADR-0053 argues
+        for: the mistake is silent otherwise, and this is exactly the class of
+        gap #156 records — one path honouring a flag while three do not.
+        """
         task = self.store.get(schedule_id)
         if task is None or task.trigger_kind != TRIGGER_SCHEDULE:
             return {"success": False, "error": f"Schedule not found: {schedule_id}"}
+        if not task.enabled and not allow_paused:
+            return {
+                "success": False,
+                "error": (
+                    f"Schedule '{schedule_id}' is paused (enabled=false) and "
+                    "was not run. Enable it first, or run it from the web "
+                    "console, where an operator can override a pause "
+                    "deliberately."
+                ),
+                "paused": True,
+            }
         return await self._execute(task)
 
     # ----- loop + execution ----------------------------------------------

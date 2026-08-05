@@ -70,6 +70,41 @@ the web UI.
 maintenance windows. Toggling re-computes `next_run` from now +
 interval.
 
+**`enabled` means "do not run automatically", not "do not run at all"** (#156).
+The distinction is load-bearing, because the flag governs four paths and they
+do not all deserve the same answer:
+
+| path | paused schedule |
+|---|---|
+| the scheduler loop | never runs — checked twice, and `update_schedule` cancels the running loop |
+| MCP `run_snapshot_schedule` | **refused** |
+| `POST /api/tasks/{id}/run`, `POST /api/schedules/{id}/run` — api-key / anonymous | **refused** |
+| the same two routes — **console operator** (`is_interactive`) | **runs**, deliberately |
+
+The console exception is not a loophole. The ▶ button sits on a row that reads
+"Paused", so pressing it *is* the expression of override intent — the same
+reasoning `tasks/gated.py` already uses to let a console operator write a task
+directly while every other caller takes the widget. Refusing them instead
+teaches un-pause → run → re-pause, and the forgotten last step leaves the
+schedule live, which is the opposite of what a refusal protects.
+
+The model gets no such exception: nothing in an MCP call can mean "I know it is
+paused, do it anyway", because nobody expressed that.
+
+Enforcement is **one predicate in one place** —
+`SnapshotScheduler.run_now(..., allow_paused=False)`, defaulting to refuse, so
+a caller added later is refused until it deliberately opts in. Until #156 this
+was the reverse: the loop honoured the flag and all three on-demand paths
+ignored it, while this requirement was marked ✅.
+
+Refusals are truthful about state: HTTP **409**, not 404 — a paused schedule
+exists and was found. All four paths are audited (`record_event` on the REST
+routes; the MCP `call_tool` wrapper records every tool call in a `finally`).
+
+**Enforced at:** `snapshot/scheduler.py::run_now`,
+`api/routes/tasks.py::run_task_now`, `api/routes/schedules.py::run_schedule_now`.
+Tested in `tests/test_paused_schedule_run_now.py`.
+
 ### FR-SCH-009 — Schedules exposed via MCP and REST ✅
 Actual surface (corrected):
 - MCP: `list_snapshot_schedules`, `create_snapshot_schedule`,

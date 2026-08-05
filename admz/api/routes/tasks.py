@@ -238,11 +238,22 @@ async def run_task_now(
     if task is None or task.trigger_kind != TRIGGER_SCHEDULE:
         raise HTTPException(status_code=400,
                             detail="only schedule tasks can be run on demand")
-    result = await ctx.scheduler.run_now(task_id)
+    # #156: a paused schedule may be run on demand only by a console operator.
+    # The ▶ button sits on a row that says "Paused", so pressing it IS the
+    # override intent; an api-key or anonymous caller expressed nothing and is
+    # refused. Same predicate the gated task writes use, not a second one.
+    from admz.tasks.gated import is_interactive
+
+    result = await ctx.scheduler.run_now(
+        task_id, allow_paused=is_interactive(principal))
     record_event(principal, "task.run", resource=f"task:{task_id}",
                  success=result.get("success", False))
     if not result.get("success"):
-        raise HTTPException(status_code=400, detail=result.get("error", "Failed"))
+        # 409 for a paused task: the request is well-formed and the task
+        # exists — it is the task's *state* that refuses (#156).
+        raise HTTPException(
+            status_code=409 if result.get("paused") else 400,
+            detail=result.get("error", "Failed"))
     return result
 
 
