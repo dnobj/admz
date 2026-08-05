@@ -33,9 +33,10 @@ the host replied; it asserts nothing about what ADMZ verified.
 `probe_device` (`admz/fleet/health.py`):
 1. **Authenticated tier** — if stored credentials + catalog + executor are
    available, call `systemready.cgi:systemReady`. Success → `online` with
-   `uptime_seconds`/`bootid`; `401` → `auth_failed`; connect failure →
-   `unreachable`; any other failure → the reachability confirmation of
-   FR-HLT-009.
+   `uptime_seconds`/`bootid`; `401` → `auth_failed` **only once a second,
+   independent auth-required op has also refused** (GH #150 — see
+   FR-HLT-010); connect failure → `unreachable`; any other failure → the
+   reachability confirmation of FR-HLT-009.
 2. **TCP tier** — otherwise a bare TCP connect to the device's effective
    port (`_probe_port`: an explicit `port`, else 443 when the learned scheme
    is https, else 80). Connect OK → `online` (no uptime info); fail →
@@ -95,6 +96,40 @@ corroborated against a second, independent auth-required op
 **The implementation is the source of truth for the outcome table**
 (`admz/fleet/health.py`, `_corroborate_rejection`); when it and this paragraph
 disagree, believe the code.
+
+### FR-HLT-010 — A `systemready` 401 is corroborated too ✅
+FR-HLT-008 covers the *credential-check* op. `probe_device` has a **second**
+place where a 401 became a fleet-visible `auth_failed`: the `systemready` call
+itself, in the authenticated tier of FR-HLT-003. Until GH #150 that branch
+condemned the stored credentials on one op's evidence — the same inference #149
+disproved on a real AXIS P8815-2.
+
+It now reuses the same `_corroborate_rejection` helper, so:
+
+| Both ops refuse | → `auth_failed`, error naming *both* ops |
+| The corroborator authenticates (2xx) | → `reachable_no_api` — the host answered and the password is demonstrably fine; ADMZ simply cannot read this device's readiness |
+| The corroborator errors, answers oddly, or is absent from the catalog | → not condemned; classified on TCP evidence. A **missing** corroborating op still yields `auth_failed`, deliberately (see FR-HLT-008's reasoning: a genuinely stale password must not read as healthy because the second op is unavailable) |
+
+The corroborating call only ever runs on a path that has already failed, so a
+healthy device pays nothing for it.
+
+**Ordering — why a `systemready` 401 still cannot reach `needs_setup`.** #150
+noted that this branch returns before the needsetup check, putting a
+factory-defaulted device out of reach of the #70/#71 deferred-recovery
+triggers. The observation is right and the obvious remedy does not work:
+`needsetup` is read out of **systemready's own parsed body** (and
+`fleet/systemready.py::read_systemready` likewise returns `None` unless
+`result.success`), so a 401 carries no needsetup signal at all. Reordering
+would evaluate `needsetup = False` against an empty body and fall through to
+the same place. **When `systemready` 401s the signal does not exist anywhere in
+ADMZ**, because `systemready` *is* the auth-free signal.
+
+So the fix removes the wrong verdict rather than relocating it. Recovering
+`needs_setup` from that state would need a new signal — an unauthenticated
+`systemready` retry being the obvious candidate — which is deliberately not
+built: the scenario (systemready 401ing while another op authenticates) has
+**never been observed on a real device**, and that is precisely why #150 was
+split out of #149.
 
 ### FR-HLT-004 — Single background loop, opt-in ✅
 `HealthMonitor` is one async loop per process (shared between the MCP and
