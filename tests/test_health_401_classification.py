@@ -51,13 +51,35 @@ def _catalog():
     return catalog
 
 
-def _probe(result):
+def _probe(result, corroborator=None):
+    """Probe with ``result`` from every op.
+
+    ``corroborator`` overrides what the *second* op answers. Since #150 a
+    systemready 401 is only AUTH_FAILED once an independent auth-required op
+    has also refused, so a test that wants the auth verdict must say what that
+    second op said. Passing it explicitly rather than defaulting it keeps the
+    two-op requirement visible at the call site — a default would hide exactly
+    the thing #150 changed.
+    """
     executor = MagicMock()
-    executor.execute = AsyncMock(return_value=result)
+    if corroborator is None:
+        executor.execute = AsyncMock(return_value=result)
+    else:
+        calls = {"n": 0}
+
+        async def _execute(*_a, **_k):
+            calls["n"] += 1
+            return result if calls["n"] == 1 else corroborator
+
+        executor.execute = _execute
     return asyncio.new_event_loop().run_until_complete(probe_device(
         device_id="cam-01", device_info={"host": "192.0.2.1"},
         credentials={"username": "root", "password": "x"},
         catalog=_catalog(), executor=executor))
+
+
+#: What an independent auth-required op looks like when it also refuses.
+REFUSED = dict(status_code=401, success=False, error="HTTP 401: Unauthorized")
 
 
 def _result(**kw):
@@ -80,14 +102,16 @@ class TestARealAuthFailureIsStillCaught:
         withheld so only the error branch can catch it. This is the
         belt-and-braces the substring match was there to provide, preserved."""
         rec = _probe(_result(status_code=None, success=False,
-                             error="Authentication failed (401). Check credentials."))
+                             error="Authentication failed (401). Check credentials."),
+                     corroborator=_result(**REFUSED))
         assert rec.status == DeviceHealthStatus.AUTH_FAILED
 
     def test_a_generic_http_401_envelope_is_recognised(self):
         """`vapix.py:1123`'s shape for a 401 that reached the generic branch:
         `f"HTTP {status_code}: {body[:500]}"`."""
         rec = _probe(_result(status_code=None, success=False,
-                             error="HTTP 401: Unauthorized\n<html>...</html>"))
+                             error="HTTP 401: Unauthorized\n<html>...</html>"),
+                     corroborator=_result(**REFUSED))
         assert rec.status == DeviceHealthStatus.AUTH_FAILED
 
 

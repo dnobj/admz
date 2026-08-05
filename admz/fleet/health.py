@@ -819,7 +819,9 @@ async def probe_device(
       1. If we have credentials AND the catalog + executor are
          available, call ``systemready.cgi:systemReady`` via the
          executor. Success → ONLINE with uptime/bootid populated.
-         Auth failure (401) → AUTH_FAILED. Connect failure →
+         Auth failure (401) → AUTH_FAILED **only once a second,
+         independent auth-required op has also refused** (GH #150;
+         see the ordering note below). Connect failure →
          UNREACHABLE. Any *other* failure (unparsable body, wrong
          content type, unexpected status) is a statement about the
          device's API, not its reachability — so it falls through to
@@ -829,6 +831,36 @@ async def probe_device(
          just do a TCP connect probe against the device's host on its
          effective port (see :func:`_probe_port`). Connect OK →
          ONLINE (without uptime info). Connect fail → UNREACHABLE.
+
+    **Ordering: why a systemready 401 still cannot reach ``needs_setup``,
+    and why moving the branch would not change that (GH #150).**
+
+    #150 observed that the 401 branch returns before the needsetup check, so a
+    factory-defaulted device that 401s on systemready cannot be classified
+    ``NEEDS_SETUP`` — which matters because the deferred-recovery triggers of
+    #70/#71 key off exactly that state.
+
+    The observation is correct; the obvious remedy does not work. ``needsetup``
+    is read out of **systemready's own parsed body** (see below, and
+    ``admz/fleet/systemready.py::read_systemready``, which likewise returns
+    ``None`` unless ``result.success``). A 401 has no such body. Reordering the
+    branches would therefore evaluate ``needsetup = False`` against an empty
+    ``parsed_data`` and fall straight through — the same outcome, reached less
+    obviously. **When systemready 401s there is no needsetup signal available
+    anywhere in ADMZ**, because systemready *is* the auth-free signal.
+
+    So this fix does not reorder. It removes the wrong verdict rather than
+    relocating it: a 401 that is not corroborated yields ``REACHABLE_NO_API``
+    (the host answered, ADMZ cannot read its readiness) instead of the
+    unsupported ``AUTH_FAILED``. A device in that state is no longer condemned,
+    and an operator sees an attention state naming the actual ambiguity.
+
+    Recovering ``NEEDS_SETUP`` from this state would need a *new* signal — the
+    obvious candidate being an unauthenticated systemready retry, since the CGI
+    is specified as auth-free. That is deliberately **not** built here: the
+    scenario has never been observed on a real device, and adding a speculative
+    extra request to every 401 sweep is the kind of assumption this issue was
+    split out of #149 to avoid making in the other direction.
     """
     host = device_info.get("host")
     now = time.time()
@@ -885,13 +917,74 @@ async def probe_device(
 
             status_code = getattr(result, "status_code", None)
             if status_code == 401 or _reports_401(getattr(result, "error", None)):
+                # GH #150. One op's 401 is not proof the password is wrong.
+                # #149 disproved exactly this inference for basicdeviceinfo on a
+                # real AXIS P8815-2 — per-op authorization differences are real
+                # on Axis firmware — so ask a second, independent auth-required
+                # op before condemning the stored credentials.
+                #
+                # Whether systemready specifically CAN 401 while other ops
+                # authenticate has never been observed. This does not assume it
+                # happens; it stops assuming it cannot, which is a different and
+                # much cheaper claim: the corroborating call only ever runs on a
+                # path that already failed.
+                creds_ok, _facts, _learned = await _corroborate_rejection(
+                    catalog=catalog, executor=executor, device_info=device_info,
+                    device_id=device_id, credentials=credentials,
+                    timeout_seconds=timeout_seconds, refused_op=SYSTEMREADY_OP,
+                )
+                if creds_ok is False:
+                    return DeviceHealthRecord(
+                        device_id=device_id,
+                        status=DeviceHealthStatus.AUTH_FAILED,
+                        last_check=now,
+                        latency_ms=elapsed_ms,
+                        last_error=(
+                            "credentials rejected — both "
+                            f"{SYSTEMREADY_OP} and {CORROBORATION_OP} refused "
+                            "them"
+                        ),
+                        consecutive_failures=1,
+                    )
+
+                # Not condemned. systemready still failed, so there is no
+                # parsed body — and therefore no uptime, no bootid, and NO
+                # needsetup signal (see the ordering note in this function's
+                # docstring). Classify on reachability evidence, exactly as the
+                # generic failure path below does, via the same helper.
+                logger.info(
+                    "health: %s returned 401 for %s but %s did not corroborate "
+                    "(creds_ok=%r) — not condemning the stored credentials",
+                    SYSTEMREADY_OP, device_id, CORROBORATION_OP, creds_ok,
+                )
+                tcp_ms = await _tcp_probe(
+                    host, _probe_port(device_info), timeout_seconds
+                )
+                if tcp_ms is None:
+                    return DeviceHealthRecord(
+                        device_id=device_id,
+                        status=DeviceHealthStatus.UNREACHABLE,
+                        last_check=now,
+                        last_error=f"{SYSTEMREADY_OP} returned 401; host then "
+                                   "failed to accept a TCP connection",
+                        consecutive_failures=1,
+                    )
                 return DeviceHealthRecord(
                     device_id=device_id,
-                    status=DeviceHealthStatus.AUTH_FAILED,
+                    status=DeviceHealthStatus.REACHABLE_NO_API,
                     last_check=now,
+                    last_seen_online=now,  # it answered HTTP — it is up
                     latency_ms=elapsed_ms,
-                    last_error="HTTP 401 from device",
-                    consecutive_failures=1,
+                    consecutive_failures=0,
+                    last_error=(
+                        f"{SYSTEMREADY_OP} returned 401 but {CORROBORATION_OP} "
+                        "authenticated — credentials look valid; ADMZ cannot "
+                        "read this device's readiness"
+                        if creds_ok
+                        else f"{SYSTEMREADY_OP} returned 401 and "
+                             f"{CORROBORATION_OP} could not corroborate it — "
+                             "credentials NOT condemned on one op's evidence"
+                    ),
                 )
 
             if not getattr(result, "success", False):
