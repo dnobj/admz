@@ -547,6 +547,19 @@ class VapixExecutor(BaseExecutor):
                 # Basic-over-plaintext is the one combination that is both
                 # dangerous and abnormal.
                 #
+                # A CALLER NOW DEPENDS ON THIS, not just on the general
+                # principle (GH #193). `discovery/reconcile.py` verifies that a
+                # claimed new address really is the device by authenticating to
+                # it with that device's stored credentials — i.e. it sends
+                # credentials to an address chosen by an UNAUTHENTICATED mDNS
+                # claim, on purpose, because Digest never puts the password on
+                # the wire. Relax this branch and that verification becomes a
+                # plaintext credential disclosure to whoever won the mDNS race.
+                # Pinned by
+                # tests/test_reconcile_requires_proof.py::TestThisDependsOnTheBasicDowngradeRefusal
+                # so the breakage names its caller rather than only failing
+                # this module's own tests.
+                #
                 # Refusal proceeds WITHOUT learning rather than raising: the
                 # request genuinely did 401, which every caller (health
                 # monitor, plan engine, MCP, REST) already handles. Raising

@@ -1580,9 +1580,12 @@ class ADMZMCPServer:
                         "device whose MAC now answers at a different IP (DHCP "
                         "moved it). Follows the MAC, not the stale IP — fixes the "
                         "'looks online but ADMZ says unreachable' case caused by "
-                        "a changed address. Read-only except for correcting the "
-                        "stored host; never registers new devices. Returns the "
-                        "list of corrected devices."
+                        "a changed address. Never registers new devices. "
+                        "WRITES to the registry: it changes where ADMZ sends a "
+                        "device's stored credentials, so a candidate address "
+                        "must first authenticate AS that device or the change "
+                        "is refused and recorded. Returns every candidate with "
+                        "`applied` and, when refused, `reason`."
                     ),
                     inputSchema={
                         "type": "object",
@@ -3660,15 +3663,26 @@ class ADMZMCPServer:
             subnet=arguments.get("subnet"),
             enable_ping=False,
         )
-        changes = reconcile_device_ips(self.registry, devices)
+        # #193: pass the catalog/executors so each candidate address must
+        # authenticate AS the device before its registry row is rewritten, and
+        # the principal so the audit row names who ran it.
+        changes = await reconcile_device_ips(
+            self.registry, devices, catalog=self.catalog,
+            executors=self.executors, principal=self.principal,
+        )
+        applied = [c for c in changes if c.get("applied")]
+        refused = [c for c in changes if not c.get("applied")]
         return {
             "success": True,
             "discovered": len(devices),
-            "updated": len(changes),
+            "updated": len(applied),
+            "refused": len(refused),
             "changes": changes,
             "message": (
-                f"Reconciled {len(changes)} device address(es) from "
-                f"{len(devices)} discovered."
+                f"Reconciled {len(applied)} device address(es) from "
+                f"{len(devices)} discovered"
+                + (f"; REFUSED {len(refused)} that could not prove identity "
+                   f"(see `changes[].reason`)" if refused else "") + "."
                 if changes
                 else f"All registered devices already match the {len(devices)} "
                 "discovered addresses; nothing to update."
