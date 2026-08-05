@@ -192,6 +192,20 @@ async def lifespan(app: FastAPI):
         logging.getLogger(__name__).warning(
             "eager encryption sweep failed", exc_info=True)
 
+    # GH #170: periodic sweep for orphaned rule-recipient secret stashes
+    # (deny and consume-on-approval already discard their own token; this is
+    # the backstop for a token nothing ever touches again — abandonment on a
+    # quiet install, where purge-on-access never fires). A bare asyncio loop,
+    # not a scheduler task: this enforces an already-fixed internal TTL, it
+    # is not an operator-schedulable action.
+    try:
+        from admz.rules.capture import start_background_purge
+        start_background_purge()
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning(
+            "rule-secret purge sweep failed to start", exc_info=True)
+
     await ctx.scheduler.start()
 
     # Device health monitor: opt-in via the health_monitor_enabled
@@ -233,6 +247,11 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await mcp_pool.stop()
+        try:
+            from admz.rules.capture import stop_background_purge
+            stop_background_purge()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             await ctx.event_supervisor.stop()
         except Exception:  # noqa: BLE001

@@ -389,6 +389,74 @@ class TestDenyEndpoint:
         assert r.status_code == 410
 
 
+class TestDenyDiscardsRuleSecrets:
+    """GH #170: denial is a terminal outcome for a captured rule-recipient
+    secret too, previously only the successful-approval path ever cleaned
+    one up. Pins both directions, per the review note that prompted this:
+    the secret must be gone after deny fires, AND an unrelated, still-
+    pending capture must survive it -- otherwise an over-broad
+    implementation (e.g. clearing the whole stash on any deny) would pass
+    the first half trivially."""
+
+    def test_deny_discards_the_stashed_secret(self, rest_client):
+        from admz.api.confirm_store import confirm_store
+        from admz.rules import capture
+
+        s = confirm_store.create_session(
+            device_id="dev-1", operation_id="test:op", family="vapix",
+            params={}, risk_level="service-affecting",
+            confirmation_level="url_only",
+        )
+        capture.stash_rule_secrets(s.token, {"login": "svc", "password": "hunter2"})
+        assert capture.has_rule_secrets(s.token) is True
+
+        r = rest_client.post(f"/api/chat/confirm/{s.token}/deny")
+        assert r.status_code == 200
+
+        assert capture.has_rule_secrets(s.token) is False
+        assert capture.consume_captured_rule_secrets(s.token) == {}
+
+    def test_deny_does_not_touch_a_different_pending_capture(self, rest_client):
+        from admz.api.confirm_store import confirm_store
+        from admz.rules import capture
+
+        denied = confirm_store.create_session(
+            device_id="dev-1", operation_id="test:op", family="vapix",
+            params={}, risk_level="service-affecting",
+            confirmation_level="url_only",
+        )
+        kept = confirm_store.create_session(
+            device_id="dev-2", operation_id="test:op", family="vapix",
+            params={}, risk_level="service-affecting",
+            confirmation_level="url_only",
+        )
+        capture.stash_rule_secrets(denied.token, {"password": "gone"})
+        capture.stash_rule_secrets(kept.token, {"password": "still-here"})
+
+        r = rest_client.post(f"/api/chat/confirm/{denied.token}/deny")
+        assert r.status_code == 200
+
+        assert capture.has_rule_secrets(denied.token) is False
+        # the OTHER token's still-pending capture must survive -- a
+        # legitimate approval reaching it later still finds it.
+        assert capture.consume_captured_rule_secrets(kept.token) == {
+            "password": "still-here"}
+
+    def test_deny_of_a_token_with_no_stash_is_a_harmless_noop(self, rest_client):
+        """Most denials never had a rule-secret capture at all -- the wiring
+        must not error or affect the deny response for that (common) case."""
+        from admz.api.confirm_store import confirm_store
+
+        s = confirm_store.create_session(
+            device_id="dev-1", operation_id="test:op", family="vapix",
+            params={}, risk_level="service-affecting",
+            confirmation_level="url_only",
+        )
+        r = rest_client.post(f"/api/chat/confirm/{s.token}/deny")
+        assert r.status_code == 200
+        assert r.json()["status"] == "denied"
+
+
 # ---------------------------------------------------------------------------
 # Capture completion note (routes/capture.py)
 # ---------------------------------------------------------------------------
