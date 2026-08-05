@@ -29,6 +29,11 @@ class TestIsSensitiveKey:
         "api_key", "apikey", "gemini_api_key",
         "ssh_key", "fernet_key", "private_key", "keyfile",
         "github_pat", "survey_github_pat", "pat",
+        # GH #336 — the actual VAPIX wire-query keys that carry a device
+        # password: pwdgrp.cgi:add-user/update-user uses `pwd`,
+        # networkshare-add.cgi:add uses `pass`.
+        "pwd", "PWD", "old_pwd", "new_pwd", "admin.pwd", "admin-pwd",
+        "pass", "PASS", "old_pass", "new_pass", "user_pass", "user.pass",
     ])
     def test_sensitive(self, key):
         assert is_sensitive_key(key) is True
@@ -40,6 +45,12 @@ class TestIsSensitiveKey:
         "pattern",
         "device_id", "operation_id", "username", "default_username",
         "host", "intent", "value",
+        # GH #336 — the false positives a naive substring join of "pass"
+        # would have introduced. Each contains "pass" but is not the
+        # discrete token: no delimiter separates it from the rest of the
+        # word, so it must NOT be masked. This is the exact leak/noise
+        # trade #310 already refused for httpx URLs, checked the other way.
+        "bypass", "passive", "compass", "passthrough", "surpass",
     ])
     def test_not_sensitive(self, key):
         assert is_sensitive_key(key) is False
@@ -201,6 +212,29 @@ class TestCrossSurfaceDelegation:
         assert out == {"username": "u", "password": MASK}
         assert _sanitize_tool_args("plain") == "plain"
         assert _sanitize_tool_args(None) is None
+
+    def test_audit_sanitizer_masks_the_actual_vapix_wire_spellings(self):
+        """GH #336, the exact reproduction that opened the issue:
+        pwdgrp.cgi:add-user/update-user carry the device password on the
+        wire as `pwd`, networkshare-add.cgi:add as `pass` — neither matched
+        before this fix, so a device password written through the gated
+        catalog path reached the audit log in the clear regardless of the
+        (correctly masked) `password` spelling never actually being used on
+        the wire for these two operations."""
+        from admz.mcp.server import _sanitize_tool_args
+        assert _sanitize_tool_args(
+            {"params": {"pwd": "hunter2SECRET"}}
+        ) == {"params": {"pwd": MASK}}
+        assert _sanitize_tool_args(
+            {"params": {"pass": "hunter2SECRET"}}
+        ) == {"params": {"pass": MASK}}
+        # The other direction, in the same surface: an ordinary argument
+        # that happens to contain those letters must not be swept up with
+        # them, or "we mask secrets" is trivially true for a sanitizer that
+        # masks everything.
+        assert _sanitize_tool_args(
+            {"params": {"bypass": "not-a-secret"}}
+        ) == {"params": {"bypass": "not-a-secret"}}
 
     def test_firebird_redact_url_delegates(self):
         """#157: firebird.py's redact_url is now a thin wrapper over the

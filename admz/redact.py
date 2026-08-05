@@ -26,6 +26,18 @@ GH #157: a fourth surface — URLs reaching a log line, whether ADMZ's own
 the query-key vocabulary a URL can carry is not closed, so a key-name list
 is the wrong shape here for the same reason it failed three times for
 fleet-setting keys (``admz/setting_policy.py``).
+
+GH #336: this predicate itself had a gap, in exactly the shape #217 and #157
+already named — the canonical list was still an enumeration, and the wire
+format is what actually needed enumerating. ``pwd`` and ``pass`` are the
+literal VAPIX query keys that carry a device password
+(``pwdgrp.cgi:add-user``/``update-user``, ``networkshare-add.cgi:add``) —
+neither is a substring of anything in ``_SENSITIVE_KEY_PARTS``, so a value
+under either key reached ``mcp/server.py::_sanitize_tool_args`` (and every
+other one of this predicate's ~12 callers) unmasked. Added the same way
+``pat`` already was: a delimiter-bounded discrete-token match, not a bare
+substring — ``pass`` as a substring would mask ``bypass``/``passive``/
+``compass``, the exact leak/noise trade #310 already refused for httpx URLs.
 """
 
 from __future__ import annotations
@@ -36,9 +48,10 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 MASK = "***"
 
-# Substring matches. ``key`` and ``pat`` are handled separately below
-# because their bare substrings over-match (file_path, pattern, the literal
-# ``key`` argument of set_fleet_setting which names a setting, not a secret).
+# Substring matches. ``key`` and the discrete tokens below are handled
+# separately because their bare substrings over-match (file_path, pattern,
+# bypass, passive, the literal ``key`` argument of set_fleet_setting which
+# names a setting, not a secret).
 _SENSITIVE_KEY_PARTS = (
     "password",
     "passwd",
@@ -48,9 +61,23 @@ _SENSITIVE_KEY_PARTS = (
     "apikey",
 )
 
-# ``pat`` (personal access token) only as a discrete token: github_pat,
-# survey.pat — but never file_path / upgrade_path / pattern.
-_PAT_TOKEN_RE = re.compile(r"(?:^|[_\-.])pat(?:[_\-.]|$)")
+# Short, ambiguous spellings that must match as a discrete, delimiter-bounded
+# component of the key — never as a bare substring, because each is also a
+# real prefix/infix of ordinary, non-secret words:
+#
+#   pat  -> file_path, upgrade_path, pattern    (real hit: github_pat)
+#   pwd  -> (short; kept consistent with the others rather than assumed safe)
+#   pass -> bypass, passive, compass, passthrough
+#
+# ``pwd`` and ``pass`` are here because they are not hypothetical — they are
+# the actual VAPIX wire-query keys that carry a device password on the wire
+# (``pwdgrp.cgi:add-user`` / ``update-user`` -> ``pwd``; ``networkshare-add.cgi:add``
+# -> ``pass``), confirmed by parsing every operation in the atlas catalog
+# (GH #336). Joining them into ``_SENSITIVE_KEY_PARTS`` as bare substrings
+# was considered and rejected: #310 already refused exactly that trade for
+# httpx URLs (a leak/noise trade), and ``pass`` as a substring would mask
+# every argument merely containing it as a byte sequence, not a token.
+_DISCRETE_SENSITIVE_TOKENS_RE = re.compile(r"(?:^|[_\-.])(?:pat|pwd|pass)(?:[_\-.]|$)")
 
 
 def is_sensitive_key(key: Any) -> bool:
@@ -64,7 +91,7 @@ def is_sensitive_key(key: Any) -> bool:
     # carries a setting *name* (e.g. set_fleet_setting), not a secret.
     if "key" in k and k != "key":
         return True
-    return bool(_PAT_TOKEN_RE.search(k))
+    return bool(_DISCRETE_SENSITIVE_TOKENS_RE.search(k))
 
 
 #: Fields that carry a *name* qualifying a sibling value field. ``key`` and
