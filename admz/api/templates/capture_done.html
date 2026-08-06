@@ -38,5 +38,15 @@
     You can close this tab and return to your chat session.<br>
     This link is now expired and cannot be reused.
   </p>
+
+  {# #340: this used to say "return to your chat session" with no way to do
+     it except the browser back button or the left-hand nav — a genuine
+     dead end on its own, and one an operator hits every time this page
+     renders. Rehydration (the endpoint chat.js calls on load) is the fix
+     for the pinned widgets vanishing; this is the small, independent fix
+     for there being no way back at all. #}
+  <p style="margin-top:20px;">
+    <a href="/chat" class="btn primary sm">Return to chat</a>
+  </p>
 </div>
 {% endblock %}

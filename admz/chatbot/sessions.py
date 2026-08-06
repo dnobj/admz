@@ -704,6 +704,45 @@ class ChatSessionStore:
             "label": row[3],
         }
 
+    def list_action_links(self, principal: str) -> List[dict]:
+        """Every confirm/capture token still linked to ``principal`` —
+        i.e. not yet popped by :meth:`pop_action_link` on resolution.
+
+        Non-destructive (#340), unlike :meth:`pop_action_link`: this powers
+        rehydrating pinned action widgets after a page reload, and the
+        caller doesn't yet know whether the underlying session is still
+        live — that check happens one level up, against
+        ``confirm_store``/``capture_store``, which is the actual source of
+        truth for "is this still pending" (a session that expired without
+        ever resolving leaves its link row here indefinitely until the
+        24h TTL sweep in :meth:`link_action` catches it — reading it here
+        is harmless because the caller re-validates against the session
+        store before treating anything as live). A session that DID
+        resolve already had its link popped by the resolution-note path
+        (``_note_resolution_to_chat`` / ``_note_capture_to_chat``), so it
+        is normally already absent from this list by the time it would
+        otherwise show up as stale — this function does not depend on
+        that, it is simply the common case.
+
+        Returns ``[{"token", "kind", "label", "created_at"}, ...]`` for
+        every link row, not just live ones — filtering by actual liveness
+        is the caller's job, since only the caller knows which store
+        (confirm vs capture) to check per ``kind``.
+        """
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT token, kind, label, created_at "
+                "FROM chat_action_links WHERE principal=?",
+                (principal,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [
+            {"token": r[0], "kind": r[1], "label": r[2], "created_at": r[3]}
+            for r in rows
+        ]
+
     def append_event(
         self, principal: str, conversation_id: str, text: str
     ) -> bool:
