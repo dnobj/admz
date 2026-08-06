@@ -222,6 +222,55 @@ async def collect_graph(ctx: Any, *, include_acs: bool = True) -> Dict[str, Any]
 # Runs
 # ═══════════════════════════════════════════════════════════════════════════
 
+def reconcile_interrupted_runs(store: InferenceRunStore) -> List[str]:
+    """Mark every row still ``running`` as ``failed`` — call once at server
+    startup, before any request is served (#192).
+
+    At the moment this runs, nothing can legitimately still be ``running``:
+    a ``fast`` run completes synchronously inside one request, and a
+    ``survey`` run's background task does not survive a process restart. So
+    every row this finds is a leftover from a process that stopped before
+    reaching ``store.finish`` or ``store.fail`` — a hard kill, an OOM, or any
+    bug that slips past the in-process handlers in :func:`run_fast` /
+    :func:`run_survey`. Those handlers fix it for a graceful cancellation;
+    this is the backstop for the case where nothing got a chance to run at
+    all (the shape #315/#314 used for orphaned temp-credential rows, applied
+    here).
+
+    Unlike ``store.running(max_age=...)`` (used to hide a stale *survey* row
+    from the concurrency guard during live operation, where a genuinely
+    in-flight survey is a real possibility) no age threshold is needed here
+    — at startup, "genuinely in flight" is not a possibility at all, so
+    every row found is stale by construction.
+
+    Best-effort and never fatal, like every other startup sweep in
+    ``admz/api/main.py``'s lifespan: a locked or unreadable DB must not stop
+    the server booting. Returns the ids fixed, for the boot log.
+    """
+    try:
+        stuck = store.running()
+    except Exception:  # noqa: BLE001 — a locked/unreadable DB must not block startup
+        logger.warning(
+            "demo inference: could not read runs for startup reconciliation",
+            exc_info=True)
+        return []
+
+    fixed: List[str] = []
+    for run in stuck:
+        try:
+            store.fail(run.id, "interrupted — the server restarted while "
+                               "this run was in flight")
+            fixed.append(run.id)
+        except Exception:  # noqa: BLE001
+            logger.warning("demo inference: could not reconcile stuck run %s",
+                           run.id, exc_info=True)
+    if fixed:
+        logger.warning(
+            "demo inference: reconciled %d run(s) left 'running' by an "
+            "earlier process: %s", len(fixed), ", ".join(fixed))
+    return fixed
+
+
 async def run_fast(ctx: Any, store: InferenceRunStore, *, created_by: str = "",
                    include_acs: bool = True) -> InferenceRun:
     """Start, execute and finish a ``fast`` run inline — it takes seconds.
@@ -230,18 +279,32 @@ async def run_fast(ctx: Any, store: InferenceRunStore, *, created_by: str = "",
     any other failure: the run is recorded ``failed`` with the reason, which is
     what the button and the MCP tool render. It never becomes a ``complete``
     run over an empty fleet.
+
+    ``finish`` lives INSIDE the try now (#192): it used to sit after it, so
+    either a cancellation delivered while awaiting :func:`collect_graph`, or
+    an exception from ``store.finish`` itself, escaped uncaught and left the
+    row ``running`` forever — this call is inline in the HTTP request
+    handler (``routes/demos.py``'s ``start_inference_run``), so a client
+    disconnect or a server restart cancelling in-flight requests reaches
+    straight into this ``await``. ``run_survey`` (20 lines below) already
+    guards both; this now matches it. ``CancelledError`` is recorded then
+    RE-RAISED — swallowing it here would defeat cooperative cancellation,
+    and the caller still needs to see it to unwind correctly.
     """
     run = store.start(mode=MODE_FAST, created_by=created_by,
                       message="Reading the registry, the last snapshots and ACS…")
     try:
         graph = await collect_graph(ctx, include_acs=include_acs)
+        done = store.finish(run.id, graph, message=describe(graph))
+        return done if done is not None else run
+    except asyncio.CancelledError:
+        store.fail(run.id, "run cancelled (server shutting down)")
+        raise
     except Exception as exc:  # noqa: BLE001 — a failed run is recorded, not raised
         logger.exception("demo inference run %s failed", run.id)
         store.fail(run.id, str(exc))
         failed = store.get(run.id)
         return failed if failed is not None else run
-    done = store.finish(run.id, graph, message=describe(graph))
-    return done if done is not None else run
 
 
 async def run_survey(ctx: Any, store: InferenceRunStore, run_id: str, *,
@@ -701,6 +764,7 @@ def start_survey_core(ctx: Any, store: InferenceRunStore, *,
 
 
 __all__ = ["collect_graph", "read_acs_rules", "run_fast", "run_survey",
+           "reconcile_interrupted_runs",
            "describe", "summary_only", "CollectionError", "MODE_FAST",
            "MODE_SURVEY", "collect_firings", "persist_proposals", "infer_demos",
            "start_survey_core", "SurveyAlreadyRunningError", "survey_in_flight"]

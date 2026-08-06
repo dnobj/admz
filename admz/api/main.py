@@ -206,6 +206,22 @@ async def lifespan(app: FastAPI):
         logging.getLogger(__name__).warning(
             "rule-secret purge sweep failed to start", exc_info=True)
 
+    # #192: a demo-inference run left `running` by a process that stopped
+    # without reaching store.finish/store.fail (a hard kill, or — before this
+    # fix — a cancelled `fast` run) has no recovery path short of hand-editing
+    # SQLite, and a stuck row is read into the chat system prompt as an
+    # in-flight run. At this point in startup nothing can legitimately still
+    # be running, so every such row is reconciled to `failed` before the
+    # first request is served. Same shape as #315's orphaned-temp-credential
+    # startup sweep.
+    try:
+        from admz.demos.inference.collect import reconcile_interrupted_runs
+        reconcile_interrupted_runs(ctx.inference_run_store)
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning(
+            "demo inference run reconciliation failed", exc_info=True)
+
     await ctx.scheduler.start()
 
     # Device health monitor: opt-in via the health_monitor_enabled
