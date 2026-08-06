@@ -4,16 +4,18 @@ Durable facts an assistant session needs before touching this repo. Read this fi
 
 ## Orchestration
 
-This project runs the **[code-teem](https://github.com/pettheory/code-teem) playbook, pinned at `v0.8.0`** — a persistent Master session coordinates Plan / Decide / Build / Test / Investigate specialists. The project-specific adaptation lives in [`docs/specification/orchestration.md`](docs/specification/orchestration.md); the spec↔issue workflow is [`docs/specification/process.md`](docs/specification/process.md).
+This project runs the **[code-teem](https://github.com/pettheory/code-teem) playbook, pinned at `v0.11.0`** — a persistent Master session implements serially and coordinates Plan / Decide / Investigate / Review / Converse specialists. The project-specific adaptation lives in [`docs/specification/orchestration.md`](docs/specification/orchestration.md); the spec↔issue workflow is [`docs/specification/process.md`](docs/specification/process.md).
 
 Practical consequences:
 
-- **One issue → one Build session → one worktree.** Never do delegated work in the main checkout.
+- **Writes serialize; reads parallelize.** The Master implements ready issues **itself**, one at a time, in an isolated worktree per PR. A dedicated `Build` session is the exception — only when the work needs a large sustained context the Master should not carry. Parallel implementation is reserved for hard resource boundaries (a separate repo with its own version stream and zero file overlap; `axis-api-atlas` qualifies, two issues here do not). The fan-out that pays is **review, research, and audit**. See [Why implementation is serial](docs/specification/orchestration.md#why-implementation-is-serial) — that section carries the evidence, from a day of running five concurrent writers on this repo.
+- **Never do implementation work in the main checkout** — `C:\admz\admz` belongs to the human. Use a sibling worktree regardless of who is writing.
 - **A plan is merged before implementation begins.** `status: planning` → docs-only PR → merge → `status: ready`.
 - **The PR that ships behavior also fixes the docs describing it** (spec status markers `📋 → ✅` flip in the same PR).
 - Every open issue carries exactly one `status:` label — see the playbook's `conventions/status-labels.md`.
 - **Cockpit vs worker** (`patterns/cockpit-and-workers.md`): a session open in a human UI is a **cockpit**, never a delegation target — two live attachments fork its history silently, with no error. Workers are durable headless sessions.
 - **Await or be watched.** Every delegation either blocks on a completion signal or ends its turn with the session on the watchdog list. A master that ends its turn waiting on an unsignaled callback is a *parked* master — this failure cost this project five recoveries on 2026-07-31/08-01, every time as a worker reporting "the suite is running, I'll report back" and then stopping.
+- **Liveness is `list_sessions`, never a file count.** On 2026-08-05 two sessions died mid-task and were reported as "still building" for hours, because progress was inferred from the number of uncommitted files in their worktrees — a number that does not change when a session stops. `live: false` is the answer; `read_session` shows what the last turn actually did. Related: `continue_session` returning `status: "running"` means *queued*, not *accepted* — a dispatch rejected by the fork-guard fails 90 ms later and looks identical unless `get_job` is checked.
 
 ## Owner-facing state outside this repo
 
@@ -22,7 +24,7 @@ Two files live in `C:\admz\.claude\` — deliberately **not** in the repo, becau
 | File | What it is |
 |---|---|
 | `SESSIONS.md` | Session inventory — every worker, its state, and the reuse policy. Prefer resuming an idle listed session over spawning. |
-| `ATTENTION.md` | **The single owner attention queue** (code-teem `patterns/attention-queue.md`). Every owner-facing decision goes here with a recommended default *and the date it fires* — never into a transcript, where it dies with the session. Ordered by tier then by what is blocked behind it, never by recency. **No credentials in it — location and procedure only.** |
+| `ATTENTION.md` | **The single owner attention queue** (code-teem `patterns/attention-queue.md`). Every owner-facing decision goes here with a recommended default — never into a transcript, where it dies with the session. Ordered by tier then by what is blocked behind it, never by recency. **No credentials in it — location and procedure only.** An item that will not reduce to a one-word answer does not belong in the queue as one: brief a `Converse` session instead, and record the outcome here. Six items sat unanswered through 2026-08-05 largely because the queue's form did not fit the question. |
 | `loops/` + `handoffs/` | Autonomous audit-loop contracts, and the durable report-back channel workers write to on completion. |
 
 ## Environments — read this before running anything
