@@ -12,5 +12,11 @@
   <p style="color:#666;font-size:14px;margin-top:24px;">
     Return to your chat session and request a new link.
   </p>
+
+  {# #340: shared by capture AND confirm's expired/denied paths (confirm.py
+     renders this same template) — same dead-end text, same fix. #}
+  <p style="margin-top:20px;">
+    <a href="/chat" class="btn primary sm">Return to chat</a>
+  </p>
 </div>
 {% endblock %}

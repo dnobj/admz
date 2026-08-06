@@ -988,6 +988,39 @@
       .catch(function () {});
   }
 
+  // Rehydrate pinned confirm/capture widgets from the server's own session
+  // tables (#340). Widgets are otherwise built ONLY from a live turn's
+  // structured tool_result (see the switch above, and chat.js's own rule at
+  // the top of this file) — restoreActiveConversation() rebuilds the
+  // TRANSCRIPT above but rebuilds no widgets, so a plain reload, a second
+  // tab, or returning from a /capture|/confirm full-page navigation drops
+  // every pinned action, including any the operator never got to. This does
+  // not weaken the "only from a structured tool_result" rule — the source
+  // here is the server's session table, strictly stronger evidence than a
+  // URL merely appearing in message text (which is what that rule exists to
+  // distrust). Runs unconditionally, independent of whether the transcript
+  // itself needed restoring — pending actions are principal-scoped, not
+  // conversation-scoped. Reuses the SAME idempotent render hooks voice mode
+  // uses (admzRenderApprovalCard / admzRenderCaptureCard): each checks
+  // whether a card for that token already exists before rendering, so this
+  // can never double-render one a live turn is concurrently creating.
+  function rehydratePendingActions() {
+    fetch("/api/chat/pending-actions", { headers: { Accept: "application/json" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data || !data.pending) return;
+        data.pending.forEach(function (item) {
+          if (item.kind === "confirm") window.admzRenderApprovalCard(item.token);
+          else if (item.kind === "capture") window.admzRenderCaptureCard(item.token);
+        });
+      })
+      .catch(function () {});
+    // Deliberately silent on any failure (403 anonymous, network error, ...):
+    // this is a best-effort background rehydration, not a user-facing
+    // action — the operator sees nothing missing beyond what they'd have
+    // seen anyway if this call didn't exist.
+  }
+
   function newConversation() {
     fetch("/api/chat/conversations", {
       method: "POST",
@@ -1049,4 +1082,5 @@
 
   // Resume the active conversation on Console load (display-only).
   restoreActiveConversation();
+  rehydratePendingActions();
 })();

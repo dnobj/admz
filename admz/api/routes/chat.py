@@ -422,6 +422,94 @@ async def api_activate_conversation(
     return {"ok": True, "active": conversation_id}
 
 
+@router.get("/api/chat/pending-actions", tags=["chat"])
+async def api_pending_actions(
+    principal: Principal = Depends(get_current_principal),
+):
+    """List this principal's still-pending confirm/capture sessions, so
+    chat.js can rehydrate pinned action widgets after a page reload (#340).
+
+    Widgets are otherwise built ONLY from a live turn's structured
+    tool_result — chat.js states that rule deliberately, to stop the model
+    fabricating a widget by typing a URL. But it means a widget exists only
+    in the live page session: restoreActiveConversation() rebuilds the
+    TRANSCRIPT on load but rebuilds no widgets, so a plain reload, a second
+    tab, or returning from /capture|/confirm (both full navigations) drops
+    every pinned action — including ones the operator never got to. This
+    endpoint is the rehydration source. It does not weaken chat.js's rule;
+    it gives it a second, authoritative channel: the server's OWN session
+    tables are strictly stronger evidence than a URL that merely appears in
+    message text, which is the thing that rule exists to distrust.
+
+    SECURITY — read this before changing scope. A confirm/capture token IS
+    the authorization to act (ADR-0009 / ADR-0034), so an endpoint that
+    lists pending sessions necessarily hands out live, usable tokens. Two
+    things keep that from being a disclosure hole:
+
+    1. Anonymous/unauthenticated callers get nothing — refused outright
+       (403), even though ADMZ_AUTH_BACKEND=none is a fully-functional dev
+       mode for almost everything else (read + low-risk mutation). NoAuth
+       hands EVERY caller the identical synthetic "anonymous" principal
+       (admz/auth.py::NoAuth), so without this refusal, any visitor under
+       the no-auth default would see — and get one-click links to use —
+       every OTHER concurrent visitor's pending tokens. That is a materially
+       different risk than confirm.py's approval gate, which DOES let the
+       anonymous principal through (loudly, with a warning): approving
+       requires already possessing the specific token you were given.
+       Listing is discovery — it hands out tokens the caller never had.
+       Worth the asymmetry, and worth restating if this endpoint's scope
+       ever gets revisited.
+    2. Scoped through chat_action_links, not a new principal column on
+       capture_sessions/confirm_sessions — neither table records an owning
+       principal at all (checked: capture_sessions is token/device_id/
+       account_id/account_type/purpose/created_at/ttl/status; confirm_
+       sessions likewise carries no principal). chat_action_links already
+       records, at token-creation time, which principal's conversation
+       spawned every confirm/capture token this chat surface has ever
+       created (see the end of this file, where every token surfaced in a
+       turn's tool_result gets linked) — reusing it is a join through the
+       conversation that created the session, not a schema addition to the
+       session stores themselves.
+    3. Every candidate is re-validated against the actual session store
+       (confirm_store / capture_store) and returned only if EFFECTIVE
+       status is still pending. A link row surviving past its session's
+       TTL (chat_action_links has its own, much longer 24h sweep — see
+       link_action) must not resurrect an expired session as a
+       live-looking widget; nor must one that completed through some path
+       that didn't pop its link. The link table only ever answers "whose is
+       this" — "is it still live" is always re-asked of the session itself.
+
+    Deliberately NOT done here: telling the model (system prompt / chat
+    turn) which sessions are still pending, so it stops saying "use the
+    cards previously provided" in the rare case they were never rendered at
+    all this browser session. Out of scope for this fix — once widgets
+    rehydrate, that sentence is accurate again in the common case (the
+    cards ARE back on screen), and doing it properly means touching prompt
+    assembly, a materially bigger change than restoring a UI element.
+    """
+    from admz.api.capture import CaptureStatus, capture_store
+    from admz.api.confirm_store import ConfirmStatus, confirm_store
+    from admz.authz import require_authenticated_principal
+
+    require_authenticated_principal(principal)
+
+    pending = []
+    for link in _sessions().list_action_links(principal.name):
+        token, kind = link["token"], link["kind"]
+        if kind == "confirm":
+            session = confirm_store.get_session(token)
+            live = session is not None and session.effective_status == ConfirmStatus.PENDING
+        elif kind == "capture":
+            session = capture_store.get_session(token)
+            live = session is not None and session.effective_status == CaptureStatus.PENDING
+        else:  # pragma: no cover — defensive; kind is a closed vocabulary today
+            live = False
+        if live:
+            pending.append({"kind": kind, "token": token})
+
+    return {"pending": pending}
+
+
 @router.patch("/api/chat/conversations/{conversation_id}", tags=["chat"])
 async def api_rename_conversation(
     conversation_id: str,

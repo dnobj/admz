@@ -57,6 +57,50 @@ class TestActionLinks:
 
 
 # ---------------------------------------------------------------------------
+# list_action_links (#340) — the non-destructive read pending-widget
+# rehydration is built on. Unlike pop_action_link, listing must never
+# consume a row: the caller (the /api/chat/pending-actions endpoint) still
+# has to re-check the underlying confirm/capture session before treating
+# anything as live, so the same link has to survive being read on every
+# page load until its session actually resolves.
+# ---------------------------------------------------------------------------
+
+
+class TestListActionLinks:
+    def test_is_non_destructive(self, store):
+        conv = _conversation(store)
+        store.link_action("tok-1", "alice", conv, "confirm", label="delete_device")
+
+        first = store.list_action_links("alice")
+        second = store.list_action_links("alice")
+        assert first == second  # reading it twice changes nothing
+        assert [l["token"] for l in first] == ["tok-1"]
+        # pop_action_link still works afterwards — the row was never touched.
+        assert store.pop_action_link("tok-1") is not None
+
+    def test_scoped_to_principal(self, store):
+        conv = _conversation(store, principal="alice")
+        conv_bob = _conversation(store, principal="bob")
+        store.link_action("tok-alice", "alice", conv, "confirm")
+        store.link_action("tok-bob", "bob", conv_bob, "capture")
+
+        alice_links = store.list_action_links("alice")
+        assert [l["token"] for l in alice_links] == ["tok-alice"]
+        bob_links = store.list_action_links("bob")
+        assert [l["token"] for l in bob_links] == ["tok-bob"]
+
+    def test_empty_for_unknown_principal(self, store):
+        assert store.list_action_links("nobody-ever-linked-anything") == []
+
+    def test_returns_kind_and_label(self, store):
+        conv = _conversation(store)
+        store.link_action("tok-1", "alice", conv, "capture", label="capture_credentials")
+        links = store.list_action_links("alice")
+        assert links[0]["kind"] == "capture"
+        assert links[0]["label"] == "capture_credentials"
+
+
+# ---------------------------------------------------------------------------
 # append_event
 # ---------------------------------------------------------------------------
 
