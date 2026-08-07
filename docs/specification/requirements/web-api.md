@@ -91,10 +91,12 @@ TLS in front. ADMZ doesn't ship its own TLS handling.
 The `GET /api/devices/{id}/credentials` endpoint (and its
 `web_reveal_credentials_enabled` flag) were removed: device-account
 passwords are never displayed through any web/REST surface. ADMZ reads
-them from the secrets backend only at execution time. The remaining
-plaintext surfaces are the opt-in MCP `get_credentials` tool
-(`tool_get_credentials_enabled`) and the fleet-setting reveal for admin
-secrets (`GET /api/fleet/settings/{key}/reveal`, group-gated).
+them from the secrets backend only at execution time. The MCP
+`get_credentials` tool was removed too (CR-1). The one remaining
+plaintext surface is the fleet-setting reveal for **admin** secrets
+(`GET /api/fleet/settings/{key}/reveal`), gated by reveal-group
+membership — anonymous callers are always denied (#151 removed the
+`tool_get_credentials_enabled` fallback).
 
 ### KL-API-002 — No SDK generated yet 📋
 The OpenAPI schema is exposed but no auto-generated Python / TS /

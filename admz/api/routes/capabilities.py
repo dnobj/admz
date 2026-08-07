@@ -99,7 +99,7 @@ def _reveal_decision(principal: Optional[Principal]) -> Tuple[bool, str]:
     Three outcomes, and the middle one is the whole of Master resolution 2:
 
     * in a reveal group → ``(True, "group:…")``
-    * anonymous (``ADMZ_AUTH_BACKEND=none``) → ``(False, "anonymous-fallback")``,
+    * anonymous (``ADMZ_AUTH_BACKEND=none``) → ``(False, "anonymous")``,
       i.e. the page still renders, read-only
     * authenticated but not in a reveal group → **403**. This is a real
       identity that has been checked and refused; degrading it to read-only
@@ -108,7 +108,7 @@ def _reveal_decision(principal: Optional[Principal]) -> Tuple[bool, str]:
     allowed, reason = principal_can_reveal(principal)
     if allowed:
         return True, reason
-    if reason == "anonymous-fallback":
+    if reason == "anonymous":
         return False, reason
     raise HTTPException(
         status_code=403,

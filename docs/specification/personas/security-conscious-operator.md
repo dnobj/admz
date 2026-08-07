@@ -47,8 +47,8 @@
 - **OOB credential capture.** Passwords enter via a one-time browser URL, not via chat.
 - **Fernet at-rest encryption** for SQLite-backed credentials, with a per-installation key file.
 - **Vault as a first-class alternative** for enterprise deployments.
-- **Protected fleet-setting keys.** `confirm_level_*`, `confirm_password_hash`, `tool_get_credentials_enabled` are settable only via the web UI.
-- **`get_credentials` MCP tool disabled by default.** Must be explicitly enabled per fleet via the protected setting.
+- **Protected fleet-setting keys.** `confirm_level_*`, `confirm_password_hash`, `confirm_approver_groups` — and since ADR-0053 every key outside the LLM-writable allow-set — are settable only via the web UI.
+- **No `get_credentials` MCP tool.** Removed outright — `create_temp_credentials` (a short-lived device-side account) is the only ad-hoc path, so stored passwords never enter LLM context.
 - **Per-protocol auth.** ADMZ tracks `{"http": "digest", "https": "basic"}` per device so it uses the auth the device actually expects.
 - **Risk classification in the catalog.** Every operation declares its level; the system doesn't reason about it.
 - **Single-use confirm tokens** with TTL (5 minutes).

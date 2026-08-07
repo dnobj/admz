@@ -526,10 +526,12 @@ Manually trigger a scheduled snapshot right now.
 
 ## 🎛 Fleet settings
 
-Fleet-wide settings persist in SQLite (`fleet_settings` table). Some keys
-are **protected** — they can only be changed via the web UI at
-`/confirm-settings`. Protected keys include `confirm_level_*`,
-`confirm_password_hash`, and `tool_get_credentials_enabled`.
+Fleet-wide settings persist in SQLite (`fleet_settings` table). Since
+ADR-0053, protection is **deny-by-default**: every key outside the
+LLM-writable allow-set (`default_username`, plus `default_password` via
+capture URL only) is protected and can only be changed via the web UI.
+Examples: `confirm_level_*`, `confirm_password_hash`,
+`confirm_approver_groups`.
 
 ### `get_fleet_settings`
 List all settings. Password-shaped values are returned masked

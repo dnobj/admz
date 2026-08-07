@@ -60,7 +60,6 @@ settings that apply across all devices:
 - `default_password` / `default_username` for `provision_device`
 - `confirm_level_<risk>` per-risk confirmation policy
 - `confirm_password_hash` PBKDF2 hash
-- `tool_get_credentials_enabled` MCP tool gate
 
 Module-level singleton `fleet_settings`. Per-call connections, WAL mode.
 

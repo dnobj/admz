@@ -143,44 +143,20 @@
 
   <hr style="margin:32px 0;border:none;border-top:1px solid #e5e7eb;">
 
-  <!-- MCP Tool Access -->
-  <form method="POST" action="/confirm-settings">
-    <input type="hidden" name="action" value="tool_toggle">
-
-    <h2 style="font-size:18px;margin-bottom:8px;">Plaintext credential access</h2>
-    <p style="color:#666;font-size:14px;margin-bottom:16px;">
-      Device-account passwords are <strong>never displayed</strong> in the
-      web UI or via REST. ADMZ reads them from the secrets backend only at
-      execution time. The single flag below controls whether the LLM may
-      retrieve plaintext; it is off by default and cannot be toggled by the
-      LLM &mdash; only through this web UI.
-    </p>
-
-    <div style="margin-bottom:24px;">
-      <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
-        <input type="checkbox" name="get_credentials_enabled" value="1"
-               {% if get_creds_enabled %}checked{% endif %}
-               style="margin-top:3px;">
-        <span>
-          <strong style="display:block;margin-bottom:2px;">Allow LLMs to retrieve plaintext passwords</strong>
-          <span style="color:#666;font-size:13px;">
-            Exposes the <code>get_credentials</code> MCP tool to
-            LLMs &mdash; the password goes into the LLM's context
-            (where it persists across tool calls in that
-            conversation). <strong>Most operators should leave this
-            off</strong> and instead use
-            <code>create_temp_credentials</code>, which mints a
-            short-lived device-side account whose plaintext is safe
-            to pass through chat.
-          </span>
-        </span>
-      </label>
-    </div>
-
-    <button type="submit"
-            style="padding:10px 24px;background:#2563eb;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer;font-weight:600;">
-      Save Tool Access
-    </button>
-  </form>
+  <!-- Plaintext credential access: nothing to configure. The
+       "Allow LLMs to retrieve plaintext passwords" checkbox that used
+       to live here was removed (#151) along with the flag it wrote —
+       its documented purpose (the get_credentials MCP tool) had already
+       been deleted, and the flag's only remaining effect was letting
+       anonymous callers bypass the fleet-setting reveal gate. -->
+  <h2 style="font-size:18px;margin-bottom:8px;">Plaintext credential access</h2>
+  <p style="color:#666;font-size:14px;margin-bottom:16px;">
+    Device-account passwords are <strong>never displayed</strong> in the
+    web UI or via REST, and no MCP tool returns them to an LLM. ADMZ
+    reads them from the secrets backend only at execution time. For
+    ad-hoc access, <code>create_temp_credentials</code> mints a
+    short-lived device-side account instead. Revealing fleet-level
+    admin secrets (API keys) requires membership in a reveal group.
+  </p>
 </div>
 {% endblock %}

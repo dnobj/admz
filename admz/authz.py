@@ -7,9 +7,9 @@ this caller?" by building a :class:`Principal`; this module answers
 Phase-4 design intent: real authentication (Windows IWA via reverse
 proxy, or API keys) populates ``Principal.groups``; sensitive
 operations then check group membership rather than relying solely on
-fleet-wide on/off flags. The flags remain useful for local
-zero-config installs where ``ADMZ_AUTH_BACKEND=none`` and there is no
-real identity to attribute permissions to.
+fleet-wide on/off flags. Anonymous principals (``ADMZ_AUTH_BACKEND=none``)
+are simply denied by these predicates — the last flag that softened
+that for reveal (``tool_get_credentials_enabled``) was removed in #151.
 
 Currently this module covers one predicate — **credential reveal** —
 because that's the operation a user explicitly asked us to gate
@@ -254,17 +254,18 @@ def principal_can_reveal(
       * ``"group:<groupname>"`` — granted via membership; ``<groupname>``
         is the matched group from the configured list (so the audit log
         shows *why* it was allowed)
-      * ``"anonymous-fallback"`` — principal is the synthetic anonymous
-        identity from ``ADMZ_AUTH_BACKEND=none``; caller should consult
-        the fleet flag to decide. Returns ``allowed=False`` from this
-        function so the flag check is explicit at the call site
+      * ``"anonymous"`` — no real identity (the synthetic principal from
+        ``ADMZ_AUTH_BACKEND=none``, or no principal at all). Always
+        denied; the ``tool_get_credentials_enabled`` fallback that used
+        to soften this for single-user installs was removed (#151).
+        Same tag :func:`principal_can_approve` uses for the same case.
       * ``"no-groups"`` — authenticated principal has no group
         memberships
       * ``"not-in-reveal-groups"`` — authenticated principal has groups
         but none of them are in the configured reveal-groups list
     """
     if principal is None or getattr(principal, "is_anonymous", False):
-        return False, "anonymous-fallback"
+        return False, "anonymous"
 
     if not (principal.groups or []):
         return False, "no-groups"
@@ -389,11 +390,11 @@ def require_reveal_permission(principal: Optional[Principal]) -> str:
     reveal. Returns the reason tag on success so the caller can record
     it in the audit log.
 
-    NOTE: this helper alone does NOT handle the anonymous fallback —
-    the call site is expected to first try this helper, catch the 403
-    that comes back for anonymous, and only then consult the flag.
-    Using a sentinel reason keeps the call-site logic explicit rather
-    than burying it inside an authz helper.
+    Anonymous principals are denied like any other non-member; the
+    distinct ``"anonymous"`` tag exists so audit rows and error
+    messages can say *why* (no identity vs. wrong groups), not to
+    signal a softer path — the flag fallback it used to signal was
+    removed (#151).
     """
     allowed, reason = principal_can_reveal(principal)
     if allowed:

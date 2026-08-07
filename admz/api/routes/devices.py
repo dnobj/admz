@@ -146,10 +146,10 @@ async def list_device_accounts(
 # NOTE: the device-credential reveal endpoint (GET
 # /api/devices/{id}/credentials) was removed — device-account passwords are
 # never displayed through the web/REST surface. ADMZ reads them from the
-# secrets backend only at execution time. The LLM path (`get_credentials`
-# MCP tool, gated by tool_get_credentials_enabled) and the short-lived
-# `create_temp_credentials` flow are unaffected. Fleet-setting reveal (admin
-# secrets like API keys) lives at GET /api/fleet/settings/{key}/reveal.
+# secrets backend only at execution time. The `get_credentials` MCP tool is
+# gone too (CR-1) — the short-lived `create_temp_credentials` flow is the
+# LLM's path. Fleet-setting reveal (admin secrets like API keys) lives at
+# GET /api/fleet/settings/{key}/reveal.
 
 
 async def _run_onboarding(device_id: str, registry: DeviceRegistry) -> dict:
@@ -750,11 +750,14 @@ async def reveal_fleet_setting(key: str, request: Request):
     """Return the plaintext value of a fleet setting (admin secrets like
     API keys — NOT device-account passwords, which are never revealable).
 
-    Gate: the caller must be in one of the configured ADMZ_REVEAL_GROUPS
-    (default ``Administrators`` + ``ADMZ-Admins``). For
-    ``ADMZ_AUTH_BACKEND=none`` deployments — where there's no identity to
-    group-check — it falls back to the ``tool_get_credentials_enabled``
-    fleet flag so local single-user installs still work.
+    Gate: the caller must be an authenticated principal in one of the
+    configured ADMZ_REVEAL_GROUPS (default ``Administrators`` +
+    ``ADMZ-Admins``). Anonymous callers are always denied — the
+    ``tool_get_credentials_enabled`` fallback that used to let
+    ``ADMZ_AUTH_BACKEND=none`` installs through was removed (#151): its
+    documented purpose (the deleted ``get_credentials`` MCP tool) no
+    longer existed, and what it actually granted was unauthenticated
+    access to plaintext secrets.
 
     Non-sensitive keys are returned without any gate — there's nothing
     to protect — so the JS on the Fleet Settings page can use this one
@@ -781,21 +784,15 @@ async def reveal_fleet_setting(key: str, request: Request):
     resource = f"fleet_setting:{key}"
 
     allowed, reason = principal_can_reveal(principal)
-    flag_fallback_used = False
-    if not allowed and reason == "anonymous-fallback":
-        if fleet_settings.get("tool_get_credentials_enabled") == "true":
-            allowed = True
-            reason = "flag:tool_get_credentials_enabled"
-            flag_fallback_used = True
-
     if not allowed:
-        if reason == "anonymous-fallback":
+        if reason == "anonymous":
             detail = (
-                "Reveal denied: fleet-setting plaintext is gated. Configure "
-                "ADMZ_AUTH_BACKEND so your Windows identity can be checked "
-                "against the reveal groups, or (for a single-user install) "
-                "enable 'Allow LLMs to retrieve plaintext' at "
-                "/confirm-settings."
+                "Reveal denied: fleet-setting plaintext requires an "
+                "authenticated identity in one of the reveal groups "
+                f"({', '.join(reveal_groups())}). Configure "
+                "ADMZ_AUTH_BACKEND (e.g. windows-local or api-key) so "
+                "callers carry a real identity — anonymous access to "
+                "plaintext secrets is not supported."
             )
         else:
             detail = (
@@ -815,7 +812,7 @@ async def reveal_fleet_setting(key: str, request: Request):
     record_event(
         principal, "reveal_fleet_setting",
         resource=resource,
-        details={"decision": reason, "flag_fallback": flag_fallback_used},
+        details={"decision": reason},
     )
     return {"key": key, "value": value}
 

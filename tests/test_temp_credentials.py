@@ -187,5 +187,11 @@ class TestTempCredentialManager:
 
 class TestGetCredentialsToggle:
 
-    def test_tool_toggle_key_is_protected(self):
-        assert "tool_get_credentials_enabled" in PROTECTED_SETTING_KEYS
+    def test_retired_tool_toggle_key_still_refuses_llm_writes(self):
+        # The tool_get_credentials_enabled flag was removed (#151) — it no
+        # longer appears in the key inventory, but like any unknown key it
+        # stays un-writable under ADR-0053's deny-by-default. Both halves
+        # matter: gone from the inventory, still refused as a write.
+        from admz.fleet_settings import is_protected_setting
+        assert "tool_get_credentials_enabled" not in PROTECTED_SETTING_KEYS
+        assert is_protected_setting("tool_get_credentials_enabled") is True

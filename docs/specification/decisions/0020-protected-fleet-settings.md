@@ -1,6 +1,7 @@
 # ADR-0020: Protected fleet-setting keys (MCP cannot write them)
 
 **Status:** Accepted, in production. **The enumerated-deny-list mechanism below is being inverted** — see [ADR-0053](0053-llm-writable-fleet-settings.md) ✅ (#212). The *reasoning* in this ADR stands unchanged; only the mechanism is replaced, because an opt-in deny-list failed four times in the same direction (#152, #168, #195, #203) and three independent enumerations of what it missed returned three different answers.
+**Amendment (2026-08-07, #151):** `tool_get_credentials_enabled` — used throughout this ADR as the motivating example — no longer exists. The `get_credentials` MCP tool it gated was removed (CR-1), after which the flag's only live effect was letting *anonymous* callers bypass the fleet-setting reveal gate; the owner chose deletion over relabeling. The examples below are kept as written: they describe why protection was needed at the time, and the protection story they motivated now lives in ADR-0053's deny-by-default.
 **Date:** Original design 2026-04; recorded as ADR 2026-05-18.
 
 ## Context

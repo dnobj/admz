@@ -467,18 +467,14 @@ class TestCredentialsEndpointRemoved:
         from tests.route_inventory import assert_not_mounted
         assert_not_mounted(app, "/api/devices/{device_id}/credentials")
 
-    def test_endpoint_returns_404_even_with_llm_flag_on(self, client):
-        # Even with the LLM creds flag enabled, the web/REST reveal of a
-        # device password does not exist — the password never leaks here.
+    def test_endpoint_returns_404(self, client):
+        # The web/REST reveal of a device password does not exist — the
+        # password never leaks here. (This test used to also flip the
+        # tool_get_credentials_enabled flag; that flag was removed, #151.)
         self._register_device_with_creds(client)
-        from admz.fleet_settings import fleet_settings as fs
-        fs.set("tool_get_credentials_enabled", "true")
-        try:
-            r = client.get("/api/devices/cam-01/credentials")
-            assert r.status_code == 404
-            assert "topsecret" not in r.text
-        finally:
-            fs.delete("tool_get_credentials_enabled")
+        r = client.get("/api/devices/cam-01/credentials")
+        assert r.status_code == 404
+        assert "topsecret" not in r.text
 
 
 class TestConfirmTokenUnification:

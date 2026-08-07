@@ -35,16 +35,18 @@ The SQLite backend encrypts the `password` field of each account with Fernet (AE
 
 **Enforced at:** `backends/sqlite_backend.py::_store_account_data` and `_encrypt`/`_decrypt`. Tested in `tests/test_sqlite_backend.py::TestEncryption`.
 
-### FR-SEC-006 — device passwords never displayed; LLM access is opt-in ✅
+### FR-SEC-006 — device passwords never displayed; no LLM retrieval ✅
 Device-account passwords are never returned over web/REST — the
 device-credential reveal endpoint and its `web_reveal_credentials_enabled`
 flag were removed. ADMZ reads the plaintext from the secrets backend only
-at execution time. The MCP `get_credentials` tool (which would place the
-password in LLM context) is gated by `tool_get_credentials_enabled`
-(default: disabled), which is in `PROTECTED_SETTING_KEYS` — MCP cannot
-write it; only the `/confirm-settings` web UI can.
+at execution time. The MCP `get_credentials` tool was removed outright
+(CR-1) — `create_temp_credentials` (a short-lived device-side account) is
+the LLM's ad-hoc path. The `tool_get_credentials_enabled` flag that once
+gated the tool — and after the tool's removal had silently become an
+anonymous bypass of the fleet-setting reveal gate — was deleted (#151);
+anonymous callers are always denied reveal.
 
-**Enforced at:** `mcp/server.py::_register_handlers` (filters tool out of `list_tools()`); the device-credential REST endpoint no longer exists. See [0020](../decisions/0020-protected-fleet-settings.md).
+**Enforced at:** the tool and endpoint no longer exist (`tests/test_credential_gate_split.py` pins their absence); fleet-setting reveal is group-gated at `api/routes/devices.py::reveal_fleet_setting` (`tests/test_reveal_group_gate.py`). See [0020](../decisions/0020-protected-fleet-settings.md).
 
 ### FR-SEC-007 — Password values masked when listing fleet settings ✅
 `get_fleet_settings` (MCP), `GET /api/fleet/settings` (REST), **and the

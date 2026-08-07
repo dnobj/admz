@@ -21,7 +21,7 @@ How devices get added to ADMZ. Three paths exist — manual, discovery-driven, a
 1. The LLM may call `register_device(device_id, device_info)` and receive `{success, device_id}`.
 2. The LLM may call `add_account(device_id, account_id, account_data)` where `account_data` includes the password.
 3. Subsequent operations against the device honor the stored credential without the LLM having to handle it again.
-4. The LLM cannot retrieve the password via `get_credentials` unless the `tool_get_credentials_enabled` fleet flag is `"true"` — disabled by default.
+4. The LLM cannot retrieve the password afterwards — no MCP tool returns stored plaintext (`get_credentials` was removed, CR-1; `create_temp_credentials` returns a separate short-lived account).
 
 **Related requirements:** [mcp-server](../requirements/mcp-server.md), [security](../requirements/security.md).
 
@@ -66,7 +66,7 @@ How devices get added to ADMZ. Three paths exist — manual, discovery-driven, a
    - **Legacy default `root/pass`** → stores credentials; if `force_change=True`, rotates the password.
    - **Authenticated already** → stores the supplied credentials if they work.
    - **Unreachable** → returns a structured error with `host` and `detail`.
-3. Generated passwords default to 24 chars (mixed case + digit) and are **never returned in the tool response** — the operator must retrieve them via `get_credentials` (which is itself gated).
+3. Generated passwords default to 24 chars (mixed case + digit) and are **never returned in the tool response** — nor retrievable afterwards (`get_credentials` was removed, CR-1). ADMZ uses the stored credential internally; for ad-hoc device access, mint a short-lived account via `create_temp_credentials`.
 4. Per-protocol auth (`http`: digest, `https`: basic, etc.) is auto-detected via `WWW-Authenticate` and stored on the device profile so the executor uses the right scheme.
 
 **Related requirements:** [mcp-server](../requirements/mcp-server.md), [credential-storage](../requirements/credential-storage.md), [discovery](../requirements/discovery.md).

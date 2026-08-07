@@ -186,7 +186,7 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **Probe (credential)** — Active testing of a device with no-auth, legacy defaults, and user-supplied credentials. Separate from passive discovery.
 
-**Protected settings keys** — A set of fleet-setting keys (`confirm_level_*`, `confirm_password_hash`, `tool_get_credentials_enabled`) that the MCP server refuses to write. Only the web UI may change them.
+**Protected settings keys** — Fleet-setting keys the MCP server refuses to write (e.g. `confirm_level_*`, `confirm_password_hash`, `confirm_approver_groups`). Since ADR-0053, protection is deny-by-default: every key outside the LLM-writable allow-set (the fleet credential pair) is protected. Only the web UI may change them.
 
 **Provision** — Bring a new device under management: probe credentials, create or rotate admin user, store creds in registry.
 

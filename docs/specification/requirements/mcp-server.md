@@ -96,10 +96,12 @@ behavior, expected inputs, and the "blocked → confirm round trip"
 pattern. The LLM doesn't need to discover the safety model
 empirically.
 
-### FR-MCP-014 — Get_credentials is opt-in via fleet flag ✅
-Filtered out of `list_tools()` when
-`tool_get_credentials_enabled != "true"`. The flag is a protected
-fleet-setting key; only the web UI can toggle it.
+### FR-MCP-014 — No get_credentials tool ✅
+The `get_credentials` tool was removed outright (CR-1) — plaintext
+passwords never enter LLM context. `create_temp_credentials` mints a
+short-lived device-side account instead. The `tool_get_credentials_enabled`
+flag that gated the removed tool was deleted too (#151);
+`tests/test_credential_gate_split.py` pins both absences.
 
 ### FR-MCP-015 — Advanced capabilities are readable, never writable ✅
 `get_advanced_capabilities` returns the advanced-capability registry
