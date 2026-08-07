@@ -627,7 +627,6 @@ async def settings_overview(request: Request):
         r: get_confirmation_level(r) for r in _DEFAULT_CONFIRMATION_LEVELS
     }
     has_password = bool(fleet_settings.get("confirm_password_hash"))
-    get_creds_enabled = fleet_settings.get("tool_get_credentials_enabled") == "true"
     from admz.snapshot.ignore import (
         USER_SETTING_KEY, _GLOBAL_IGNORE_PATTERNS, _scoped_rules,
     )
@@ -645,7 +644,6 @@ async def settings_overview(request: Request):
             "title": "Settings",
             "levels": levels,
             "has_password": has_password,
-            "get_creds_enabled": get_creds_enabled,
             "acs": acs_config(),
             "github": github_status,
             "github_connected_flash": request.query_params.get("github_connected") == "1",
@@ -857,7 +855,6 @@ def _build_confirm_settings_context(request: Request, **extra):
 
     levels = {r: get_confirmation_level(r) for r in _DEFAULT_CONFIRMATION_LEVELS}
     has_password = bool(fleet_settings.get("confirm_password_hash"))
-    get_creds_enabled = fleet_settings.get("tool_get_credentials_enabled") == "true"
     # Show the EFFECTIVE list, not the raw setting: if the box is empty the
     # default applies, and the page must say what is actually in force (GH #152
     # is the same complaint about this page — it could not show what was really
@@ -867,7 +864,6 @@ def _build_confirm_settings_context(request: Request, **extra):
         "title": "Confirmation Settings",
         "levels": levels,
         "has_password": has_password,
-        "get_creds_enabled": get_creds_enabled,
         "approver_groups": ", ".join(approver_groups()),
         "approver_groups_configured": bool(
             (fleet_settings.get(APPROVER_GROUPS_SETTING) or "").strip()),
@@ -1011,25 +1007,12 @@ async def confirm_settings_save(
             ),
         )
 
-    elif action == "tool_toggle":
-        form_data = await request.form()
-        llm_enabled = "get_credentials_enabled" in form_data
-        if llm_enabled:
-            fleet_settings.set("tool_get_credentials_enabled", "true")
-        else:
-            fleet_settings.delete("tool_get_credentials_enabled")
-        record_event(
-            principal, "fleet_setting.write",
-            resource="confirm_settings:tool_toggle",
-            details={"llm_enabled": llm_enabled},
-        )
-        return templates.TemplateResponse(
-            request,
-            "confirm_settings.html",
-            _build_confirm_settings_context(
-                request, success="Plaintext credential access settings saved."
-            ),
-        )
+    # NOTE: an ``action == "tool_toggle"`` branch used to live here, writing
+    # ``tool_get_credentials_enabled``. Both the branch and the flag were
+    # removed (#151): the flag's documented purpose (the deleted
+    # ``get_credentials`` MCP tool) no longer existed, and its only live
+    # effect had become an anonymous bypass of the fleet-setting reveal
+    # gate. A legacy POST now falls through to the unknown-action error.
 
     record_event(
         principal, "fleet_setting.write",

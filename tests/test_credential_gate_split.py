@@ -7,18 +7,18 @@ principal for the duration of a test so the gate is satisfied.
 
 Background: device-account passwords are never displayed through any
 web/REST surface — the device-credential reveal endpoint and its
-``web_reveal_credentials_enabled`` flag were removed entirely. A single
-flag remains:
-
-  - ``tool_get_credentials_enabled`` — LLM-facing MCP ``get_credentials``
-    tool (off by default; toggled only via /confirm-settings).
+``web_reveal_credentials_enabled`` flag were removed entirely. The MCP
+``get_credentials`` tool is gone too (CR-1), and #151 finished the job:
+``tool_get_credentials_enabled`` — which once gated that tool and had
+silently become an anonymous bypass of the fleet-setting reveal gate —
+was removed along with its /confirm-settings checkbox.
 
 This file pins:
   - The MCP get_credentials tool is gone (CR-1) and stays gone.
-  - The /confirm-settings page renders exactly the one LLM checkbox and
-    its toggle round-trips.
-  - ``tool_get_credentials_enabled`` is protected; the removed
-    ``web_reveal_credentials_enabled`` is not.
+  - The /confirm-settings page no longer renders the LLM checkbox, and
+    a legacy ``tool_toggle`` POST cannot write the flag.
+  - The retired flag left the key inventory but — like any unknown
+    key — still refuses LLM writes under ADR-0053's deny-by-default.
 """
 
 import pytest
@@ -125,17 +125,12 @@ class TestDeviceCredentialRevealRemoved:
         from tests.route_inventory import assert_not_mounted
         assert_not_mounted(app, "/api/devices/{device_id}/credentials")
 
-    def test_endpoint_404_even_with_llm_flag(self, client):
-        from admz.fleet_settings import fleet_settings
-        fleet_settings.set("tool_get_credentials_enabled", "true")
-        try:
-            r = client.get(
-                "/api/devices/cam-gate-test/credentials?account_id=default"
-            )
-            assert r.status_code == 404
-            assert "topsecret" not in r.text
-        finally:
-            fleet_settings.delete("tool_get_credentials_enabled")
+    def test_endpoint_404(self, client):
+        r = client.get(
+            "/api/devices/cam-gate-test/credentials?account_id=default"
+        )
+        assert r.status_code == 404
+        assert "topsecret" not in r.text
 
 
 # ---------------------------------------------------------------------------
@@ -169,14 +164,23 @@ class TestMcpGetCredentialsRemoved:
 
 
 # ---------------------------------------------------------------------------
-# Settings page round-trip — one LLM flag only
+# Settings page — the LLM checkbox is gone (#151)
 # ---------------------------------------------------------------------------
 
 
-class TestSettingsPageRoundtrip:
-    def test_save_llm_flag(self, client):
+class TestSettingsPageCheckboxRemoved:
+    def test_page_renders_without_the_checkbox(self, client):
+        r = client.get("/confirm-settings")
+        assert r.status_code == 200
+        body = r.text
+        assert 'name="get_credentials_enabled"' not in body
+        assert 'name="web_reveal_credentials_enabled"' not in body
+        assert 'value="tool_toggle"' not in body
+
+    def test_legacy_tool_toggle_post_cannot_write_the_flag(self, client):
+        # A stale browser tab (or script) replaying the old form must not
+        # recreate the flag row — the branch that wrote it is gone.
         from admz.fleet_settings import fleet_settings
-        fleet_settings.delete("tool_get_credentials_enabled")
 
         with _with_admin():
             r = client.post(
@@ -184,38 +188,25 @@ class TestSettingsPageRoundtrip:
                 data={"action": "tool_toggle", "get_credentials_enabled": "1"},
             )
         assert r.status_code == 200
-        assert fleet_settings.get("tool_get_credentials_enabled") == "true"
-
-    def test_save_unchecked_clears(self, client):
-        from admz.fleet_settings import fleet_settings
-        fleet_settings.set("tool_get_credentials_enabled", "true")
-
-        with _with_admin():
-            r = client.post(
-                "/confirm-settings",
-                data={"action": "tool_toggle"},
-            )
-        assert r.status_code == 200
+        assert "Unknown action" in r.text
         assert fleet_settings.get("tool_get_credentials_enabled") is None
 
-    def test_settings_page_renders_llm_checkbox_only(self, client):
-        r = client.get("/confirm-settings")
-        assert r.status_code == 200
-        body = r.text
-        # The LLM checkbox remains; the removed web-reveal one does not.
-        assert 'name="get_credentials_enabled"' in body
-        assert 'name="web_reveal_credentials_enabled"' not in body
-        assert "LLM" in body
-
 
 # ---------------------------------------------------------------------------
-# Protected from MCP writes
+# The retired flag stays un-writable by the LLM
 # ---------------------------------------------------------------------------
 
 
-class TestFlagProtected:
-    def test_llm_flag_protected_web_flag_gone(self):
+class TestLegacyFlagRetired:
+    def test_flag_left_the_key_inventory(self):
         from admz.api.confirm_store import PROTECTED_SETTING_KEYS
-        assert "tool_get_credentials_enabled" in PROTECTED_SETTING_KEYS
-        # The web-reveal flag was retired entirely.
+        # Retired keys leave the inventory entirely (the dead-entry guard
+        # in test_setting_policy.py enforces this direction too).
+        assert "tool_get_credentials_enabled" not in PROTECTED_SETTING_KEYS
         assert "web_reveal_credentials_enabled" not in PROTECTED_SETTING_KEYS
+
+    def test_flag_still_refuses_llm_writes(self):
+        # ADR-0053 deny-by-default: an unknown/retired key is protected,
+        # so even on an upgraded install the model cannot recreate the row.
+        from admz.fleet_settings import is_protected_setting
+        assert is_protected_setting("tool_get_credentials_enabled") is True

@@ -49,9 +49,11 @@ by MCP can be consumed by the web form.
 - `/confirm-settings` — the **only** UI for the protected keys:
   - Per-risk confirmation levels (dropdowns)
   - Confirmation password (set / clear; PBKDF2-hashed)
-  - `tool_get_credentials_enabled` toggle
+  - Approver groups
 
-MCP cannot write these (ADR-0020); this page is the privileged entry.
+MCP cannot write these (ADR-0020/0053); this page is the privileged
+entry. (The `tool_get_credentials_enabled` toggle that used to live
+here was removed with its flag, #151.)
 
 ### FR-UI-007 — Error pages ✅
 `error.html`, `capture_expired.html` for 4xx/5xx + expired-token

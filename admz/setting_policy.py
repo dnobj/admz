@@ -102,7 +102,11 @@ KNOWN_SETTING_KEYS: FrozenSet[str] = frozenset({
     # from the LLM-writable allow-set above: a model that could widen this
     # could authorize its own pending actions.
     "confirm_approver_groups",
-    "tool_get_credentials_enabled",
+    # `tool_get_credentials_enabled` is deliberately NOT here anymore: the
+    # flag was removed (#151) when its last live effect turned out to be an
+    # anonymous bypass of the reveal gate. A stale row in an upgraded
+    # install is inert, and — like any unknown key — still refuses LLM
+    # writes under ADR-0053's deny-by-default.
     # --- chatbot (ADR-0025) ------------------------------------------------
     "gemini_api_key",
     "gemini_default_model",

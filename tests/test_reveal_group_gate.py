@@ -5,9 +5,12 @@ like API keys) is gated by group membership. With Phase-4 authentication
 producing real Principals carrying group memberships, it checks
 membership in ADMZ_REVEAL_GROUPS (default: Administrators, ADMZ-Admins).
 
-For ``ADMZ_AUTH_BACKEND=none`` deployments (anonymous principal), it
-falls back to the ``tool_get_credentials_enabled`` flag so local
-single-user installs keep working without IIS.
+Anonymous callers (``ADMZ_AUTH_BACKEND=none``) are ALWAYS denied for
+sensitive keys. The ``tool_get_credentials_enabled`` fallback that used
+to let them through was removed (#151) — its documented purpose (the
+deleted ``get_credentials`` MCP tool) no longer existed, and what it
+actually granted was unauthenticated access to plaintext secrets. A
+legacy flag row left behind by an upgrade must NOT resurrect the bypass.
 
 (The per-account device-credential reveal endpoint was removed entirely
 — device-account passwords are never displayed through any web/REST
@@ -19,7 +22,10 @@ This file pins:
     mismatch, match by Administrators, match by ADMZ-Admins,
     domain-prefixed group, case-insensitive comparison)
   - /api/fleet/settings/{key}/reveal endpoint: non-sensitive bypass,
-    sensitive gate, plaintext on allow
+    sensitive gate, plaintext on allow, anonymous always denied
+  - the windows-local auth chain 401s an unauthenticated request before
+    the route runs — the anonymous principal is unreachable there
+    (#151's merge precondition, encoded)
   - Audit-log entries on the fleet-setting reveal path
 """
 
@@ -110,15 +116,15 @@ class TestRevealGroupsConfig:
 
 
 class TestPrincipalCanReveal:
-    def test_anonymous_returns_fallback_sentinel(self):
+    def test_anonymous_denied(self):
         allowed, reason = principal_can_reveal(_anon())
         assert allowed is False
-        assert reason == "anonymous-fallback"
+        assert reason == "anonymous"
 
-    def test_none_principal_returns_fallback_sentinel(self):
+    def test_none_principal_denied(self):
         allowed, reason = principal_can_reveal(None)
         assert allowed is False
-        assert reason == "anonymous-fallback"
+        assert reason == "anonymous"
 
     def test_authenticated_no_groups_denied(self):
         allowed, reason = principal_can_reveal(_windows("alice", []))
@@ -291,29 +297,30 @@ class TestFleetSettingReveal:
         r = client.get("/api/fleet/settings/no_such_key/reveal")
         assert r.status_code == 404
 
-    def test_sensitive_anonymous_flag_off_403(self, client):
+    def test_sensitive_anonymous_403(self, client):
         from admz.fleet_settings import fleet_settings
         fleet_settings.set("default_password", "pass")
-        fleet_settings.delete("tool_get_credentials_enabled")
 
         r = client.get("/api/fleet/settings/default_password/reveal")
         assert r.status_code == 403
 
-    def test_sensitive_anonymous_flag_on_returns_plaintext(self, client):
-        # The single-user fallback: ADMZ_AUTH_BACKEND=none + the LLM-creds
-        # flag on (the only remaining "creds enabled" signal).
+    def test_sensitive_anonymous_denied_even_with_legacy_flag_row(self, client):
+        # Upgrade path (#151): an install that had "Allow LLMs to retrieve
+        # plaintext" checked still carries the flag row in fleet_settings.
+        # The row must be inert — the anonymous bypass it powered is gone.
         from admz.fleet_settings import fleet_settings
         fleet_settings.set("default_password", "pass")
         fleet_settings.set("tool_get_credentials_enabled", "true")
+        try:
+            r = client.get("/api/fleet/settings/default_password/reveal")
+            assert r.status_code == 403
+            assert "pass" not in r.text
+        finally:
+            fleet_settings.delete("tool_get_credentials_enabled")
 
-        r = client.get("/api/fleet/settings/default_password/reveal")
-        assert r.status_code == 200
-        assert r.json()["value"] == "pass"
-
-    def test_sensitive_admin_returns_plaintext_without_flag(self, client):
+    def test_sensitive_admin_returns_plaintext(self, client):
         from admz.fleet_settings import fleet_settings
         fleet_settings.set("default_password", "pass")
-        fleet_settings.delete("tool_get_credentials_enabled")
 
         _set_principal(client, _windows("alice", ["Administrators"]))
         r = client.get("/api/fleet/settings/default_password/reveal")
@@ -323,11 +330,43 @@ class TestFleetSettingReveal:
     def test_sensitive_non_admin_denied(self, client):
         from admz.fleet_settings import fleet_settings
         fleet_settings.set("default_password", "pass")
-        fleet_settings.set("tool_get_credentials_enabled", "true")
 
         _set_principal(client, _windows("carol", ["Users"]))
         r = client.get("/api/fleet/settings/default_password/reveal")
         assert r.status_code == 403
+
+
+# --- windows-local: the anonymous principal is unreachable ------------------
+
+
+class TestWindowsLocalChainNeverAnonymous:
+    """#151's merge precondition, encoded as a test.
+
+    Under ``ADMZ_AUTH_BACKEND=windows-local`` the chain is
+    ``CompositeAuth([ApiKeyAuth, SessionAuth])`` — both raise 401 rather
+    than synthesize a principal, and ``/api/fleet/settings/*`` is not in
+    the middleware's exempt list. So an unauthenticated request dies at
+    the middleware with 401; the reveal route (and with it any anonymous
+    branch) is never reached. This holds regardless of legacy flag rows.
+    """
+
+    def test_unauthenticated_request_is_401_not_403(self, client):
+        from admz.api.main import app
+        from admz.auth import build_auth_backend, set_active_backend
+        from admz.fleet_settings import fleet_settings
+
+        fleet_settings.set("default_password", "pass")
+        fleet_settings.set("tool_get_credentials_enabled", "true")
+        set_active_backend(build_auth_backend("windows-local"))
+        try:
+            r = client.get("/api/fleet/settings/default_password/reveal")
+            # 401 from the auth middleware — the route never ran. A 403
+            # here would mean the route saw an (anonymous) principal.
+            assert r.status_code == 401
+            assert "pass" not in r.text
+        finally:
+            fleet_settings.delete("tool_get_credentials_enabled")
+            set_active_backend(app.state._stub_backend)
 
 
 # --- Audit log integration -------------------------------------------------

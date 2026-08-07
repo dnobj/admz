@@ -80,18 +80,17 @@ and its `web_reveal_credentials_enabled` flag were **removed entirely**.
 ADMZ reads the plaintext from the secrets backend only at execution time
 to reach the device.
 
-One opt-in flag remains, default off, in `PROTECTED_SETTING_KEYS`,
-flipped only via `/confirm-settings`. See
+No credential-retrieval flag remains. The `get_credentials` MCP tool was
+removed (CR-1), and its `tool_get_credentials_enabled` flag was deleted
+(#151) after its only surviving effect turned out to be an anonymous
+bypass of the fleet-setting reveal gate. `create_temp_credentials`
+(a short-lived device-side account) is the ad-hoc LLM access path. See
 [ADR-0020](../decisions/0020-protected-fleet-settings.md).
-
-| Flag | What it gates |
-|---|---|
-| `tool_get_credentials_enabled` | MCP `get_credentials` tool. Adds the password to the LLM's conversation context. Most operators should leave this off and rely on `create_temp_credentials` for ad-hoc LLM access. |
 
 Reveal of **fleet-level** secrets (admin values like API keys, NOT device
 passwords) is a separate surface — `GET /api/fleet/settings/{key}/reveal`,
-gated by membership in `ADMZ_REVEAL_GROUPS` (with the LLM flag as the
-anonymous-mode fallback).
+gated by membership in `ADMZ_REVEAL_GROUPS`. Anonymous callers are always
+denied.
 
 ### FR-CRED-010 — Per-protocol detection on every probe ✅
 `_detect_auth_schemes()` parses `WWW-Authenticate` from 401 responses

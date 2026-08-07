@@ -49,7 +49,7 @@
 - **Full VAPIX reference.** The LLM is expected to use the catalog, not free-form VAPIX construction. If an operation isn't in the catalog, the system can't do it via MCP.
 - **Approving its own dangerous operations.** Tokens are single-use and require the human to relay them back.
 - **Reading its own audit log.** Audit data is for the human operator and may not be exposed to MCP.
-- **Mutating its own safety configuration.** Protected fleet-setting keys (`confirm_level_*`, `confirm_password_hash`, `tool_get_credentials_enabled`) cannot be set via MCP.
+- **Mutating its own safety configuration.** Protected fleet-setting keys (`confirm_level_*`, `confirm_password_hash`, `confirm_approver_groups` — since ADR-0053, everything outside the LLM-writable allow-set) cannot be set via MCP.
 
 ## Constraints (for ADMZ developers)
 

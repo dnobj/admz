@@ -21,7 +21,7 @@ How devices get added to ADMZ. Three paths exist — manual, discovery-driven, a
 1. The LLM may call `register_device(device_id, device_info)` and receive `{success, device_id}`.
 2. The LLM may call `add_account(device_id, account_id, account_data)` where `account_data` includes the password.
 3. Subsequent operations against the device honor the stored credential without the LLM having to handle it again.
-4. The LLM cannot retrieve the password via `get_credentials` unless the `tool_get_credentials_enabled` fleet flag is `"true"` — disabled by default.
+4. The LLM cannot retrieve the password afterwards — no MCP tool returns stored plaintext (`get_credentials` was removed, CR-1; `create_temp_credentials` returns a separate short-lived account).
 
 **Related requirements:** [mcp-server](../requirements/mcp-server.md), [security](../requirements/security.md).
 
