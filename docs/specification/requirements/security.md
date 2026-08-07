@@ -580,7 +580,8 @@ entry has always described, just with a smaller surface than before.
 - **Don't add MCP tools that return credentials.** The OOB capture pattern is the right answer. Exception: `create_temp_credentials` returns plaintext intentionally because the whole point is the LLM uses the short-lived cred directly.
 - **Don't add MCP tools that change confirmation policy.** Protected keys (FR-SEC-012) are the right surface for that.
 - **Don't add executor families that hard-code `verify=False`.** Use `verify_ssl_default()` from `admz/ssl_config.py`.
-- **Don't add REST endpoints that return passwords without the same fleet-flag gating** as the MCP equivalents (FR-SEC-006).
+- **Don't add REST endpoints that return passwords.** Device-account passwords are never returned over web/REST at all (FR-SEC-006), and there is no MCP equivalent to mirror — `get_credentials` was removed outright (CR-1). The one intentional plaintext surface is fleet-setting reveal for *admin* secrets, and any comparable endpoint takes the same gate: reveal-group membership via `admz/authz.py::require_reveal_permission`, plus an audit row. **Never a fleet flag, and never anonymous** — this bullet used to mandate exactly the fleet-flag pattern #151/#346 deleted, which had become an unauthenticated path to plaintext (#349).
+- **A template context is a reveal surface too.** A page that builds its own context and renders a protected key has bypassed the gate just as surely as an endpoint would — three separate pages did it before anyone framed it that way (#158, #350). If a handler puts a secret in front of a renderer, it needs the reveal gate or it needs to stop.
 - **Always mask password-shaped fleet settings** in any list/get response (FR-SEC-007).
 
 ## References

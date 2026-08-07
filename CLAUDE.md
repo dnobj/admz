@@ -81,7 +81,7 @@ Two files live in `C:\admz\.claude\` — deliberately **not** in the repo, becau
 | | Port | `ADMZ_HOME` | Code from | venv |
 |---|---|---|---|---|
 | **Production** | 4242 | `C:\ProgramData\admz` | `C:\admz\admz-prod` (detached, pinned) | `C:\admz\admz-prod\.venv` |
-| **Staging** | 4243 | `C:\ProgramData\admz-staging` | `C:\admz\admz-staging-code` (detached) | *none — uses the dev venv* |
+| **Staging** | 4243 | `C:\ProgramData\admz-staging` | `C:\admz\admz-staging-code` (detached, **~94 commits behind master**) | *none — and it can no longer borrow the dev venv: see below* |
 | **Dev** | — | — | `C:\admz\admz` | `C:\admz\admz\.venv` |
 
 **Production manages a live Axis fleet and a live ACS install.** It runs as the Shawl-supervised Windows service `admz`. Never point tests, agents, or experiments at `:4242` or `C:\ProgramData\admz`. Restarting it, migrating its DB, or driving its devices requires explicit human authorization.
@@ -136,6 +136,22 @@ longer reach production.
 > first, and it told each one that the thing protecting production was not switched on.
 
 Staging exists so UI and behavior can be exercised without touching production. It carries a **copy** of the real device data (so it has real credentials — treat its `ADMZ_HOME` as secret-bearing) and runs with health polling turned down and GitHub config-push disabled.
+
+> ### ⚠️ Staging is currently unusable — do not plan verification on it (#238)
+>
+> Verified 2026-08-07: **nothing is listening on 4243**, `C:\admz\admz-staging-code` is
+> detached at `948de66` (~94 commits behind master), it has **no venv of its own**, and its
+> code uses the **mcp 1.x** decorator API (`@self.server.list_tools()`) while the dev venv it
+> is documented to borrow now has **mcp 2.x**. So it cannot start as configured — it would
+> fail at import, which is the same shape ADR-0054 describes for production.
+>
+> It used to work precisely *because* both the code and the shared venv were stale together;
+> the dev/prod split upgraded the venv and left staging behind. Bringing it back is a real
+> decision (update the checkout and give it its own venv, or retire it and verify against a
+> dev instance) and is queued for the owner rather than assumed.
+>
+> **Until then, "verify it on staging" is not an available instruction** — the section below
+> on verifying UI work describes how staging *would* be used, not something you can do today.
 
 ## Running things
 
@@ -209,7 +225,12 @@ Delegated work runs as **durable headless sessions through the switchyard bridge
 
 ## Verifying UI work
 
-Staging is the place to exercise the web UI. ADMZ authenticates with `windows-local` (Negotiate SSO), which a headless client cannot complete — so by default a browser session needs a human to sign in once, after which an agent can drive that authenticated tab.
+Staging is the *intended* place to exercise the web UI — **but see the warning above: it is
+not runnable today (#238)**, so until it is rebuilt or retired, UI verification means a local
+dev instance. The rest of this section describes the arrangement staging provides when it
+works, and stays here because the decision is to fix it, not to drop it.
+
+ADMZ authenticates with `windows-local` (Negotiate SSO), which a headless client cannot complete — so by default a browser session needs a human to sign in once, after which an agent can drive that authenticated tab.
 
 **Which browser surface** (code-teem `patterns/browser-verification.md`): the **embedded browser is cockpit-only** — one pane, one session, unparallelizable in principle, and it is *not* the unattended default. Per-worker driven browsers are. Observed here on 2026-08-02: `get_page_text` and `screenshot` against the embedded browser each hung the full 300s while `tabs_context` still answered, so treat a hang as the expected failure mode rather than a puzzle, and do not build unattended verification on that surface.
 
