@@ -4,7 +4,7 @@ Durable facts an assistant session needs before touching this repo. Read this fi
 
 ## Orchestration
 
-This project runs the **[code-teem](https://github.com/pettheory/code-teem) playbook, pinned at `v0.11.0`** — a persistent Master session implements serially and coordinates Plan / Decide / Investigate / Review / Converse specialists. The project-specific adaptation lives in [`docs/specification/orchestration.md`](docs/specification/orchestration.md); the spec↔issue workflow is [`docs/specification/process.md`](docs/specification/process.md).
+This project runs the **[code-teem](https://github.com/pettheory/code-teem) playbook, pinned at `v0.13.1`** — a Master **role** implements serially and coordinates Plan / Decide / Investigate / Review / Converse specialists. The Master is a role any fresh session can assume, not a session to keep alive: see [The context-free tick](#the-context-free-tick). The project-specific adaptation lives in [`docs/specification/orchestration.md`](docs/specification/orchestration.md); the spec↔issue workflow is [`docs/specification/process.md`](docs/specification/process.md).
 
 Practical consequences:
 
@@ -17,6 +17,45 @@ Practical consequences:
 - **Await or be watched.** Every delegation either blocks on a completion signal or ends its turn with the session on the watchdog list. A master that ends its turn waiting on an unsignaled callback is a *parked* master — this failure cost this project five recoveries on 2026-07-31/08-01, every time as a worker reporting "the suite is running, I'll report back" and then stopping.
 - **Liveness is `list_sessions`, never a file count.** On 2026-08-05 two sessions died mid-task and were reported as "still building" for hours, because progress was inferred from the number of uncommitted files in their worktrees — a number that does not change when a session stops. `live: false` is the answer; `read_session` shows what the last turn actually did. Related: `continue_session` returning `status: "running"` means *queued*, not *accepted* — a dispatch rejected by the fork-guard fails 90 ms later and looks identical unless `get_job` is checked.
 
+## The context-free tick
+
+The Master can run as a loop: wake, do one bounded pass, end the turn. The tick is
+**context-free by contract** — it orients from files, trusts only external state, and never
+relies on transcript memory. The point is not automation; it is that a Master which survives a
+context clear every cycle *proves* every cycle that its ledger is complete. Install:
+`.claude/skills/tick/SKILL.md` (from the playbook's `templates/TICK.template.md`).
+
+Ledger files, all outside this repo in `C:\admz\.claude\`:
+
+| File | Rewritten or appended | Read by |
+|---|---|---|
+| `STATUS.md` | rewritten every tick, never appended | **the owner** |
+| `HANDOFF.md` | rewritten at every tick boundary and before any deliberate clear | the next Master instance |
+| `TICKS.log` | one appended line per tick | the tick's own stall check |
+| `ATTENTION.md` | the durable queue; the question store is the record | the owner |
+
+`HANDOFF.md` carries phase · item · anchor · done-so-far · **tried-and-failed** · next-step. That
+tried-and-failed line is the one that saves the next instance an hour, and it is the line most
+easily left vague — "verifiable facts only" is the standard, not "mostly done".
+
+### Control-plane adapter block
+
+Everything the playbook and the `/tick` skill name abstractly, bound to this machine. **Skills
+stay portable because they never name tools; this block is the one place bindings live.** Swap
+the control plane and only this block changes.
+
+| Capability | Binding | Degraded rule |
+|---|---|---|
+| **Question store** | `mcp__sy__raise_question` (attach `proposedAnswer` wherever a default is defensible — one call, not a raise-then-answer two-step) · `mcp__sy__list_questions` · `mcp__sy__answer_question` (lands as a *proposal*; **only the owner resolves**) | Unreachable → hold questions in `HANDOFF.md`, say so in `STATUS.md`, continue. Never block the tick on it. |
+| **Fleet / jobs** | `mcp__sy__list_sessions` · `continue_session` · `await_job` · `list_jobs` · `get_job` | Bridge paused (check the dashboard header) → dispatch sends are refused politely; **reconcile and orient are unaffected**. Work serially and reconcile next tick. |
+| **Session liveness** | `mcp__sy__list_sessions` (`live` field) · `mcp__sy__read_session` to see what a stalled session last did | **Never infer progress from a file count** — it does not change when a session dies. `continue_session` returning `status: "running"` means *queued*, not *accepted*; confirm with `get_job`. |
+| **Timeline / dashboard** | switchyard dashboard | Unreachable → note it in `STATUS.md`; the repo and GitHub remain truth. |
+
+**Path→audit ripple matrix:** not yet defined for this project. Per v0.13.1 the tick uses the
+default table in the playbook's `patterns/triggers-and-lanes.md` and raises a question proposing
+a real one — that is the designed path, not a gap to paper over. Inventing an unvalidated matrix
+would be worse than the default, because it would look authoritative.
+
 ## Owner-facing state outside this repo
 
 Two files live in `C:\admz\.claude\` — deliberately **not** in the repo, because they change many times a day and in-repo means commits and PRs:
@@ -25,6 +64,9 @@ Two files live in `C:\admz\.claude\` — deliberately **not** in the repo, becau
 |---|---|
 | `SESSIONS.md` | Session inventory — every worker, its state, and the reuse policy. Prefer resuming an idle listed session over spawning. |
 | `ATTENTION.md` | **The single owner attention queue** (code-teem `patterns/attention-queue.md`). Every owner-facing decision goes here with a recommended default — never into a transcript, where it dies with the session. Ordered by tier then by what is blocked behind it, never by recency. **No credentials in it — location and procedure only.** An item that will not reduce to a one-word answer does not belong in the queue as one: brief a `Converse` session instead, and record the outcome here. Six items sat unanswered through 2026-08-05 largely because the queue's form did not fit the question. |
+| `STATUS.md` | **The owner's one-page brief** — where things sit, what's next, what's waiting on you. Rewritten in full every reconciliation, never appended. If it is older than recent activity, treat it as wrong. |
+| `HANDOFF.md` | Machine resume state for the Master **role**: phase · item · anchor · done-so-far · tried-and-failed · next-step. Written to be executable cold by a session with no memory of this one. |
+| `TICKS.log` | One appended line per tick. The tick's own stall check reads the last 5 — mechanical, because a loop asked whether it is making progress will say yes. |
 | `loops/` + `handoffs/` | Autonomous audit-loop contracts, and the durable report-back channel workers write to on completion. |
 
 ## Environments — read this before running anything
