@@ -232,6 +232,34 @@ class TestSurveySettingsWriteGate:
         for row in _audit_rows("fleet_setting.write"):
             assert SURVEY_PAT not in repr(row)
 
+    def test_partial_application_is_named_in_the_failure_row(self, client, monkeypatch):
+        """Each write in save_config commits on its own, so a failure partway
+        through leaves real changes. A bare "action failed" row would read as
+        "nothing happened" — the wrong thing to believe about a repointed
+        survey repo."""
+        from admz.api.routes import survey as survey_route
+
+        def _boom(ctx, **kwargs):
+            raise RuntimeError("scheduler unavailable")
+
+        monkeypatch.setattr(survey_route, "_sync_survey_schedule", _boom)
+
+        _set_principal(client, _windows("alice", ["Administrators"]))
+        r = client.post("/settings/survey",
+                        data={"action": "save_config", "repo": "someone/elsewhere"})
+        assert r.status_code == 200  # the page renders the error, by design
+
+        from admz.fleet_settings import fleet_settings
+        from admz.survey import secrets
+        assert fleet_settings.get(secrets.KEY_REPO) == "someone/elsewhere"
+
+        rows = _audit_rows("survey.action")
+        assert rows, "a failed save_config left no row at all"
+        row = rows[0]
+        assert row.success is False
+        assert (row.details or {}).get("partial") is True
+        assert secrets.KEY_REPO in (row.details or {}).get("applied", [])
+
     def test_repo_target_is_recorded(self, client):
         """Pointing the survey at a different repository is the step that turns
         a contribution into an exfiltration, and it was the write with no
@@ -243,3 +271,45 @@ class TestSurveySettingsWriteGate:
         rows = _audit_rows("fleet_setting.write")
         assert any((row.details or {}).get("repo") == "someone/elsewhere"
                    for row in rows), "the repo target was not recorded"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/acs/config — the neighbour the first draft missed
+# ---------------------------------------------------------------------------
+
+
+class TestAcsConfigWriteGate:
+    """`save_acs_config` writes the `acs_pro` fleet key, which
+    ``is_protected_setting`` returns True for. It sat ungated while the two
+    routes #351 named were being fixed — found by the review of this PR's
+    first draft, which is the same protection-on-one-path-not-its-neighbour
+    shape as #158/#350, caught before merge this time.
+    """
+
+    def test_anonymous_refused_and_nothing_written(self, client):
+        from admz.modules.acs_pro.config import FLEET_KEY
+        from admz.fleet_settings import fleet_settings
+
+        r = client.post("/api/acs/config",
+                        json={"enabled": True, "server_url": "https://attacker:29204",
+                              "verify_tls": False})
+        assert r.status_code == 403
+        assert fleet_settings.get(FLEET_KEY) is None
+
+    def test_authenticated_write_succeeds_and_is_audited(self, client):
+        _set_principal(client, _windows("alice", ["Administrators"]))
+        r = client.post("/api/acs/config",
+                        json={"enabled": True, "server_url": "https://acs.local",
+                              "port": 29204, "verify_tls": True})
+        assert r.status_code == 200
+
+        rows = _audit_rows("fleet_setting.write")
+        assert any(row.resource == "acs_pro" for row in rows)
+        row = next(r_ for r_ in rows if r_.resource == "acs_pro")
+        assert (row.details or {}).get("server_url") == "https://acs.local"
+
+    def test_the_key_really_is_protected(self):
+        """If this ever goes False the gate above is arguing for itself."""
+        from admz.fleet_settings import is_protected_setting
+        from admz.modules.acs_pro.config import FLEET_KEY
+        assert is_protected_setting(FLEET_KEY) is True

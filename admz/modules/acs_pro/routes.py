@@ -59,6 +59,26 @@ async def acs_get_config():
 
 @router.post("/api/acs/config")
 async def acs_save_config(request: Request):
+    """Persist the ACS Pro connection.
+
+    Gated and audited for the same reason as the chat and survey settings
+    handlers (#351): ``save_acs_config`` writes the ``acs_pro`` fleet key,
+    which ``is_protected_setting`` returns True for. Ungated, an anonymous
+    caller could enable the module, repoint ``server_url`` at a host they
+    control, and turn ``verify_tls`` off — and every later ACS operation
+    would follow it, with nothing recording who changed it.
+
+    Found by the review of #351's first draft, which fixed the two handlers
+    the issue named and left this neighbour — the exact shape #158/#350 kept
+    repeating, caught here before merge rather than by the next audit.
+    """
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
+
     body = await request.json()
     cfg = save_acs_config(
         enabled=bool(body.get("enabled")),
@@ -67,6 +87,12 @@ async def acs_save_config(request: Request):
         verify_tls=bool(body.get("verify_tls")),
         client_machine_name=body.get("client_machine_name", ""),
     )
+    # The stored config carries no secret (ACS authenticates via Negotiate as
+    # the service account), so the row can name the values that matter.
+    record_event(principal, "fleet_setting.write", resource="acs_pro",
+                 details={"enabled": cfg.get("enabled"),
+                          "server_url": cfg.get("server_url"),
+                          "verify_tls": cfg.get("verify_tls")})
     return {"success": True, "config": cfg}
 
 

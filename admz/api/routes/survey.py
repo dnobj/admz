@@ -124,6 +124,11 @@ async def survey_settings_action(
     error: Optional[str] = None
     preview = None
     run_report = None
+    #: Keys actually written, accumulated as each write commits. Each
+    #: `fleet_settings.set` below commits independently, so a failure partway
+    #: through `save_config` leaves earlier keys changed — the failure row has
+    #: to name them or a partial application is an unattributed change.
+    applied: list = []
 
     try:
         if action == "save_config":
@@ -134,16 +139,22 @@ async def survey_settings_action(
             capabilities.set_enabled(
                 "survey.contributor", bool(enabled), principal,
                 reason="saved from the survey settings page")
+            applied.append("survey.contributor")
             if repo:
                 fleet_settings.set(secrets.KEY_REPO, repo.strip())
+                applied.append(secrets.KEY_REPO)
             if redaction_profile in ("hash-serial", "keep-serial"):
                 fleet_settings.set(secrets.KEY_REDACTION, redaction_profile)
+                applied.append(secrets.KEY_REDACTION)
             if validation_tier in ("0", "1"):
                 fleet_settings.set(secrets.KEY_VALIDATION_TIER, validation_tier)
+                applied.append(secrets.KEY_VALIDATION_TIER)
             if contributor is not None:
                 fleet_settings.set(secrets.KEY_CONTRIBUTOR, contributor.strip())
+                applied.append(secrets.KEY_CONTRIBUTOR)
             if schedule_seconds is not None and schedule_seconds.strip():
                 fleet_settings.set(secrets.KEY_SCHEDULE_SECONDS, schedule_seconds.strip())
+                applied.append(secrets.KEY_SCHEDULE_SECONDS)
             _sync_survey_schedule(ctx, enabled=bool(enabled),
                                   schedule_seconds=schedule_seconds
                                   if schedule_seconds is not None
@@ -153,7 +164,8 @@ async def survey_settings_action(
             # exfiltration, and it was the one write with no trace.
             record_event(principal, "fleet_setting.write",
                          resource="survey_settings:save_config",
-                         details={"repo": (repo or "").strip() or None,
+                         details={"applied": list(applied),
+                                  "repo": (repo or "").strip() or None,
                                   "redaction_profile": redaction_profile,
                                   "validation_tier": validation_tier})
             success = "Survey settings saved."
@@ -163,12 +175,14 @@ async def survey_settings_action(
                 error = "PAT cannot be empty. Use 'Clear PAT' to remove it."
             else:
                 secrets.set_pat(github_pat.strip())
+                applied.append(secrets.KEY_PAT)
                 record_event(principal, "fleet_setting.write",
                              resource=f"survey_settings:{secrets.KEY_PAT}")
                 success = "GitHub PAT saved (encrypted)."
 
         elif action == "clear_pat":
             secrets.set_pat("")
+            applied.append(secrets.KEY_PAT)
             record_event(principal, "fleet_setting.write",
                          resource=f"survey_settings:{secrets.KEY_PAT}",
                          details={"cleared": True})
@@ -201,8 +215,14 @@ async def survey_settings_action(
     except Exception as exc:  # noqa: BLE001 - surface to the page, never 500 the UI
         logger.exception("survey action failed")
         error = f"{type(exc).__name__}: {exc}"
+        # `applied` is the point of this row. Each write above commits on its
+        # own, so a failure partway through leaves real, effective changes —
+        # a bare "action failed" would read as "nothing happened", which is
+        # the wrong thing to believe about a repointed survey repo.
         record_event(principal, "survey.action", resource=f"survey_settings:{action}",
-                     success=False, error_message=f"{type(exc).__name__}: {exc}")
+                     success=False, error_message=f"{type(exc).__name__}: {exc}",
+                     details={"applied": list(applied),
+                              "partial": bool(applied)})
 
     return templates.TemplateResponse(
         request,

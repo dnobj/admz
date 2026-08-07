@@ -15,7 +15,12 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
-from admz.auth import AuthBackend, NoAuth, Principal, set_active_backend
+from admz.auth import (
+    AuthBackend,
+    Principal,
+    get_active_backend,
+    set_active_backend,
+)
 
 
 class _StubBackend(AuthBackend):
@@ -30,8 +35,11 @@ class _StubBackend(AuthBackend):
 def as_authenticated(name: str = "admin", groups=("Administrators",)):
     """Run the block with a real (non-anonymous) Windows-shaped principal.
 
-    Restores :class:`NoAuth` on exit so a test that uses this does not change
-    the posture for whatever runs next — the backend is process-wide state.
+    Restores **whatever backend was active on entry**, not a hardcoded
+    :class:`NoAuth`. The active backend is process-wide, so restoring a
+    constant would silently destroy an outer fixture's specialised backend and
+    change how later requests authenticate — a nesting bug that only shows up
+    in whichever test happens to run next.
 
     ``groups`` defaults to ``Administrators`` so the principal also satisfies
     the reveal/approver gates; pass ``groups=()`` to test the authenticated-
@@ -46,8 +54,9 @@ def as_authenticated(name: str = "admin", groups=("Administrators",)):
         source="windows",
         is_anonymous=False,
     )
+    previous = get_active_backend()
     set_active_backend(_StubBackend(principal))
     try:
         yield principal
     finally:
-        set_active_backend(NoAuth())
+        set_active_backend(previous)
