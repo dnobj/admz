@@ -22,8 +22,15 @@ Practical consequences:
 The Master can run as a loop: wake, do one bounded pass, end the turn. The tick is
 **context-free by contract** — it orients from files, trusts only external state, and never
 relies on transcript memory. The point is not automation; it is that a Master which survives a
-context clear every cycle *proves* every cycle that its ledger is complete. Install:
-`.claude/skills/tick/SKILL.md` (from the playbook's `templates/TICK.template.md`).
+context clear every cycle *proves* every cycle that its ledger is complete.
+
+**Install (Claude Code):** the skill lives at `C:dmz\.claude\skills	ick\SKILL.md` —
+**beside the ledger, not in the repo**, because sessions run rooted at `C:dmz` and skills are
+discovered from the session's own `.claude/skills/`. The copy in this repo is the versioned
+source; installing means copying it there. It also needs YAML frontmatter (`name`,
+`description`) that the engine-neutral playbook template does not carry — "install per the
+engine's skill mechanism" is a real step, not a formality. **A newly added skill is only
+discovered when a session starts**, so `/tick` will not resolve in the session that installed it.
 
 Ledger files, all outside this repo in `C:\admz\.claude\`:
 

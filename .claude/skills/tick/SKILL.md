@@ -1,3 +1,8 @@
+---
+name: tick
+description: Run one Master tick for ADMZ per the code-teem playbook pinned in CLAUDE.md — orient from the ledger (HANDOFF.md, STATUS.md, the question store), run the stall check over TICKS.log, reconcile answers and merge clean PRs, work the top ready item serially, dispatch readers non-blocking, then rewrite STATUS.md and HANDOFF.md and append a TICKS.log line. Context-free by contract: trust only files and external state, never transcript memory. Use when the user types /tick, or asks to run a Master tick, resume the loop, or pick up ADMZ work from the ledger.
+---
+
 # /tick — one Master tick
 
 _The loop contract from [PLAYBOOK.md](https://github.com/pettheory/code-teem/blob/v0.13.1/PLAYBOOK.md) ("Running the master as a loop") as an installable skill. Deliberately **tool- and engine-neutral**: capabilities are named ("the question store", "the ledger"), and everything machine-specific — which tools reach the store, which identity reaches which remote — comes from the project's agent file, per its control-plane adapter block ([../conventions/agent-file.md](https://github.com/pettheory/code-teem/blob/v0.13.1/conventions/agent-file.md)). The same skill drops unchanged into any project on any engine; only the agent file varies._
