@@ -186,6 +186,15 @@ class TestChatPage:
 
 
 class TestChatSettingsPage:
+    @pytest.fixture(autouse=True)
+    def _authenticated(self):
+        """POST /settings/chat writes protected keys and so refuses anonymous
+        (#351). These cases are about the handler's behaviour once past that
+        gate; the gate itself is covered in test_settings_write_authz.py."""
+        from tests.authz_harness import as_authenticated
+        with as_authenticated():
+            yield
+
     def test_settings_page_renders_unconfigured(self, client):
         r = client.get("/settings/chat")
         assert r.status_code == 200

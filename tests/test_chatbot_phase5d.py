@@ -293,6 +293,14 @@ class TestDoneEventEnrichment:
 
 
 class TestSettingsPageBudget:
+    @pytest.fixture(autouse=True)
+    def _authenticated(self):
+        """POST /settings/chat refuses anonymous since #351; these cases test
+        budget parsing, not the gate."""
+        from tests.authz_harness import as_authenticated
+        with as_authenticated():
+            yield
+
     def test_set_daily_budget_via_form(self, client):
         r = client.post(
             "/settings/chat",

@@ -110,6 +110,16 @@ async def survey_settings_action(
     principal: Principal = Depends(get_current_principal),
     ctx: AppContext = Depends(get_context),
 ):
+    # #351 (#164 item 2): every branch below either writes a protected fleet
+    # setting — two of them real credentials, `survey_github_pat` encrypted at
+    # rest — or runs a survey that can submit fleet data to GitHub. The module
+    # docstring above has claimed "all writes require an authenticated
+    # principal" since it was written; this is the line that makes that true.
+    from admz.audit import record_event
+    from admz.authz import require_authenticated_principal
+
+    require_authenticated_principal(principal)
+
     success: Optional[str] = None
     error: Optional[str] = None
     preview = None
@@ -138,6 +148,14 @@ async def survey_settings_action(
                                   schedule_seconds=schedule_seconds
                                   if schedule_seconds is not None
                                   else fleet_settings.get(secrets.KEY_SCHEDULE_SECONDS))
+            # The repo target is recorded: pointing the survey at a different
+            # repository is the step that turns a contribution into an
+            # exfiltration, and it was the one write with no trace.
+            record_event(principal, "fleet_setting.write",
+                         resource="survey_settings:save_config",
+                         details={"repo": (repo or "").strip() or None,
+                                  "redaction_profile": redaction_profile,
+                                  "validation_tier": validation_tier})
             success = "Survey settings saved."
 
         elif action == "set_pat":
@@ -145,10 +163,15 @@ async def survey_settings_action(
                 error = "PAT cannot be empty. Use 'Clear PAT' to remove it."
             else:
                 secrets.set_pat(github_pat.strip())
+                record_event(principal, "fleet_setting.write",
+                             resource=f"survey_settings:{secrets.KEY_PAT}")
                 success = "GitHub PAT saved (encrypted)."
 
         elif action == "clear_pat":
             secrets.set_pat("")
+            record_event(principal, "fleet_setting.write",
+                         resource=f"survey_settings:{secrets.KEY_PAT}",
+                         details={"cleared": True})
             success = "GitHub PAT cleared."
 
         elif action == "preview":
@@ -160,7 +183,16 @@ async def survey_settings_action(
             from admz.survey.runner import run_survey
             # respect_enabled False so a manual run works even before the toggle;
             # submit only if a PAT is present, else offline.
-            report = run_survey(submit=secrets.has_pat(), respect_enabled=False)
+            submitting = secrets.has_pat()
+            # Audited BEFORE the run: this can push fleet data to GitHub, and
+            # `respect_enabled=False` means the contributor toggle is not a
+            # second brake. A run that dies mid-flight must still leave a
+            # record that someone started it.
+            record_event(principal, "survey.run_now",
+                         resource="survey_settings:run_now",
+                         details={"submit": submitting,
+                                  "repo": fleet_settings.get(secrets.KEY_REPO)})
+            report = run_survey(submit=submitting, respect_enabled=False)
             run_report = report.to_dict()
             success = f"Survey run: {report.status}. {report.message}"
 
@@ -169,6 +201,8 @@ async def survey_settings_action(
     except Exception as exc:  # noqa: BLE001 - surface to the page, never 500 the UI
         logger.exception("survey action failed")
         error = f"{type(exc).__name__}: {exc}"
+        record_event(principal, "survey.action", resource=f"survey_settings:{action}",
+                     success=False, error_message=f"{type(exc).__name__}: {exc}")
 
     return templates.TemplateResponse(
         request,

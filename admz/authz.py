@@ -421,9 +421,18 @@ def require_authenticated_principal(principal: Optional[Principal]) -> None:
         confirm-password hash, credential-access flags, scheduler /
         health-monitor toggles, the Gemini API key. Since ADR-0053 that
         is *every* key except the fleet credential pair, and the check
-        is :func:`admz.fleet_settings.is_protected_setting`. Note there
-        is no generic REST fleet-settings write route — the enforcement
-        point is the MCP tool and the out-of-band capture path.
+        is :func:`admz.fleet_settings.is_protected_setting`.
+
+        There is no *generic* REST fleet-settings write route, but there
+        are **per-key web write handlers**, and each is its own
+        enforcement point: ``POST /confirm-settings``,
+        ``POST /settings/chat`` and ``POST /settings/survey`` all call
+        this function. This paragraph used to say the MCP tool and the
+        capture path were the only enforcement points; that was read as
+        "nothing else can write", and the two handlers above went
+        ungated and unaudited for as long as it stood (#351). If you add
+        a handler that writes a protected key, it joins this list — the
+        absence of a generic route is not a gate.
       * ``DELETE /api/devices/{id}``,
         ``POST /api/snapshot/restore``,
         ``POST /api/plans/{id}/execute`` — destructive / data-loss.

@@ -1097,24 +1097,44 @@ async def chat_settings_save(
     daily_token_budget: Optional[str] = Form(None),
     principal: Principal = Depends(get_current_principal),
 ):
-    """Persist API key / default-model / daily-budget changes."""
+    """Persist API key / default-model / daily-budget changes.
+
+    Every branch writes a key that ``is_protected_setting`` returns True for,
+    and one of them (``gemini_api_key``) is a live billable credential stored
+    encrypted at rest. So the handler takes the same two lines
+    ``/confirm-settings`` has always had: refuse an anonymous principal, then
+    record who wrote what (#351 — #164 item 2, which #329 left undone while
+    fixing the capability half of this same route).
+    """
+    from admz.audit import record_event
+    from admz.authz import require_authenticated_principal
+
+    require_authenticated_principal(principal)
+
     success: Optional[str] = None
     error: Optional[str] = None
+    #: Set by a branch that actually wrote; drives the audit row below. The
+    #: VALUE is never recorded — the point is attribution, not a second copy
+    #: of the secret in a second store.
+    written: Optional[str] = None
 
     if action == "set_api_key":
         if not api_key or not api_key.strip():
             error = "API key cannot be empty. Use 'Clear key' to remove."
         else:
             set_api_key(api_key)
+            written = "gemini_api_key"
             success = "Gemini API key saved."
     elif action == "clear_api_key":
         clear_api_key()
+        written = "gemini_api_key"
         success = "Gemini API key cleared."
     elif action == "set_default_model":
         if not default_model or default_model not in SELECTABLE_MODELS:
             error = f"Invalid model. Choose one of: {', '.join(SELECTABLE_MODELS)}"
         else:
             set_default_model(default_model)
+            written = "gemini_default_model"
             success = f"Default model set to {default_model}."
     elif action == "set_daily_token_budget":
         try:
@@ -1122,6 +1142,7 @@ async def chat_settings_save(
             if budget < 0:
                 raise ValueError("must be >= 0")
             set_daily_budget(budget)
+            written = "chat_daily_token_budget"
             success = (
                 "Daily token budget cleared (unlimited)."
                 if budget == 0
@@ -1134,6 +1155,15 @@ async def chat_settings_save(
             )
     else:
         error = f"Unknown action: {action!r}"
+
+    if written:
+        record_event(principal, "fleet_setting.write",
+                     resource=f"chat_settings:{written}",
+                     details={"action": action})
+    elif error:
+        record_event(principal, "fleet_setting.write",
+                     resource="chat_settings", success=False,
+                     error_message=error, details={"action": action})
 
     config = get_chatbot_config()
     return templates.TemplateResponse(
