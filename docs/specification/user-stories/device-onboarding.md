@@ -66,7 +66,7 @@ How devices get added to ADMZ. Three paths exist — manual, discovery-driven, a
    - **Legacy default `root/pass`** → stores credentials; if `force_change=True`, rotates the password.
    - **Authenticated already** → stores the supplied credentials if they work.
    - **Unreachable** → returns a structured error with `host` and `detail`.
-3. Generated passwords default to 24 chars (mixed case + digit) and are **never returned in the tool response** — the operator must retrieve them via `get_credentials` (which is itself gated).
+3. Generated passwords default to 24 chars (mixed case + digit) and are **never returned in the tool response** — nor retrievable afterwards (`get_credentials` was removed, CR-1). ADMZ uses the stored credential internally; for ad-hoc device access, mint a short-lived account via `create_temp_credentials`.
 4. Per-protocol auth (`http`: digest, `https`: basic, etc.) is auto-detected via `WWW-Authenticate` and stored on the device profile so the executor uses the right scheme.
 
 **Related requirements:** [mcp-server](../requirements/mcp-server.md), [credential-storage](../requirements/credential-storage.md), [discovery](../requirements/discovery.md).

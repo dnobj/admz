@@ -72,7 +72,7 @@ is that the LLM uses these creds directly for a brief window).
 Max 3 temp creds per device. TTL 60–3600s. Background loop cleans
 expired ones via `pwdgrp.cgi:remove-user`.
 
-### FR-CRED-009 — Device passwords are never displayed; LLM access is opt-in ✅
+### FR-CRED-009 — Device passwords are never displayed; no LLM retrieval ✅
 Device-account passwords are **never displayed** through any web/REST
 surface — the account page shows only a "stored · never displayed" lock,
 and the device-credential reveal endpoint (`GET /api/devices/{id}/credentials`)

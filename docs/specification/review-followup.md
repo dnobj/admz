@@ -83,7 +83,7 @@ This document tracks the per-issue follow-up for the production-quality review o
 | # | Item | Severity | Status |
 |---|---|---|---|
 | 2.1 | Mask password values in `GET /api/fleet/settings`. Extracted `is_sensitive_setting_key`, `mask_setting_value`, `mask_settings_for_display` into `admz/fleet_settings.py`; both MCP and REST surfaces now use the same helper. 11 new tests in `tests/test_fleet_settings.py` + 3 REST tests in `TestFleetSettingsMasking`. | 🔴 | ✅ |
-| 2.2 | Gate `/api/devices/{id}/credentials` behind `tool_get_credentials_enabled` flag — returns 403 with a `/confirm-settings` hint when disabled. 3 new tests in `TestCredentialsEndpointGated`. | 🔴 | ✅ |
+| 2.2 | Gate `/api/devices/{id}/credentials` behind `tool_get_credentials_enabled` flag — returns 403 with a `/confirm-settings` hint when disabled. 3 new tests in `TestCredentialsEndpointGated`. *(Superseded: the endpoint was later removed entirely, and the flag deleted in #151 — see security.md FR-SEC-006 for the current surface.)* | 🔴 | ✅ |
 | 2.3 | Default `--host 127.0.0.1` in `__main__.py`; explicit `--host 0.0.0.0` required. Help text documents the no-auth caveat. | 🔴 | ✅ |
 | 2.4 | CORS now driven by `ADMZ_ALLOWED_ORIGINS` env var (comma-separated). Default is the 4 localhost variants; `*` is opt-in and downgrades `allow_credentials` to False. | 🔴 | ✅ |
 | 2.5 | `ADMZ_VERIFY_SSL` env var via new `admz/ssl_config.py::verify_ssl_default()`. Wired into `VapixExecutor`, `http_probe`, `ssdp_discovery`, `credential_probe` (all 4 hard-coded `verify=False` call sites). Backward-compatible default still False. 13 new tests in `tests/test_ssl_config.py`. | 🔴 | ✅ |
