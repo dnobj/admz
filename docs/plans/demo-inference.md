@@ -472,7 +472,7 @@ REST (all under the existing demos router, authenticated principal):
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/api/demos/inference/run` | Runs collection + clustering. Writes only proposals — touches no device, so it is **inert metadata**: authenticated principal, no confirmation gate (same bar as demo CRUD, `0046-demos.md:126`) |
+| `POST` | `/api/demos/inference/runs` | Runs collection + clustering. Writes only proposals — touches no device, so it is **inert metadata**: authenticated principal, no confirmation gate (same bar as demo CRUD, `0046-demos.md:126`) |
 | `GET` | `/api/demos/inference/runs` / `/runs/{id}` | Run header + graph (the audit trail) |
 | `GET` | `/api/demos/proposals` | `?status=proposed` default |
 | `GET` | `/api/demos/proposals/{id}` | Full evidence + score breakdown + observability |
@@ -482,10 +482,16 @@ REST (all under the existing demos router, authenticated principal):
 MCP tools (mirroring the REST cores, as every demo tool already does):
 
 - `infer_demos` — run inference; returns the proposal list with evidence.
-- `list_demo_proposals` / `get_demo_proposal` — read-only.
+- `list_demo_proposals` — read-only. **As shipped this is the only proposal read tool**:
+  the planned separate `get_demo_proposal` was folded into it, so a single proposal is
+  read with `list_demo_proposals(proposal=…)` (#206). A REST handler of that name does
+  exist in `admz/api/routes/demos.py`, which is what makes the stale line here
+  plausible-looking; there is no MCP tool.
 - `confirm_demo_proposal` — creates a real demo (see gating note).
 - `dismiss_demo_proposal`.
-- `acs_rule_anatomy` — read-only ACS rule detail (also useful standalone).
+- ~~`acs_rule_anatomy`~~ — **not shipped as an MCP tool** (#206). The capability landed as
+  a REST query parameter instead: `GET /api/acs/rules?anatomy=1`, over
+  `admz/modules/acs_pro/firebird.py::rule_anatomy`.
 
 **Gating.** Run/list/dismiss are inert. `confirm_demo_proposal` creates a demo and
 attaches rule membership — inert by the ADR-0046 bar — **unless** it also captures
@@ -567,7 +573,7 @@ default would pollute the real DB.
 
 Read-only until the confirm step; the deployment on :4242 is **production**.
 
-1. `POST /api/demos/inference/run` with ACS connected. Compare the proposals against
+1. `POST /api/demos/inference/runs` with ACS connected. Compare the proposals against
    the operator's actual demo inventory — record precision/recall by hand in the PR.
 2. Inspect the run graph: every ACS rule from the 12-rule specimen must appear, each
    with a resolved trigger device or an `unattached` note.
