@@ -50,8 +50,8 @@ An in-process `httpx.MockTransport` probe (no sockets, no device) reproduced the
 
 ```
 Digest attempt   req 1: Authorization = None            <- password never leaves
-Basic retry      req 1: Authorization = Basic cm9vdDpzM2NyM3QtZmxlZXQtcHc=
-                                        -> 'root:s3cr3t-fleet-pw'    PREEMPTIVE
+Basic retry      req 1: Authorization = Basic <base64 of "root:s3cr3t-fleet-pw">
+                                        readable on the wire         PREEMPTIVE
 attacker returns 500 (so nothing is persisted): 1 Authorization already sent
 ```
 
