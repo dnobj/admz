@@ -22,10 +22,13 @@
 # NOTE: setup.py feeds this file into `install_requires`, so these bounds also
 # become the installed distribution's Requires-Dist. They are not CI-only.
 #
-# Bounding these direct requirements does NOT bound transitives — pydantic,
-# starlette, anyio, cffi, h11 and watchfiles remain unbounded except where an
-# upstream happens to cap them. This shrinks the rolling surface; it does not
-# close it. A constraints file is the proportionate follow-up.
+# Bounding these direct requirements does NOT bound transitives. Two carry
+# ceilings here anyway (#241): starlette — directly imported, and the one
+# package with a proven break (#223) yet no effective ceiling — and cffi,
+# cryptography's native-ABI axis. pydantic, anyio, h11 and watchfiles remain
+# unbounded except where an upstream happens to cap them. This shrinks the
+# rolling surface; it does not close it. A constraints file (#233) is the
+# proportionate follow-up.
 
 hvac>=2.0.0,<3            # installed 2.4.0 (= latest). Vault client for credential-at-rest.
 cryptography>=46.0.0,<47  # installed 46.0.5; latest 50.0.0 is FOUR majors ahead. Fernet
@@ -33,6 +36,14 @@ cryptography>=46.0.0,<47  # installed 46.0.5; latest 50.0.0 is FOUR majors ahead
                           # raised from >=41 (five majors below installed): a backtrack to
                           # 41 must not be legal on this path. 50 also needs cffi>=2.0.0,
                           # i.e. a native rebuild on Windows, not just a Python-level major.
+cffi>=2.0,<3              # installed 2.0.0. TRANSITIVE — cryptography's C FFI layer, not
+                          # imported by admz — and the one deliberate pseudo-direct entry
+                          # (#241): nothing else caps it (cryptography sets only a floor),
+                          # and a cffi major is a native ABI change requiring a Windows
+                          # rebuild, not a Python-level bump. Requires-Dist consequence
+                          # acknowledged: this reads as a direct dep of the admz
+                          # distribution; the constraints file (#233) is its correct
+                          # eventual home, this line moves there when #233 lands.
 
 # fastapi and mcp: bounds shipped in #222 and resolved in #223. UNCHANGED by
 # #227 — the reasoning below is merged and still current.
@@ -76,6 +87,13 @@ cryptography>=46.0.0,<47  # installed 46.0.5; latest 50.0.0 is FOUR majors ahead
 #   tool dispatch. admz/mcp/server.py now performs that check itself — do not
 #   delete it assuming the SDK still does it.
 fastapi>=0.104.0,<1
+starlette>=0.52,<0.53     # installed 0.52.1. Imported directly (admz/security_headers.py) —
+                          # same rule as jsonschema and websockets below. Until #241 its only
+                          # ceiling was fastapi's `<1`, which is no boundary at all on a
+                          # 0.y.z package's own breaking axis — and starlette is the package
+                          # whose 1.x break cost 70 TemplateResponse call sites and 82 tests
+                          # (#223/#224). Pre-1.0 minor axis; one-minor window, deliberate,
+                          # same as uvicorn and zeroconf: the bump is visible and CI proves it.
 uvicorn[standard]>=0.40.0,<0.41  # installed 0.40.0; latest 0.52.1. Pre-1.0, so EVERY minor
                           # is a permitted breaking change and `<1` would be useless. Floor
                           # raised from >=0.24 (16 minors below installed). One-minor window
