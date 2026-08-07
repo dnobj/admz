@@ -305,16 +305,26 @@ async def acs_rule_fired(request: Request):
 
 @router.post("/api/acs/webhook-token/regenerate")
 async def acs_webhook_regenerate(request: Request):
-    """Rotate the webhook shared secret (authenticated operator action)."""
+    """Rotate the webhook shared secret and return the new value.
+
+    Gate: **reveal-group membership**, not merely an authenticated identity
+    (#350). This response body *contains the credential*, so anything weaker
+    than the gate guarding a read would be a read gate with one extra click —
+    a caller refused by `GET /api/fleet/settings/acs_webhook_token/reveal`
+    could rotate and be handed the new token instead. The cost of the stricter
+    gate is that rotation now needs the same membership as revealing, which is
+    the intended equivalence: both hand over a live credential.
+    """
     from admz.auth import get_current_principal
-    from admz.authz import require_authenticated_principal
+    from admz.authz import require_reveal_permission
     from admz.audit import record_event
     from admz.modules.acs_pro.webhook import regenerate_token
 
     principal = await get_current_principal(request)
-    require_authenticated_principal(principal)
+    reason = require_reveal_permission(principal)
     tok = regenerate_token()
-    record_event(principal, "acs.webhook_token.regenerate", resource="acs:webhook")
+    record_event(principal, "acs.webhook_token.regenerate", resource="acs:webhook",
+                 details={"decision": reason})
     return {"success": True, "token": tok}
 
 
@@ -343,6 +353,16 @@ async def acs_page(request: Request):
     host = request.headers.get("host") or f"127.0.0.1:{_os.getenv('ADMZ_PORT', '4242')}"
     scheme = request.url.scheme or "http"
 
+    # #350: the page reports only WHETHER a token exists. The value is read
+    # through the group-gated, audited reveal endpoint like every other
+    # sensitive fleet setting — rendering it here put a live credential in the
+    # page source for any principal the reveal gate would have refused.
+    #
+    # `create=False` matters independently: the default `create=True` MINTS and
+    # PERSISTS a token as a side effect, so loading this page used to write a
+    # protected setting with no principal and no audit row.
+    webhook_token_set = bool(get_token(create=False))
+
     # Firebird firing-reader status (named rule firings without a per-rule edit).
     from admz.modules.acs_pro.firebird import firebird_available, firebird_enabled
     fb_available, fb_reason = firebird_available()
@@ -358,7 +378,7 @@ async def acs_page(request: Request):
             "error": None if reachable else version.get("message"),
             "cameras": cameras,
             "webhook_url": f"{scheme}://{host}{WEBHOOK_PATH}",
-            "webhook_token": get_token(),
+            "webhook_token_set": webhook_token_set,
             "firebird_enabled": firebird_enabled(),
             "firebird_available": fb_available,
             "firebird_reason": fb_reason,
