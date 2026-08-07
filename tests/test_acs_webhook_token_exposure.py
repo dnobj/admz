@@ -155,10 +155,55 @@ class TestPageDoesNotRenderTheToken:
         assert "wh-token" in r.text
         assert "/reveal" in r.text
 
-    def test_unconfigured_page_offers_creation_not_a_blank_secret(self, client):
+    def test_unconfigured_page_offers_creation_to_a_reveal_group_member(self, client):
+        _set_principal(client, _windows("alice", ["Administrators"]))
         r = client.get("/acs")
         assert r.status_code == 200
-        assert "Create token" in r.text
+        # Assert on the rendered BUTTON, not the label text: the page's own JS
+        # carries the phrase in a comment, so a bare substring check passes
+        # whether or not the control is there.
+        assert 'id="wh-regen"' in r.text
+        assert ">Create token</button>" in r.text
+
+
+class TestControlsMatchWhatTheViewerMayActuallyDo:
+    """Both reveal and regenerate hand over the credential and take the same
+    gate, so a viewer who cannot pass it must not be shown buttons that could
+    only 403.
+
+    The anonymous principal of an ``ADMZ_AUTH_BACKEND=none`` install is the
+    sharp case: it can never satisfy ``principal_can_reveal`` (always denied
+    since #346), and the page no longer auto-mints, so a "Create token" button
+    would be a dead end with no working path behind it. The out-of-band route
+    — the same one every protected setting uses — is named instead.
+    """
+
+    def test_anonymous_sees_no_dead_end_buttons(self, client):
+        r = client.get("/acs")
+        assert r.status_code == 200
+        assert 'id="wh-regen"' not in r.text
+        assert ">Create token</button>" not in r.text
+        assert 'id="wh-reveal-controls"' not in r.text
+
+    def test_anonymous_is_told_the_out_of_band_route(self, client):
+        r = client.get("/acs")
+        assert "admz settings set acs_webhook_token" in r.text
+        assert "reveal groups" in r.text
+
+    def test_non_member_sees_no_dead_end_buttons(self, client):
+        _seed_token(client)
+        _set_principal(client, _windows("carol", ["Users"]))
+        r = client.get("/acs")
+        assert 'id="wh-regen"' not in r.text
+        assert TOKEN_VALUE not in r.text
+
+    def test_member_gets_the_controls(self, client):
+        _seed_token(client)
+        _set_principal(client, _windows("alice", ["Administrators"]))
+        r = client.get("/acs")
+        assert 'id="wh-regen"' in r.text
+        assert "Regenerate" in r.text
+        assert TOKEN_VALUE not in r.text  # controls, still not the value
 
 
 class TestPageDoesNotMintAToken:

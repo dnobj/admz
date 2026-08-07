@@ -363,6 +363,17 @@ async def acs_page(request: Request):
     # protected setting with no principal and no audit row.
     webhook_token_set = bool(get_token(create=False))
 
+    # Whether to offer the controls at all. Both reveal and regenerate hand
+    # over the credential and take the same gate, so a viewer who cannot pass
+    # it gets guidance instead of buttons that could only ever 403 — including
+    # the anonymous principal of an `ADMZ_AUTH_BACKEND=none` install, which
+    # can never satisfy it and would otherwise see a "Create token" button
+    # with no working path behind it. The out-of-band route is the same one
+    # every other protected key uses: `python -m admz settings set`.
+    from admz.auth import get_current_principal
+    from admz.authz import principal_can_reveal, reveal_groups
+    may_manage_token = principal_can_reveal(await get_current_principal(request))[0]
+
     # Firebird firing-reader status (named rule firings without a per-rule edit).
     from admz.modules.acs_pro.firebird import firebird_available, firebird_enabled
     fb_available, fb_reason = firebird_available()
@@ -379,6 +390,8 @@ async def acs_page(request: Request):
             "cameras": cameras,
             "webhook_url": f"{scheme}://{host}{WEBHOOK_PATH}",
             "webhook_token_set": webhook_token_set,
+            "may_manage_token": may_manage_token,
+            "reveal_groups": ", ".join(reveal_groups()),
             "firebird_enabled": firebird_enabled(),
             "firebird_available": fb_available,
             "firebird_reason": fb_reason,
