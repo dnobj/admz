@@ -30,11 +30,26 @@
     <input id="wh-url" readonly value="{{ webhook_url }}" style="padding:6px 9px;border:1px solid var(--border);border-radius:6px;background:var(--panel2);color:var(--text);font-family:var(--mono)">
     <button class="btn sm ghost" type="button" onclick="copyField('wh-url', this)">Copy</button>
     <label class="page-sub">Token</label>
-    <input id="wh-token" readonly value="{{ webhook_token }}" type="password" style="padding:6px 9px;border:1px solid var(--border);border-radius:6px;background:var(--panel2);color:var(--text);font-family:var(--mono)">
-    <span style="white-space:nowrap"><button class="btn sm ghost" type="button" onclick="toggleToken(this)">Show</button>
-      <button class="btn sm ghost" type="button" onclick="copyField('wh-token', this)">Copy</button>
-      <button class="btn sm ghost" type="button" id="wh-regen" style="color:var(--fg-red,#f87171)">Regenerate</button></span>
+    <!-- #350: the value is NOT rendered here. `type="password"` only masks the
+         glyphs — the plaintext used to sit in the page source for any principal
+         the reveal gate would refuse. Reveal fetches it on demand through the
+         group-gated, audited /reveal endpoint, the same chokepoint the fleet
+         settings page uses. -->
+    <input id="wh-token" readonly type="password" data-revealed="false"
+           value="{% if webhook_token_set %}••••••••••••{% endif %}"
+           placeholder="Not configured yet — Regenerate to create one"
+           style="padding:6px 9px;border:1px solid var(--border);border-radius:6px;background:var(--panel2);color:var(--text);font-family:var(--mono)">
+    <span style="white-space:nowrap">{% if may_manage_token %}<span id="wh-reveal-controls" {% if not webhook_token_set %}hidden{% endif %}><button class="btn sm ghost" type="button" onclick="toggleToken(this)">Show</button>
+      <button class="btn sm ghost" type="button" onclick="copyToken(this)">Copy</button></span>
+      <button class="btn sm ghost" type="button" id="wh-regen" style="color:var(--fg-red,#f87171)">{% if webhook_token_set %}Regenerate{% else %}Create token{% endif %}</button>{% endif %}</span>
   </div>
+  {% if not may_manage_token %}
+  <p class="page-sub" style="margin:8px 0 0">
+    {% if webhook_token_set %}Revealing the token requires membership in one of the reveal groups ({{ reveal_groups }}).
+    {% else %}No webhook token is configured, and creating one requires membership in one of the reveal groups ({{ reveal_groups }}).
+    An operator with shell access can also set it out of band with <code>python -m admz settings set acs_webhook_token &lt;value&gt;</code>, the same route every other protected setting uses.{% endif %}
+  </p>
+  {% endif %}
   <details style="margin-top:10px">
     <summary class="page-sub" style="cursor:pointer">How to configure it in ACS</summary>
     <div class="page-sub" style="margin-top:6px;line-height:1.6">
@@ -157,10 +172,40 @@ function copyField(id, btn) {
   if (wasPw) el.type = 'password';
   var t = btn.textContent; btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = t; }, 1200);
 }
-function toggleToken(btn) {
+// #350: the token is never in the page until the operator asks for it, and
+// asking goes through the same group-gated + audited endpoint as every other
+// sensitive fleet setting. A 403 here is the real answer (not in a reveal
+// group), so surface the endpoint's own message rather than inventing one.
+const WH_TOKEN_KEY = 'acs_webhook_token';
+
+async function revealToken() {
+  var el = document.getElementById('wh-token');
+  if (!el) return null;
+  if (el.dataset.revealed === 'true') return el.value;
+  var r = await fetch('/api/fleet/settings/' + WH_TOKEN_KEY + '/reveal');
+  if (!r.ok) {
+    var detail = 'HTTP ' + r.status;
+    try { var b = await r.json(); if (b && b.detail) detail = b.detail; } catch (e) { /* keep the code */ }
+    alert(detail);
+    return null;
+  }
+  var d = await r.json();
+  el.value = d.value;
+  el.dataset.revealed = 'true';
+  return d.value;
+}
+
+async function toggleToken(btn) {
   var el = document.getElementById('wh-token'); if (!el) return;
-  if (el.type === 'password') { el.type = 'text'; btn.textContent = 'Hide'; }
-  else { el.type = 'password'; btn.textContent = 'Show'; }
+  if (el.type === 'text') { el.type = 'password'; el.value = '••••••••••••'; el.dataset.revealed = 'false'; btn.textContent = 'Show'; return; }
+  if (await revealToken() === null) return;
+  el.type = 'text';
+  btn.textContent = 'Hide';
+}
+
+async function copyToken(btn) {
+  if (await revealToken() === null) return;
+  copyField('wh-token', btn);
 }
 (function () {
   var body = document.getElementById('ev-body');
@@ -173,7 +218,20 @@ function toggleToken(btn) {
     try {
       var r = await fetch('/api/acs/webhook-token/regenerate', { method: 'POST' });
       var d = await r.json();
-      if (d.success && d.token) { var f = document.getElementById('wh-token'); f.value = d.token; f.type = 'text'; }
+      // #350: this endpoint now requires reveal-group membership, because its
+      // response carries the credential. Show its 403 detail as-is.
+      if (!r.ok) { alert(d && d.detail ? d.detail : 'HTTP ' + r.status); }
+      else if (d.success && d.token) {
+        var f = document.getElementById('wh-token');
+        f.value = d.token; f.type = 'text'; f.dataset.revealed = 'true';
+        // First creation flips the widget into its configured state. Without
+        // this the Show/Copy controls stay hidden and the button keeps its
+        // creation label, so a second click silently rotates a credential the
+        // operator has not copied yet.
+        var ctrls = document.getElementById('wh-reveal-controls');
+        if (ctrls) ctrls.hidden = false;
+        regen.textContent = 'Regenerate';
+      }
     } catch (e) { alert('Failed to regenerate.'); }
     regen.disabled = false;
   });

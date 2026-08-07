@@ -80,8 +80,18 @@ to those two surfaces and never mentioned the HTML page, which had its
 (#158). `gemini_api_key` and `acs_webhook_token` — named in FR-SEC-007a
 below as secrets since #214 — rendered in plaintext directly in that page's
 HTML, no gate at all, the whole time #214's corrected wording sat one
-paragraph above describing a *different* route as fixed. The doc was
-locally accurate and globally misleading — precisely the shape CLAUDE.md's
+paragraph above describing a *different* route as fixed.
+
+**And it happened a third time, on a third page.** #158 fixed
+`/fleet-settings`; a post-merge audit then found `GET /acs` still rendering
+`acs_webhook_token` into its own HTML — the ACS page builds its own template
+context and so nothing in #158's fix reached it (#350, fixed: the page now
+reports only *whether* a token exists and Reveal fetches through the gated
+endpoint). Three pages, three separate fixes, one predicate that was correct
+the whole time. **The lesson is not "check the predicate" — it is that a
+template context is a reveal surface, and every page that builds its own is
+its own gate.** The doc was locally accurate and globally misleading —
+precisely the shape CLAUDE.md's
 own "not live" incident (#214, a different one) warns every session to
 watch for: a true sentence about the part that was checked, read as a
 claim about the whole.
