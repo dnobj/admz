@@ -18,10 +18,10 @@ retry buffer.
 
 ## Exploration verified (against `plan/acs-refire-on-callback-failure`, cut from master @ ce8d048)
 
-**`evaluate` has a single raise path.** [evaluator.py:64-81](admz/events/evaluator.py):
+**`evaluate` has a single raise path.** [evaluator.py:64-81](../../../admz/events/evaluator.py):
 
 - `self._refresh()` at `:65` is **unguarded** — `DetectionStore.list()` uses `try`/*`finally`* with no
-  `except` ([detections.py:180-192](admz/events/detections.py)), so a sqlite error propagates out of
+  `except` ([detections.py:180-192](../../../admz/events/detections.py)), so a sqlite error propagates out of
   `evaluate` to whoever called it.
 - Everything else is swallowed. The per-rule body is wrapped at `:70-81`, so a malformed rule, a
   matcher error, a bad cooldown or a failed pre-auth check **cannot** raise.
@@ -30,7 +30,7 @@ retry buffer.
 - `_device_tags` catches its own failures at `:46-51`.
 
 **And that path is compound-rare.** `_refresh` only touches the DB when
-`self.store.version != self._rules_version` ([evaluator.py:37](admz/events/evaluator.py)). In steady
+`self.store.version != self._rules_version` ([evaluator.py:37](../../../admz/events/evaluator.py)). In steady
 state that is an integer comparison which cannot raise. So an `on_event` failure needs *both* a
 detection-rule mutation *and* a sqlite read error on the very next event.
 
@@ -45,19 +45,19 @@ and only one of them can retry:
 
 | Path | Site | Log level today | Retry available? |
 |---|---|---|---|
-| Device WS stream | [wsstream.py:203-209](admz/events/wsstream.py) | `debug` | **None** — a WS event is delivered once |
-| ACS recorded-events poll | [acs_ingest.py](admz/events/acs_ingest.py) | `warning`, once/streak (#253) | the `ACS_LOOKBACK_HOURS` window |
-| ACS Firebird poll | [acs_firebird_ingest.py:116-128](admz/events/acs_firebird_ingest.py) | `debug` | **None** — `_hw_id` advances at `:121-122` *before* the fire, and the cursor is pushed server-side |
-| ACS webhook | [routes.py:270-272](admz/modules/acs_pro/routes.py) | **`except: pass`** — fully silent | **None** |
-| Direct/test callers | [test_event_detections.py:130](tests/test_event_detections.py) | — | — |
+| Device WS stream | [wsstream.py:203-209](../../../admz/events/wsstream.py) | `debug` | **None** — a WS event is delivered once |
+| ACS recorded-events poll | [acs_ingest.py](../../../admz/events/acs_ingest.py) | `warning`, once/streak (#253) | the `ACS_LOOKBACK_HOURS` window |
+| ACS Firebird poll | [acs_firebird_ingest.py:116-128](../../../admz/events/acs_firebird_ingest.py) | `debug` | **None** — `_hw_id` advances at `:121-122` *before* the fire, and the cursor is pushed server-side |
+| ACS webhook | [routes.py:270-272](../../../admz/modules/acs_pro/routes.py) | **`except: pass`** — fully silent | **None** |
+| Direct/test callers | [test_event_detections.py:130](../../../tests/test_event_detections.py) | — | — |
 
 **There is no fire-failure counter.** #253 added a `_warned_fire_failed` latch but no metric, and
-`status()` exposes none ([acs_ingest.py](admz/events/acs_ingest.py)). So "the gap is loud" is true of
+`status()` exposes none ([acs_ingest.py](../../../admz/events/acs_ingest.py)). So "the gap is loud" is true of
 the log and false of every machine-readable surface — which matters for option 3.
 
 **The sibling already made this exact fix.** #249 gave `WatchGate._refresh` the shape being proposed
 here: on a failed store read, keep the previous specs, do not advance the version cursor, warn once per
-streak, return ([subscriptions.py:51-91](admz/events/subscriptions.py)). `DetectionEvaluator._refresh`
+streak, return ([subscriptions.py:51-91](../../../admz/events/subscriptions.py)). `DetectionEvaluator._refresh`
 is the same method in the same subsystem and did not get the same treatment.
 
 ## D1 — fire before appending: **reject**
@@ -139,7 +139,7 @@ Why this is the right level:
 rule that was disabled moments earlier. Today's alternative is to drop the event entirely and fire
 *nothing at all* — including every rule that is still enabled. Staleness is bounded to one refresh
 cycle and `pre_authorized` still gates every service-affecting action
-([evaluator.py:76-77](admz/events/evaluator.py)). `WatchGate` accepted the identical trade for
+([evaluator.py:76-77](../../../admz/events/evaluator.py)). `WatchGate` accepted the identical trade for
 `_specs` in #249 (a just-deleted watched event keeps capturing for one cycle), so this is consistency
 rather than a new risk appetite.
 
@@ -161,7 +161,7 @@ have to be observed."
 - `__init__`: add `self._refresh_failing = False`.
 - `_refresh()`: wrap the `store.list()` call; on exception keep `self._rules` and `self._rules_version`
   unchanged, warn once per streak (debug thereafter), and return. Log recovery once, mirroring
-  [subscriptions.py:86-88](admz/events/subscriptions.py).
+  [subscriptions.py:86-88](../../../admz/events/subscriptions.py).
 - No change to `evaluate`, `_fire`, or the matcher.
 
 Log-level only (no behaviour change): `admz/events/wsstream.py`,
@@ -180,7 +180,7 @@ Deterministic throughout — fake stores, no sleeps, no threads, no wall-clock r
 authoritative leg.
 
 `tests/test_event_detections.py` (mirroring the `TestWatchGateRefreshFailure` block #249 added to
-[test_events_watched_scoping.py](tests/test_events_watched_scoping.py)):
+[test_events_watched_scoping.py](../../../tests/test_events_watched_scoping.py)):
 
 - **`evaluate` does not raise when the rule store does.** A store whose `list()` raises once →
   `evaluate` returns normally. Fails now (the exception propagates), passes after.
@@ -237,7 +237,7 @@ during implementation" block gains a one-line pointer to it.
 ## Out of scope
 
 Any change to the ACS poller's identity gate or `_seeded` (ADR-0057 stands). `EventStore.has()` — only
-D1 needed it. Retrying a *detached* `_fire` action failure ([evaluator.py:79](admz/events/evaluator.py))
+D1 needed it. Retrying a *detached* `_fire` action failure ([evaluator.py:79](../../../admz/events/evaluator.py))
 — that path already records `record_fire` + an audit row and is a separate concern. GH #125.
 
 ## Critical files
@@ -247,5 +247,5 @@ Edit: `admz/events/evaluator.py` (the change), `admz/events/wsstream.py`,
 `admz/events/acs_firebird_ingest.py`, `admz/modules/acs_pro/routes.py`, `admz/events/acs_ingest.py`
 (log levels + counter), `tests/test_event_detections.py`, ADR-0057 (one-line pointer), `INDEX.md`.
 Reuse, don't reimplement: `WatchGate._refresh`'s failure branch
-([subscriptions.py:72-91](admz/events/subscriptions.py)) — this is that code, in the sibling method.
+([subscriptions.py:72-91](../../../admz/events/subscriptions.py)) — this is that code, in the sibling method.
 Read before touching: ADR-0057 and #249's diff.

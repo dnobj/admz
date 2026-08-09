@@ -17,19 +17,19 @@ auto**.
 
 Exploration verified (against `feat/rule-grounding` working tree):
 - ADR-0047 slice 3 already prescribes the push mechanism: synthetic DriftFields (expected =
-  fragment value) → `RestoreBuilder.build_targeted_revert_plan` ([restore.py:155](admz/snapshot/restore.py))
+  fragment value) → `RestoreBuilder.build_targeted_revert_plan` ([restore.py:155](../../../admz/snapshot/restore.py))
   → one gated plan (the `scenarios.py` concat pattern) — no new device-touch path.
 - **"Activation state transitions on plan COMPLETION"** is mandated but unmechanized — and the same
   gap is the live marker-before-approval bug (`scenarios.py:57/:125` set `active_scenario` before
   `execute_gated_plan`; chip task_7f8c285b).
 - Plan steps are catalog-ops-only with no inter-step data flow; but action executors are arbitrary
   async Python behind one approval, and `plan_summary_json` round-trips through
-  `_register_plan_from_session` ([operations.py:448](admz/operations.py)) — a JSON completion payload
+  `_register_plan_from_session` ([operations.py:448](../../../admz/operations.py)) — a JSON completion payload
   crosses the MCP-subprocess→web-process boundary for free.
 - **A rule's condition topic is published by the device independent of the rule** (AOA scenario, VMD
   ProfileANY, IO/Port) — it IS the "watched event that correlates to the demo". Signals are free-form
   `{label, topic|category, device_id|role}` dicts matched by substring against the event store.
-- `validate_assignment` ([fragments.py:143](admz/demos/fragments.py)) already accepts
+- `validate_assignment` ([fragments.py:143](../../../admz/demos/fragments.py)) already accepts
   `mode="require"` for non-writable facets; only the MCP schema hardcodes `mode:"set"`.
 - Ingest is one global fleet flag, toggled only where `ctx.event_supervisor` lives (web process) —
   which is exactly where approved action sessions execute.
@@ -77,7 +77,7 @@ Handlers:
   `owner == demo.id`; `demo_set` rows push `expected` (holds base), `demo_broken` rows push new
   `base_value`; nothing to push → plain `deactivate_demo_core`. Plan with `demo_deactivation` handler.
 - `admz/snapshot/models.py`: `DriftField.base_value: Optional[str] = None`, set at the
-  `demo_set`/`demo_broken` construction sites in [drift.py:185-201](admz/snapshot/drift.py)
+  `demo_set`/`demo_broken` construction sites in [drift.py:185-201](../../../admz/snapshot/drift.py)
   (`base_val` already in scope).
 - `admz/demos/actions.py`: `prepare_demo_core`/`end_demo_core` three-way routing — legacy scenario
   branch unchanged; fragments non-empty → the new cores; else current error reworded toward capture.

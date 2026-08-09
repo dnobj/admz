@@ -114,7 +114,7 @@ completed or in-flight plan fails.
 When a plan targets multiple devices, the engine respects the
 fleet semaphore (`ADMZ_SNAPSHOT_FLEET_CONCURRENCY`, default in
 `admz/snapshot/engine.py`). Phase 3D, validated by
-[test_fleet_concurrency.py](../../tests/test_fleet_concurrency.py).
+[test_fleet_concurrency.py](../../../tests/test_fleet_concurrency.py).
 
 ## Known limitations
 

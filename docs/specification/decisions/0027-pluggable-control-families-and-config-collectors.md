@@ -120,7 +120,7 @@ The flat "device = box" model is extended with:
   with devices ADMZ manages directly, records the ACS server that owns them.
   A single site may have **multiple ACS servers** — ACS server records are
   site-scoped entities within the Org → Site → Group hierarchy
-  (see [hierarchy.md](hierarchy.md)).
+  (see [hierarchy.md](../requirements/hierarchy.md)).
 
 ### 4. Sequence of work (recommended)
 
@@ -207,7 +207,7 @@ is planned.
 - `control_family` on the device record is a schema migration (additive, null-
   defaulting to `"vapix"`). The migration is straightforward but must be
   coordinated with the Org → Site → Group migration work
-  ([hierarchy.md](hierarchy.md) FR-HIER-007 / NFR-HIER-001).
+  ([hierarchy.md](../requirements/hierarchy.md) FR-HIER-007 / NFR-HIER-001).
 - ACS work carries **pre-condition risk**: if the DB schema is unstable across
   ACS Pro versions, the `AcsCollector` may need per-version adapters. This
   risk is why Phase 3a is a read-only, spike-first approach.

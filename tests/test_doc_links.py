@@ -48,55 +48,17 @@ DOC_DIRS = ("docs",)
 #: Vendored third-party documentation — see the module docstring.
 EXCLUDE = ("docs/vapix-docs/",)
 
-#: Pre-existing broken links, as ``(doc, target)``. **A baseline, not an
-#: exemption.** Two classes, both real 404s on GitHub, and both needing
-#: judgement that this guard's own PR should not be making: plan files writing
-#: repo-root-relative paths (``admz/events/store.py`` from
-#: ``docs/specification/plans/``), and links to things that moved or were never
-#: written (the catalog now lives in the ``axis-api-atlas`` repo; ``hierarchy.md``
-#: and ``plans/dev-prod-split.md`` exist nowhere).
+#: Escape hatch for a broken link that genuinely cannot be fixed yet, as
+#: ``(doc, target)``. **Empty, and that is the point** — it held 32 entries when
+#: the checker landed, and GH #376 burned all of them down: 49 repo-root-relative
+#: paths in plan files (`admz/events/store.py` from `docs/specification/plans/`,
+#: which needed `../../../`), plus four that had moved or never existed.
 #:
-#: ``test_the_baseline_only_shrinks`` fails once an entry starts resolving, so
-#: the set cannot outlive the debt. Burn-down: GH #376.
-#:
-#: Keyed by ``(doc, target)``, not by line — so a *new* occurrence of an
-#: already-listed broken target, elsewhere in the same document, is grandfathered
-#: in silently. Accepted: keying by line would churn the set on every edit above
-#: it, which is how baselines get bulk-regenerated and stop meaning anything.
-KNOWN_BROKEN = {
-    ("docs/specification/INDEX.md", "plans/dev-prod-split.md"),
-    ("docs/specification/decisions/0001-organize-catalog-by-cgi.md", "../../../catalog/vapix/index/by-risk.yaml"),
-    ("docs/specification/decisions/0001-organize-catalog-by-cgi.md", "../../../catalog/vapix/index/by-task.yaml"),
-    ("docs/specification/decisions/0027-pluggable-control-families-and-config-collectors.md", "hierarchy.md"),
-    ("docs/specification/plans/acs-poller-watermark.md", "admz/api/routes/events.py"),
-    ("docs/specification/plans/acs-poller-watermark.md", "admz/events/acs_firebird_ingest.py"),
-    ("docs/specification/plans/acs-poller-watermark.md", "admz/events/acs_ingest.py"),
-    ("docs/specification/plans/acs-poller-watermark.md", "admz/events/config.py"),
-    ("docs/specification/plans/acs-poller-watermark.md", "admz/events/evaluator.py"),
-    ("docs/specification/plans/acs-poller-watermark.md", "admz/events/ingest.py"),
-    ("docs/specification/plans/acs-poller-watermark.md", "admz/events/store.py"),
-    ("docs/specification/plans/acs-poller-watermark.md", "admz/modules/acs_pro/events.py"),
-    ("docs/specification/plans/acs-poller-watermark.md", "admz/modules/acs_pro/routes.py"),
-    ("docs/specification/plans/acs-poller-watermark.md", "admz/modules/acs_pro/tools.py"),
-    ("docs/specification/plans/acs-poller-watermark.md", "admz/snapshot/ignore.py"),
-    ("docs/specification/plans/acs-poller-watermark.md", "tests/test_acs_detections.py"),
-    ("docs/specification/plans/acs-poller-watermark.md", "tests/test_acs_event_ingest.py"),
-    ("docs/specification/plans/acs-refire-on-callback-failure.md", "admz/events/acs_firebird_ingest.py"),
-    ("docs/specification/plans/acs-refire-on-callback-failure.md", "admz/events/acs_ingest.py"),
-    ("docs/specification/plans/acs-refire-on-callback-failure.md", "admz/events/detections.py"),
-    ("docs/specification/plans/acs-refire-on-callback-failure.md", "admz/events/evaluator.py"),
-    ("docs/specification/plans/acs-refire-on-callback-failure.md", "admz/events/subscriptions.py"),
-    ("docs/specification/plans/acs-refire-on-callback-failure.md", "admz/events/wsstream.py"),
-    ("docs/specification/plans/acs-refire-on-callback-failure.md", "admz/modules/acs_pro/routes.py"),
-    ("docs/specification/plans/acs-refire-on-callback-failure.md", "tests/test_event_detections.py"),
-    ("docs/specification/plans/acs-refire-on-callback-failure.md", "tests/test_events_watched_scoping.py"),
-    ("docs/specification/plans/demo-setup-wizard.md", "admz/demos/fragments.py"),
-    ("docs/specification/plans/demo-setup-wizard.md", "admz/operations.py"),
-    ("docs/specification/plans/demo-setup-wizard.md", "admz/snapshot/drift.py"),
-    ("docs/specification/plans/demo-setup-wizard.md", "admz/snapshot/restore.py"),
-    ("docs/specification/requirements/plans.md", "../../tests/test_fleet_concurrency.py"),
-    ("docs/specification/requirements/snapshot-restore.md", "../../tests/test_fleet_concurrency.py"),
-}
+#: Adding an entry is not how you fix a broken link. It is for a target that is
+#: legitimately absent right now — a file a merged-but-unshipped plan will add —
+#: and `test_the_baseline_only_shrinks` fails the moment one starts resolving,
+#: so an entry cannot outlive its reason.
+KNOWN_BROKEN: set = set()
 
 #: ``[text](target)`` — target captured up to the first space (Markdown allows
 #: a trailing "title") or the closing paren.
@@ -215,3 +177,12 @@ class TestTheCheckerItself:
         for t in ("https://example.com", "http://x", "mailto:a@b", "#heading"):
             assert _is_checkable(t) is False
         assert _is_checkable("a/b.md") is True
+
+
+def test_the_baseline_is_empty():
+    """GH #376 burned it down. Re-populating it should be a deliberate act that
+    fails a test named for what it means, not a quiet way to land a bad link."""
+    assert KNOWN_BROKEN == set(), (
+        "KNOWN_BROKEN is an escape hatch for a target that legitimately does "
+        "not exist yet, not a place to put a link you could fix:\n  "
+        + "\n  ".join(f"{d} -> {t}" for d, t in sorted(KNOWN_BROKEN)))
