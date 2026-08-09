@@ -282,23 +282,43 @@ class TestRetention:
 
 
 class TestPreview:
+    @pytest.fixture(autouse=True)
+    def _one_loop(self):
+        """See `TestPreviewReaper._one_loop`: since GH #172 a `PreviewManager`
+        owns a reaper task, so opening under one loop and discarding it leaves
+        the task destroyed-pending. These tests predate the reaper and acquired
+        one implicitly."""
+        self._mgrs = []
+        self._lp = asyncio.new_event_loop()
+        try:
+            yield
+            for m in self._mgrs:
+                self._lp.run_until_complete(m.aclose())
+        finally:
+            self._lp.close()
+
+    def _go(self, coro):
+        return self._lp.run_until_complete(coro)
+
     def _mgr(self):
         from admz.events.preview import PreviewManager
-        return PreviewManager(registry=_Reg([{"device_id": "a"}, {"device_id": "b"}]))
+        m = PreviewManager(registry=_Reg([{"device_id": "a"}, {"device_id": "b"}]))
+        self._mgrs.append(m)
+        return m
 
     def test_capacity_cap(self, monkeypatch):
         import admz.events.config as c
         from admz.events.preview import PreviewCapacityError
         monkeypatch.setattr(c, "MAX_PREVIEW_STREAMS", 2)
         mgr = self._mgr()
-        _run(mgr.open(["a", "b"]))          # 2 device-streams → at cap
+        self._go(mgr.open(["a", "b"]))          # 2 device-streams → at cap
         with pytest.raises(PreviewCapacityError):
-            _run(mgr.open(["c"]))           # one more would exceed
+            self._go(mgr.open(["c"]))           # one more would exceed
 
     def test_open_requires_device(self):
         mgr = self._mgr()
         with pytest.raises(ValueError):
-            _run(mgr.open([]))
+            self._go(mgr.open([]))
 
     def test_session_fanout_replays_ring_then_live(self):
         from admz.events.preview import PreviewSession
@@ -318,7 +338,7 @@ class TestPreview:
             await agen.aclose()
             return got, [r1, r2, r3]
 
-        got, expected = _run(scenario())
+        got, expected = self._go(scenario())
         assert [g["id"] for g in got] == [e["id"] for e in expected]
 
     def test_session_persists_nothing(self):
@@ -329,7 +349,7 @@ class TestPreview:
         s = PreviewSession(["a"], registry=mgr.registry, manager=mgr)
         assert s.stream_count == 1
         # ring buffering doesn't touch any store
-        _run(s._push(_rec()))
+        self._go(s._push(_rec()))
         assert len(s.ring_snapshot()) == 1
 
     def test_idle_expired(self, monkeypatch):
@@ -359,14 +379,26 @@ class TestPreviewReaper:
         return PreviewManager(registry=_Reg([{"device_id": "a"}, {"device_id": "b"}]))
 
     @pytest.fixture(autouse=True)
-    def _no_dangling_reaper(self):
-        """Each `_run` builds a fresh loop and discards it, so a reaper left
-        running is destroyed pending. Closing managers keeps that noise out of
-        the suite — and exercises `aclose()` on every test here."""
+    def _one_loop(self):
+        """One event loop for the whole test, and every manager closed on it.
+
+        The module's `_run` builds a fresh loop per call and discards it. That
+        is fine for plain coroutines, but `PreviewManager` now owns a task: a
+        manager opened under one loop and closed under another leaves the
+        reaper "cancelling" forever and destroyed pending. Cancelling a task
+        from a different loop is not a thing you can do.
+        """
         self._mgrs = []
-        yield
-        for m in self._mgrs:
-            _run(m.aclose())
+        self._lp = asyncio.new_event_loop()
+        try:
+            yield
+            for m in self._mgrs:
+                self._lp.run_until_complete(m.aclose())
+        finally:
+            self._lp.close()
+
+    def _go(self, coro):
+        return self._lp.run_until_complete(coro)
 
     def _open_mgr(self):
         m = self._mgr()
@@ -389,19 +421,19 @@ class TestPreviewReaper:
         monkeypatch.setattr(c, "MAX_PREVIEW_STREAMS", 2)
         monkeypatch.setattr(c, "PREVIEW_IDLE_TIMEOUT", 10.0)
         mgr = self._open_mgr()
-        s = _run(mgr.open(["a", "b"]))              # at cap
+        s = self._go(mgr.open(["a", "b"]))              # at cap
         s._last_subscriber_at = time.time() - 1000  # tab died; generator never finalised
-        assert _run(mgr.reap()) == 1
+        assert self._go(mgr.reap()) == 1
         assert mgr._sessions == []
-        _run(mgr.open(["a"]))                       # the budget is usable again
+        self._go(mgr.open(["a"]))                       # the budget is usable again
 
     def test_a_subscribed_session_is_never_reaped(self):
         """The guard must not close a preview someone is watching."""
         mgr = self._open_mgr()
-        s = _run(mgr.open(["a"]))
+        s = self._go(mgr.open(["a"]))
         s._last_subscriber_at = time.time() - 10_000
         s._queues.append(object())                  # a live subscriber
-        assert _run(mgr.reap()) == 0
+        assert self._go(mgr.reap()) == 0
         assert mgr._sessions == [s]
 
     def test_max_duration_is_enforced_without_an_iterating_subscriber(self, monkeypatch):
@@ -411,12 +443,12 @@ class TestPreviewReaper:
         import admz.events.config as c
         monkeypatch.setattr(c, "PREVIEW_MAX_SECONDS", 60.0)
         mgr = self._open_mgr()
-        s = _run(mgr.open(["a"]))
+        s = self._go(mgr.open(["a"]))
         s._queues.append(object())                  # "subscribed", but parked
         s._started_at = time.time() - 10_000
         assert s.idle_expired() is False            # not idle — a queue is present
         assert s.duration_expired() is True
-        assert _run(mgr.reap()) == 1
+        assert self._go(mgr.reap()) == 1
 
     def test_open_reaps_before_measuring_the_cap(self, monkeypatch):
         """Otherwise an abandoned session refuses a legitimate preview for up to
@@ -425,9 +457,9 @@ class TestPreviewReaper:
         monkeypatch.setattr(c, "MAX_PREVIEW_STREAMS", 2)
         monkeypatch.setattr(c, "PREVIEW_IDLE_TIMEOUT", 10.0)
         mgr = self._open_mgr()
-        dead = _run(mgr.open(["a", "b"]))
+        dead = self._go(mgr.open(["a", "b"]))
         dead._last_subscriber_at = time.time() - 1000
-        _run(mgr.open(["c", "d"]))                  # would raise without the reap
+        self._go(mgr.open(["c", "d"]))                  # would raise without the reap
         assert len(mgr._sessions) == 1
 
     def test_a_session_that_fails_to_stop_is_still_released(self, monkeypatch):
@@ -436,26 +468,28 @@ class TestPreviewReaper:
         import admz.events.config as c
         monkeypatch.setattr(c, "PREVIEW_IDLE_TIMEOUT", 10.0)
         mgr = self._open_mgr()
-        s = _run(mgr.open(["a"]))
+        s = self._go(mgr.open(["a"]))
         s._last_subscriber_at = time.time() - 1000
 
         async def boom():
             raise RuntimeError("stop failed")
         s.stop = boom
-        assert _run(mgr.reap()) == 1
+        assert self._go(mgr.reap()) == 1
         assert mgr._sessions == []
 
-    def test_the_reaper_loop_starts_on_open_and_stops_when_idle(self):
+    def test_the_reaper_loop_starts_on_open_and_stops_when_idle(self, monkeypatch):
         """Lazy and self-terminating: no previews open, no task. It cannot live
         in the ingest reconcile loop, which no-ops unless `event_ingest_enabled`
         while preview is deliberately independent of that flag."""
         import admz.events.config as c
         from admz.events.preview import PreviewManager
+        # monkeypatch, not a hand-rolled save/restore: it puts back the *prior*
+        # value rather than a hard-coded default, and survives a hard failure.
+        monkeypatch.setattr(c, "PREVIEW_REAP_INTERVAL", 0.01)
 
         async def scenario():
             mgr = PreviewManager(registry=_Reg([{"device_id": "a"}]))
             assert mgr._reaper is None                 # nothing open → no task
-            c.PREVIEW_REAP_INTERVAL = 0.01
             try:
                 s = await mgr.open(["a"])
                 assert mgr._reaper is not None and not mgr._reaper.done()
@@ -464,9 +498,74 @@ class TestPreviewReaper:
                 assert mgr._sessions == []
                 assert mgr._reaper is None
             finally:
-                c.PREVIEW_REAP_INTERVAL = 30.0
                 await mgr.aclose()
-        _run(scenario())
+        self._go(scenario())
+
+    def test_a_cancelled_stop_still_deregisters(self):
+        """Review finding on #372. `stop()`'s `_stopped` guard means a second
+        caller returns immediately — so if the first is cancelled before
+        `_release`, the session stays in `_sessions` forever holding part of the
+        cap. That is this PR's own bug, arriving through cancellation.
+        """
+        async def scenario():
+            mgr = self._mgr()
+            s = await mgr.open(["a"])
+            started = asyncio.Event()
+
+            async def hang():
+                started.set()
+                await asyncio.sleep(3600)
+            s._stop_streams = hang
+
+            task = asyncio.create_task(s.stop())
+            await started.wait()
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            assert mgr._sessions == []          # released despite the cancel
+            await mgr.aclose()
+        self._go(scenario())
+
+    def test_a_slow_start_cannot_resurrect_a_reaped_session(self):
+        """Review finding on #372. `start()` awaits each device in turn, so a
+        hung connect can outlast the threshold; the reaper then stops and
+        releases the session while `start()` is suspended. Without a `_stopped`
+        check it resumes and keeps opening streams onto a session no longer in
+        `_sessions` — untracked, unreapable, held for the life of the process.
+        """
+        from admz.events import preview as pv
+
+        async def scenario():
+            mgr = self._mgr()
+            session = await mgr.open(["a", "b"])
+            opened, stopped = [], []
+
+            class _Stream:
+                def __init__(self, did, **kw):
+                    self.device_id, self.connected = did, False
+
+                async def start(self):
+                    opened.append(self.device_id)
+                    if len(opened) == 1:
+                        await session.stop()      # the reaper lands mid-start
+
+                async def stop(self):
+                    stopped.append(self.device_id)
+
+            monkey = pv.DeviceEventStream
+            pv.DeviceEventStream = _Stream
+            try:
+                await session.start()
+            finally:
+                pv.DeviceEventStream = monkey
+            assert opened == ["a"]               # bailed out; "b" never opened
+            assert stopped == ["a"]              # and the one it had was closed
+            assert session._streams == []
+            assert mgr._sessions == []
+            await mgr.aclose()
+        self._go(scenario())
 
 
 # ---------------------------------------------------------------------------

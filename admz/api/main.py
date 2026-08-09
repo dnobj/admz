@@ -285,7 +285,12 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        await mcp_pool.stop()
+        # Guarded like every step below it: an exception here used to skip the
+        # whole remaining shutdown sequence (found reviewing #372).
+        try:
+            await mcp_pool.stop()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             from admz.rules.capture import stop_background_purge
             stop_background_purge()

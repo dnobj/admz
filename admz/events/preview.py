@@ -55,7 +55,7 @@ class PreviewSession:
 
     # ----- lifecycle -----
     async def start(self) -> None:
-        if self._streams:
+        if self._streams or self._stopped:
             return
         for did in self.device_ids:
             # store=None → no persistence; event_filter=None → see everything live.
@@ -63,25 +63,45 @@ class PreviewSession:
                                   on_event=self._push, event_filter=None)
             self._streams.append(s)
             await s.start()
+            if self._stopped:
+                # The reaper stopped and released us mid-start (each device is
+                # awaited in turn, so a slow or hung connect can outlast the
+                # idle/duration threshold). Without this check the loop would
+                # carry on opening streams onto a session no longer in
+                # `_sessions` — untracked, unreapable, and holding device
+                # connections for the life of the process.
+                await self._stop_streams()
+                return
         self._started_at = self._last_subscriber_at = time.time()
+
+    async def _stop_streams(self) -> None:
+        streams, self._streams = self._streams, []
+        for s in streams:
+            try:
+                await s.stop()
+            except Exception:  # noqa: BLE001
+                pass
 
     async def stop(self) -> None:
         if self._stopped:
             return
         self._stopped = True
-        for s in self._streams:
-            try:
-                await s.stop()
-            except Exception:  # noqa: BLE001
-                pass
-        self._streams = []
-        # wake any subscribers so their generators can exit
-        for q in list(self._queues):
-            try:
-                q.put_nowait(None)
-            except asyncio.QueueFull:
-                pass
-        self._manager._release(self)
+        try:
+            await self._stop_streams()
+            # wake any subscribers so their generators can exit
+            for q in list(self._queues):
+                try:
+                    q.put_nowait(None)
+                except asyncio.QueueFull:
+                    pass
+        finally:
+            # In `finally` so a CancelledError escaping mid-stop still
+            # deregisters. The `_stopped` guard means a second caller returns
+            # immediately, so if the first one were cancelled before this line
+            # the session would stay in `_sessions` forever, holding part of
+            # MAX_PREVIEW_STREAMS — the leak this whole change removes, arriving
+            # through the cancellation path.
+            self._manager._release(self)
 
     async def _push(self, rec: Dict[str, Any]) -> None:
         self._ring.append(rec)
@@ -212,12 +232,16 @@ class PreviewManager:
                 continue
             try:
                 await session.stop()
-                reaped += 1
             except Exception:  # noqa: BLE001 — one bad session must not stop the sweep
                 logger.warning("preview reap: could not stop %s",
                                session.device_ids, exc_info=True)
                 self._release(session)   # drop it anyway; the alternative is a
-                reaped += 1              # session that can never be reclaimed
+                                         # session that can never be reclaimed
+            # Count releases, not calls: two sweeps can overlap (one from
+            # `open()`, one from the loop) and `stop()`'s re-entry guard returns
+            # immediately for the second, whose session is still mid-teardown.
+            if session not in self._sessions:
+                reaped += 1
         if reaped:
             logger.info("preview reap: stopped %d abandoned session(s)", reaped)
         return reaped
@@ -235,9 +259,15 @@ class PreviewManager:
         """
         if self._reaper is not None and not self._reaper.done():
             return
+        coro = self._reap_loop()
         try:
-            self._reaper = asyncio.create_task(self._reap_loop())
-        except RuntimeError:      # no running loop (sync test / CLI use)
+            self._reaper = asyncio.create_task(coro)
+        except RuntimeError:
+            # No running loop. Unreachable from production — `open()` is async
+            # and awaits before this — so it only guards direct construction in
+            # a sync context. Close the coroutine explicitly: an un-awaited one
+            # would warn, and reaping is genuinely off in that case.
+            coro.close()
             self._reaper = None
 
     async def aclose(self) -> None:
