@@ -137,27 +137,52 @@ def _stop_rule_secret_purge() -> None:
     stop_background_purge()
 
 
-async def _shutdown_step(name: str, fn) -> None:
-    """Run one shutdown step, swallowing anything it raises.
+async def _shutdown_step(name: str, fn):
+    """Run one shutdown step. Returns the ``BaseException`` it raised, if any.
 
-    Logged rather than silently passed: the old hand-written blocks used bare
-    ``except Exception: pass``, so a subsystem failing to stop left no trace at
-    all — and "the service did not shut down cleanly" is exactly the kind of
-    thing you want a line for when the next start behaves oddly.
+    Ordinary failures are logged and swallowed — the old hand-written blocks
+    used bare ``except Exception: pass``, so a subsystem failing to stop left no
+    trace at all, and "the service did not shut down cleanly" is exactly the
+    line you want when the next start behaves oddly.
 
-    ``CancelledError`` is not caught. It is not this step failing; it is the
-    shutdown itself being torn down, and swallowing it would make the loop
-    uncancellable.
+    ``CancelledError`` / ``KeyboardInterrupt`` / ``SystemExit`` are **returned,
+    not re-raised**, so :func:`_run_shutdown` can finish the remaining steps and
+    re-raise afterwards. Re-raising here was the first version of this fix and
+    it reintroduced the bug: a cancellation mid-sequence skipped every step
+    behind it, including the registry close, which is the precise failure #379
+    exists to remove.
     """
     try:
         result = fn()
         if inspect.isawaitable(result):
             await result
-    except asyncio.CancelledError:
-        raise
     except Exception:  # noqa: BLE001 — one step must not skip the rest
         logging.getLogger(__name__).warning(
             "shutdown: %s did not stop cleanly", name, exc_info=True)
+    except BaseException as exc:  # noqa: BLE001 — cancellation / interrupt
+        logging.getLogger(__name__).warning(
+            "shutdown: %s interrupted by %s; continuing with the remaining "
+            "steps", name, type(exc).__name__)
+        return exc
+    return None
+
+
+async def _run_shutdown(steps) -> None:
+    """Run every step, then re-raise the first interrupt any of them raised.
+
+    Once the enclosing task is being cancelled, later awaits tend to raise
+    ``CancelledError`` immediately too — so those steps log and move on, while
+    synchronous ones (notably the registry close) still actually run. Finishing
+    the sequence and re-raising afterwards is strictly better than abandoning
+    it, and the loop stays cancellable.
+    """
+    interrupt = None
+    for name, fn in steps:
+        exc = await _shutdown_step(name, fn)
+        if exc is not None and interrupt is None:
+            interrupt = exc
+    if interrupt is not None:
+        raise interrupt
 
 
 @asynccontextmanager
@@ -350,8 +375,7 @@ async def lifespan(app: FastAPI):
         if callable(close):
             steps.append(("registry", close))
 
-        for name, fn in steps:
-            await _shutdown_step(name, fn)
+        await _run_shutdown(steps)
 
 app = FastAPI(
     title="ADMZ - Axis Device Management Zone",

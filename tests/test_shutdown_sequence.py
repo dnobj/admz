@@ -18,7 +18,7 @@ import asyncio
 
 import pytest
 
-from admz.api.main import _shutdown_step
+from admz.api.main import _run_shutdown, _shutdown_step
 
 
 def _run(coro):
@@ -60,13 +60,18 @@ class TestShutdownStep:
             _run(_shutdown_step("health monitor", boom))
         assert "health monitor" in caplog.text
 
-    def test_cancellation_is_not_swallowed(self):
-        """Not this step failing — the shutdown itself being torn down.
-        Swallowing it would make the lifespan uncancellable."""
+    def test_an_interrupt_is_returned_not_raised(self):
+        """So `_run_shutdown` can finish the remaining steps first. Re-raising
+        here was v1 of this fix and reintroduced the bug it was closing."""
         async def cancelled():
             raise asyncio.CancelledError()
-        with pytest.raises(asyncio.CancelledError):
-            _run(_shutdown_step("x", cancelled))
+        exc = _run(_shutdown_step("x", cancelled))
+        assert isinstance(exc, asyncio.CancelledError)
+
+    def test_an_ordinary_failure_returns_none(self):
+        def boom():
+            raise RuntimeError("no")
+        assert _run(_shutdown_step("x", boom)) is None
 
 
 async def _noop(seen):
@@ -145,10 +150,88 @@ class TestTheRealLifespan:
                 later.append("scheduler")
                 await real_scheduler_stop()
 
+            # The registry close is THE step the bug skipped, and it is last.
+            # Asserting only on the scheduler would pass even if the close were
+            # dropped from the list entirely (review finding on #380).
+            from admz.api import main as main_mod
+            real_close = getattr(main_mod.registry, "close", None)
+            assert callable(real_close), (
+                "premise: the sqlite backend exposes close(), so the "
+                "conditional step is actually in the list")
+
+            def record_close():
+                later.append("registry")
+                return real_close()
+
+            main_mod.registry.close = record_close
             ctx.health_monitor.stop = boom
             ctx.scheduler.stop = record_scheduler
-        # Exiting the context manager ran shutdown. If the health-monitor
-        # failure had propagated — as it did before #379 — the scheduler step
-        # and the registry close behind it would both have been skipped, and
-        # TestClient would have raised out of __exit__.
-        assert later == ["scheduler"]
+        # Exiting the context manager ran shutdown. Before #379 the
+        # health-monitor failure propagated, skipping the scheduler step AND
+        # the registry close behind it, and TestClient raised out of __exit__.
+        assert later == ["scheduler", "registry"]
+
+    def test_the_context_is_not_left_behind_for_later_tests(self):
+        """This class builds real components against a temp dir. If the process
+        global survived, a later test in the same process could pick up a closed
+        registry pointing at a deleted directory."""
+        from fastapi.testclient import TestClient
+
+        from admz.api import context as ctx_mod
+        from admz.api.main import app
+
+        with TestClient(app):
+            pass
+        # Whatever the lifespan installed, put the module back to a state a
+        # later test can safely re-enter: the next TestClient rebuilds it.
+        ctx_mod._ctx = None
+
+
+class TestRunShutdown:
+    """The sequencing half: an interrupt must not abandon the remaining steps."""
+
+    def test_cancellation_still_runs_every_later_step(self):
+        """v1 re-raised immediately, so a cancellation mid-sequence skipped the
+        registry close — the exact failure #379 removes, reintroduced by its
+        own fix."""
+        ran = []
+
+        async def cancelled():
+            raise asyncio.CancelledError()
+
+        steps = [
+            ("events", lambda: ran.append("events")),
+            ("scheduler", cancelled),
+            ("registry", lambda: ran.append("registry")),
+        ]
+        with pytest.raises(asyncio.CancelledError):
+            _run(_run_shutdown(steps))
+        assert ran == ["events", "registry"]
+
+    def test_the_first_interrupt_is_the_one_re_raised(self):
+        async def cancelled():
+            raise asyncio.CancelledError()
+
+        def interrupted():
+            raise KeyboardInterrupt()
+
+        with pytest.raises(asyncio.CancelledError):
+            _run(_run_shutdown([("a", cancelled), ("b", interrupted)]))
+
+    def test_a_keyboard_interrupt_does_not_abandon_cleanup(self):
+        """`except Exception` let BaseException skip the rest — the same hole in
+        a different costume."""
+        ran = []
+
+        def interrupted():
+            raise KeyboardInterrupt()
+
+        with pytest.raises(KeyboardInterrupt):
+            _run(_run_shutdown([("a", interrupted),
+                                ("registry", lambda: ran.append("registry"))]))
+        assert ran == ["registry"]
+
+    def test_no_interrupt_means_no_raise(self):
+        def boom():
+            raise RuntimeError("ordinary")
+        _run(_run_shutdown([("a", boom), ("b", lambda: None)]))
