@@ -48,7 +48,7 @@ See [ADR-0015](../decisions/0015-pluggable-facets.md).
 `ADMZ_SNAPSHOT_FLEET_CONCURRENCY` (default 4) caps in-flight
 device snapshots when running `snapshot_fleet`. Env var or ctor
 arg; invalid env values fall back to default with a warning. Phase
-3D, validated by [test_fleet_concurrency.py](../../tests/test_fleet_concurrency.py).
+3D, validated by [test_fleet_concurrency.py](../../../tests/test_fleet_concurrency.py).
 
 ### FR-SNP-005 — Git-backed snapshot store ✅
 `admz/snapshot/git_repo.py::SnapshotRepo` writes each device's
