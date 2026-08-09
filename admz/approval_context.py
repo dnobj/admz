@@ -43,48 +43,106 @@ So the marker is ambient, and the cost is stated plainly:
 started inside an approval inherits it for the task's whole life, while
 concurrent unrelated work does not see it. That is the correct semantics — the
 operator approved *that survey*, including every device it provisions.
+
+.. warning::
+
+   **A detached task keeps the approval for its whole life, and the parent
+   cannot revoke it.** ``create_task`` *copies* the value; resetting the token
+   in the parent does not reach the child. So a task spawned inside an approval
+   stays approved after ``execute_approved_session`` has returned or been
+   cancelled.
+
+   For the survey this is exactly what is wanted. It is a hazard for any
+   *other* detached task an action executor might spawn, which would carry
+   provisioning authority it was never meant to have. Two things bound it
+   today: only the two provisioning actions establish the marker at all (see
+   ``operations._PROVISIONING_APPROVAL_ACTIONS``), and consumers gate on
+   :func:`is_approved_for` rather than "any approval". If a third action is
+   ever added to that set, check what it spawns.
+
+   Found in review of #361; recorded rather than designed away, because
+   removing propagation would break the survey — the one caller that needs it.
 """
 
 from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Tuple
 
-#: The approved action id, or ``None``. Never ``set()`` outside :func:`approved`.
-_APPROVED: ContextVar[Optional[str]] = ContextVar("admz_approved_action", default=None)
+#: ``(action_id, confirm_token)`` or ``None``. Never ``set()`` outside
+#: :func:`approved`.
+_APPROVED: ContextVar[Optional[Tuple[str, Optional[str]]]] = ContextVar(
+    "admz_approved_action", default=None
+)
 
 
 @contextmanager
-def approved(action: str) -> Iterator[None]:
+def approved(action: str, token: Optional[str] = None) -> Iterator[None]:
     """Mark the enclosed work as already carrying the operator's approval.
 
-    ``action`` is the approved action id (e.g. ``register_discovered_device``).
-    It is recorded so :func:`approved_action` can name it in an audit row —
-    "provisioned under approval X" is a more useful trail than "provisioned".
+    ``action`` is the approved action id; ``token`` is the confirm-session
+    token, carried so a consumer can tell *which* approval covered a write and
+    an audit row can say so.
 
     The ``try/finally`` is not defensive style; it is the thing that stops this
     from being a hole. See the module warning.
     """
-    token = _APPROVED.set(action)
+    ctx_token = _APPROVED.set((action, token))
     try:
         yield
     finally:
-        _APPROVED.reset(token)
+        _APPROVED.reset(ctx_token)
 
 
 def is_approved() -> bool:
-    """True if the current context is running inside an approved action."""
+    """True if the current context is inside *any* approved action.
+
+    .. warning::
+
+       **Do not gate on this.** Use :func:`is_approved_for` with the actions
+       whose approval legitimately covers the write you are about to make.
+       "Some approval is in scope" is not authority to do a different thing —
+       ADR-0034's whole model is that an approval is for a *specific* action,
+       and this predicate throws that away. It exists for audit and debugging.
+    """
     return _APPROVED.get() is not None
 
 
-def approved_action() -> Optional[str]:
-    """The approved action id, or ``None`` — for audit rows, not for gating.
+def is_approved_for(*actions: str) -> bool:
+    """True if the current context is inside an approval for one of ``actions``.
 
-    Gate on :func:`is_approved`. This exists so an approved provisioning can
-    record *which* approval covered it.
+    This is the predicate a gate should use. It was added after review of the
+    first draft (#361): the marker was established for **every** approved
+    action, so approving an unrelated one — a task creation, a rule delete —
+    would have been sufficient authority for provisioning had that executor
+    ever reached the onboarding path. Approval for X is not approval for Y.
     """
-    return _APPROVED.get()
+    current = _APPROVED.get()
+    return current is not None and current[0] in actions
 
 
-__all__ = ["approved", "is_approved", "approved_action"]
+def approved_action() -> Optional[str]:
+    """The approved action id, or ``None`` — for audit rows, not for gating."""
+    current = _APPROVED.get()
+    return current[0] if current else None
+
+
+def approved_token() -> Optional[str]:
+    """The confirm token of the approval in scope, or ``None``.
+
+    Identity, so a consumer can record *which* approval authorised a write —
+    and so a future refinement can require the approval to be the one covering
+    *this* device set. See the detached-task caveat in the module docstring.
+    """
+    current = _APPROVED.get()
+    return current[1] if current else None
+
+
+__all__ = [
+    "approved",
+    "is_approved",
+    "is_approved_for",
+    "approved_action",
+    "approved_token",
+]

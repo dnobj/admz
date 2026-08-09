@@ -25,7 +25,12 @@ import asyncio
 
 import pytest
 
-from admz.approval_context import approved, approved_action, is_approved
+from admz.approval_context import (
+    approved,
+    approved_action,
+    approved_token,
+    is_approved,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +138,7 @@ class TestExecuteApprovedSessionEstablishesContext:
         def _spy(action, registry, git_repo=None):
             seen["approved"] = is_approved()
             seen["action"] = approved_action()
+            seen["token"] = approved_token()
             return {"success": True}
 
         monkeypatch.setitem(
@@ -144,6 +150,71 @@ class TestExecuteApprovedSessionEstablishesContext:
         assert out == {"success": True}
         assert seen["approved"] is True
         assert seen["action"] == "register_discovered_device"
+        assert seen["token"] == "tok-1", "the approval's identity is not carried"
+
+    @pytest.mark.asyncio
+    async def test_an_unrelated_action_gets_no_marker(self, monkeypatch):
+        """**Approval for X is not approval for Y** — found in review (#361).
+
+        The first draft wrapped every action executor. With a gate asking only
+        "is anything approved?", approving a task creation or a rule delete
+        would have authorised provisioning had that executor ever reached the
+        onboarding path. Only the two provisioning-covering actions establish
+        the marker; everything else runs unmarked and therefore gates.
+        """
+        from admz import operations
+        from types import SimpleNamespace
+
+        seen = {}
+
+        def _spy(action, registry, git_repo=None):
+            seen["approved"] = is_approved()
+            return {"success": True}
+
+        monkeypatch.setitem(operations._ACTION_EXECUTORS, "delete_task", _spy)
+
+        session = SimpleNamespace(
+            is_action=True, is_plan=False,
+            action={"action": "delete_task", "task_id": "t1"},
+            confirmed_by="AXIS\\alice", token="tok-2",
+        )
+        await operations.execute_approved_session(
+            session, catalog=None, registry=None, executors={})
+
+        assert seen["approved"] is False
+
+    def test_the_provisioning_action_set_is_small_and_explicit(self):
+        """A guard on the list itself: it grants real authority, so growing it
+        should be a deliberate act someone notices in review."""
+        from admz.operations import (
+            _ACTION_EXECUTORS, _PROVISIONING_APPROVAL_ACTIONS)
+
+        assert _PROVISIONING_APPROVAL_ACTIONS == {
+            "start_demo_survey", "register_discovered_device"}
+        # Every entry must be a real action, or it silently grants nothing.
+        assert _PROVISIONING_APPROVAL_ACTIONS <= set(_ACTION_EXECUTORS)
+
+    @pytest.mark.asyncio
+    async def test_is_approved_for_discriminates(self, monkeypatch):
+        from admz import operations
+        from admz.approval_context import is_approved_for
+
+        seen = {}
+
+        def _spy(action, registry, git_repo=None):
+            seen["for_provisioning"] = is_approved_for(
+                "start_demo_survey", "register_discovered_device")
+            seen["for_something_else"] = is_approved_for("delete_device")
+            return {"success": True}
+
+        monkeypatch.setitem(
+            operations._ACTION_EXECUTORS, "register_discovered_device", _spy)
+
+        await operations.execute_approved_session(
+            self._session(), catalog=None, registry=None, executors={})
+
+        assert seen["for_provisioning"] is True
+        assert seen["for_something_else"] is False
 
     @pytest.mark.asyncio
     async def test_context_is_gone_after_it_returns(self, monkeypatch):
@@ -207,18 +278,30 @@ def test_approved_is_never_set_outside_its_module():
     import pathlib
     import re
 
-    root = pathlib.Path("admz")
+    # `tests/` is scanned too, deliberately. A test that pokes the ContextVar
+    # directly normalises the unsafe pattern and is where the next production
+    # copy-paste comes from. Review of #361 flagged that the first version
+    # scanned only `admz/`.
     offenders = []
-    for path in sorted(root.rglob("*.py")):
-        if path.name == "approval_context.py":
-            continue
-        text = path.read_text(encoding="utf-8", errors="replace")
-        if re.search(r"_APPROVED\s*\.\s*set\s*\(", text):
-            offenders.append(str(path))
+    for root in (pathlib.Path("admz"), pathlib.Path("tests")):
+        for path in sorted(root.rglob("*.py")):
+            if path.name == "approval_context.py" or path.name == pathlib.Path(__file__).name:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            # Both the direct call and the aliasing routes: importing the
+            # private name at all is the step before setting it, and there is
+            # no legitimate reason to reach past the public helpers.
+            if re.search(r"_APPROVED\s*\.\s*set\s*\(", text):
+                offenders.append(f"{path}: _APPROVED.set(")
+            if re.search(r"import\s+_APPROVED|_APPROVED\s+as\s+", text):
+                offenders.append(f"{path}: imports the private _APPROVED")
+            if re.search(r"getattr\s*\(\s*_APPROVED", text):
+                offenders.append(f"{path}: getattr on _APPROVED")
 
     assert not offenders, (
-        "_APPROVED.set() outside admz/approval_context.py — use the "
-        f"`approved()` context manager, which resets in finally: {offenders}"
+        "reach past admz/approval_context.py's public helpers — use the "
+        "`approved()` context manager, which resets in finally: "
+        f"{offenders}"
     )
 
 
