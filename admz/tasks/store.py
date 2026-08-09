@@ -45,7 +45,13 @@ def event_for_status(status: str) -> Optional[str]:
     pending store's ``trigger_for_status``."""
     if status == "needs_setup":
         return EVENT_NEEDS_SETUP
-    if status == "online":
+    # `limited_api` satisfies "online" (GH #357): it is only ever reached by an
+    # authenticated read that returned real data, so the device is up and its
+    # credentials are good — exactly what `on_online` waits for. Omitting it
+    # would strand pending work (pre-authorized recovery, deferred snapshots)
+    # on any device that recovers into that state, and it would never retry,
+    # because the status is settled and does not change again on its own.
+    if status in ("online", "limited_api"):
         return EVENT_ONLINE
     return None
 

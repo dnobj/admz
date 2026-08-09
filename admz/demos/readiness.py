@@ -49,7 +49,13 @@ DEMO_BLOCKED = "blocked"        # another demo holds a device
 DEMO_NOT_READY = "not_ready"    # drifted / offline / unknown
 DEMO_EMPTY = "empty"            # no devices resolved
 
-_HEALTHY = "online"
+# Health statuses that mean "this device is up and ADMZ can reach it" for the
+# purposes of demo readiness. `limited_api` belongs here (GH #357): the device
+# is authenticated-reachable and ADMZ reads it every cycle — it simply lacks
+# the JSON-RPC surface. Excluding it would count a working device as offline
+# and turn a ready demo into `not_ready`, which is the same "it's fine but we
+# report it as broken" error #357 fixed one layer down.
+_HEALTHY = frozenset({"online", "limited_api"})
 
 
 def scenario_of(config_source: Optional[str]) -> Optional[str]:
@@ -115,7 +121,7 @@ def device_readiness(
         "role": role or "",
         "config": config,
         "health": health_status or "unknown",
-        "online": (health_status or "") == _HEALTHY,
+        "online": (health_status or "") in _HEALTHY,
     }
 
 

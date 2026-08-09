@@ -295,8 +295,12 @@ const _driftCache = {};
 const HEALTH = {
   online:      { sem: 'green', label: 'Online', bucket: 'online' },
   unreachable: { sem: 'red',   label: 'Unreachable', bucket: 'attention' },
-  // Up, but ADMZ can't speak its API (GH #138) — amber, never the red of an
-  // outage, and it still wants attention: ADMZ cannot manage this device.
+  // Up and manageable, just not over the JSON-RPC surface (GH #357). NOT an
+  // attention state: ADMZ reads and tracks these devices every cycle, and
+  // bucketing them here is what parked the T8516 in "needs attention" forever.
+  limited_api: { sem: 'green', label: 'Online, limited API', bucket: 'online' },
+  // Up, but NOTHING ADMZ can read answers (GH #138) — amber, never the red of
+  // an outage, and it does want attention: ADMZ cannot manage this device.
   reachable_no_api: { sem: 'amber', label: 'Reachable, no API', bucket: 'attention' },
   auth_failed: { sem: 'amber', label: 'Auth failed', bucket: 'attention' },
   needs_setup: { sem: 'amber', label: 'Needs setup', bucket: 'attention' },

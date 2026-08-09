@@ -25,6 +25,9 @@ from typing import Any, Dict, List, Optional
 HEALTH_SEM = {
     "online": "green",
     "unreachable": "red",
+    # GH #357: up AND a managed read works — it is not an attention state, so
+    # it is not amber. The caveat lives in the label, not the colour.
+    "limited_api": "green",
     "reachable_no_api": "amber",
     "auth_failed": "amber",
     "auth-failed": "amber",
@@ -36,6 +39,7 @@ HEALTH_SEM = {
 HEALTH_LABEL = {
     "online": "Online",
     "unreachable": "Unreachable",
+    "limited_api": "Online, limited API",
     "reachable_no_api": "Reachable, no API",
     "auth_failed": "Auth failed",
     "auth-failed": "Auth failed",
@@ -270,7 +274,14 @@ def _build_nav_data(request) -> Dict[str, Any]:
     for s in sites:
         sid = s.get("site_id")
         devs = _site_devices(sid)
-        issues = sum(1 for d in devs if _device_health(d) not in ("online", "unknown"))
+        # `limited_api` is not an issue (GH #357) — the device is up and ADMZ
+        # reads it; counting it here would put a permanent badge on any site
+        # holding a T85-class switch, which is the site-level version of the
+        # attention-bucket parking this issue fixed.
+        issues = sum(
+            1 for d in devs
+            if _device_health(d) not in ("online", "limited_api", "unknown")
+        )
         short = (s.get("metadata", {}) or {}).get("short") if isinstance(s.get("metadata"), dict) else None
         site_entries.append(
             {
