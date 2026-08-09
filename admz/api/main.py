@@ -295,6 +295,13 @@ async def lifespan(app: FastAPI):
             await ctx.event_supervisor.stop()
         except Exception:  # noqa: BLE001
             pass
+        # GH #172: the preview reaper is lazily started and self-terminating, so
+        # it is usually already gone; this closes the case where a picker is
+        # still open at shutdown.
+        try:
+            await ctx.preview_manager.aclose()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             await ctx.acs_event_poller.stop()
         except Exception:  # noqa: BLE001

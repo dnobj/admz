@@ -344,6 +344,131 @@ class TestPreview:
         assert s.idle_expired() is False
 
 
+class TestPreviewReaper:
+    """GH #172. The module docstring, the `/api/events/preview` route docstring
+    and `PREVIEW_IDLE_TIMEOUT` all promised idle teardown; `idle_expired()`
+    existed and **nothing called it**. Sessions left `_sessions` only via
+    `_release` ← `stop()` ← the SSE generator's `finally`, so a generator that
+    is never finalised — a killed browser, a proxy dropping the connection
+    without closing it — held its device WebSocket streams open forever and
+    permanently consumed part of `MAX_PREVIEW_STREAMS`.
+    """
+
+    def _mgr(self):
+        from admz.events.preview import PreviewManager
+        return PreviewManager(registry=_Reg([{"device_id": "a"}, {"device_id": "b"}]))
+
+    @pytest.fixture(autouse=True)
+    def _no_dangling_reaper(self):
+        """Each `_run` builds a fresh loop and discards it, so a reaper left
+        running is destroyed pending. Closing managers keeps that noise out of
+        the suite — and exercises `aclose()` on every test here."""
+        self._mgrs = []
+        yield
+        for m in self._mgrs:
+            _run(m.aclose())
+
+    def _open_mgr(self):
+        m = self._mgr()
+        self._mgrs.append(m)
+        return m
+
+    def test_a_fresh_session_is_not_expired(self, monkeypatch):
+        """The open()->start() race. `_last_subscriber_at` used to initialise to
+        0.0, and `open()` registers a session *before* the route calls
+        `start()`; a sweep landing in that window would judge it idle since the
+        epoch and stop a session about to be used."""
+        from admz.events.preview import PreviewSession
+        mgr = self._open_mgr()
+        s = PreviewSession(["a"], registry=mgr.registry, manager=mgr)
+        assert s.idle_expired() is False
+        assert s.expired() is False
+
+    def test_reap_stops_an_abandoned_session_and_frees_the_budget(self, monkeypatch):
+        import admz.events.config as c
+        monkeypatch.setattr(c, "MAX_PREVIEW_STREAMS", 2)
+        monkeypatch.setattr(c, "PREVIEW_IDLE_TIMEOUT", 10.0)
+        mgr = self._open_mgr()
+        s = _run(mgr.open(["a", "b"]))              # at cap
+        s._last_subscriber_at = time.time() - 1000  # tab died; generator never finalised
+        assert _run(mgr.reap()) == 1
+        assert mgr._sessions == []
+        _run(mgr.open(["a"]))                       # the budget is usable again
+
+    def test_a_subscribed_session_is_never_reaped(self):
+        """The guard must not close a preview someone is watching."""
+        mgr = self._open_mgr()
+        s = _run(mgr.open(["a"]))
+        s._last_subscriber_at = time.time() - 10_000
+        s._queues.append(object())                  # a live subscriber
+        assert _run(mgr.reap()) == 0
+        assert mgr._sessions == [s]
+
+    def test_max_duration_is_enforced_without_an_iterating_subscriber(self, monkeypatch):
+        """`subscribe()` checks `PREVIEW_MAX_SECONDS` too — but only between
+        yields, so it bounds sessions whose subscriber is still iterating, which
+        were never the ones at risk. A generator parked forever is."""
+        import admz.events.config as c
+        monkeypatch.setattr(c, "PREVIEW_MAX_SECONDS", 60.0)
+        mgr = self._open_mgr()
+        s = _run(mgr.open(["a"]))
+        s._queues.append(object())                  # "subscribed", but parked
+        s._started_at = time.time() - 10_000
+        assert s.idle_expired() is False            # not idle — a queue is present
+        assert s.duration_expired() is True
+        assert _run(mgr.reap()) == 1
+
+    def test_open_reaps_before_measuring_the_cap(self, monkeypatch):
+        """Otherwise an abandoned session refuses a legitimate preview for up to
+        a whole sweep interval."""
+        import admz.events.config as c
+        monkeypatch.setattr(c, "MAX_PREVIEW_STREAMS", 2)
+        monkeypatch.setattr(c, "PREVIEW_IDLE_TIMEOUT", 10.0)
+        mgr = self._open_mgr()
+        dead = _run(mgr.open(["a", "b"]))
+        dead._last_subscriber_at = time.time() - 1000
+        _run(mgr.open(["c", "d"]))                  # would raise without the reap
+        assert len(mgr._sessions) == 1
+
+    def test_a_session_that_fails_to_stop_is_still_released(self, monkeypatch):
+        """Otherwise one wedged session holds part of the cap permanently — the
+        exact failure being fixed, reintroduced through the error path."""
+        import admz.events.config as c
+        monkeypatch.setattr(c, "PREVIEW_IDLE_TIMEOUT", 10.0)
+        mgr = self._open_mgr()
+        s = _run(mgr.open(["a"]))
+        s._last_subscriber_at = time.time() - 1000
+
+        async def boom():
+            raise RuntimeError("stop failed")
+        s.stop = boom
+        assert _run(mgr.reap()) == 1
+        assert mgr._sessions == []
+
+    def test_the_reaper_loop_starts_on_open_and_stops_when_idle(self):
+        """Lazy and self-terminating: no previews open, no task. It cannot live
+        in the ingest reconcile loop, which no-ops unless `event_ingest_enabled`
+        while preview is deliberately independent of that flag."""
+        import admz.events.config as c
+        from admz.events.preview import PreviewManager
+
+        async def scenario():
+            mgr = PreviewManager(registry=_Reg([{"device_id": "a"}]))
+            assert mgr._reaper is None                 # nothing open → no task
+            c.PREVIEW_REAP_INTERVAL = 0.01
+            try:
+                s = await mgr.open(["a"])
+                assert mgr._reaper is not None and not mgr._reaper.done()
+                await s.stop()                         # last session gone
+                await asyncio.sleep(0.05)              # loop notices and exits
+                assert mgr._sessions == []
+                assert mgr._reaper is None
+            finally:
+                c.PREVIEW_REAP_INTERVAL = 30.0
+                await mgr.aclose()
+        _run(scenario())
+
+
 # ---------------------------------------------------------------------------
 # The retired category allow-list (GH #172)
 # ---------------------------------------------------------------------------

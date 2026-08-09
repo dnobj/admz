@@ -20,7 +20,7 @@ import asyncio
 import logging
 import time
 from collections import deque
-from typing import Any, AsyncIterator, Deque, Dict, List
+from typing import Any, AsyncIterator, Deque, Dict, List, Optional
 
 from admz.events import config as cfg
 from admz.events.wsstream import DeviceEventStream
@@ -46,8 +46,11 @@ class PreviewSession:
         self._streams: List[DeviceEventStream] = []
         self._ring: Deque[Dict[str, Any]] = deque(maxlen=int(cfg.PREVIEW_RING))
         self._queues: List[asyncio.Queue] = []          # one per live subscriber
-        self._started_at = 0.0
-        self._last_subscriber_at = 0.0
+        # Seeded at construction, not at start(): `PreviewManager.open` registers
+        # the session before the route calls `start()`, and a reaper sweeping in
+        # that window would see 0.0, judge it idle since the epoch, and stop a
+        # session about to be used. `start()` resets both to the real start.
+        self._started_at = self._last_subscriber_at = time.time()
         self._stopped = False
 
     # ----- lifecycle -----
@@ -138,6 +141,17 @@ class PreviewSession:
         return (not self._queues
                 and time.time() - self._last_subscriber_at > float(cfg.PREVIEW_IDLE_TIMEOUT))
 
+    def duration_expired(self) -> bool:
+        """Past the hard cap. ``subscribe()`` checks this too, but only between
+        yields — so it bounds a session whose subscriber is still iterating, which
+        is the case that was never at risk. This is the check for the other one.
+        """
+        return time.time() - self._started_at > float(cfg.PREVIEW_MAX_SECONDS)
+
+    def expired(self) -> bool:
+        """Either abandonment condition. What the reaper asks."""
+        return self.idle_expired() or self.duration_expired()
+
     def status(self) -> Dict[str, Any]:
         return {
             "device_ids": self.device_ids,
@@ -154,6 +168,7 @@ class PreviewManager:
     def __init__(self, *, registry: Any):
         self.registry = registry
         self._sessions: List[PreviewSession] = []
+        self._reaper: Optional[asyncio.Task] = None
 
     def _active_streams(self) -> int:
         return sum(s.stream_count for s in self._sessions)
@@ -162,12 +177,101 @@ class PreviewManager:
         ids = [d for d in dict.fromkeys(device_ids) if d]
         if not ids:
             raise ValueError("no device_ids for preview")
+        # Reap before measuring: an abandoned session must not be able to refuse
+        # a legitimate preview for up to a whole sweep interval.
+        await self.reap()
         if self._active_streams() + len(ids) > int(cfg.MAX_PREVIEW_STREAMS):
             raise PreviewCapacityError(
                 f"preview cap reached ({cfg.MAX_PREVIEW_STREAMS} device streams)")
         session = PreviewSession(ids, registry=self.registry, manager=self)
         self._sessions.append(session)
+        self._ensure_reaper()
         return session
+
+    # ----- reaping (GH #172) -----
+    async def reap(self) -> int:
+        """Stop every abandoned session. Returns how many were stopped.
+
+        The advertised idle teardown (``preview.py`` module docstring, the
+        ``/api/events/preview`` route docstring, and ``PREVIEW_IDLE_TIMEOUT``)
+        had no implementation: ``PreviewSession.idle_expired`` existed and
+        nothing called it. Sessions left ``_sessions`` only via ``_release``,
+        reached from ``stop()``, reached from the SSE generator's ``finally`` —
+        so a subscriber generator that is never finalised (a killed browser, a
+        proxy dropping the connection without closing it) held its per-device
+        WebSocket streams open indefinitely and permanently consumed part of
+        ``MAX_PREVIEW_STREAMS``. The abandoned-tab guard the docstrings name was
+        precisely the unguarded case.
+
+        ``stop()`` calls ``_release``, which mutates ``_sessions`` — hence the
+        snapshot.
+        """
+        reaped = 0
+        for session in list(self._sessions):
+            if not session.expired():
+                continue
+            try:
+                await session.stop()
+                reaped += 1
+            except Exception:  # noqa: BLE001 — one bad session must not stop the sweep
+                logger.warning("preview reap: could not stop %s",
+                               session.device_ids, exc_info=True)
+                self._release(session)   # drop it anyway; the alternative is a
+                reaped += 1              # session that can never be reclaimed
+        if reaped:
+            logger.info("preview reap: stopped %d abandoned session(s)", reaped)
+        return reaped
+
+    def _ensure_reaper(self) -> None:
+        """Start the sweep loop if it is not already running.
+
+        Lazy and self-terminating rather than a lifespan-managed service: with
+        no previews open there is nothing to sweep, and the subsystem should
+        cost nothing when unused. It also cannot hang off the ingest
+        supervisor's reconcile loop, which is the obvious host — that loop
+        no-ops unless ``event_ingest_enabled``, while preview is deliberately
+        independent of that flag (picking must work with the firehose off), so
+        the reaper would be absent in exactly the common case.
+        """
+        if self._reaper is not None and not self._reaper.done():
+            return
+        try:
+            self._reaper = asyncio.create_task(self._reap_loop())
+        except RuntimeError:      # no running loop (sync test / CLI use)
+            self._reaper = None
+
+    async def aclose(self) -> None:
+        """Cancel the reaper and stop every live session. Called at shutdown.
+
+        Without this the sweep task outlives the loop that owns it — harmless in
+        a long-lived process, but it leaves each session's device WebSockets to
+        be torn down by process exit rather than closed, and it surfaces as
+        "Task was destroyed but it is pending" wherever the loop is short-lived.
+        """
+        task, self._reaper = self._reaper, None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        for session in list(self._sessions):
+            try:
+                await session.stop()
+            except Exception:  # noqa: BLE001
+                self._release(session)
+
+    async def _reap_loop(self) -> None:
+        try:
+            while self._sessions:
+                await asyncio.sleep(float(cfg.PREVIEW_REAP_INTERVAL))
+                await self.reap()
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # pragma: no cover — defensive; must never kill the app
+            logger.warning("preview reaper loop failed", exc_info=True)
+        finally:
+            self._reaper = None
 
     def _release(self, session: PreviewSession) -> None:
         try:
