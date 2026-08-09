@@ -285,7 +285,12 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        await mcp_pool.stop()
+        # Guarded like every step below it: an exception here used to skip the
+        # whole remaining shutdown sequence (found reviewing #372).
+        try:
+            await mcp_pool.stop()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             from admz.rules.capture import stop_background_purge
             stop_background_purge()
@@ -293,6 +298,13 @@ async def lifespan(app: FastAPI):
             pass
         try:
             await ctx.event_supervisor.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        # GH #172: the preview reaper is lazily started and self-terminating, so
+        # it is usually already gone; this closes the case where a picker is
+        # still open at shutdown.
+        try:
+            await ctx.preview_manager.aclose()
         except Exception:  # noqa: BLE001
             pass
         try:

@@ -55,6 +55,7 @@ MAX_PREVIEW_STREAMS = 8             # bound concurrent device connections previe
 PREVIEW_MAX_SECONDS = 600.0         # a picker SSE auto-closes after this (abandoned-tab guard)
 PREVIEW_RING = 200                  # events buffered per preview (replay to the picker)
 PREVIEW_IDLE_TIMEOUT = 120.0        # close a preview this long after its last subscriber leaves
+PREVIEW_REAP_INTERVAL = 30.0        # how often PreviewManager sweeps for abandoned sessions
 
 # ACS Pro action-rule poller (ADR-0041 — ACS has NO push API, so we POLL the
 # recorded-events log for "Action Rule" firings). Separate flag from the device
