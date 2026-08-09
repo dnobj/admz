@@ -16,9 +16,13 @@ terminated at IIS — but it is the alternative, not the default.
 > without demoting the procedure they superseded. Two of that procedure's
 > defects were wrong under *every* deployment model and are fixed below — an
 > interpreter path that does not exist, and a service environment with no
-> `ADMZ_HOME`, which silently sends the instance to `~/.admz` and, on a host
-> already running ADMZ, gives you **a second service with its own database and
-> its own Fernet key managing the same fleet**.
+> `ADMZ_HOME`, which silently sends the instance to `~/.admz` under whatever
+> account the service runs as — **a separate database and a separate Fernet key
+> from the one being backed up**. (An earlier draft of this note said it gives
+> you a second *service*; Windows service names are case-insensitive, so
+> `nssm install ADMZ` alongside the existing `admz` normally fails outright. The
+> damaging case is the quieter one: any instance started under a different
+> account, or with the old service replaced, silently builds its own store.)
 
 > **Audience.** Ops engineers comfortable with Windows services and Python
 > deployment. Part 2 additionally assumes IIS and AD.
@@ -100,19 +104,37 @@ $dataDir = "C:\ProgramData\admz"
 
 New-Item -ItemType Directory -Force $dataDir | Out-Null
 
-# Machine-wide, so the service and an interactive admin agree on the data dir.
+# Machine-wide, so the service and an interactive admin agree on these.
+# ADMZ_AUTH_BACKEND is NOT optional: unset, admz/auth.py defaults to `none`
+# and the service comes up ANONYMOUS -- no /login, no SSO, no gate on who
+# you are. It is the single most important line in this block.
 [Environment]::SetEnvironmentVariable("ADMZ_HOME", $dataDir, "Machine")
+[Environment]::SetEnvironmentVariable("ADMZ_AUTH_BACKEND", "windows-local", "Machine")
 
 # Only SYSTEM and Administrators may read the secrets directory.
-icacls $dataDir /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F"
+# *S-1-5-32-544 is the built-in Administrators SID -- the NAME is localised and
+# the command fails on a non-English Windows.
+icacls $dataDir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"
 
-# Git must trust the repo when running as SYSTEM.
-git config --global --add safe.directory C:/admz/admz
+# --system, NOT --global (ADR-0054): --global writes the *interactive admin's*
+# .gitconfig, and the service runs as LocalSystem, which never reads it.
+git config --system --add safe.directory C:/admz/admz
 
-shawl add --name admz --restart --log-dir "$dataDir\logs" -- $py -m admz api --host 0.0.0.0 --port 4242
+shawl add --name admz --restart --log-dir "$dataDir\logs" -- $py -m admz api --host 127.0.0.1 --port 4242
 sc.exe config admz start= delayed-auto
 sc.exe start admz
 ```
+
+**On the bind address.** `127.0.0.1` above is the safe default: the session
+cookie is plaintext over HTTP, so a LAN bind exposes it (KL-AUTH-006). To serve
+other machines, put TLS in front and set `ADMZ_SESSION_COOKIE_SECURE=1` before
+widening the bind. Note that `_check_bind_safety` (`admz/__main__.py`) refuses a
+non-loopback bind for the `windows` and `composite` backends but **not** for
+`windows-local` — so nothing stops you; the judgement is yours.
+
+`/grant:r` replaces the ACEs of the trustees it names and leaves any other
+explicit ACEs in place, so on a directory migrated from `~/.admz` check what
+survived: `icacls $dataDir`.
 
 `admz.key` is hardened by the code on creation regardless of who creates it
 (#207, ADR-0010), so the highest-value secret is protected even if the ACL step
@@ -123,10 +145,26 @@ is skipped. Nothing else in `ADMZ_HOME` is.
 ```powershell
 Invoke-RestMethod http://localhost:4242/api/health
 
-# Confirm the service really is using the interpreter and data dir you intended:
-Get-CimInstance Win32_Service -Filter "Name='admz'" | Select-Object PathName
+# The service itself: running, LocalSystem, delayed-auto, right interpreter.
+Get-CimInstance Win32_Service -Filter "Name='admz'" |
+    Select-Object State, StartMode, StartName, PathName
+
+# The environment it will actually inherit.
 [Environment]::GetEnvironmentVariable("ADMZ_HOME", "Machine")
+[Environment]::GetEnvironmentVariable("ADMZ_AUTH_BACKEND", "Machine")   # windows-local
+
+# Authentication is really on: this must be 401 or a redirect to /login,
+# NOT a 200. A 200 means the service is anonymous (see Step 3).
+try { Invoke-WebRequest http://localhost:4242/api/devices -MaximumRedirection 0 }
+catch { $_.Exception.Response.StatusCode.value__ }
+
+# The secrets directory is not world-readable.
+icacls C:\ProgramData\admz
 ```
+
+The `/api/devices` check is the one worth keeping: `/api/health` bypasses auth
+by design, so it returns 200 on a correctly configured *and* on a completely
+anonymous instance. It cannot tell you the deployment worked.
 
 **Use the `localhost` name, not `127.0.0.1`.** Literal IPs are never in the
 Local Intranet zone, so Edge/Chrome prompt for credentials instead of signing you
@@ -136,6 +174,9 @@ needs `network.negotiate-auth.trusted-uris`. Disable the SSO button with
 
 **Serve on 127.0.0.1, or front with TLS and set `ADMZ_SESSION_COOKIE_SECURE=1`**
 — otherwise the session cookie travels over plaintext HTTP (KL-AUTH-006).
+
+Voice and chat ride the same session: the cookie travels with the WebSocket
+upgrade, so the signed-in identity flows into MCP tool calls and audit rows.
 
 Logins are rate-limited (form 5/min/IP; SSO has a roomier bucket for its
 handshake legs) and audited (`auth.login`, with a `method: form|negotiate`

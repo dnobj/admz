@@ -1,23 +1,38 @@
 """Relative links in Markdown docs must resolve to real files (GH #173).
 
-There is no CI and no link checker, and `DEPLOYMENT_WINDOWS.md` accumulated a
-`## See also` list that pointed only at the ADRs its own body had superseded.
-While fixing that I hand-wrote four new ADR links and **got all four filenames
-wrong** — plausible-looking slugs for real decisions. That is the failure this
-guards: a link that reads correctly in review and 404s for the reader.
+While restructuring `DEPLOYMENT_WINDOWS.md` I hand-wrote four new ADR links and
+**got all four filenames wrong** — plausible-looking slugs for real decisions.
+Nothing in review caught them, and nothing would have. That is what this guards:
+a link that reads correctly and 404s for the reader.
 
-Deliberately narrow. It checks only *relative* links to paths inside the repo:
+It runs in CI. `.github/workflows/ci.yml` executes the full suite on pull
+requests; on pushes to `master` only `preflight` + `quick` run, so a broken link
+merged without a PR is caught at collection time but not asserted on.
 
-* external `http(s)://` and `mailto:` links — not our business, and checking
-  them would need the network;
+Deliberately narrow, and the exclusions are the interesting part:
+
+* external `http(s)://` and `mailto:` links — checking them needs the network;
 * pure `#anchor` links — a heading checker is a different tool with different
   false positives;
-* code spans and fenced blocks — `[foo](bar)` inside a shell example is not a
-  link, and a doc showing Markdown syntax should not fail for it;
-* ``docs/vapix-docs/`` — a vendored mirror of Axis's own documentation, whose
-  cross-references point into Axis's site structure. 169 of those files fail
-  this check and none of it is ours to fix; policing it would mean either
-  rewriting a third party's text or carrying a permanent ignore list.
+* code spans and fenced blocks — `[foo](bar)` in a shell example is not a link;
+* ``docs/vapix-docs/`` — a vendored mirror of Axis's own documentation whose
+  cross-references point into Axis's site structure. That is 163 of the 306
+  Markdown files under `docs/`, leaving 143 checked. Not ours to fix, and an
+  ignore list that size would swamp the signal.
+
+**Known limits**, so nobody mistakes a pass for proof (found by review):
+
+* inline links split across two lines are not seen — the scan is line-based;
+* the fence tracker treats any ``` or ~~~ as a toggle, so a ~~~ line will close
+  a ``` fence and fence-like text inside a fence flips state;
+* four-space indented code blocks are not stripped, so a link-shaped string
+  inside one is checked as if it were a link;
+* destinations containing balanced parentheses, or labels containing nested
+  brackets, are not parsed.
+
+The dangerous direction is the first three — a checker that silently sees
+nothing passes everything — which is why `test_the_checker_sees_the_deployment_guide_links`
+pins that the file this guard was written for is actually being read.
 """
 
 from __future__ import annotations
@@ -43,6 +58,11 @@ EXCLUDE = ("docs/vapix-docs/",)
 #:
 #: ``test_the_baseline_only_shrinks`` fails once an entry starts resolving, so
 #: the set cannot outlive the debt. Burn-down: GH #376.
+#:
+#: Keyed by ``(doc, target)``, not by line — so a *new* occurrence of an
+#: already-listed broken target, elsewhere in the same document, is grandfathered
+#: in silently. Accepted: keying by line would churn the set on every edit above
+#: it, which is how baselines get bulk-regenerated and stop meaning anything.
 KNOWN_BROKEN = {
     ("docs/specification/INDEX.md", "plans/dev-prod-split.md"),
     ("docs/specification/decisions/0001-organize-catalog-by-cgi.md", "../../../catalog/vapix/index/by-risk.yaml"),
@@ -93,6 +113,12 @@ def _markdown_files():
             yield path
 
 
+#: ``[label]: target`` on its own line — the definition half of a
+#: reference-style link. Without this the checker sees no links at all in a doc
+#: written that way, and passes it (review finding on #378).
+_REFDEF = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*<?([^>\s]+)>?")
+
+
 def _links_in(path: Path):
     """Yield ``(lineno, target)`` for links outside fenced blocks and code spans."""
     in_fence = False
@@ -101,6 +127,10 @@ def _links_in(path: Path):
             in_fence = not in_fence
             continue
         if in_fence:
+            continue
+        refdef = _REFDEF.match(raw)
+        if refdef:
+            yield lineno, refdef.group(1)
             continue
         line = re.sub(r"`[^`]*`", "", raw)      # drop inline code spans
         for m in _LINK.finditer(line):
@@ -156,3 +186,32 @@ def test_the_baseline_only_shrinks():
     assert not fixed, (
         "these resolve now; remove them from KNOWN_BROKEN:\n  "
         + "\n  ".join(fixed))
+
+
+class TestTheCheckerItself:
+    """The scanner needs its own tests: every weakness here makes docs pass
+    silently, which is indistinguishable from having no guard."""
+
+    def _scan(self, tmp_path, text):
+        f = tmp_path / "d.md"
+        f.write_text(text, encoding="utf-8")
+        return [t for _, t in _links_in(f)]
+
+    def test_inline_links_are_found(self, tmp_path):
+        assert self._scan(tmp_path, "see [x](a/b.md) here") == ["a/b.md"]
+
+    def test_reference_definitions_are_found(self, tmp_path):
+        """Added after review: a doc written entirely in reference style used to
+        yield zero links and therefore pass with every target broken."""
+        assert self._scan(tmp_path, "see [x][k]\n\n[k]: a/b.md") == ["a/b.md"]
+
+    def test_fenced_blocks_are_skipped(self, tmp_path):
+        assert self._scan(tmp_path, "```\n[x](nope.md)\n```\n[y](yes.md)") == ["yes.md"]
+
+    def test_code_spans_are_skipped(self, tmp_path):
+        assert self._scan(tmp_path, "`[x](nope.md)` and [y](yes.md)") == ["yes.md"]
+
+    def test_external_and_anchor_targets_are_not_checkable(self):
+        for t in ("https://example.com", "http://x", "mailto:a@b", "#heading"):
+            assert _is_checkable(t) is False
+        assert _is_checkable("a/b.md") is True
