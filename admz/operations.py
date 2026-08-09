@@ -26,6 +26,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
+from admz.approval_context import approved
 from admz.api.confirm_store import (
     ConfirmSession,
     ConfirmStatus,
@@ -1325,11 +1326,21 @@ async def execute_approved_session(
                 "success": False,
                 "error": f"Unknown action in session: {action.get('action')!r}",
             }
+        # ADR-0059: everything the approved action does runs inside the
+        # approved context, so a chokepoint gate downstream can tell "the
+        # operator already said yes to this" from "a fresh call arrived".
+        # Unused until the gate lands (slice 2) — this slice only establishes
+        # the marker, so behaviour here is unchanged.
+        #
+        # The context manager resets in `finally`, and this `try/except` sits
+        # INSIDE it: an executor that raises still unwinds the token. A test
+        # asserts exactly that, because the failure mode is silent.
         try:
-            outcome = executor(action, registry, git_repo=git_repo)
-            if inspect.isawaitable(outcome):
-                outcome = await outcome  # device-touching actions (rules) are async
-            return outcome
+            with approved(str(action.get("action") or "")):
+                outcome = executor(action, registry, git_repo=git_repo)
+                if inspect.isawaitable(outcome):
+                    outcome = await outcome  # device-touching actions (rules) are async
+                return outcome
         except Exception as exc:  # noqa: BLE001 — surface, don't crash the route
             return {
                 "success": False,
