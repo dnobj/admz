@@ -255,18 +255,29 @@ Add a discovered device to the registry.
 - **Args:** `device_id`, `ip_address`, `mac_address` (optional),
   `model` (optional), `hostname` (optional), `device_type` (optional),
   `tags` (array, optional)
-- **Returns:** a **blocked envelope** — `{success: false, blocked: true,
-  risk_level, confirmation_level, confirm_token, confirm_url}`. Since #199 this
-  tool registers nothing on its own: a scan chose the device, so the operator
-  approves a blast radius rather than a device.
-- On approval the registration **and** credential onboarding run together — and
-  onboarding is the part that writes: a factory-defaulted unit gets an admin
-  account created on it (`pwdgrp.cgi:add-user`, `group=root`).
+- **Returns:** `{success, device_id, onboarding, message}` — the device is
+  registered, then onboarded. **No approval is required to register**, as of
+  ADR-0059.
+- **But onboarding may still return a blocked envelope.** If the device turns
+  out to be factory-defaulted, `onboarding` carries
+  `{status: "approval_required", blocked: true, confirm_token, confirm_url, …}`
+  — because creating an admin account on it (`pwdgrp.cgi:add-user`,
+  `group=root`) is gated at the point that decision is made. Surface the
+  approval link; do not treat it as a failure and retry.
 
 > **Corrected 2026-08-04 (#214).** This entry documented the pre-gate return
 > shape and said onboarding "runs automatically after registration". An agent
 > written against it would treat the blocked envelope as a failure and retry,
 > rather than surfacing the approval link to the operator.
+>
+> **Corrected again 2026-08-09 (ADR-0059 slice 3).** The #214 correction then
+> became wrong in the other direction when the entry-point gate was retired:
+> this tool no longer returns a blocked envelope of its own. It was left saying
+> so for one merge — the PR that retired the gate rewrote `discovery/gated.py`
+> and the ADR but missed this file, which is the in-PR doc obligation working
+> only as well as the author's grep. **The gate moved rather than vanished**:
+> the approval now lives inside `onboarding`, and only for a device that is
+> actually factory-defaulted.
 
 ### `reconcile_device_addresses`
 Run a discovery scan and update any registered device whose **MAC** now
