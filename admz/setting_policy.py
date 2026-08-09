@@ -133,7 +133,6 @@ KNOWN_SETTING_KEYS: FrozenSet[str] = frozenset({
     # The switch above was protected; these decide what it actually records,
     # and were not. Setting retention to 0 discards the event history.
     "event_topic_filters",
-    "event_store_categories",
     "event_ingest_tag",
     "event_store_max_rows",
     "event_store_retention_days",

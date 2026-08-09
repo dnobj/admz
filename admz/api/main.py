@@ -204,6 +204,17 @@ async def lifespan(app: FastAPI):
         logging.getLogger(__name__).warning(
             "legacy client-secret purge failed", exc_info=True)
 
+    # GH #172: drop fleet-setting rows for event knobs that no longer exist.
+    # Removing the code leaves the row, and every settings surface enumerates
+    # list_all(), so the operator would still see a control that does nothing.
+    try:
+        from admz.events.config import purge_retired_settings
+        purge_retired_settings()
+    except Exception:  # noqa: BLE001 — never fatal to startup
+        import logging
+        logging.getLogger(__name__).warning(
+            "retired event-setting purge failed", exc_info=True)
+
     # GH #170: periodic sweep for orphaned rule-recipient secret stashes
     # (deny and consume-on-approval already discard their own token; this is
     # the backstop for a token nothing ever touches again — abandonment on a

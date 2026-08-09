@@ -9,20 +9,32 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import List, Optional, Set
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Device-side subscription. "//." = every topic (proven against the fleet). We
-# narrow what we *store* via STORE categories below; operators can later set a
-# tighter device-side filter list once per-model subtree syntax is confirmed.
+# Device-side subscription. "//." = every topic (proven against the fleet). What
+# we *store* is decided by the watch gate, not here (ADR-0048); operators can
+# later set a tighter device-side filter list once per-model subtree syntax is
+# confirmed.
 DEFAULT_TOPIC_FILTERS: List[str] = ["//."]
 
-# Ingest-side allow-list: which normalized categories get persisted (drops the
-# chattiest non-actionable "other" topics). None elsewhere would mean "store all".
-DEFAULT_STORE_CATEGORIES: Set[str] = {
-    "motion", "io", "ptz", "storage", "tamper", "audio", "call", "network", "light", "system",
-}
+# There is deliberately no category allow-list. ADR-0048 replaced it, for the
+# device-WebSocket path, with the watch gate: a device event is persisted only
+# if it matches a watched-event or detection spec (`WatchGate.matches`, applied
+# at `wsstream.py`), which is strictly narrower than any category filter and,
+# unlike one, cannot discard something an operator explicitly asked to watch.
+#
+# It is NOT a fleet-wide persistence gate: the three ACS writers
+# (`events/acs_ingest.py`, `events/acs_firebird_ingest.py`,
+# `modules/acs_pro/routes.py`) append their firings unconditionally. Reviving a
+# category allow-list would not fix that either — those normalize to
+# `action_rule`, which the old default set also excluded, so it would silently
+# drop every ACS firing. Source-aware gating is the actual fix; see GH #371.
+
+# Settings this module used to honour and no longer does. Their rows are swept
+# at startup by `purge_retired_settings()` — see GH #172.
+_RETIRED_SETTING_KEYS = ("event_store_categories",)
 
 # Supervisor knobs.
 RECONCILE_INTERVAL_SECONDS = 60.0   # re-read watched scope to add/drop streams
@@ -96,19 +108,6 @@ def topic_filters() -> List[str]:
     return list(DEFAULT_TOPIC_FILTERS)
 
 
-def store_categories() -> Optional[Set[str]]:
-    """Categories to persist; None means store everything."""
-    try:
-        raw = _settings().get("event_store_categories")
-        if raw:
-            val = json.loads(raw)
-            if isinstance(val, list):
-                return {str(x).lower() for x in val} or None
-    except Exception:  # noqa: BLE001
-        pass
-    return set(DEFAULT_STORE_CATEGORIES)
-
-
 def tag_filter() -> Optional[str]:
     """Optional tag to further narrow the watched device set (None = no extra narrowing)."""
     try:
@@ -134,3 +133,28 @@ def events_max_rows() -> int:
 def events_retention_days() -> int:
     """Days of stored events to keep (fleet-overridable via ``event_store_retention_days``)."""
     return _int_setting("event_store_retention_days", EVENTS_RETENTION_DAYS)
+
+
+def purge_retired_settings() -> int:
+    """Delete fleet-setting rows for event knobs that no longer exist. Returns
+    how many were removed.
+
+    `event_store_categories` was superseded by the watch gate in ADR-0048 and
+    removed in GH #172. Removing the code does not remove the row: every
+    settings surface enumerates `list_all()`, so an install that once set it
+    would keep showing an apparently live control that does nothing — which is
+    the same trap the removal is meant to close, one layer down.
+
+    Idempotent (nothing to delete on later starts) and never raises: a startup
+    cleanup must not be able to stop the process coming up.
+    """
+    removed = 0
+    for key in _RETIRED_SETTING_KEYS:
+        try:
+            if _settings().delete(key):
+                removed += 1
+                logger.info("removed the retired fleet setting %r (#172)", key)
+        except Exception:  # noqa: BLE001 — never fatal to startup
+            logger.warning("could not remove the retired fleet setting %r; "
+                           "will retry next start", key, exc_info=True)
+    return removed

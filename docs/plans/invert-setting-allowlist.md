@@ -97,6 +97,8 @@ Isolated `ADMZ_HOME` under `%TEMP%`, driving the real
   refused acs_firebird_enabled           control
 ```
 
+> _Note (GH #172, 2026-08-09):_ the `event_store_categories` line above is left as captured. That key has since been removed — ADR-0048 had already superseded it, so it was an inert row, not a live setting, even when this scan ran. The capture is evidence of what the scan saw, not a claim about current behaviour.
+
 Plus the eight already reproduced in #212: `acs_pro`, `config_ignore_patterns`,
 `config_ignore_rules`, `config_ignore_seed_version`, `default_password`,
 `default_username`, `health_verify_credentials`, `acs_webhook_token`.
@@ -462,7 +464,7 @@ so no UI path was missed.
 | `acs_webhook_token` | `acs_pro/routes.py:286` → `webhook.py:49`, /acs Regenerate button | none — human path exists |
 | `config_ignore_seed_version` | `ignore.py:258`, startup lifespan only | none operationally — self-maintaining marker |
 | `snapshot_gc_enabled`, `snapshot_gc_aggressive` | none | **none — both keys are entirely inert.** Setters *and* readers have zero production callers; the CLI `admz maint gc --aggressive` passes its flag straight to `run_gc()`. Already flagged at `docs/specification/review-2026-06-10.md:221` |
-| `event_topic_filters`, `event_store_categories`, `event_ingest_tag`, `event_store_max_rows`, `event_store_retention_days` | **none** | five documented "fleet-overridable" operator controls become hand-edit-SQLite-only |
+| `event_topic_filters`, `event_ingest_tag`, `event_store_max_rows`, `event_store_retention_days` | **none** | four documented "fleet-overridable" operator controls become hand-edit-SQLite-only. _(`event_store_categories` was listed here too until GH #172 removed it: ADR-0048 had already superseded it, so it was never an operator control at all — it was an inert key.)_ |
 | `health_verify_credentials` | **none** | removes the documented escape hatch at `requirements/fleet-health.md:70`; credential verification becomes permanently forced on |
 | `acs_fb_fbclient`, `acs_fb_install`, `acs_fb_data_dir` | **none** | a non-standard ACS install has **no remedy**: `firebird_available()` reports `"fbclient.dll not found"` and `/acs` surfaces that reason with no field to fix it |
 
