@@ -3647,19 +3647,48 @@ class ADMZMCPServer:
             "device_type": arguments.get("device_type", "unknown"),
             "tags": arguments.get("tags", []),
         }
-        # #199: this is the second discovery-driven path into provisioning —
-        # `discover_network_devices` then this, two tool calls, and a
-        # factory-defaulted unit gets a root account. Same gate as the REST
-        # survey (discovery/gated.py), so neither route is the loose one.
-        # `_register_device` stays ungated: there the caller named the device.
-        from admz.discovery.gated import (ACTION_REGISTER_DISCOVERED,
-                                          gate_scan_write)
-        return gate_scan_write(
-            ACTION_REGISTER_DISCOVERED, device_id,
-            {"device_id": device_id, "device_info": device_info},
-            f"Register discovered device '{device_id}' at "
-            f"{arguments['ip_address']} and onboard it — if it is "
-            f"factory-defaulted this creates an admin account on it.")
+        # ADR-0059 slice 3: this gate is GONE, and its removal is the point.
+        #
+        # It was added by #199 as the second discovery-driven path into
+        # provisioning. Provisioning is now gated at the decision point inside
+        # `onboard_device_credentials`, so the root-account creation this
+        # protected is still held — by a widget that names the actual device
+        # and only fires when the device really is factory-defaulted.
+        #
+        # What remained here was a gate on the REGISTRY WRITE, justified by
+        # "the model discovered this device rather than a human naming it".
+        # That justification does not survive: `register_device` performs the
+        # same `registry.add_device` with no gate, one tool call away — and
+        # ADR-0059's whole argument is that "chosen by a scan" versus "named by
+        # a human" is not distinguishable for an autonomous caller. A gate one
+        # tool call from an ungated equivalent is not protection; it is the
+        # false assurance this project has now removed five times (#158, #350,
+        # #351, #355, and here).
+        #
+        # Whether registry additions should be gated AT ALL is a real question
+        # and is with the owner (#365); it is not answered by leaving a
+        # bypassable gate on one of the two paths.
+        #
+        # Register, then onboard — the same pair `_register_device` does, and
+        # the same pair the old approved executor did. If the device turns out
+        # to be factory-defaulted, onboarding returns the approval envelope and
+        # it is passed straight up.
+        from admz.onboarding import onboard_device_credentials
+
+        try:
+            self.registry.add_device(device_id, device_info)
+        except Exception as exc:  # noqa: BLE001 — already registered, MAC clash
+            return {"success": False, "device_id": device_id,
+                    "error": f"{type(exc).__name__}: {exc}"}
+
+        onboarding = await onboard_device_credentials(
+            device_id=device_id, registry=self.registry,
+            catalog=self.catalog, executors=self.executors)
+        return {
+            "success": True, "device_id": device_id, "onboarding": onboarding,
+            "message": (f"Device '{device_id}' registered. "
+                        + str(onboarding.get("message", ""))).strip(),
+        }
 
     async def _reconcile_device_addresses(
         self, arguments: Dict[str, Any]

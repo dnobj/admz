@@ -19,16 +19,22 @@ call?", which is sound about a human and collapses for the model: it can call
 found. The proof was in the gate table itself — ``register_discovered_device``
 was held while ``register_device``, reaching the identical write, was not.
 
-**These two gates stay, and they are no longer about provisioning.** What each
-now approves is narrower and still real:
+**One gate stays. The other was retired, and the asymmetry is why.**
 
-* the **deep survey** (``api/routes/demos.py``) — the operator approves a
-  *blast radius*: scan this subnet, register what you find. The chokepoint
-  cannot express that, because by the time it fires the scan has happened.
-* **``register_discovered_device``** (``mcp/server.py``) — the operator
-  approves registering a device the model discovered rather than one a human
-  named. That is a registry write, and the chokepoint does not cover registry
-  writes.
+The **deep survey** gate (``api/routes/demos.py``) stays: the operator approves
+a *blast radius* — scan this subnet, register what you find — which the
+chokepoint cannot express, because by the time it fires the scan has happened.
+
+The **``register_discovered_device``** gate is **gone** (slice 3). Once
+provisioning is gated downstream, what remained here was a gate on the registry
+write, justified by "the model discovered this device rather than a human
+naming it". That justification does not survive review: ``register_device``
+performs the same ``registry.add_device`` with no gate, one tool call away —
+and this ADR's own argument is that "chosen by a scan" versus "named by a
+human" is **not distinguishable for an autonomous caller**. A gate one tool
+call from an ungated equivalent is not protection; it is false assurance, the
+shape this project has now removed five times. Whether registry additions
+should be gated at all is a separate, open question for the owner.
 
 **The survey gate is load-bearing for a second reason, and removing it would
 be actively harmful.** Approving it runs
@@ -40,16 +46,16 @@ unapproved, which means the chokepoint fires **per device**, from a background
 task, with nobody on the page to answer. One approval becomes N widgets nobody
 sees.
 
-ADR-0059's plan said slice 3 would "retire the entry-point gate". That
-instruction was over-generalised and is not what shipped; see the ADR's
-amendment.
+ADR-0059's plan said slice 3 would retire *both* entry-point gates. Half of
+that was right; see the ADR's amendment for why the survey one stays.
 
-Two entry points, one helper
-----------------------------
+One entry point, one helper
+---------------------------
 Splitting a gate across call sites is how a guard ends up half-implemented
-(#208) or divergent (#255), so both callers come through :func:`gate_scan_write`
-— one risk class, one level resolution, one envelope. There is no second
-predicate to keep in step.
+(#208) or divergent (#255), so the survey comes through
+:func:`gate_scan_write` — one risk class, one level resolution, one envelope.
+The chokepoint in ``onboarding`` is the other layer and has its own envelope;
+the two answer different questions and neither is a copy of the other.
 
 **No interactive exemption.** ``demos/gated.py`` and ``tasks/gated.py`` let a
 signed-in console operator through, because there the operator is editing their
@@ -57,7 +63,7 @@ own fleet metadata. Here the operator *is* part of the threat the decision names
 — "an authenticated user, or the model in two tool calls, can currently scan a
 named subnet and provision root accounts with nothing in the way" — so the
 console is gated too. Copying ``is_interactive`` from the neighbouring modules
-would have left the REST survey, the louder of the two paths, exactly as it was.
+would have left the REST survey exactly as it was.
 """
 
 from __future__ import annotations
@@ -66,9 +72,8 @@ from typing import Any, Mapping
 
 from admz import operations
 
-#: Actions registered in ``operations._ACTION_EXECUTORS`` for this gate.
+#: Action registered in ``operations._ACTION_EXECUTORS`` for this gate.
 ACTION_SURVEY = "start_demo_survey"
-ACTION_REGISTER_DISCOVERED = "register_discovered_device"
 
 
 def gate_scan_write(action: str, target: str, payload: Mapping[str, Any],

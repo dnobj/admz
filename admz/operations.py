@@ -873,6 +873,16 @@ async def _action_register_discovered_device(
 ) -> Dict[str, Any]:
     """Approved register-and-onboard of one discovered device (#199).
 
+    **No longer raised** — ADR-0059 slice 3 retired the MCP entry-point gate
+    that created these sessions, because provisioning is now gated downstream
+    and the registry write it nominally protected was reachable ungated via
+    `register_device` one tool call away.
+
+    **Kept deliberately, not overlooked.** Confirm sessions persist with a TTL,
+    so an approval created before this shipped can still be clicked after it.
+    Deleting the executor would turn that click into "Unknown action in
+    session". It can go once no pre-slice-3 session can still be pending.
+
     Onboarding is what makes this more than a registry write: a factory-default
     unit gets an admin account created on it. The registry add and the onboard
     stay together here exactly as the tool does them — decoupling the two is

@@ -28,10 +28,21 @@ rather than deleted — see the amendment below.
 > "retire the entry points" from this ADR's argument without re-checking it
 > against that section.
 >
+> **Corrected again during slice 3's own review.** The paragraph above
+> originally kept BOTH entry gates. The reviewer showed the justification for
+> keeping the MCP one does not hold: it nominally guarded a registry write,
+> while `register_device` performs the same `registry.add_device` ungated one
+> tool call away — and this ADR's own argument is that "discovered by a scan"
+> versus "named by a human" is unenforceable for an autonomous caller. So that
+> gate WAS retired; only the survey gate remains, and it remains for the
+> context reason above rather than for anything about provisioning.
+>
+> Whether registry additions should be gated at all is now open as #365 —
+> which is the question the retired gate was standing in for.
+>
 > What the three slices actually changed: provisioning is gated at the decision
 > point, so `register_device` and `onboard_device` — previously ungated paths to
-> a root account — now gate, and the register/onboard asymmetry is gone. The two
-> pre-existing gates remain, doing a narrower and still-necessary job.
+> a root account — now gate, and the register/onboard asymmetry is gone.
 **Relates to:** ADR-0034 (one human gate; risk → level), GH #199 (the survey
 provisioning gap this continues), GH #299 (the entry-point gate this revises),
 GH #313 (the sibling gap this does **not** close — see *Why #313's refutation
