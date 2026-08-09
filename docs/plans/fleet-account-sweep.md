@@ -5,7 +5,7 @@
 [#314](https://github.com/dnobj/admz/issues/314).
 
 This is a procedure against **live cameras**, so it is written down before it is
-run. Writing it first already changed it twice — see [Prerequisite](#prerequisite-the-catalog-has-no-read-operation)
+run. Writing it first already changed it twice — see [Prerequisite](#prerequisite-no-verified-read-operation-covering-the-fleet)
 and [Do it in the same window as #165](#do-it-in-the-same-window-as-165).
 
 ---
@@ -62,13 +62,26 @@ adjudicate. It looks for one regex.
 The last row is the one that keeps this sweep cheap and honest: we are not
 auditing the operator's account hygiene, only ADMZ's own litter.
 
-## Prerequisite: the catalog has no read operation
+## Prerequisite: no *verified* read operation covering the fleet
 
-`q_70025d93` says the sweep would "enumerate accounts per device via the existing
-catalog read path". **There is no such path.** The catalog carries exactly three
-`pwdgrp.cgi` operations — `add-user`, `remove-user`, `update-user`. All writes.
+`q_70025d93` says the sweep would "enumerate accounts per device **via the
+existing catalog read path**". There isn't one that can be relied on across this
+fleet. What the catalog actually has:
 
-VAPIX does support the read (`docs/vapix-docs/vapix-network-video-system-settings.md:193`):
+| Operation | What it is | Usable here? |
+|---|---|---|
+| `pwdgrp.cgi:add-user` / `remove-user` / `update-user` | the three `pwdgrp.cgi` ops | **No — all writes.** There is no `pwdgrp.cgi` read. |
+| `user-management:getConfig` | REST `v2beta`, `risk_level: read-only`, `auth_level: viewer` | **Maybe.** Its own note says *"BETA, auto-drafted from OpenAPI — verify request/response shape + risk before relying on it."* Unverified, and `v2beta` will not exist on older firmware. |
+| `ssh:listUsers` | REST `ssh/v2` | **No — different account space.** SSH users, not VAPIX device accounts. |
+
+> An earlier revision of this plan said flatly that *no* read operation existed.
+> That was wrong: I had grepped only `data/vapix/cgi/` and generalised from it.
+> `user-management:getConfig` and `ssh:listUsers` both live under `data/vapix/rest/`.
+> The corrected claim is narrower and is the one that matters — nothing verified
+> covers the whole fleet.
+
+VAPIX does support the universal read
+(`docs/vapix-docs/vapix-network-video-system-settings.md:193`):
 
 ```
 GET /axis-cgi/pwdgrp.cgi?action=get
@@ -80,19 +93,29 @@ ptz="root,joe,ellen"
 digusers="root,joe,ellen,frank"
 ```
 
-So **step 0 is a catalog addition in `axis-api-atlas`**: a `pwdgrp.cgi:get`
-operation, `risk_level: none` (it is a read), parsing those five group lines into
-a set of usernames. That is a separate repo with its own version stream, so it
-is a separate PR there and an atlas bump here.
+**So step 0 is a catalog change in `axis-api-atlas`**, and it has two parts,
+in this order:
 
-Two things to get right in that operation:
+1. **Try `user-management:getConfig` against one device first.** If it returns
+   the account roster on this fleet's firmware, that is the modern path and
+   costs nothing to confirm — but it must be *verified*, not assumed, because
+   the operation says so itself. Promote it out of "auto-drafted" if it works.
+2. **Add `pwdgrp.cgi:get` regardless.** This fleet spans four executor
+   generations; `v2beta` will not be everywhere, and a sweep that silently skips
+   older devices is worse than no sweep, because it reports a clean total that
+   excludes exactly the units most likely to be stale.
 
-- **It discloses account names.** `risk_level: none` is correct for the
+That is a separate repo with its own version stream, so it is a PR there and an
+atlas bump here.
+
+Two things to get right in the new operation:
+
+- **It discloses account names.** `risk_level: read-only` is correct for the
   confirmation gate — nothing is modified — but the response is not something to
   log verbatim at info level. Treat the username list like device metadata, not
   like a secret, and keep it out of chat context by default.
-- **Not every device answers it.** Speaker and intercom firmwares vary. The
-  sweep must treat a non-200 as *unknown*, never as *no orphans*.
+- **Not every device will answer either call.** Speaker and intercom firmwares
+  vary. The sweep must treat a non-200 as *unknown*, never as *no orphans*.
 
 ### Why not use the snapshot `users` facet instead
 
