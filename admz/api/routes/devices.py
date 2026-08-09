@@ -161,7 +161,11 @@ async def _run_onboarding(device_id: str, registry: DeviceRegistry) -> dict:
     onboarding must never fail a device add."""
     try:
         from admz.api.context import get_context
-        from admz.onboarding import CREDENTIALS_NEEDED, onboard_device_credentials
+        from admz.onboarding import (
+            APPROVAL_REQUIRED,
+            CREDENTIALS_NEEDED,
+            onboard_device_credentials,
+        )
 
         ctx = get_context()
         result = await onboard_device_credentials(
@@ -170,6 +174,14 @@ async def _run_onboarding(device_id: str, registry: DeviceRegistry) -> dict:
             catalog=ctx.catalog,
             executors=ctx.executors,
         )
+        # ADR-0059: a factory-defaulted device now needs approval before ADMZ
+        # creates a root account on it. The blocked envelope is already in
+        # `result` (confirm_token, confirm_url); pass it up UNCHANGED rather
+        # than re-wording it here — three callers each phrasing their own
+        # approval message is three places to drift, which is the failure
+        # ADR-0059 exists to end.
+        if result.get("status") == APPROVAL_REQUIRED:
+            return result
         if result.get("status") == CREDENTIALS_NEEDED:
             from admz.api.capture import capture_store
 

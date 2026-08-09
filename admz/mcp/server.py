@@ -2155,6 +2155,7 @@ class ADMZMCPServer:
         """
         from admz.onboarding import (
             ALREADY_CREDENTIALED,
+            APPROVAL_REQUIRED,
             CREDENTIALS_NEEDED,
             FLEET_CREDENTIALS_SAVED,
             PROVISIONED,
@@ -2168,6 +2169,11 @@ class ADMZMCPServer:
             executors=self.executors,
         )
         status = result.get("status")
+        # ADR-0059: returned unchanged. It is already the standard blocked
+        # envelope the model handles for every other gated operation, so
+        # re-wording it here would make this one path special for no gain.
+        if status == APPROVAL_REQUIRED:
+            return result
         if status == ALREADY_CREDENTIALED:
             result["message"] = "Stored credentials verified — device is ready."
         elif status == PROVISIONED:

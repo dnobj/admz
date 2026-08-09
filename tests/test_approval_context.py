@@ -190,7 +190,12 @@ class TestExecuteApprovedSessionEstablishesContext:
             _ACTION_EXECUTORS, _PROVISIONING_APPROVAL_ACTIONS)
 
         assert _PROVISIONING_APPROVAL_ACTIONS == {
-            "start_demo_survey", "register_discovered_device"}
+            "start_demo_survey",
+            "register_discovered_device",
+            # Added by slice 2: raised by the gate itself, for a device that
+            # is already registered.
+            "provision_device_credentials",
+        }
         # Every entry must be a real action, or it silently grants nothing.
         assert _PROVISIONING_APPROVAL_ACTIONS <= set(_ACTION_EXECUTORS)
 

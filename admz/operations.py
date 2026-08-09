@@ -1209,6 +1209,40 @@ async def _action_create_temp_credentials(
     }
 
 
+async def _action_provision_device_credentials(action, registry, git_repo=None):
+    """Approved provisioning of one ALREADY-REGISTERED device (ADR-0059).
+
+    Deliberately not `register_discovered_device`, which this could otherwise
+    have reused: that executor calls ``registry.add_device`` first, and
+    ``add_device`` **raises** on a device that already exists. Reusing it would
+    mean the operator approves the widget and gets "Device already exists" —
+    the gate here fires for devices ADMZ has already registered, which is the
+    common case (a REST add, or an MCP onboard of a known device).
+
+    So this executor does exactly the approved thing and nothing else: re-run
+    onboarding, which now finds itself inside the approved context and
+    provisions instead of gating.
+    """
+    from admz.api.context import get_context
+    from admz.onboarding import onboard_device_credentials
+
+    device_id = action.get("device_id") or ""
+    if not device_id:
+        return {"success": False, "action": "provision_device_credentials",
+                "error": "device_id is required"}
+
+    ctx = get_context()
+    onboarding = await onboard_device_credentials(
+        device_id=device_id, registry=registry,
+        catalog=ctx.catalog, executors=ctx.executors)
+    return {
+        "success": True, "action": "provision_device_credentials",
+        "device_id": device_id, "onboarding": onboarding,
+        "message": f"Onboarding re-run for '{device_id}' under approval. "
+                   f"Result: {onboarding.get('status')}.",
+    }
+
+
 _ACTION_EXECUTORS = {
     "accept_baseline": _action_accept_baseline,
     "delete_device": _action_delete_device,
@@ -1236,6 +1270,8 @@ _ACTION_EXECUTORS = {
     # #188: copying files into the firmware cache is a write into the trusted
     # side of _upload_path_allowed's boundary, so it takes the widget.
     "import_firmware": _action_import_firmware,
+    # ADR-0059: the approved half of the onboarding gate.
+    "provision_device_credentials": _action_provision_device_credentials,
 }
 
 
@@ -1255,6 +1291,9 @@ _ACTION_EXECUTORS = {
 _PROVISIONING_APPROVAL_ACTIONS = frozenset({
     "start_demo_survey",
     "register_discovered_device",
+    # ADR-0059 slice 2: raised by the gate at onboarding's provisioning
+    # decision point, for a device that is ALREADY registered.
+    "provision_device_credentials",
 })
 
 
