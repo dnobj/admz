@@ -206,10 +206,10 @@ async def github_setup_callback(
         _audit(principal, "github_app.register", success=False, error=str(exc))
         return RedirectResponse("/settings?github_error=register#github-backup",
                                 status_code=303)
-    gh_secrets.save_app(
-        creds["id"], creds.get("slug", ""), creds["pem"],
-        client_secret=creds.get("client_secret"),
-    )
+    # `creds` also carries a client_secret. It is deliberately NOT passed on
+    # and NOT stored (#172): nothing in ADMZ reads it, because App auth uses
+    # the private key, not an OAuth user flow.
+    gh_secrets.save_app(creds["id"], creds.get("slug", ""), creds["pem"])
     _audit(principal, "github_app.register",
            details={"app_id": str(creds["id"]), "slug": creds.get("slug")})
     install_state = sign_state("install")

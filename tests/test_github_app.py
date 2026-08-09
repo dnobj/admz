@@ -192,7 +192,7 @@ class TestSecrets:
     PEM = "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----"
 
     def test_save_roundtrip_and_encrypted(self, gh_settings):
-        gh_secrets.save_app(42, "admz-cfg", self.PEM, client_secret="cs")
+        gh_secrets.save_app(42, "admz-cfg", self.PEM)
         assert gh_secrets.get_app_id() == "42"
         assert gh_secrets.get_slug() == "admz-cfg"
         assert gh_secrets.get_private_key() == self.PEM
@@ -252,3 +252,50 @@ class TestPushBridgeIsolation:
         monkeypatch.delenv("ADMZ_DISABLE_GITHUB_APP_PUSH", raising=False)
         monkeypatch.setattr(gh_secrets, "is_connected", lambda: False)
         assert gh_push.installation_token_for_push() is None
+
+
+class TestClientSecretIsNotStored:
+    """GH #172. GitHub's manifest conversion returns a client secret; ADMZ used
+    to encrypt and keep it, and nothing ever read it back.
+
+    ADMZ authenticates as the App with the *private key* (JWT → installation
+    token). A client secret is only for OAuth **user**-to-server flows, which
+    ADMZ does not perform — so it was a real credential held at rest forever to
+    no purpose. A stored secret with no reader cannot be protected by anything
+    except not having it.
+    """
+
+    PEM = "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----"
+
+    def test_save_app_takes_no_client_secret(self):
+        """The parameter is gone, so a caller cannot reintroduce the store by
+        passing one."""
+        import inspect
+        assert "client_secret" not in inspect.signature(
+            gh_secrets.save_app).parameters
+
+    def test_nothing_is_written_under_the_key(self, gh_settings):
+        gh_secrets.save_app(42, "admz-cfg", self.PEM)
+        assert gh_settings.get(gh_secrets.KEY_CLIENT_SECRET) in (None, "")
+
+    def test_a_legacy_value_is_cleared_on_re_setup(self, gh_settings):
+        """An install that already holds one is cleaned when it next
+        establishes App credentials — no separate migration needed."""
+        gh_settings.set(gh_secrets.KEY_CLIENT_SECRET, "legacy-ciphertext")
+        gh_secrets.save_app(42, "admz-cfg", self.PEM)
+        assert gh_settings.get(gh_secrets.KEY_CLIENT_SECRET) in (None, "")
+
+    def test_the_key_stays_protected_and_encrypted(self):
+        """Kept in both policy sets on purpose: an install that never re-runs
+        setup still holds the old value, and it must stay masked and
+        un-writable by the LLM until it is gone."""
+        from admz.fleet_settings import is_protected_setting, is_sensitive_setting_key
+        assert is_protected_setting(gh_secrets.KEY_CLIENT_SECRET) is True
+        assert is_sensitive_setting_key(gh_secrets.KEY_CLIENT_SECRET) is True
+
+    def test_disconnect_still_removes_it(self, gh_settings):
+        """`clear()` iterates SETTING_KEYS, which still names it — so Disconnect
+        cleans a legacy value even without a re-setup."""
+        gh_settings.set(gh_secrets.KEY_CLIENT_SECRET, "legacy-ciphertext")
+        gh_secrets.clear()
+        assert gh_settings.get(gh_secrets.KEY_CLIENT_SECRET) in (None, "")

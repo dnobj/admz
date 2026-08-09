@@ -164,6 +164,8 @@ KNOWN_SETTING_KEYS: FrozenSet[str] = frozenset({
     "github_app_id",
     "github_app_slug",
     "github_app_private_key",
+    # No longer written (#172) — kept so a value an older install still holds
+    # stays masked and un-writable until `save_app` or Disconnect clears it.
     "github_app_client_secret",
     "github_app_installation_id",
     "github_config_repo",
@@ -208,7 +210,7 @@ STORE_ENCRYPTED_SETTING_KEYS: FrozenSet[str] = frozenset({
 MODULE_ENCRYPTED_SETTING_KEYS: FrozenSet[str] = frozenset({
     "survey_github_pat",
     "github_app_private_key",
-    "github_app_client_secret",
+    "github_app_client_secret",  # legacy leftovers only (#172) — see above
 })
 
 #: Sensitive-looking, deliberately NOT encrypted. Both need a reason on record,
