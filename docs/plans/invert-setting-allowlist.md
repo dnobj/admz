@@ -97,6 +97,8 @@ Isolated `ADMZ_HOME` under `%TEMP%`, driving the real
   refused acs_firebird_enabled           control
 ```
 
+> _Note (GH #172, 2026-08-09):_ the `event_store_categories` line above is left as captured. That key has since been removed — ADR-0048 had already superseded it, so it was an inert row, not a live setting, even when this scan ran. The capture is evidence of what the scan saw, not a claim about current behaviour.
+
 Plus the eight already reproduced in #212: `acs_pro`, `config_ignore_patterns`,
 `config_ignore_rules`, `config_ignore_seed_version`, `default_password`,
 `default_username`, `health_verify_credentials`, `acs_webhook_token`.

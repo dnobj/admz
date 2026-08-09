@@ -372,13 +372,17 @@ class TestNoCategoryAllowList:
         from admz.setting_policy import KNOWN_SETTING_KEYS
         assert "event_store_categories" not in KNOWN_SETTING_KEYS
 
-    def test_a_watched_other_category_event_is_still_stored(self):
-        """**The regression the allow-list would reintroduce.**
+    def test_the_gate_admits_a_watched_other_category_event(self):
+        """**The regression the allow-list would reintroduce**, at the gate.
 
         `other` was excluded from `DEFAULT_STORE_CATEGORIES`. So had the filter
         been wired as #172 first proposed, an operator who explicitly watched an
         `other`-category topic would get nothing stored, with no error anywhere
         — the silent-drop failure the gate exists to prevent.
+
+        This asserts only that the gate says yes; that the event then actually
+        reaches the store is
+        `test_events_wsstream.py::test_a_watched_other_category_event_reaches_the_store`.
         """
         gate = _gate([_wev(device_id="a", match={"topic": "unclassified"})], [],
                      [{"device_id": "a"}])
@@ -397,3 +401,51 @@ class TestNoCategoryAllowList:
                      [{"device_id": "a"}])
         for category in ("other", "motion", "tamper", "system"):
             assert gate.matches(_rec(device_id="a", category=category)) is False
+
+
+class TestRetiredSettingPurge:
+    """GH #172. Deleting the code does not delete the row, and every settings
+    surface enumerates `list_all()` — so without this an operator who once set
+    `event_store_categories` keeps seeing a live-looking control that does
+    nothing, which is the trap the removal exists to close.
+    """
+
+    def _cfg(self, monkeypatch):
+        from admz.events import config as cfg
+
+        class _S:
+            def __init__(self):
+                self.rows = {"event_store_categories": '["motion"]',
+                             "event_topic_filters": '["//."]'}
+                self.raised = False
+
+            def delete(self, key):
+                if self.raised:
+                    raise RuntimeError("database is locked")
+                return self.rows.pop(key, None) is not None
+
+        store = _S()
+        monkeypatch.setattr(cfg, "_settings", lambda: store)
+        return cfg, store
+
+    def test_removes_the_row_and_counts_it(self, monkeypatch):
+        cfg, store = self._cfg(monkeypatch)
+        assert cfg.purge_retired_settings() == 1
+        assert "event_store_categories" not in store.rows
+
+    def test_leaves_live_settings_alone(self, monkeypatch):
+        """It sweeps a named list, not everything with an `event_` prefix."""
+        cfg, store = self._cfg(monkeypatch)
+        cfg.purge_retired_settings()
+        assert store.rows["event_topic_filters"] == '["//."]'
+
+    def test_is_idempotent(self, monkeypatch):
+        cfg, store = self._cfg(monkeypatch)
+        cfg.purge_retired_settings()
+        assert cfg.purge_retired_settings() == 0
+
+    def test_never_raises_when_the_store_fails(self, monkeypatch):
+        """It runs in the API lifespan; a cleanup must not stop startup."""
+        cfg, store = self._cfg(monkeypatch)
+        store.raised = True
+        assert cfg.purge_retired_settings() == 0

@@ -19,11 +19,22 @@ logger = logging.getLogger(__name__)
 # confirmed.
 DEFAULT_TOPIC_FILTERS: List[str] = ["//."]
 
-# There is deliberately no category allow-list. ADR-0048 replaced it with the
-# watch gate — an event is stored only if it matches a watched-event or
-# detection spec (`WatchGate.matches`), which is strictly narrower than any
-# category filter and, unlike one, cannot discard something an operator
-# explicitly asked to watch. See GH #172.
+# There is deliberately no category allow-list. ADR-0048 replaced it, for the
+# device-WebSocket path, with the watch gate: a device event is persisted only
+# if it matches a watched-event or detection spec (`WatchGate.matches`, applied
+# at `wsstream.py`), which is strictly narrower than any category filter and,
+# unlike one, cannot discard something an operator explicitly asked to watch.
+#
+# It is NOT a fleet-wide persistence gate: the three ACS writers
+# (`events/acs_ingest.py`, `events/acs_firebird_ingest.py`,
+# `modules/acs_pro/routes.py`) append their firings unconditionally. Reviving a
+# category allow-list would not fix that either — those normalize to
+# `action_rule`, which the old default set also excluded, so it would silently
+# drop every ACS firing. Source-aware gating is the actual fix; see GH #371.
+
+# Settings this module used to honour and no longer does. Their rows are swept
+# at startup by `purge_retired_settings()` — see GH #172.
+_RETIRED_SETTING_KEYS = ("event_store_categories",)
 
 # Supervisor knobs.
 RECONCILE_INTERVAL_SECONDS = 60.0   # re-read watched scope to add/drop streams
@@ -122,3 +133,28 @@ def events_max_rows() -> int:
 def events_retention_days() -> int:
     """Days of stored events to keep (fleet-overridable via ``event_store_retention_days``)."""
     return _int_setting("event_store_retention_days", EVENTS_RETENTION_DAYS)
+
+
+def purge_retired_settings() -> int:
+    """Delete fleet-setting rows for event knobs that no longer exist. Returns
+    how many were removed.
+
+    `event_store_categories` was superseded by the watch gate in ADR-0048 and
+    removed in GH #172. Removing the code does not remove the row: every
+    settings surface enumerates `list_all()`, so an install that once set it
+    would keep showing an apparently live control that does nothing — which is
+    the same trap the removal is meant to close, one layer down.
+
+    Idempotent (nothing to delete on later starts) and never raises: a startup
+    cleanup must not be able to stop the process coming up.
+    """
+    removed = 0
+    for key in _RETIRED_SETTING_KEYS:
+        try:
+            if _settings().delete(key):
+                removed += 1
+                logger.info("removed the retired fleet setting %r (#172)", key)
+        except Exception:  # noqa: BLE001 — never fatal to startup
+            logger.warning("could not remove the retired fleet setting %r; "
+                           "will retry next start", key, exc_info=True)
+    return removed

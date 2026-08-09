@@ -174,3 +174,23 @@ def test_preview_mode_persists_nothing(monkeypatch):
     _drive(monkeypatch, store=None, on_event=on_event, event_filter=None)
     assert len(fired) == 2   # both events fanned to the SSE broadcaster
     # (no store → nothing persisted; store=None must not raise)
+
+
+def test_a_watched_other_category_event_reaches_the_store(monkeypatch):
+    """GH #172, end to end — the regression a category allow-list reintroduces.
+
+    `OTHER_NOTIFY` (`LiveStreamAccessed`) normalizes to category `other`, which
+    the retired `DEFAULT_STORE_CATEGORIES` excluded. With a gate that admits it
+    — i.e. an operator explicitly watching that topic — it must be persisted.
+    Wiring the old allow-list back would drop it here, silently, after the gate
+    said yes.
+
+    This goes through `_handle` and `EventStore.append`; the sibling test in
+    `test_events_watched_scoping.py` only exercises `WatchGate.matches`, so on
+    its own it cannot show that anything was stored.
+    """
+    store = _Store()
+    _drive(monkeypatch, store=store,
+           event_filter=lambda rec: rec["data"]["category"] == "other")
+    cats = [r["data"]["category"] for r in store.rows]
+    assert cats == ["other"]          # the io event was gated out, the other kept
