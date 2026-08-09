@@ -313,3 +313,143 @@ class TestAcsConfigWriteGate:
         from admz.fleet_settings import is_protected_setting
         from admz.modules.acs_pro.config import FLEET_KEY
         assert is_protected_setting(FLEET_KEY) is True
+
+
+# ---------------------------------------------------------------------------
+# POST /api/acs/test — writes nothing, but aims ADMZ at a caller-chosen host
+# ---------------------------------------------------------------------------
+
+
+class TestAcsTestConnectionGate:
+    """GH #355. This route stores nothing, so it is outside #351's class — but
+    it makes ADMZ issue an outbound request to a host and port the caller
+    supplies and reports whether it answered. That is a reachability oracle
+    with ADMZ's network position, which is the fleet network.
+
+    The gate is on *who may ask*, not *what may be asked*: the URL must come
+    from the body (the "Test connection" button exists precisely to be used
+    before a server is saved). Restricting targets is a separate decision and
+    is still with the owner.
+    """
+
+    def test_anonymous_refused_and_no_request_is_made(self, client, monkeypatch):
+        from admz.modules.acs_pro import routes as acs_routes
+
+        called = []
+
+        async def _spy(catalog, executors, op, params, server):
+            called.append(server)
+            return {"success": True}
+
+        monkeypatch.setattr(acs_routes, "run_acs_op_direct", _spy)
+
+        r = client.post("/api/acs/test",
+                        json={"server_url": "10.0.0.5", "port": 29204})
+        assert r.status_code == 403
+        assert called == [], "refused caller still reached the network"
+
+    def test_authenticated_probe_runs_and_is_audited_with_the_target(
+        self, client, monkeypatch
+    ):
+        from admz.modules.acs_pro import routes as acs_routes
+
+        async def _ok(catalog, executors, op, params, server):
+            return {"success": True, "data": {"Major": 6}}
+
+        monkeypatch.setattr(acs_routes, "run_acs_op_direct", _ok)
+        _set_principal(client, _windows("alice", ["Administrators"]))
+
+        r = client.post("/api/acs/test",
+                        json={"server_url": "acs.internal", "port": 29204})
+        assert r.status_code == 200
+
+        rows = _audit_rows("acs.test_connection")
+        assert rows, "the probe left no audit row"
+        # The TARGET is the point: a scan should be reconstructable afterwards.
+        assert "acs.internal" in (rows[0].details or {}).get("target", "")
+
+    def test_a_missing_server_still_requires_auth(self, client):
+        """The 400 for an empty body must not short-circuit the gate —
+        otherwise the refusal depends on payload shape."""
+        r = client.post("/api/acs/test", json={})
+        assert r.status_code == 403
+
+    def test_credentials_in_the_url_never_reach_the_audit_row(
+        self, client, monkeypatch
+    ):
+        """A URL may carry `user:password@`. ACS authenticates via Negotiate,
+        so that has no legitimate use here — and recording it would put a
+        caller-supplied credential in the audit database permanently, which is
+        the exact thing #351's rows were careful not to do. It is stripped
+        from the request as well, not just from the log: httpx would otherwise
+        send it as Basic auth (#310 is the precedent for a credential riding a
+        URL into a log)."""
+        from admz.modules.acs_pro import routes as acs_routes
+
+        seen = {}
+
+        async def _capture(catalog, executors, op, params, server):
+            seen["host"] = server["host"]
+            return {"success": True}
+
+        monkeypatch.setattr(acs_routes, "run_acs_op_direct", _capture)
+        _set_principal(client, _windows("alice", ["Administrators"]))
+
+        client.post("/api/acs/test",
+                    json={"server_url": "https://admin:hunter2@acs.internal:29204"})
+
+        assert "hunter2" not in seen["host"], "credential reached the outbound request"
+        assert seen["host"] == "https://acs.internal:29204"
+        for row in _audit_rows("acs.test_connection"):
+            assert "hunter2" not in repr(row)
+
+    def test_a_failed_probe_is_not_recorded_as_a_success(
+        self, client, monkeypatch
+    ):
+        """`record_event` defaults to success=True, so a row written before the
+        call would describe every timeout and refusal as a successful
+        connection."""
+        from admz.modules.acs_pro import routes as acs_routes
+
+        async def _fail(catalog, executors, op, params, server):
+            return {"success": False, "error": "ConnectError"}
+
+        monkeypatch.setattr(acs_routes, "run_acs_op_direct", _fail)
+        _set_principal(client, _windows("alice", ["Administrators"]))
+
+        client.post("/api/acs/test", json={"server_url": "10.0.0.9"})
+
+        rows = _audit_rows("acs.test_connection")
+        assert rows and rows[0].success is False
+
+    def test_an_exception_still_leaves_a_row(self, client, monkeypatch):
+        """The reason the row is written in `finally`: who aimed ADMZ where is
+        exactly what you want recorded when the probe blew up."""
+        from admz.modules.acs_pro import routes as acs_routes
+
+        async def _boom(catalog, executors, op, params, server):
+            raise RuntimeError("network unreachable")
+
+        monkeypatch.setattr(acs_routes, "run_acs_op_direct", _boom)
+        _set_principal(client, _windows("alice", ["Administrators"]))
+
+        try:
+            client.post("/api/acs/test", json={"server_url": "10.0.0.9"})
+        except RuntimeError:
+            pass  # the handler does not swallow it; the row must exist anyway
+
+        rows = _audit_rows("acs.test_connection")
+        assert rows and rows[0].success is False
+        assert (rows[0].details or {}).get("target") == "https://10.0.0.9:29204"
+
+
+class TestStripUserinfo:
+    def test_it(self):
+        from admz.modules.acs_pro.routes import _strip_userinfo
+
+        assert _strip_userinfo("https://u:p@h:29204") == "https://h:29204"
+        assert _strip_userinfo("http://u@h/path") == "http://h/path"
+        # An @ in the PATH is not userinfo and must survive untouched.
+        assert _strip_userinfo("https://h/a@b") == "https://h/a@b"
+        assert _strip_userinfo("https://h:29204") == "https://h:29204"
+        assert _strip_userinfo("bare-host") == "bare-host"

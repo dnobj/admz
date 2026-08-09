@@ -39,12 +39,30 @@ _configure_templates(templates)
 _LIST_RANGE = {"range": {"StartIndex": 0, "NumberOfElements": 10000}}
 
 
+def _strip_userinfo(url: str) -> str:
+    """Drop any ``user:password@`` from a URL's authority.
+
+    ACS authenticates with **Negotiate as the service account** — there is no
+    username/password in its config and no supported use for credentials in
+    this URL. What userinfo would do is real damage: `httpx` would send it as
+    Basic auth, and the string reaches the audit row, the logs and any error
+    message built from it. #310 is this project's precedent for a credential
+    riding along in a URL to a log; there is no reason to accept the shape at
+    all, so it is removed rather than merely redacted at the point of display.
+    """
+    scheme, sep, rest = url.partition("://")
+    if not sep or "@" not in rest.split("/", 1)[0]:
+        return url
+    authority, slash, path = rest.partition("/")
+    return f"{scheme}://{authority.rsplit('@', 1)[-1]}{slash}{path}"
+
+
 def _base_from_body(body: dict) -> str:
     host = (body.get("server_url") or "").strip()
     if not host:
         return ""
     if host.startswith(("http://", "https://")):
-        return host.rstrip("/")
+        return _strip_userinfo(host.rstrip("/"))
     try:
         port = int(body.get("port") or DEFAULT_PORT)
     except (TypeError, ValueError):
@@ -98,8 +116,37 @@ async def acs_save_config(request: Request):
 
 @router.post("/api/acs/test")
 async def acs_test(request: Request):
-    """Probe the posted server with a read-only api-version call."""
+    """Probe the posted server with a read-only api-version call.
+
+    **Gated and audited (#355).** This route writes nothing, which is why it
+    was not covered by #351 — but it makes ADMZ issue an outbound request to a
+    host and port the *caller* chooses and reports whether it answered. That is
+    a reachability oracle with ADMZ's network position, and ADMZ's position is
+    the fleet network. Ungated it was available to the anonymous principal of
+    an ``ADMZ_AUTH_BACKEND=none`` install.
+
+    The URL genuinely has to come from the request body: the Settings → Modules
+    "Test connection" button must work *before* the config is saved, so reading
+    the stored server address is not an option. The gate is therefore on *who
+    may ask*, not on *what may be asked* — and the audit row records the target
+    (userinfo stripped, see :func:`_strip_userinfo`) so a scan is visible after
+    the fact rather than invisible.
+
+    **What this does not do:** restrict the target. Under ``windows-local``
+    every caller is authenticated, so this closes the anonymous case and leaves
+    the authenticated one. Whether to add a host allowlist or a rate limit is a
+    real design decision and is with the owner (see #355); it is deliberately
+    not decided here, because guessing at an allowlist for a route whose whole
+    purpose is reaching a not-yet-configured server is how you ship something
+    that blocks the legitimate use.
+    """
     from admz.api.context import get_context
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
 
     body = await request.json()
     base = _base_from_body(body)
@@ -110,10 +157,28 @@ async def acs_test(request: Request):
         )
     server = {"device_id": "acs-server", "host": base, "verify_tls": bool(body.get("verify_tls"))}
     ctx = get_context()
-    res = await run_acs_op_direct(
-        ctx.catalog, ctx.executors, "VersionFacade:GetApiVersion", {}, server
-    )
-    return res
+    # Recorded in `finally`, carrying the REAL outcome. Recording before the
+    # call was the first instinct — "a probe that hangs still leaves a trace" —
+    # but `record_event` defaults to success=True, so every failed, refused or
+    # timed-out probe would have written a row that reads as a successful
+    # connection. `finally` keeps the guarantee that matters (a timeout or an
+    # exception still writes the row, because both return through here) and
+    # loses only the case where the process itself dies mid-probe.
+    ok = False
+    res = None
+    try:
+        res = await run_acs_op_direct(
+            ctx.catalog, ctx.executors, "VersionFacade:GetApiVersion", {}, server
+        )
+        ok = bool(isinstance(res, dict) and res.get("success"))
+        return res
+    finally:
+        record_event(
+            principal, "acs.test_connection", resource=f"acs:{base}",
+            success=ok,
+            error_message="" if ok else "probe did not return a successful result",
+            details={"target": base, "verify_tls": bool(body.get("verify_tls"))},
+        )
 
 
 @router.get("/api/acs/events")
