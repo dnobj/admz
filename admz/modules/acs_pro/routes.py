@@ -98,8 +98,36 @@ async def acs_save_config(request: Request):
 
 @router.post("/api/acs/test")
 async def acs_test(request: Request):
-    """Probe the posted server with a read-only api-version call."""
+    """Probe the posted server with a read-only api-version call.
+
+    **Gated and audited (#355).** This route writes nothing, which is why it
+    was not covered by #351 — but it makes ADMZ issue an outbound request to a
+    host and port the *caller* chooses and reports whether it answered. That is
+    a reachability oracle with ADMZ's network position, and ADMZ's position is
+    the fleet network. Ungated it was available to the anonymous principal of
+    an ``ADMZ_AUTH_BACKEND=none`` install.
+
+    The URL genuinely has to come from the request body: the Settings → Modules
+    "Test connection" button must work *before* the config is saved, so reading
+    the stored server address is not an option. The gate is therefore on *who
+    may ask*, not on *what may be asked* — and the audit row records the target
+    so a scan is visible after the fact rather than invisible.
+
+    **What this does not do:** restrict the target. Under ``windows-local``
+    every caller is authenticated, so this closes the anonymous case and leaves
+    the authenticated one. Whether to add a host allowlist or a rate limit is a
+    real design decision and is with the owner (see #355); it is deliberately
+    not decided here, because guessing at an allowlist for a route whose whole
+    purpose is reaching a not-yet-configured server is how you ship something
+    that blocks the legitimate use.
+    """
     from admz.api.context import get_context
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import require_authenticated_principal
+
+    principal = await get_current_principal(request)
+    require_authenticated_principal(principal)
 
     body = await request.json()
     base = _base_from_body(body)
@@ -109,6 +137,10 @@ async def acs_test(request: Request):
             status_code=400,
         )
     server = {"device_id": "acs-server", "host": base, "verify_tls": bool(body.get("verify_tls"))}
+    # Recorded BEFORE the call: a probe that hangs or dies still leaves a trace
+    # of who aimed ADMZ where. The target is the whole point of the row.
+    record_event(principal, "acs.test_connection", resource=f"acs:{base}",
+                 details={"target": base, "verify_tls": bool(body.get("verify_tls"))})
     ctx = get_context()
     res = await run_acs_op_direct(
         ctx.catalog, ctx.executors, "VersionFacade:GetApiVersion", {}, server

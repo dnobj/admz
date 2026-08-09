@@ -313,3 +313,63 @@ class TestAcsConfigWriteGate:
         from admz.fleet_settings import is_protected_setting
         from admz.modules.acs_pro.config import FLEET_KEY
         assert is_protected_setting(FLEET_KEY) is True
+
+
+# ---------------------------------------------------------------------------
+# POST /api/acs/test — writes nothing, but aims ADMZ at a caller-chosen host
+# ---------------------------------------------------------------------------
+
+
+class TestAcsTestConnectionGate:
+    """GH #355. This route stores nothing, so it is outside #351's class — but
+    it makes ADMZ issue an outbound request to a host and port the caller
+    supplies and reports whether it answered. That is a reachability oracle
+    with ADMZ's network position, which is the fleet network.
+
+    The gate is on *who may ask*, not *what may be asked*: the URL must come
+    from the body (the "Test connection" button exists precisely to be used
+    before a server is saved). Restricting targets is a separate decision and
+    is still with the owner.
+    """
+
+    def test_anonymous_refused_and_no_request_is_made(self, client, monkeypatch):
+        from admz.modules.acs_pro import routes as acs_routes
+
+        called = []
+
+        async def _spy(catalog, executors, op, params, server):
+            called.append(server)
+            return {"success": True}
+
+        monkeypatch.setattr(acs_routes, "run_acs_op_direct", _spy)
+
+        r = client.post("/api/acs/test",
+                        json={"server_url": "10.0.0.5", "port": 29204})
+        assert r.status_code == 403
+        assert called == [], "refused caller still reached the network"
+
+    def test_authenticated_probe_runs_and_is_audited_with_the_target(
+        self, client, monkeypatch
+    ):
+        from admz.modules.acs_pro import routes as acs_routes
+
+        async def _ok(catalog, executors, op, params, server):
+            return {"success": True, "data": {"Major": 6}}
+
+        monkeypatch.setattr(acs_routes, "run_acs_op_direct", _ok)
+        _set_principal(client, _windows("alice", ["Administrators"]))
+
+        r = client.post("/api/acs/test",
+                        json={"server_url": "acs.internal", "port": 29204})
+        assert r.status_code == 200
+
+        rows = _audit_rows("acs.test_connection")
+        assert rows, "the probe left no audit row"
+        # The TARGET is the point: a scan should be reconstructable afterwards.
+        assert "acs.internal" in (rows[0].details or {}).get("target", "")
+
+    def test_a_missing_server_still_requires_auth(self, client):
+        """The 400 for an empty body must not short-circuit the gate —
+        otherwise the refusal depends on payload shape."""
+        r = client.post("/api/acs/test", json={})
+        assert r.status_code == 403
