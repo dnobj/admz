@@ -61,9 +61,24 @@ fleet-pair / capture branches.
 
 ## 3. The approved-context module
 
-New `admz/approval_context.py`, exactly the shape the ADR specifies: a
-`ContextVar`, a `@contextmanager approved(action)` that sets and **resets in
-`finally`**, and `is_approved()`.
+New `admz/approval_context.py`: a `ContextVar`, a `@contextmanager
+approved(action, token)` that sets and **resets in `finally`**, and
+**`is_approved_for(*actions)`** as the gating predicate.
+
+> **Amended after slice 1's review (#361).** The ADR specified a bare
+> `is_approved()`, and that is not safe: the marker would be established for
+> every approved action, so approving a task creation or a rule delete would
+> have been sufficient authority to provision. **Approval for X is not approval
+> for Y.** Two changes followed — only `operations._PROVISIONING_APPROVAL_ACTIONS`
+> (`start_demo_survey`, `register_discovered_device`) establishes the marker at
+> all, and the gate must ask `is_approved_for(...)` naming those actions.
+> `is_approved()` still exists for audit and debugging and is documented as
+> not-for-gating.
+>
+> Also recorded there: a task spawned inside an approval keeps it for the task's
+> whole life, because `create_task` copies the context and the parent cannot
+> revoke the copy. The survey needs exactly that; it is a hazard for any other
+> detached task, bounded by the two-action list above.
 
 > **The fail-open hazard is the whole risk of this change.** A token set and
 > never reset marks every later call on that task approved: the gate stops
@@ -73,11 +88,11 @@ New `admz/approval_context.py`, exactly the shape the ADR specifies: a
 >    greps the tree for it, in the spirit of the existing mock-faithfulness and
 >    setting-policy lints — a static check because the dynamic one cannot see a
 >    leak that only happens on a path no test takes.
-> 2. `is_approved()` is `False` after `execute_approved_session` returns,
+> 2. The marker is cleared after `execute_approved_session` returns,
 >    **including when it raises**. Both directions get a test.
 
 `operations.execute_approved_session` wraps its dispatch in
-`with approved(action):`. `asyncio.create_task` copies the current context, so
+`with approved(action, token):` — but only for the two actions listed above. `asyncio.create_task` copies the current context, so
 the survey's background task inherits it for its whole life — which is the
 correct semantics: the operator approved *that survey*, including the devices it
 provisions.
@@ -107,7 +122,8 @@ Each caller's obligation is therefore only to *not swallow it*:
   approval fields through, the way it already does for `CREDENTIALS_NEEDED`.
 - `_onboard_device` (MCP) returns the dict to the model; the blocked envelope is
   already the shape the model is trained on for gated ops.
-- The survey and the approval executor never see it — `is_approved()` is true.
+- The survey and the approval executor never see it — `is_approved_for(...)`
+  is true for both.
 
 **Fail-closed if a caller is missed**: an unhandled status reads as "not
 provisioned", which is safe and merely confusing. That is the ADR's stated cost
@@ -129,7 +145,7 @@ buried in caller churn.
 **Slice 1 — the mechanism, unused.** `admz/approval_context.py`, plus the
 `with approved(action):` wrap in `execute_approved_session`, plus both hazard
 tests (reset on return, reset on raise) and the static no-bare-`set()` lint.
-Nothing consults `is_approved()` yet, so behaviour is unchanged and the risky
+Nothing consults the marker yet, so behaviour is unchanged and the risky
 part is reviewable on its own.
 
 **Slice 2 — the gate.** The `APPROVAL_REQUIRED` status and the
@@ -152,7 +168,9 @@ Beyond the two hazard tests in §3:
 - `needsetup=yes` + unapproved → `APPROVAL_REQUIRED`, and
   **`provision_factory_default` is never called** (spy on it; a status assertion
   alone would pass if the gate returned the right envelope *after* provisioning).
-- `needsetup=yes` + `is_approved()` → provisions, no widget.
+- `needsetup=yes` + `is_approved_for(...)` → provisions, no widget.
+- `needsetup=yes` inside an approval for an UNRELATED action → still gates.
+  (The authority-widening case slice 1's review caught.)
 - Each non-provisioning path (`ALREADY_CREDENTIALED`, unreachable, fleet-pair,
   capture) → unchanged, no gate. One test each; this is the "operators do not
   notice" claim and it is the claim most likely to be wrong.
