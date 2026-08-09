@@ -96,7 +96,11 @@ def migrate_legacy(
         ).fetchone()
         if exists:
             rows = conn.execute(
-                "SELECT id, device_id, action_json, trigger, baseline_bootid, "
+                # baseline_bootid is deliberately not selected: the field it
+                # fed was removed in GH #172 as unwritten and unread. Legacy
+                # rows carry one, and it is discarded here rather than migrated
+                # into a column nothing consults.
+                "SELECT id, device_id, action_json, trigger, "
                 "approved_by, description, created_at, expires_at, status, "
                 "last_error FROM pending_device_actions"
             ).fetchall()
@@ -106,7 +110,7 @@ def migrate_legacy(
         conn.close()
 
     for r in rows:
-        (pid, did, action_json, trig, bootid, approved_by, desc,
+        (pid, did, action_json, trig, approved_by, desc,
          created_at, expires_at, status, last_error) = r
         if store.get(pid) is not None:
             summary["skipped"] += 1
@@ -121,7 +125,6 @@ def migrate_legacy(
             device_ids=[did] if did else None,
             trigger_kind=TRIGGER_DETECTION,
             event=trig or "",
-            baseline_bootid=bootid or "",
             expires_at=float(expires_at or 0),
             action_type=action.get("action", ""),
             action_params={k: v for k, v in action.items() if k != "action"},

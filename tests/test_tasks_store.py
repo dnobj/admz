@@ -162,3 +162,209 @@ def test_task_to_dict_shape():
     d = t.to_dict()
     assert d["name"] == "hi" and d["interval_human"] == "1h"
     assert d["trigger_kind"] == "schedule"
+
+
+class TestModuleTaskHandlerInstall:
+    """GH #172 instance 4. `contract.py` lists `task_handlers()` among the seven
+    factories "the platform calls and merges", present tense, and
+    `ModuleRegistry.task_handlers_all` implements the merge — but nothing
+    invoked it. Six of the seven merges were wired; this was the only orphan, so
+    a module implementing the documented contract had its handlers silently
+    dropped, surfacing later and far from the cause as `ValueError: no handler
+    registered for action ...`.
+    """
+
+    def _clean(self, monkeypatch):
+        """Work on a copy of the handler registry — it is module-global, and the
+        built-ins register at import."""
+        from admz.tasks import handlers as h
+        monkeypatch.setattr(h, "_HANDLERS", dict(h._HANDLERS))
+        return h
+
+    class _Reg:
+        def __init__(self, mapping):
+            self._m = mapping
+
+        def task_handlers_all(self):
+            return self._m
+
+    def test_module_handlers_are_installed(self, monkeypatch):
+        h = self._clean(monkeypatch)
+
+        async def handler(task, ctx):
+            return {"success": True}
+
+        assert h.install_module_task_handlers(self._Reg({"acs_sync": handler})) == 1
+        assert h.get_task_handler("acs_sync") is handler
+        assert "acs_sync" in h.list_action_types()
+
+    def test_a_module_may_not_replace_a_builtin(self, monkeypatch):
+        """A module quietly taking over `snapshot` for the whole fleet would be
+        load-order-dependent and invisible. Refused; the built-in stands."""
+        h = self._clean(monkeypatch)
+        builtin = h.get_task_handler("snapshot")
+        assert builtin is not None                      # guard: the premise
+
+        async def usurper(task, ctx):
+            return {"success": True}
+
+        assert h.install_module_task_handlers(self._Reg({"snapshot": usurper})) == 0
+        assert h.get_task_handler("snapshot") is builtin
+
+    def test_one_refusal_does_not_block_the_others(self, monkeypatch):
+        h = self._clean(monkeypatch)
+
+        async def a(task, ctx):
+            return {}
+
+        async def b(task, ctx):
+            return {}
+
+        n = h.install_module_task_handlers(
+            self._Reg({"snapshot": a, "acs_sync": b}))
+        assert n == 1
+        assert h.get_task_handler("acs_sync") is b
+
+    def test_no_modules_is_not_an_error(self, monkeypatch):
+        h = self._clean(monkeypatch)
+        assert h.install_module_task_handlers(self._Reg({})) == 0
+        assert h.install_module_task_handlers(self._Reg(None)) == 0
+
+    def test_the_real_registry_is_accepted(self, monkeypatch):
+        """Shape check against the actual ModuleRegistry, so a rename of
+        `task_handlers_all` fails here rather than at startup. Neither shipped
+        module supplies handlers today, so 0 is the expected count."""
+        from admz.modules.registry import ModuleRegistry
+        h = self._clean(monkeypatch)
+        assert h.install_module_task_handlers(ModuleRegistry().discover()) == 0
+
+
+class TestBaselineBootidIsGone:
+    """GH #172 instance 5. A column plus four API fields that nothing wrote and
+    nothing read: the only writer was the one-shot legacy migration, and neither
+    firing path (`claim_for_event`, `HealthMonitor._fire_pending`) ever compared
+    a device's bootid. It shipped as `null` in `GET /api/tasks`,
+    `GET /api/tasks/{id}`, `GET /api/devices/{id}/pending` and the MCP
+    `list_device_recovery` result.
+
+    The confusable twin in `admz/recovery.py` (`await_device_recovery`) is
+    genuinely live and is deliberately untouched — that resemblance is what made
+    this one look like it worked.
+    """
+
+    def test_the_field_is_removed(self):
+        from admz.tasks.store import Task
+        assert not hasattr(Task(id="t1"), "baseline_bootid")
+
+    def test_it_is_not_in_the_api_shape(self):
+        from admz.tasks.store import Task
+        assert "baseline_bootid" not in Task(id="t1").to_dict()
+
+    def test_create_detection_rejects_it(self):
+        """The kwarg is gone, so a caller cannot quietly reintroduce the field."""
+        import inspect
+        from admz.tasks.store import TaskStore
+        assert "baseline_bootid" not in inspect.signature(
+            TaskStore.create_detection).parameters
+
+    def test_the_live_recovery_twin_is_untouched(self):
+        """`await_device_recovery` really does use a baseline bootid. Deleting
+        the dead one must not have taken the working one with it."""
+        import inspect
+        from admz import recovery
+        assert "baseline_bootid" in inspect.signature(
+            recovery.await_device_recovery).parameters
+
+
+class TestModuleHandlerInstallEdgeCases:
+    """Review findings on #373 — the cases the first pass missed."""
+
+    def _clean(self, monkeypatch):
+        from admz.tasks import handlers as h
+        monkeypatch.setattr(h, "_HANDLERS", dict(h._HANDLERS))
+        monkeypatch.setattr(h, "_MODULE_INSTALLED", set(h._MODULE_INSTALLED))
+        return h
+
+    class _Reg:
+        def __init__(self, mapping):
+            self._m = mapping
+
+        def task_handlers_all(self):
+            return self._m
+
+    def test_a_second_lifespan_is_a_no_op(self, monkeypatch):
+        h = self._clean(monkeypatch)
+
+        async def handler(task, ctx):
+            return {}
+
+        reg = self._Reg({"acs_sync": handler})
+        assert h.install_module_task_handlers(reg) == 1
+        assert h.install_module_task_handlers(reg) == 0     # identical → no-op
+        assert h.get_task_handler("acs_sync") is handler
+
+    def test_a_changed_module_handler_refreshes(self, monkeypatch):
+        """Not an override: refusing here would pin the stale callable and log
+        it as a built-in clash, which it is not."""
+        h = self._clean(monkeypatch)
+
+        async def v1(task, ctx):
+            return {}
+
+        async def v2(task, ctx):
+            return {}
+
+        h.install_module_task_handlers(self._Reg({"acs_sync": v1}))
+        assert h.install_module_task_handlers(self._Reg({"acs_sync": v2})) == 1
+        assert h.get_task_handler("acs_sync") is v2
+
+    def test_a_builtin_is_still_refused_after_a_module_install(self, monkeypatch):
+        """The refresh path must not become a way in."""
+        h = self._clean(monkeypatch)
+        builtin = h.get_task_handler("snapshot")
+
+        async def usurper(task, ctx):
+            return {}
+
+        h.install_module_task_handlers(self._Reg({"acs_sync": usurper}))
+        assert h.install_module_task_handlers(self._Reg({"snapshot": usurper})) == 0
+        assert h.get_task_handler("snapshot") is builtin
+
+
+class TestModuleVsModuleCollision:
+    """A plain `dict.update` in `task_handlers_all` hid module-vs-module
+    clashes: the install step saw one handler and had nothing to refuse."""
+
+    def test_the_merge_warns_when_two_modules_claim_one_action(self, caplog):
+        import logging
+        from admz.modules.registry import ModuleRegistry
+
+        async def a(task, ctx):
+            return {}
+
+        async def b(task, ctx):
+            return {}
+
+        class _M:
+            def __init__(self, mid, handlers):
+                self.id, self._h = mid, handlers
+
+            def task_handlers(self):
+                return self._h
+
+        reg = ModuleRegistry()
+        reg._modules = [_M("alpha", {"sync": a}), _M("beta", {"sync": b})]
+        with caplog.at_level(logging.WARNING):
+            merged = reg.task_handlers_all()
+        assert merged["sync"] is b                      # last wins, as before
+        assert "alpha" in caplog.text and "beta" in caplog.text
+
+
+class TestPendingActionShimCompat:
+    def test_it_still_accepts_the_removed_kwarg(self):
+        """It is a back-compat shim; removing a parameter it always took would
+        TypeError on exactly the callers it exists to keep working."""
+        import inspect
+        from admz.fleet.pending_actions import PendingActionStore
+        assert "baseline_bootid" in inspect.signature(
+            PendingActionStore.create).parameters

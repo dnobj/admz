@@ -67,7 +67,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     last_result     TEXT,
     event           TEXT NOT NULL DEFAULT '',
     device_id       TEXT NOT NULL DEFAULT '',
-    baseline_bootid TEXT NOT NULL DEFAULT '',
     expires_at      REAL NOT NULL DEFAULT 0,
     action_type     TEXT NOT NULL DEFAULT 'snapshot',
     action_params   TEXT NOT NULL DEFAULT '{}',
@@ -86,7 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_device ON tasks(device_id, status);
 # Column order MUST match the table definition above (used for SELECT * mapping).
 _COLS = (
     "id, description, trigger_kind, interval_seconds, next_run, last_run, "
-    "last_result, event, device_id, baseline_bootid, expires_at, action_type, "
+    "last_result, event, device_id, expires_at, action_type, "
     "action_params, tag_filter, device_ids, enabled, status, approved_by, "
     "created_at, last_error"
 )
@@ -118,7 +117,6 @@ class Task:
     # --- detection trigger (event-based, one-shot) ---
     event: str = ""                     # EVENT_NEEDS_SETUP / EVENT_ONLINE
     device_id: str = ""                 # the single target device (indexed claim)
-    baseline_bootid: str = ""
     expires_at: float = 0.0             # unix; 0 = no expiry (schedule tasks)
     # --- action ---
     action_type: str = "snapshot"       # snapshot|drift_audit|survey|reprovision
@@ -169,7 +167,6 @@ class Task:
             "last_result": self.last_result,
             "event": self.event or None,
             "device_id": self.device_id or None,
-            "baseline_bootid": self.baseline_bootid or None,
             "expires_at": self.expires_at or None,
             "action_type": self.action_type,
             "action_params": self.action_params,
@@ -203,7 +200,6 @@ def _row_to_task(row) -> Task:
         last_result=d["last_result"],
         event=d["event"] or "",
         device_id=d["device_id"] or "",
-        baseline_bootid=d["baseline_bootid"] or "",
         expires_at=float(d["expires_at"] or 0),
         action_type=d["action_type"] or "snapshot",
         action_params=params,
@@ -288,7 +284,7 @@ class TaskStore:
                     task.id, task.description or "", task.trigger_kind,
                     int(task.interval_seconds or 0), task.next_run, task.last_run,
                     task.last_result, task.event or "", task.device_id or "",
-                    task.baseline_bootid or "", float(task.expires_at or 0),
+                    float(task.expires_at or 0),
                     task.action_type or "snapshot",
                     json.dumps(task.action_params or {}),
                     task.tag_filter,
@@ -346,7 +342,6 @@ class TaskStore:
         action_params: Optional[Dict[str, Any]] = None,
         approved_by: str = "",
         description: str = "",
-        baseline_bootid: str = "",
         ttl_seconds: float = DEFAULT_TTL_SECONDS,
         task_id: Optional[str] = None,
     ) -> str:
@@ -361,7 +356,6 @@ class TaskStore:
             event=event,
             device_id=device_id,
             device_ids=[device_id],
-            baseline_bootid=baseline_bootid or "",
             expires_at=now + ttl_seconds,
             action_type=action_type,
             action_params=action_params or {},

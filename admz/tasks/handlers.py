@@ -43,6 +43,9 @@ class TaskContext:
 TaskHandler = Callable[["Task", "TaskContext"], Awaitable[Dict[str, Any]]]
 
 _HANDLERS: Dict[str, TaskHandler] = {}
+#: Action types installed from a module, so a re-install can tell "refresh my
+#: own handler" from "collide with a built-in" (GH #172).
+_MODULE_INSTALLED: set = set()
 _CONTEXT: Optional[TaskContext] = None
 
 
@@ -73,6 +76,61 @@ def set_task_context(ctx: TaskContext) -> None:
 
 def get_task_context() -> Optional[TaskContext]:
     return _CONTEXT
+
+
+def install_module_task_handlers(module_registry: Any) -> int:
+    """Merge every module's ``task_handlers()`` into the registry (GH #172).
+
+    ``contract.py`` lists ``task_handlers()`` among the seven factories *"the
+    platform calls … and merges"*, present tense, and
+    ``ModuleRegistry.task_handlers_all`` implements the merge — but nothing
+    invoked it. Six of the seven merges are wired; this was the only orphan. So
+    a module implementing the documented contract had its handlers **silently
+    dropped**, surfacing much later and far from the cause as
+    ``ValueError: no handler registered for action …`` from
+    :func:`execute_task_action`.
+
+    Returns how many were installed.
+
+    **A module may not replace a built-in.** The built-ins register at import
+    via ``@register_task_handler``, so an override here would be a module
+    quietly taking over ``snapshot`` or ``reprovision`` for the whole fleet —
+    load-order-dependent and invisible. Refused and logged; the module's other
+    handlers still install.
+
+    This is a guard against accident, **not a boundary**: ``register_task_handler``
+    is public and unconditional, so a module that calls it directly at import
+    still wins. Making that impossible means giving registration an ownership
+    model, which is a larger change than #172 and is not attempted here.
+
+    Re-running (a second lifespan, a reload, a test) is a no-op for identical
+    handlers and a **refresh** for changed ones — a module's own previous
+    installation is not a built-in and must not be reported as one.
+    """
+    installed = 0
+    for action_type, handler in (module_registry.task_handlers_all() or {}).items():
+        existing = _HANDLERS.get(action_type)
+        if existing is handler:
+            continue          # same install re-run (a second lifespan): no-op
+        if action_type in _MODULE_INSTALLED:
+            # A module handler we installed before, now different: this is a
+            # refresh, not an override. Refusing it would pin the *stale*
+            # callable — and report it as a built-in clash, which it is not.
+            _HANDLERS[action_type] = handler
+            installed += 1
+            continue
+        if existing is not None:
+            logger.warning(
+                "module task handler for %r refused: %r is already registered "
+                "as a built-in, and modules may not replace built-ins",
+                action_type, action_type)
+            continue
+        _HANDLERS[action_type] = handler
+        _MODULE_INSTALLED.add(action_type)
+        installed += 1
+    if installed:
+        logger.info("installed %d module task handler(s)", installed)
+    return installed
 
 
 async def execute_task_action(

@@ -9,7 +9,9 @@ factories and merges the results:
   * ``routers()``              → ``[(APIRouter, prefix)]``
   * ``nav_section(ctx)``       → a ``NavSection`` for the sidebar (or None)
   * ``build_prompt_section(ctx)`` → a system-prompt fragment (or "")
-  * ``task_handlers()``        → unified-task action handlers (ADR-0037)
+  * ``task_handlers()``        → unified-task action handlers (ADR-0037), merged
+    at startup by ``admz.tasks.handlers.install_module_task_handlers``. A module
+    may add an action type; it may not replace a built-in (GH #172).
   * ``self_heals()``           → whether the family relearns auth on the wire
 
 This file imports ONLY stdlib + typing, so the stdio MCP subprocess and the

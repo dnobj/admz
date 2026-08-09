@@ -44,8 +44,8 @@ the platform calls and merges: `executors()`, `mcp_tools() -> [ToolSpec]`,
 an `mcp.types.Tool` schema with a *free async function* `(ToolCtx, args)`.
 **`ModuleRegistry.discover()`** does an explicit, ordered import of each
 module's `get_module()` (no entry-point magic) and exposes merge helpers
-(`executors_for_all`, `tool_specs_all`, `nav_sections_all`,
-`prompt_sections_all`, `self_heals(family)`). It is built once in
+(`executors_for_all`, `tool_specs_all`, `routers_all`, `nav_sections_all`,
+`prompt_sections_all`, `task_handlers_all`, `self_heals(family)`). It is built once in
 `components.build_components` and stored on `Components`, so MCP, web, and the
 chatbot all read one registered set without a global.
 
