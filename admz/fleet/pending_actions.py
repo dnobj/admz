@@ -44,7 +44,6 @@ def _task_to_legacy(t: Task) -> Dict[str, Any]:
         "device_id": t.device_id,
         "action": t.action,                 # {"action": type, **params}
         "trigger": t.event,
-        "baseline_bootid": t.baseline_bootid,
         "approved_by": t.approved_by,
         "description": t.description,
         "created_at": t.created_at,
@@ -68,7 +67,7 @@ class PendingActionStore:
 
     def create(
         self, *, device_id: str, action: Dict[str, Any], trigger: str,
-        approved_by: str = "", description: str = "", baseline_bootid: str = "",
+        approved_by: str = "", description: str = "",
         ttl_seconds: float = DEFAULT_TTL_SECONDS,
     ) -> str:
         action = action or {}
@@ -77,7 +76,7 @@ class PendingActionStore:
         return self._store.create_detection(
             device_id=device_id, event=trigger, action_type=action_type,
             action_params=params, approved_by=approved_by, description=description,
-            baseline_bootid=baseline_bootid, ttl_seconds=ttl_seconds,
+            ttl_seconds=ttl_seconds,
         )
 
     def list_active_for(self, device_id: str) -> List[Dict[str, Any]]:

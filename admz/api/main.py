@@ -154,6 +154,11 @@ async def lifespan(app: FastAPI):
     try:
         from admz.recovery_actions import register_recovery_handlers
         register_recovery_handlers(ctx)
+        # GH #172: and the module-supplied handlers the contract promises are
+        # merged. Built-ins register at import via @register_task_handler; this
+        # adds whatever the registered modules contribute.
+        from admz.tasks.handlers import install_module_task_handlers
+        install_module_task_handlers(ctx.module_registry)
     except Exception:  # noqa: BLE001
         import logging
         logging.getLogger(__name__).warning(

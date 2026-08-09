@@ -75,6 +75,40 @@ def get_task_context() -> Optional[TaskContext]:
     return _CONTEXT
 
 
+def install_module_task_handlers(module_registry: Any) -> int:
+    """Merge every module's ``task_handlers()`` into the registry (GH #172).
+
+    ``contract.py`` lists ``task_handlers()`` among the seven factories *"the
+    platform calls … and merges"*, present tense, and
+    ``ModuleRegistry.task_handlers_all`` implements the merge — but nothing
+    invoked it. Six of the seven merges are wired; this was the only orphan. So
+    a module implementing the documented contract had its handlers **silently
+    dropped**, surfacing much later and far from the cause as
+    ``ValueError: no handler registered for action …`` from
+    :func:`execute_task_action`.
+
+    Returns how many were installed.
+
+    **A module may not replace a built-in.** The built-ins register at import
+    via ``@register_task_handler``, so an override here would be a module
+    quietly taking over ``snapshot`` or ``reprovision`` for the whole fleet —
+    load-order-dependent and invisible. Refused and logged; the module's other
+    handlers still install.
+    """
+    installed = 0
+    for action_type, handler in (module_registry.task_handlers_all() or {}).items():
+        if action_type in _HANDLERS:
+            logger.warning(
+                "module task handler for %r refused: a handler is already "
+                "registered and modules may not replace built-ins", action_type)
+            continue
+        _HANDLERS[action_type] = handler
+        installed += 1
+    if installed:
+        logger.info("installed %d module task handler(s)", installed)
+    return installed
+
+
 async def execute_task_action(
     task: Task, ctx: Optional[TaskContext] = None
 ) -> Dict[str, Any]:
