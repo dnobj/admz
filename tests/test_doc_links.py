@@ -55,10 +55,17 @@ EXCLUDE = ("docs/vapix-docs/",)
 #: which needed `../../../`), plus four that had moved or never existed.
 #:
 #: Adding an entry is not how you fix a broken link. It is for a target that is
-#: legitimately absent right now — a file a merged-but-unshipped plan will add —
-#: and `test_the_baseline_only_shrinks` fails the moment one starts resolving,
-#: so an entry cannot outlive its reason.
+#: legitimately absent right now — a file a merged-but-unshipped plan will add.
+#:
+#: **Using it takes two deliberate edits**, by design: add the entry here, and
+#: add the same pair to ``ALLOWED_WHILE_EMPTY`` below with a one-line reason.
+#: ``test_the_baseline_only_shrinks`` then fails the moment the target starts
+#: resolving, so an entry cannot outlive its reason.
 KNOWN_BROKEN: set = set()
+
+#: The one place an entry above is justified, with why. Two lists rather than
+#: one so that adding an exemption cannot be a one-line edit lost in a diff.
+ALLOWED_WHILE_EMPTY: dict = {}
 
 #: ``[text](target)`` — target captured up to the first space (Markdown allows
 #: a trailing "title") or the closing paren.
@@ -123,8 +130,8 @@ def test_relative_links_resolve(doc):
     assert not broken, (
         "broken relative links:\n  " + "\n  ".join(broken)
         + "\n\nIf the target moved, fix the link. Do NOT add it to "
-          "KNOWN_BROKEN -- that set is a frozen record of debt predating this "
-          "guard, not somewhere to put new breakage."
+          "KNOWN_BROKEN unless the target genuinely cannot exist yet -- and "
+          "then justify it in ALLOWED_WHILE_EMPTY."
     )
 
 
@@ -179,10 +186,13 @@ class TestTheCheckerItself:
         assert _is_checkable("a/b.md") is True
 
 
-def test_the_baseline_is_empty():
-    """GH #376 burned it down. Re-populating it should be a deliberate act that
-    fails a test named for what it means, not a quiet way to land a bad link."""
-    assert KNOWN_BROKEN == set(), (
-        "KNOWN_BROKEN is an escape hatch for a target that legitimately does "
-        "not exist yet, not a place to put a link you could fix:\n  "
-        + "\n  ".join(f"{d} -> {t}" for d, t in sorted(KNOWN_BROKEN)))
+def test_every_exemption_is_justified():
+    """GH #376 emptied `KNOWN_BROKEN`. It stays usable — but an entry must also
+    be justified in `ALLOWED_WHILE_EMPTY`, so an exemption cannot be a one-line
+    edit that reads like a fix."""
+    unjustified = sorted(set(KNOWN_BROKEN) - set(ALLOWED_WHILE_EMPTY))
+    assert not unjustified, (
+        "KNOWN_BROKEN is for a target that legitimately does not exist yet, not "
+        "a place to put a link you could fix. Add a reason to "
+        "ALLOWED_WHILE_EMPTY, or fix the link:\n  "
+        + "\n  ".join(f"{d} -> {t}" for d, t in unjustified))

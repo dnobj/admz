@@ -59,9 +59,10 @@ concern of the **index files** (ADR-0019), not the directory layout.
 - Browsing the tree to find "stream profile operations" requires
   knowing the CGI is `streamprofile.cgi`. The index files
   (`by-task.yaml`, `by-risk.yaml`) bridge this, but they have to be
-  maintained. _(The catalog left this repo in #235/#236: it now lives in
+  maintained. _(The catalog left this repo in `712a8b3` / PR #37, "consume
+  axis-api-atlas as the catalog source of truth". It now lives in
   `axis-api-atlas` as `src/axis_api_atlas/data/vapix/index/`. The links here
-  used to point at the in-repo copy and had been dangling since the move.)_
+  pointed at the deleted in-repo copy and had been dangling since.)_
 - Some operations on the same conceptual feature live across multiple
   CGIs (e.g. "stream config" touches both `streamprofile.cgi` and
   `param.cgi:root.StreamProfile`). The index layer is what
