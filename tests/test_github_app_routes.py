@@ -151,6 +151,32 @@ class TestCallbacks:
         assert gh_secrets.get_app_id() == "55"
         assert gh_secrets.get_private_key() == "PEMDATA"
 
+    def test_setup_discards_the_client_secret(self, client, monkeypatch):
+        """GH #172, along the *route*, not just the store.
+
+        The unit tests pin `save_app`; this pins the callback, which is where a
+        future edit would reintroduce the write — by calling `fleet_settings.set`
+        directly, or by threading the value into some new persistence call. It
+        plants a legacy value first so the assertion cannot pass merely because
+        nothing ran.
+        """
+        from admz.fleet_settings import fleet_settings
+        fleet_settings.set(gh_secrets.KEY_CLIENT_SECRET, "legacy-ciphertext")
+        monkeypatch.setattr(
+            gh_client, "exchange_manifest_code",
+            lambda code, session=None: {
+                "id": 55, "slug": "admz-cfg", "pem": "PEMDATA",
+                "client_secret": "super-secret",
+            },
+        )
+        state = gh_routes.sign_state("setup")
+        r = client.get(f"/api/github/setup/callback?code=abc&state={state}")
+        assert r.status_code == 303
+        stored = fleet_settings.get(gh_secrets.KEY_CLIENT_SECRET)
+        assert stored in (None, "")
+        # and it is nowhere else in the settings table under another name
+        assert "super-secret" not in repr(fleet_settings.list_all())
+
     def test_install_without_app_redirects_error(self, client):
         # No app registered yet → nothing to install into.
         r = client.get("/api/github/install/callback?installation_id=7")

@@ -192,6 +192,18 @@ async def lifespan(app: FastAPI):
         logging.getLogger(__name__).warning(
             "eager encryption sweep failed", exc_info=True)
 
+    # GH #172: retire the GitHub App client secret older versions stored and
+    # nothing ever read. save_app() and Disconnect also clear it, but both need
+    # the operator to *do* something — a connected install that is simply
+    # upgraded would keep the credential indefinitely without this.
+    try:
+        from admz.github_app.secrets import purge_legacy_client_secret
+        purge_legacy_client_secret()
+    except Exception:  # noqa: BLE001 — never fatal to startup
+        import logging
+        logging.getLogger(__name__).warning(
+            "legacy client-secret purge failed", exc_info=True)
+
     # GH #170: periodic sweep for orphaned rule-recipient secret stashes
     # (deny and consume-on-approval already discard their own token; this is
     # the backstop for a token nothing ever touches again — abandonment on a

@@ -8,9 +8,13 @@ target repo) are stored plaintext. Mirrors ``admz/survey/secrets.py``.
 
 The **client secret is not stored at all** (#172). GitHub returns one from the
 manifest conversion, and this module used to keep it encrypted — but nothing
-ever read it: ADMZ authenticates as the App via the private key, and a client
-secret is only for OAuth user-to-server flows it does not perform. A credential
-held at rest with no reader is attack surface and nothing else.
+ever *consumed* it: no getter, no caller. (Generic ``list_all()`` settings dumps
+load the row like any other and mask it; that is not a reader of the value.)
+ADMZ authenticates as the App via the private key, and a client secret is only
+for OAuth user-to-server flows it does not perform. A credential held at rest
+with no reader is attack surface and nothing else — so ``save_app`` deletes any
+legacy value, ``clear()`` does too, and ``purge_legacy_client_secret()`` runs at
+startup for the install that does neither.
 
 The setting keys carrying secrets contain ``key``/``secret`` in their name so
 ``admz/redact.py`` masks them automatically, and they're listed in
@@ -82,21 +86,52 @@ def save_app(app_id, slug: str, private_key_pem: str) -> None:
     anything except not having it.
 
     Any value written by an earlier version is **deleted here**, so an install
-    that re-runs the App setup is cleaned without a migration. `KEY_CLIENT_SECRET`
-    stays in `setting_policy`'s protected and encrypted sets on purpose: an
-    install that never re-runs setup still has the old value, and it must stay
-    masked and un-writable by the LLM until it is gone.
+    that re-runs the App setup is cleaned on the way past. That is opportunistic,
+    not the migration: a working install re-runs setup never, so
+    `purge_legacy_client_secret()` at startup is what actually retires the value.
+    `KEY_CLIENT_SECRET` stays in `setting_policy`'s protected and encrypted sets
+    on purpose — it must stay masked and un-writable by the LLM for as long as
+    any install can still hold one.
     """
     fleet_settings.set(KEY_APP_ID, str(app_id))
     fleet_settings.set(KEY_APP_SLUG, slug or "")
     fleet_settings.set(KEY_PRIVATE_KEY, encrypt(private_key_pem))
-    # Clear rather than leave: this is the one moment we know the caller is
-    # (re)establishing App credentials, so it is the natural cleanup point.
+    # Opportunistic cleanup. `delete()` of an absent key returns False rather
+    # than raising, so this catch only ever fires on a real store failure — and
+    # then swallowing is right twice over: a setup must not fail over a cleanup,
+    # and the startup purge below retries it on the next start anyway.
     try:
         fleet_settings.delete(KEY_CLIENT_SECRET)
     except Exception:  # noqa: BLE001 — never fail a setup over a cleanup
-        logger.warning("could not clear the legacy %s", KEY_CLIENT_SECRET,
-                       exc_info=True)
+        logger.warning("could not clear the legacy %s (startup purge will "
+                       "retry)", KEY_CLIENT_SECRET, exc_info=True)
+
+
+def purge_legacy_client_secret() -> bool:
+    """Delete a client secret left by a pre-#172 version. Returns True if one
+    was actually removed.
+
+    This is the migration, and it exists because the other two cleanup paths
+    only fire on *activity*: `save_app` needs a re-setup, `clear()` needs a
+    Disconnect. The most ordinary install — connected, working, upgraded in
+    place, touched by neither — would otherwise keep the credential forever,
+    which is precisely the case #172 is about. Called from the API lifespan.
+
+    Idempotent and cheap: a delete of an absent key is a no-op returning False,
+    so every start after the first does nothing. Never raises — a startup
+    cleanup must not be able to stop the process coming up; the next start
+    tries again.
+    """
+    try:
+        removed = bool(fleet_settings.delete(KEY_CLIENT_SECRET))
+    except Exception:  # noqa: BLE001 — never fatal to startup
+        logger.warning("could not purge the legacy %s; will retry next start",
+                       KEY_CLIENT_SECRET, exc_info=True)
+        return False
+    if removed:
+        logger.info("purged the retired %s (#172): it was stored by an older "
+                    "version and nothing reads it", KEY_CLIENT_SECRET)
+    return removed
 
 
 def get_app_id() -> Optional[str]:

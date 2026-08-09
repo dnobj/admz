@@ -164,8 +164,11 @@ KNOWN_SETTING_KEYS: FrozenSet[str] = frozenset({
     "github_app_id",
     "github_app_slug",
     "github_app_private_key",
-    # No longer written (#172) — kept so a value an older install still holds
-    # stays masked and un-writable until `save_app` or Disconnect clears it.
+    # Retired (#172): no longer written, and purged at startup. It stays
+    # declared here so that until every install has started once, the value
+    # some of them still hold is a *known* key — classified, masked, and
+    # (being absent from LLM_WRITABLE) protected by deny-by-default. Dropping
+    # it would make it an unknown key holding a live credential.
     "github_app_client_secret",
     "github_app_installation_id",
     "github_config_repo",

@@ -286,12 +286,25 @@ class TestClientSecretIsNotStored:
         assert gh_settings.get(gh_secrets.KEY_CLIENT_SECRET) in (None, "")
 
     def test_the_key_stays_protected_and_encrypted(self):
-        """Kept in both policy sets on purpose: an install that never re-runs
-        setup still holds the old value, and it must stay masked and
-        un-writable by the LLM until it is gone."""
+        """Still declared, on purpose: until every install has started once,
+        some of them hold the old value, and it must stay masked and
+        un-writable by the LLM for as long as one can exist. Dropping it from
+        `KNOWN_SETTING_KEYS` would turn a live credential into an unknown key.
+
+        Membership is asserted directly as well as through the predicates —
+        removing it from `MODULE_ENCRYPTED_SETTING_KEYS` alone would leave the
+        predicate assertions green.
+        """
         from admz.fleet_settings import is_protected_setting, is_sensitive_setting_key
+        from admz.setting_policy import (
+            KNOWN_SETTING_KEYS, LLM_WRITABLE_SETTING_KEYS,
+            MODULE_ENCRYPTED_SETTING_KEYS,
+        )
         assert is_protected_setting(gh_secrets.KEY_CLIENT_SECRET) is True
         assert is_sensitive_setting_key(gh_secrets.KEY_CLIENT_SECRET) is True
+        assert gh_secrets.KEY_CLIENT_SECRET in KNOWN_SETTING_KEYS
+        assert gh_secrets.KEY_CLIENT_SECRET not in LLM_WRITABLE_SETTING_KEYS
+        assert gh_secrets.KEY_CLIENT_SECRET in MODULE_ENCRYPTED_SETTING_KEYS
 
     def test_disconnect_still_removes_it(self, gh_settings):
         """`clear()` iterates SETTING_KEYS, which still names it — so Disconnect
@@ -299,3 +312,41 @@ class TestClientSecretIsNotStored:
         gh_settings.set(gh_secrets.KEY_CLIENT_SECRET, "legacy-ciphertext")
         gh_secrets.clear()
         assert gh_settings.get(gh_secrets.KEY_CLIENT_SECRET) in (None, "")
+
+
+class TestLegacyClientSecretPurge:
+    """GH #172. `save_app` and `clear()` both need the operator to *do*
+    something; the ordinary install — connected, working, upgraded in place —
+    does neither, and would keep the credential forever. The startup purge is
+    what actually retires it, so it is tested as the migration it is.
+    """
+
+    def test_purges_and_reports_it(self, gh_settings):
+        gh_settings.set(gh_secrets.KEY_CLIENT_SECRET, "legacy-ciphertext")
+        assert gh_secrets.purge_legacy_client_secret() is True
+        assert gh_settings.get(gh_secrets.KEY_CLIENT_SECRET) in (None, "")
+
+    def test_is_idempotent_and_quiet_when_there_is_nothing_to_do(self, gh_settings):
+        """Every start after the first. Must not report a purge it didn't do —
+        the return value is what gets logged."""
+        assert gh_secrets.purge_legacy_client_secret() is False
+        assert gh_secrets.purge_legacy_client_secret() is False
+
+    def test_never_raises_when_the_store_fails(self, gh_settings, monkeypatch):
+        """It runs in the API lifespan. A cleanup that can stop the process
+        coming up is worse than the value it removes."""
+        from admz.fleet_settings import fleet_settings
+        monkeypatch.setattr(
+            fleet_settings, "delete",
+            lambda k: (_ for _ in ()).throw(RuntimeError("database is locked")))
+        assert gh_secrets.purge_legacy_client_secret() is False
+
+    def test_leaves_the_other_app_settings_alone(self, gh_settings):
+        """It targets one key. A purge that also cleared the private key would
+        silently disconnect a working install."""
+        gh_secrets.save_app(42, "admz-cfg", "PEM")
+        gh_settings.set(gh_secrets.KEY_CLIENT_SECRET, "legacy-ciphertext")
+        gh_secrets.purge_legacy_client_secret()
+        assert gh_secrets.get_app_id() == "42"
+        assert gh_secrets.get_private_key() == "PEM"
+        assert gh_secrets.get_slug() == "admz-cfg"
