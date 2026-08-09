@@ -10,9 +10,19 @@
 -r requirements.txt
 pytest>=9.0.0,<10         # installed 9.0.2; latest 9.1.1. Floor raised from >=7.0.0 — TWO
                           # majors below installed.
-pytest-asyncio>=1.0.0,<2  # installed 1.3.0; latest 1.4.0. Floor raised from >=0.21.0, which
-                          # predates the 1.0 rewrite of loop/scope handling; the suite's
-                          # asyncio_mode config does not work on 0.x.
+pytest-asyncio>=1.4,<1.5  # installed 1.4.0 (= latest). Bounded at the MINOR, not the major
+                          # (#362): 1.3->1.4 changed loop teardown -- 1.4 clears the current
+                          # event loop after an async test, 1.3 left one behind. So `<2` was
+                          # never a real ceiling on this package's breaking axis, and the room
+                          # it left is exactly what CI used: CI resolved 1.4.0 while the dev
+                          # venv held 1.3.0, and `tests/test_auth.py` failed deterministically
+                          # in CI while passing every local ordering.
+                          #
+                          # Standardised UP, on 1.4: its stricter teardown is what exposed a
+                          # real latent bug (an `asyncio.get_event_loop()` helper). Pinning
+                          # down to 1.3 would have restored the blindness. Floor originally
+                          # >=0.21.0, which predates the 1.0 rewrite of loop/scope handling;
+                          # the suite's asyncio_mode config does not work on 0.x.
 pytest-cov>=7.0.0,<8      # installed 7.0.0; latest 7.1.0. Floor raised from >=4.0.0 — three
                           # majors below installed.
 pytest-mock>=3.10.0,<4    # installed 3.15.1 (= latest). Floor already at the installed major.
