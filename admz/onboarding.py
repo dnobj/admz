@@ -49,6 +49,19 @@ PROVISIONED = "provisioned"
 PROVISION_FAILED = "provision_failed"
 FLEET_CREDENTIALS_SAVED = "fleet_credentials_saved"
 CREDENTIALS_NEEDED = "credentials_needed"
+#: ADR-0059. The device is factory-defaulted, so onboarding is about to create
+#: a root admin account on it — and nobody has approved that yet. The dict also
+#: carries the standard blocked envelope (``confirm_token``, ``confirm_url``,
+#: …), so a caller can surface the approval link without knowing anything about
+#: this module. Fail-closed: a caller that ignores the status sees "not
+#: provisioned", which is safe.
+APPROVAL_REQUIRED = "approval_required"
+
+#: The actions whose approval covers provisioning here. Named explicitly rather
+#: than asking "is anything approved?" — approval for X is not approval for Y,
+#: which is the finding that came out of slice 1's review.
+_APPROVAL_ACTIONS = ("start_demo_survey", "register_discovered_device",
+                     "provision_device_credentials")
 
 
 async def onboard_device_credentials(
@@ -132,11 +145,64 @@ async def onboard_device_credentials(
     )
     if ready and ready.get("needsetup"):
         host = device_info.get("host") or device_info.get("ip_address")
+
+        # ADR-0059: THE GATE. This is the provisioning decision point — the
+        # next call creates a root admin account on a device. Everything up to
+        # here has been reads (TCP probe, registry lookup, credential confirm,
+        # systemready), so raising the widget now costs an unreachable or
+        # already-credentialed device nothing; they returned earlier.
+        #
+        # The gate lives here rather than at the entry points because whether
+        # provisioning will happen is not knowable without contacting the
+        # device — `read_systemready` above is what decides it. A gate at
+        # function entry would fire on every device add, which is the outcome
+        # ADR-0059 is explicitly avoiding.
+        from admz.approval_context import is_approved_for
+
+        if not is_approved_for(*_APPROVAL_ACTIONS):
+            from admz.audit import record_event
+            from admz.discovery.gated import gate_scan_write
+
+            env = gate_scan_write(
+                "provision_device_credentials", device_id,
+                # Device id + host only. NOT the device's advertised metadata:
+                # on a factory-defaulted unit that is an unauthenticated claim
+                # (#193), and it adds nothing to "may ADMZ create a root
+                # account here?".
+                {"device_id": device_id, "host": host},
+                reason=(
+                    f"Device '{device_id}' at {host} is factory-defaulted. "
+                    "Approving creates a root admin account on it."
+                ),
+            )
+            record_event(
+                None, "provision.gated", resource=f"device:{device_id}",
+                details={"host": host, "reason": "needsetup"},
+            )
+            return {**env, "status": APPROVAL_REQUIRED, "device_id": device_id}
+
         result = await provision_factory_default(
             catalog, executors, registry,
             device_id=device_id, host=host,
         )
         if result.get("success"):
+            # Device, host and password SOURCE — never the password (#199
+            # item 2, and the same rule #351/#355 reinforced: an audit row is
+            # attribution, not a second copy of a secret). `approved_action`
+            # names which approval authorised it.
+            from admz.approval_context import approved_action, approved_token
+            from admz.audit import record_event
+
+            record_event(
+                None, "provision.approved", resource=f"device:{device_id}",
+                details={
+                    "host": host,
+                    "username": result.get("username"),
+                    "password_source": result.get("password_source"),
+                    "under_approval": approved_action(),
+                    "confirm_token": approved_token(),
+                },
+            )
             return {
                 "status": PROVISIONED, "device_id": device_id,
                 "username": result.get("username"),

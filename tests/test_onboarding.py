@@ -102,19 +102,38 @@ class TestResolutionOrder:
         assert out["status"] == "already_credentialed"
         assert "provision_called" not in patch_probes
 
-    def test_needsetup_provisions_from_fleet(self, patch_probes):
+    def test_needsetup_provisions_from_fleet_when_approved(self, patch_probes):
+        """ADR-0059: provisioning a factory-defaulted device now requires an
+        approval. This test kept its subject — "the fleet default is used and
+        the write happens" — and gained the approval the operator would give;
+        the *unapproved* half is pinned in test_provisioning_gate.py."""
+        from admz.approval_context import approved
+
         patch_probes["systemready"] = {"needsetup": True, "systemready": True,
                                        "bootid": None, "uptime": 1}
-        out = _run()
+        with approved("register_discovered_device", "tok-test"):
+            out = _run()
         assert out["status"] == "provisioned"
         assert out["password_source"] == "fleet_default"
         assert patch_probes.get("provision_called")
 
+    def test_needsetup_gates_when_not_approved(self, patch_probes):
+        """The other side of the same branch, here so this file's reader sees
+        the gate exists rather than wondering why the test above wraps."""
+        patch_probes["systemready"] = {"needsetup": True, "systemready": True,
+                                       "bootid": None, "uptime": 1}
+        out = _run()
+        assert out["status"] == "approval_required"
+        assert not patch_probes.get("provision_called")
+
     def test_provision_failure_reported(self, patch_probes):
+        from admz.approval_context import approved
+
         patch_probes["systemready"] = {"needsetup": True, "systemready": True,
                                        "bootid": None, "uptime": 1}
         patch_probes["provision"] = {"success": False, "error": "vapix said no"}
-        out = _run()
+        with approved("register_discovered_device", "tok-test"):
+            out = _run()
         assert out["status"] == "provision_failed"
         assert "vapix said no" in out["error"]
 
