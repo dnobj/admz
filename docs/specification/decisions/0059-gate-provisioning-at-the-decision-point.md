@@ -1,8 +1,37 @@
 # ADR-0059 — Gate provisioning at the decision point, not at the entry points
 
-**Status:** Proposed (2026-08-05). Docs-only; no implementation. Supersedes the
+**Status:** **Accepted** — adopted by the owner 2026-08-07, implemented 2026-08-09
+in three slices (PRs #361 marker, #363 gate, #364 this). Supersedes the
 *"Why the gate is here and not on `provision_factory_default`"* section of
-[`admz/discovery/gated.py`](../../../admz/discovery/gated.py) once implemented.
+[`admz/discovery/gated.py`](../../../admz/discovery/gated.py), which is rewritten
+rather than deleted — see the amendment below.
+
+> ### Amendment on implementation (2026-08-09): the entry-point gates were NOT retired
+>
+> The build plan said slice 3 would remove the two `discovery/gated.py` call
+> sites "now that the chokepoint covers them". **That instruction was wrong and
+> was not carried out.**
+>
+> The chokepoint covers *provisioning*. It does not cover what those two gates
+> actually approve now: the survey gate approves a **blast radius** (scan this
+> subnet), which cannot be expressed at the chokepoint because by then the scan
+> has already happened; and `register_discovered_device` approves a **registry
+> write** for a device the model discovered rather than a human named.
+>
+> Worse, removing the survey gate would have been actively harmful. Approving it
+> is what runs the survey inside the approved context, and `create_task` copies
+> that context into the background run — so one approval covers every device the
+> survey provisions. Ungated, the survey would run unapproved and the chokepoint
+> would fire **per device**, from a background task, with nobody on the page.
+> One approval becomes N widgets nobody sees — precisely the failure the
+> "Approved context" section below exists to prevent. The plan generalised
+> "retire the entry points" from this ADR's argument without re-checking it
+> against that section.
+>
+> What the three slices actually changed: provisioning is gated at the decision
+> point, so `register_device` and `onboard_device` — previously ungated paths to
+> a root account — now gate, and the register/onboard asymmetry is gone. The two
+> pre-existing gates remain, doing a narrower and still-necessary job.
 **Relates to:** ADR-0034 (one human gate; risk → level), GH #199 (the survey
 provisioning gap this continues), GH #299 (the entry-point gate this revises),
 GH #313 (the sibling gap this does **not** close — see *Why #313's refutation

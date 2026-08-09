@@ -219,6 +219,55 @@ class TestUngatedPathsAreUntouched:
 # ---------------------------------------------------------------------------
 
 
+class TestSurveyApprovalCoversItsDevices:
+    """Why the survey's entry gate must NOT be retired (ADR-0059 amendment).
+
+    Approving the survey runs it inside the approved context, and
+    `asyncio.create_task` copies that context into the background run — so one
+    approval covers every factory-defaulted device the survey provisions.
+
+    Ungate the survey and the chokepoint fires **per device**, from a
+    background task, with nobody on the page to answer. The plan's original
+    "retire the entry-point gate" instruction would have caused exactly that;
+    this test is what makes the reason executable rather than a comment.
+    """
+
+    @pytest.mark.asyncio
+    async def test_one_approval_covers_many_devices(self, registry,
+                                                    provision_spy):
+        import asyncio
+        from admz.approval_context import is_approved_for
+
+        seen = []
+
+        async def survey_like_background_work():
+            # Three devices, as the survey would: each goes through the same
+            # chokepoint, and none of them should raise a widget.
+            for _ in range(3):
+                out = await _onboard(registry)
+                seen.append(out["status"])
+
+        with approved("start_demo_survey", "tok-survey"):
+            assert is_approved_for("start_demo_survey")
+            task = asyncio.create_task(survey_like_background_work())
+        # Awaited AFTER the approval scope closes — the background run keeps
+        # the copied context, which is the property the survey relies on.
+        await task
+
+        assert seen == [PROVISIONED, PROVISIONED, PROVISIONED]
+        assert provision_spy.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_without_the_approval_every_device_would_gate(
+        self, registry, provision_spy
+    ):
+        """The counterfactual, stated as a test: this is what retiring the
+        survey gate would have produced."""
+        seen = [ (await _onboard(registry))["status"] for _ in range(3) ]
+        assert seen == [APPROVAL_REQUIRED] * 3
+        provision_spy.assert_not_awaited()
+
+
 class TestApprovedExecutorIsRegistered:
     def test_the_action_exists_and_grants_provisioning(self):
         from admz.operations import (

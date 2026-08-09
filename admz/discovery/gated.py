@@ -7,26 +7,45 @@ A network sweep that *registers what it finds* does not stop at registering.
 subnet and create an admin account on every unclaimed device on it. Until this
 existed there was **no gate at all** on that.
 
-Why the gate is here and not on ``provision_factory_default``
---------------------------------------------------------------
-Gating the provisioning step would make every caller inherit it, which sounds
-strictly better and is not. Three callers reach it legitimately and must not be
-held:
+What these gates are for, now that provisioning has its own (ADR-0059)
+----------------------------------------------------------------------
+**This module used to be the only gate on provisioning.** It no longer is:
+ADR-0059 put a gate at the decision point — inside
+``onboarding.onboard_device_credentials``, immediately before
+``provision_factory_default`` — because the entry-point placement could not be
+kept complete. It classified callers by "was the device chosen before the
+call?", which is sound about a human and collapses for the model: it can call
+``discover_network_devices`` (an ungated read) and then name what it just
+found. The proof was in the gate table itself — ``register_discovered_device``
+was held while ``register_device``, reaching the identical write, was not.
 
-* ``tasks/handlers.py::_run_reprovision`` — the deferred **scheduled** recovery
-  task. Nothing can approve a widget on the scheduler's behalf, so a gate there
-  does not delay the write, it fails it. This one is decisive.
-* ``api/routes/devices.py::_run_onboarding`` — an operator adding one device
-  they typed the address of. The intent is already explicit and singular.
-* ``mcp/server.py::_register_device`` — the same shape, one named device.
+**These two gates stay, and they are no longer about provisioning.** What each
+now approves is narrower and still real:
 
-What those three have in common is that the *device* is chosen before the call.
-What the two gated callers have in common is that the device set is chosen by a
-**scan**, so the operator approves a blast radius rather than a device. That is
-the distinction the gate encodes, and it is why it sits at the two entry points.
+* the **deep survey** (``api/routes/demos.py``) — the operator approves a
+  *blast radius*: scan this subnet, register what you find. The chokepoint
+  cannot express that, because by the time it fires the scan has happened.
+* **``register_discovered_device``** (``mcp/server.py``) — the operator
+  approves registering a device the model discovered rather than one a human
+  named. That is a registry write, and the chokepoint does not cover registry
+  writes.
 
-Two entry points, one gate
---------------------------
+**The survey gate is load-bearing for a second reason, and removing it would
+be actively harmful.** Approving it runs
+``operations._action_start_demo_survey`` inside the approved context, and
+``asyncio.create_task`` copies that context into the background survey — so
+every factory-defaulted device the survey provisions is covered by the one
+approval the operator already gave. Delete this gate and the survey runs
+unapproved, which means the chokepoint fires **per device**, from a background
+task, with nobody on the page to answer. One approval becomes N widgets nobody
+sees.
+
+ADR-0059's plan said slice 3 would "retire the entry-point gate". That
+instruction was over-generalised and is not what shipped; see the ADR's
+amendment.
+
+Two entry points, one helper
+----------------------------
 Splitting a gate across call sites is how a guard ends up half-implemented
 (#208) or divergent (#255), so both callers come through :func:`gate_scan_write`
 — one risk class, one level resolution, one envelope. There is no second
