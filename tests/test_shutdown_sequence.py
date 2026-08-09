@@ -204,19 +204,18 @@ class TestRunShutdown:
             ("scheduler", cancelled),
             ("registry", lambda: ran.append("registry")),
         ]
-        with pytest.raises(asyncio.CancelledError):
-            _run(_run_shutdown(steps))
+        assert isinstance(_run(_run_shutdown(steps)), asyncio.CancelledError)
         assert ran == ["events", "registry"]
 
-    def test_the_first_interrupt_is_the_one_re_raised(self):
+    def test_the_first_interrupt_is_the_one_returned(self):
         async def cancelled():
             raise asyncio.CancelledError()
 
         def interrupted():
             raise KeyboardInterrupt()
 
-        with pytest.raises(asyncio.CancelledError):
-            _run(_run_shutdown([("a", cancelled), ("b", interrupted)]))
+        first = _run(_run_shutdown([("a", cancelled), ("b", interrupted)]))
+        assert isinstance(first, asyncio.CancelledError)
 
     def test_a_keyboard_interrupt_does_not_abandon_cleanup(self):
         """`except Exception` let BaseException skip the rest — the same hole in
@@ -226,15 +225,15 @@ class TestRunShutdown:
         def interrupted():
             raise KeyboardInterrupt()
 
-        with pytest.raises(KeyboardInterrupt):
-            _run(_run_shutdown([("a", interrupted),
-                                ("registry", lambda: ran.append("registry"))]))
+        exc = _run(_run_shutdown([("a", interrupted),
+                                  ("registry", lambda: ran.append("registry"))]))
+        assert isinstance(exc, KeyboardInterrupt)
         assert ran == ["registry"]
 
-    def test_no_interrupt_means_no_raise(self):
+    def test_no_interrupt_means_none(self):
         def boom():
             raise RuntimeError("ordinary")
-        _run(_run_shutdown([("a", boom), ("b", lambda: None)]))
+        assert _run(_run_shutdown([("a", boom), ("b", lambda: None)])) is None
 
 
 class TestStartupFailureIsCleanedUp:
@@ -303,5 +302,69 @@ class TestStartupFailureIsCleanedUp:
 
         monkeypatch.setattr(HealthMonitor, "start", boom)
         with pytest.raises(RuntimeError, match="nope"):
+            with TestClient(app):
+                pass
+
+
+class TestTeardownDoesNotMaskTheStartupError:
+    """Review finding on #383. `_run_shutdown` returns the interrupt instead of
+    raising it precisely so the lifespan can decline to raise while a startup
+    error is already on its way out.
+
+    Without that, a `CancelledError` from any shutdown step during a failed
+    startup would reach the operator *instead of* the reason the service
+    refused to come up.
+    """
+
+    @pytest.fixture(autouse=True)
+    def isolate(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ADMZ_HOME", str(tmp_path))
+        monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
+        monkeypatch.setenv("ADMZ_KEY_PATH", str(tmp_path / "admz.key"))
+        monkeypatch.setenv("ADMZ_CONFIG_REPO_PATH", str(tmp_path / "config-repo"))
+        monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    def test_the_startup_error_wins_over_a_teardown_interrupt(self, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        from admz.api.main import app
+        from admz.fleet.health import HealthMonitor
+        from admz.snapshot.scheduler import SnapshotScheduler
+
+        async def boom(self):
+            raise RuntimeError("the real reason startup failed")
+
+        async def cancelled(self):
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(HealthMonitor, "start", boom)
+        monkeypatch.setattr(SnapshotScheduler, "stop", cancelled)
+
+        # Not CancelledError: the operator needs the startup failure.
+        with pytest.raises(RuntimeError, match="the real reason startup failed"):
+            with TestClient(app):
+                pass
+
+    def test_a_teardown_interrupt_still_surfaces_on_a_clean_shutdown(self, monkeypatch):
+        """The other direction — with nothing in flight, the interrupt must not
+        be swallowed, or the loop stops being cancellable."""
+        from fastapi.testclient import TestClient
+
+        from admz.api.main import app
+        from admz.snapshot.scheduler import SnapshotScheduler
+
+        async def cancelled(self):
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(SnapshotScheduler, "stop", cancelled)
+        # TestClient drives the lifespan through a blocking portal, which
+        # re-wraps the cancellation as `concurrent.futures.CancelledError` —
+        # a *different* class from `asyncio.CancelledError` on this Python.
+        # What matters is that it escapes at all.
+        import concurrent.futures
+        with pytest.raises((asyncio.CancelledError,
+                            concurrent.futures.CancelledError)):
             with TestClient(app):
                 pass

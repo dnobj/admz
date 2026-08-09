@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -167,8 +168,12 @@ async def _shutdown_step(name: str, fn):
     return None
 
 
-async def _run_shutdown(steps) -> None:
-    """Run every step, then re-raise the first interrupt any of them raised.
+async def _run_shutdown(steps):
+    """Run every step; return the first interrupt any of them raised, or None.
+
+    Returned rather than raised so the caller can decline to raise it while an
+    exception is already in flight — a teardown interrupt must not replace the
+    startup error that caused the teardown (#381).
 
     Once the enclosing task is being cancelled, later awaits tend to raise
     ``CancelledError`` immediately too — so those steps log and move on, while
@@ -181,8 +186,7 @@ async def _run_shutdown(steps) -> None:
         exc = await _shutdown_step(name, fn)
         if exc is not None and interrupt is None:
             interrupt = exc
-    if interrupt is not None:
-        raise interrupt
+    return interrupt
 
 
 @asynccontextmanager
@@ -192,20 +196,24 @@ async def lifespan(app: FastAPI):
     _warn_anonymous_auth_backend()
     _log_active_capabilities()
     registry = create_device_registry()
-    ctx = init_context(registry)
-    # Imported here, not beside its start() below, so the `finally` can always
-    # name it — a start that fails before that import would otherwise raise
-    # NameError out of the cleanup itself.
-    from admz.chatbot.mcp_pool import mcp_pool
 
-    # GH #381: everything from here is inside the cleanup scope. It used to open
+    # GH #381: everything below is inside the cleanup scope. It used to open
     # after the components were started, so a failing start() left every
     # component before it running with no shutdown step reached at all — the
-    # sequence #379 made uniformly best-effort was simply unreachable. Both
-    # `registry` and `ctx` exist by this line, which is what the `finally`
-    # needs; a failure in `create_device_registry`/`init_context` has nothing
-    # built to clean up.
+    # sequence #379 made uniformly best-effort was simply unreachable.
+    #
+    # `init_context` and the `mcp_pool` import are INSIDE it too: `init_context`
+    # runs `build_components`, which is large and fallible, and would otherwise
+    # strand the registry it was handed. Both names are pre-bound to None so the
+    # `finally` can tell "never got there" from "built", rather than raising
+    # NameError out of the cleanup itself. (An earlier revision of this fix
+    # hoisted the import to just *above* the try — outside the very scope it was
+    # moved there to be safe in.)
+    ctx = None
+    mcp_pool = None
     try:
+        ctx = init_context(registry)
+        from admz.chatbot.mcp_pool import mcp_pool  # noqa: F811 — rebinds the guard
 
         # One-time migration of the legacy schedules.json + pending_device_actions
         # into the unified tasks table (ADR-0037). Idempotent + non-destructive, so
@@ -368,25 +376,38 @@ async def lifespan(app: FastAPI):
         #
         # Order matters and is preserved: stop the things that USE the registry
         # before closing it.
-        steps = [
-            ("chat MCP pool", mcp_pool.stop),
-            ("rule-secret purge loop", _stop_rule_secret_purge),
-            ("event supervisor", ctx.event_supervisor.stop),
-            # GH #172: the preview reaper is lazily started and self-terminating,
-            # so it is usually already gone; this covers a picker still open.
-            ("preview manager", ctx.preview_manager.aclose),
-            ("ACS action-rule poller", ctx.acs_event_poller.stop),
-            ("ACS Firebird poller", ctx.acs_firebird_poller.stop),
-            ("health monitor", ctx.health_monitor.stop),
-            ("scheduler", ctx.scheduler.stop),
-        ]
+        # Built conditionally: on a startup failure either of these may never
+        # have been reached (#381).
+        steps = []
+        if mcp_pool is not None:
+            steps.append(("chat MCP pool", mcp_pool.stop))
+        steps.append(("rule-secret purge loop", _stop_rule_secret_purge))
+        if ctx is not None:
+            steps += [
+                ("event supervisor", ctx.event_supervisor.stop),
+                # GH #172: the preview reaper is lazily started and
+                # self-terminating, so it is usually already gone; this covers a
+                # picker still open.
+                ("preview manager", ctx.preview_manager.aclose),
+                ("ACS action-rule poller", ctx.acs_event_poller.stop),
+                ("ACS Firebird poller", ctx.acs_firebird_poller.stop),
+                ("health monitor", ctx.health_monitor.stop),
+                ("scheduler", ctx.scheduler.stop),
+            ]
         # close() is a no-op for backends that hold no persistent connections,
         # but exists for the few that do. Last, and only if present.
         close = getattr(registry, "close", None)
         if callable(close):
             steps.append(("registry", close))
 
-        await _run_shutdown(steps)
+        _interrupt = await _run_shutdown(steps)
+        # Only surface a teardown interrupt when nothing else is propagating.
+        # In a `finally`, ``sys.exc_info()`` is the exception on its way out —
+        # usually the failing ``start()``, and that is the one the operator
+        # needs. Raising over it would report a cancelled shutdown and hide the
+        # reason the service refused to come up (#381).
+        if _interrupt is not None and sys.exc_info()[0] is None:
+            raise _interrupt
 
 app = FastAPI(
     title="ADMZ - Axis Device Management Zone",
