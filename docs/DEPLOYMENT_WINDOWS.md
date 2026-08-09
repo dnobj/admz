@@ -1,15 +1,181 @@
-# Deploying ADMZ on Windows with Windows Authentication
+# Deploying ADMZ on Windows
 
-This guide walks through deploying ADMZ on Windows Server (or Windows
-10/11) with **Windows Integrated Authentication (IWA)** in front of
-the FastAPI app via **IIS as a reverse proxy**. Result: browser users
-sign in transparently via their existing Windows session; programmatic
-agents use API keys.
+ADMZ ships as a **Shawl-supervised Windows service** authenticating with the
+**`windows-local`** backend (ADR-0033) plus in-process **Negotiate SSO**
+(ADR-0035), storing its data under **`ADMZ_HOME`** (ADR-0042). No IIS, no
+reverse proxy, no domain required. That is the deployment described in Part 1,
+and it is what production runs.
 
-> **Audience.** Ops engineers comfortable with IIS, AD service accounts,
-> and Python web app deployment on Windows.
+Part 2 documents the **IIS reverse-proxy / IWA** topology (ADR-0021). It is
+still supported and is the right answer when an organisation requires IWA
+terminated at IIS — but it is the alternative, not the default.
 
-## Topology
+> **This document used to say the opposite.** Until GH #173 the numbered
+> procedure was the IIS/NSSM path and the `windows-local` service was an
+> "Alternative" 240 lines down: ADR-0033/0035/0042 each added their material
+> without demoting the procedure they superseded. Two of that procedure's
+> defects were wrong under *every* deployment model and are fixed below — an
+> interpreter path that does not exist, and a service environment with no
+> `ADMZ_HOME`, which silently sends the instance to `~/.admz` and, on a host
+> already running ADMZ, gives you **a second service with its own database and
+> its own Fernet key managing the same fleet**.
+
+> **Audience.** Ops engineers comfortable with Windows services and Python
+> deployment. Part 2 additionally assumes IIS and AD.
+
+---
+
+# Part 1 — The standard deployment (Shawl + `windows-local`)
+
+## What you get
+
+Browser users reach ADMZ on port 4242, are redirected to `/login`, and can
+**"Continue as the signed-in Windows user"** — SSO handled in-process by Windows
+SSPI, no IIS. Group membership comes from the logon token, so a member of the
+local `Administrators` group passes the credential-reveal gate with no LDAP.
+Agents use `Authorization: Bearer admz_<key>`.
+
+## Topology (standard)
+
+```
+Browser / agent
+  - browser: Negotiate SSO, or the /login form
+  - agent:   Authorization: Bearer admz_<...>
+        |
+        |  HTTP(S) :4242
+        v
+admz service  (Shawl -> python -m admz api)
+  - windows-local + in-process SSPI
+  - LocalSystem, delayed-auto start, auto-restart
+  - ADMZ_HOME=C:\ProgramData\admz
+```
+
+## Prerequisites (standard)
+
+1. **Windows 10/11 or Windows Server 2019+.** Domain membership optional — on a
+   workgroup, Negotiate SSO falls back to NTLM (KL-AUTH-004/008).
+2. **Python 3.8+** and a virtualenv holding ADMZ and its dependencies.
+3. **[Shawl](https://github.com/mtkennerly/shawl)** on the box, to wrap the
+   Python process as a service.
+4. **An elevated PowerShell** — registering a service and setting a machine-wide
+   environment variable both require it.
+
+## Step 1 — Get the two paths right
+
+These are the two things the old procedure got wrong, so they come first.
+
+| | Value | Why it matters |
+|---|---|---|
+| Interpreter | `<checkout>\.venv\Scripts\python.exe` | The venv **inside** the checkout. On this project's host the checkout is `C:\admz\admz`, so it is `C:\admz\admz\.venv\Scripts\python.exe` — `C:\admz\` is the worktree *parent*, one level up. |
+| `ADMZ_HOME` | `C:\ProgramData\admz` | **Set it explicitly.** Unset, `admz/paths.py` defaults to `~/.admz` under whatever account the service runs as, and the instance silently builds a fresh `admz.db` and `admz.key` there. |
+
+A wrong interpreter path fails loudly. A missing `ADMZ_HOME` does not — which is
+why it is the more dangerous of the two.
+
+## Step 2 — Run the setup script
+
+```powershell
+# From an ELEVATED PowerShell:
+cd C:\admz
+.\setup-admz-service.ps1
+```
+
+It migrates an existing `~/.admz` to `C:\ProgramData\admz`; ACLs that directory
+(without it, `ADMZ_HOME` is readable by all local users); fixes git ownership for
+SYSTEM (`safe.directory`); updates the Org `repo_path` in the DB; sets the
+machine-wide `ADMZ_HOME`; and registers the `admz` service through Shawl —
+LocalSystem, delayed-auto start, auto-restart, rotating logs.
+
+> **The script is not in this repository.** It lives beside the checkout as
+> `C:\admz\setup-admz-service.ps1` on the deployment host and is not
+> version-controlled (GH #377). Step 3 is what it does, so a host without it can
+> still be brought up by hand.
+
+## Step 3 — Or do it by hand
+
+```powershell
+# ELEVATED. Adjust the checkout path to yours.
+$py = "C:\admz\admz\.venv\Scripts\python.exe"
+$dataDir = "C:\ProgramData\admz"
+
+New-Item -ItemType Directory -Force $dataDir | Out-Null
+
+# Machine-wide, so the service and an interactive admin agree on the data dir.
+[Environment]::SetEnvironmentVariable("ADMZ_HOME", $dataDir, "Machine")
+
+# Only SYSTEM and Administrators may read the secrets directory.
+icacls $dataDir /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F"
+
+# Git must trust the repo when running as SYSTEM.
+git config --global --add safe.directory C:/admz/admz
+
+shawl add --name admz --restart --log-dir "$dataDir\logs" -- $py -m admz api --host 0.0.0.0 --port 4242
+sc.exe config admz start= delayed-auto
+sc.exe start admz
+```
+
+`admz.key` is hardened by the code on creation regardless of who creates it
+(#207, ADR-0010), so the highest-value secret is protected even if the ACL step
+is skipped. Nothing else in `ADMZ_HOME` is.
+
+## Step 4 — Verify
+
+```powershell
+Invoke-RestMethod http://localhost:4242/api/health
+
+# Confirm the service really is using the interpreter and data dir you intended:
+Get-CimInstance Win32_Service -Filter "Name='admz'" | Select-Object PathName
+[Environment]::GetEnvironmentVariable("ADMZ_HOME", "Machine")
+```
+
+**Use the `localhost` name, not `127.0.0.1`.** Literal IPs are never in the
+Local Intranet zone, so Edge/Chrome prompt for credentials instead of signing you
+in silently. For a LAN hostname, add the site to the Local Intranet zone; Firefox
+needs `network.negotiate-auth.trusted-uris`. Disable the SSO button with
+`ADMZ_SSO_NEGOTIATE=0`.
+
+**Serve on 127.0.0.1, or front with TLS and set `ADMZ_SESSION_COOKIE_SECURE=1`**
+— otherwise the session cookie travels over plaintext HTTP (KL-AUTH-006).
+
+Logins are rate-limited (form 5/min/IP; SSO has a roomier bucket for its
+handshake legs) and audited (`auth.login`, with a `method: form|negotiate`
+detail). The password is used only for the `LogonUserW` call and is never
+stored; SSO never sees one at all.
+
+## Step 5 — Mint an API key for an agent
+
+```powershell
+C:\admz\admz\.venv\Scripts\python.exe -m admz api-key create --name nightly-snapshot-bot
+```
+
+The plaintext key is shown **once** — copy it then; only its hash is stored.
+
+Unattended lab tooling (e.g. `tools/dev_auto_approve.py`) reads its key from
+`ADMZ_DEV_API_KEY`.
+
+## Changing the service later
+
+Stopping and starting `admz` does not need elevation; **changing its
+configuration does**. `sc.exe config` also fails on this service's long
+`binPath` with error `1639` (invalid command line) — use
+`Invoke-CimMethod -MethodName Change`, which passes the string as a parameter
+rather than a command line.
+
+## ACS Pro note
+
+The ACS connection authenticates as the service's Windows identity. If the ACS
+server does not authorize SYSTEM/Administrators, set the service Log On to a
+local account that ACS does authorize.
+
+---
+
+# Part 2 — Alternative: IIS reverse proxy with IWA (ADR-0021)
+
+Use this when the organisation requires Windows Integrated Authentication
+terminated at IIS. It is supported and ADR-0021 was never withdrawn — but Part 1
+is the default, and none of the following is needed for it.
+
+## Topology (IIS)
 
 ```
 ┌────────────────────────────┐
@@ -41,7 +207,7 @@ agents use API keys.
 └────────────────────────────┘
 ```
 
-## Prerequisites
+## Prerequisites (IIS)
 
 1. **Windows Server 2019+** (or Windows 10/11 Pro/Enterprise for dev).
 2. **IIS** with these role services enabled:
@@ -72,9 +238,10 @@ choco install nssm
 # (Service accounts with strong passwords are preferred for production.)
 
 # Install the service. Replace paths and the account as needed.
-nssm install ADMZ "C:\admz\.venv\Scripts\python.exe" "-m admz api --host 127.0.0.1 --port 4242"
-nssm set ADMZ AppDirectory "C:\admz"
+nssm install ADMZ "C:\admz\admz\.venv\Scripts\python.exe" "-m admz api --host 127.0.0.1 --port 4242"
+nssm set ADMZ AppDirectory "C:\admz\admz"
 nssm set ADMZ AppEnvironmentExtra `
+    "ADMZ_HOME=C:\\ProgramData\\admz" `
     "ADMZ_AUTH_BACKEND=composite" `
     "ADMZ_BASE_URL=https://admz.example.com" `
     "ADMZ_LDAP_ENABLED=true" `
@@ -239,49 +406,20 @@ curl https://admz.example.com/api/devices \
     -H "Authorization: Bearer admz_aB1c2D3e..."
 ```
 
-## Alternative: single box / workgroup — `windows-local` (no IIS)
+## Where `windows-local` fits
 
-For a machine that has no IIS front and possibly no domain (e.g. a
-Windows 11 Home workgroup host), use the **`windows-local`** backend
-(ADR-0033). ADMZ shows a `/login` page and validates the submitted
-credentials **against Windows itself** via `LogonUserW` — local SAM
-accounts, or domain accounts if the host is joined — then issues a
-server-side session cookie. The account's Windows **group memberships**
-are read from the logon token, so a member of the local
-`Administrators` group passes the credential-reveal gate with no LDAP.
+The `windows-local` + Shawl deployment is **Part 1** of this document, not an
+alternative to the IIS path. The contrast that matters here:
 
-```powershell
-# Run with the windows-local backend (env var on the service/launcher):
-$env:ADMZ_AUTH_BACKEND = "windows-local"
-python -m admz api --host 127.0.0.1 --port 4242
-```
+| | Part 1 (`windows-local`) | Part 2 (IIS + IWA) |
+|---|---|---|
+| Who authenticates | ADMZ, via `LogonUserW` and in-process SSPI | IIS, which sets `REMOTE_USER` |
+| Groups from | the Windows logon token | LDAP enrichment (ADR-0023) |
+| Needs a domain | no (workgroup falls back to NTLM) | effectively yes |
+| Needs IIS | no | yes |
+| `ADMZ_AUTH_BACKEND` | `windows-local` | `composite` |
 
-- Browsers: any page load redirects to `/login`. The page offers
-  **"Continue as the signed-in Windows user"** — single sign-on via HTTP
-  Negotiate handled in-process by Windows SSPI (ADR-0035; no IIS) — or
-  sign in as a different user with the credential form (`alice`,
-  `DOMAIN\alice`, or `alice@domain.local`). Edge/Chrome do SSO to
-  `localhost` out of the box — **use the `localhost` name, not
-  `127.0.0.1`**: literal IPs are never in the Local Intranet zone, so
-  the browser prompts for credentials instead of silently signing you
-  in (and remembers whatever account you type). For a LAN hostname add
-  the site to the Local Intranet zone, and Firefox needs
-  `network.negotiate-auth.trusted-uris`. Disable the SSO button with
-  `ADMZ_SSO_NEGOTIATE=0`.
-- Agents: unchanged — `Authorization: Bearer admz_<key>`.
-- Voice/chat: the session cookie rides the WebSocket upgrade, so the
-  signed-in identity flows into the MCP tool calls and audit rows.
-- Logins are rate-limited (form 5/min/IP; SSO has a roomier bucket for
-  its handshake legs) and audited (`auth.login`, with a
-  `method: form|negotiate` detail); the password is used only for the
-  LogonUser call, never stored — SSO never sees a password at all.
-- Caveats: serve on 127.0.0.1 (or front with TLS and set
-  `ADMZ_SESSION_COOKIE_SECURE=1`) — the cookie is plaintext-HTTP
-  otherwise (KL-AUTH-006). On a workgroup, Negotiate SSO uses NTLM
-  (KL-AUTH-004/008).
-- Unattended lab tooling (e.g. `tools/dev_auto_approve.py`): mint a key
-  (`python -m admz api-key create --name dev-auto-approver`) and export
-  it as `ADMZ_DEV_API_KEY`.
+Both accept `Authorization: Bearer admz_<key>` from agents, unchanged.
 
 ## Health probes
 
@@ -379,6 +517,15 @@ local account that ACS authorizes.
 DB without the key is useless. See README §Backup.
 
 ## See also
+
+**The standard deployment (Part 1):**
+
+- [ADR-0033: windows-local authentication](specification/decisions/0033-windows-local-credential-auth.md)
+- [ADR-0035: in-process Negotiate SSO](specification/decisions/0035-negotiate-sso-login.md)
+- [ADR-0042: ADMZ_HOME and the Windows service](specification/decisions/0042-machine-level-data-directory.md)
+- [ADR-0054: dev/prod tree and venv split](specification/decisions/0054-separate-production-tree-and-venv.md)
+
+**The IIS alternative (Part 2):**
 
 - [ADR-0021: Windows IWA via reverse proxy](specification/decisions/0021-windows-iwa-via-reverse-proxy.md)
 - [ADR-0022: API keys for agents](specification/decisions/0022-api-keys-for-agents.md)
