@@ -19,6 +19,7 @@ import cycle. ``get_confirmation_level`` already lazy-imports ``fleet_settings``
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import json
 import logging
@@ -26,6 +27,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
+from admz.approval_context import approved
 from admz.api.confirm_store import (
     ConfirmSession,
     ConfirmStatus,
@@ -1228,10 +1230,42 @@ _ACTION_EXECUTORS = {
     # the confirmation gate entirely — the catalog risk_level was never
     # consulted on that path, so #165's reclassification did not reach it.
     "create_temp_credentials": _action_create_temp_credentials,
+    # NOTE: adding an action here does NOT grant it provisioning authority —
+    # see _PROVISIONING_APPROVAL_ACTIONS below, which is a separate, smaller
+    # list and deliberately so.
     # #188: copying files into the firmware cache is a write into the trusted
     # side of _upload_path_allowed's boundary, so it takes the widget.
     "import_firmware": _action_import_firmware,
 }
+
+
+#: Actions whose approval legitimately covers provisioning a factory-defaulted
+#: device downstream (ADR-0059). **Deliberately much smaller than
+#: `_ACTION_EXECUTORS`**, and the two entries are the two callers that reach
+#: `onboard_device_credentials` already approved:
+#:
+#: * ``start_demo_survey`` — the operator approved a scan; it provisions every
+#:   factory-default device it finds, which is what they approved.
+#: * ``register_discovered_device`` — the approval executor for one device.
+#:
+#: An action absent from here gets no marker, so a downstream gate treats it as
+#: unapproved and raises the widget — the fail-closed direction. Adding an entry
+#: grants real authority: only do it for an approval whose card actually told
+#: the operator a root account might be created.
+_PROVISIONING_APPROVAL_ACTIONS = frozenset({
+    "start_demo_survey",
+    "register_discovered_device",
+})
+
+
+@contextlib.contextmanager
+def _maybe_approved(action_id: str, token: Optional[str]):
+    """Enter the approved context only for provisioning-covering actions."""
+    if action_id in _PROVISIONING_APPROVAL_ACTIONS:
+        with approved(action_id, token):
+            yield
+    else:
+        yield
 
 
 def create_action_session(
@@ -1325,11 +1359,29 @@ async def execute_approved_session(
                 "success": False,
                 "error": f"Unknown action in session: {action.get('action')!r}",
             }
+        # ADR-0059: the two provisioning actions run inside the approved
+        # context, so a chokepoint gate downstream can tell "the operator
+        # already said yes to this" from "a fresh call arrived". Unused until
+        # the gate lands (slice 2); behaviour here is unchanged.
+        #
+        # ONLY those two. The first draft wrapped every action, which review
+        # (#361) correctly called authority widening: with a gate that asks
+        # merely "is anything approved?", approving a task creation or a rule
+        # delete would have authorised provisioning if that executor ever
+        # reached onboarding. Approval for X is not approval for Y — ADR-0034's
+        # whole model. Anything not in this set gets no marker and therefore
+        # gates normally, which is the fail-closed direction.
+        #
+        # The context manager resets in `finally`, and this `try/except` sits
+        # INSIDE it: an executor that raises still unwinds the token. A test
+        # asserts exactly that, because the failure mode is silent.
+        action_id = str(action.get("action") or "")
         try:
-            outcome = executor(action, registry, git_repo=git_repo)
-            if inspect.isawaitable(outcome):
-                outcome = await outcome  # device-touching actions (rules) are async
-            return outcome
+            with _maybe_approved(action_id, session.token):
+                outcome = executor(action, registry, git_repo=git_repo)
+                if inspect.isawaitable(outcome):
+                    outcome = await outcome  # device-touching actions (rules) are async
+                return outcome
         except Exception as exc:  # noqa: BLE001 — surface, don't crash the route
             return {
                 "success": False,

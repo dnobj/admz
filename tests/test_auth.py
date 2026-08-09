@@ -25,8 +25,22 @@ from admz.discovery.models import DiscoveredDevice, DeviceType
 
 
 def _run(coro):
-    """Helper to run async functions in sync tests."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    """Helper to run async functions in sync tests.
+
+    ``asyncio.run`` rather than ``get_event_loop().run_until_complete`` — the
+    latter depends on ambient loop state this file does not own. Once any
+    earlier async test has run under a pytest-asyncio that clears the current
+    loop, ``get_event_loop()`` stops emitting a DeprecationWarning and starts
+    raising ``RuntimeError: There is no current event loop``.
+
+    That is exactly how it failed: `pytest-asyncio` is pinned `>=1.0.0,<2`, CI
+    resolved 1.4.0 while the dev venv held 1.3.0, and 1.4.0 leaves no current
+    loop behind. The file that happened to expose it was simply the first
+    async test file sorting before this one — nothing to do with what it
+    tested. `asyncio.run` creates and closes its own loop, so this helper no
+    longer cares what ran before it.
+    """
+    return asyncio.run(coro)
 
 
 # ------------------------------------------------------------------
