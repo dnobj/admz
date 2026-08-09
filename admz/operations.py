@@ -1224,22 +1224,73 @@ async def _action_provision_device_credentials(action, registry, git_repo=None):
     provisions instead of gating.
     """
     from admz.api.context import get_context
-    from admz.onboarding import onboard_device_credentials
+    from admz.onboarding import (
+        CREDENTIALS_NEEDED, PROVISIONED, onboard_device_credentials,
+    )
 
     device_id = action.get("device_id") or ""
     if not device_id:
         return {"success": False, "action": "provision_device_credentials",
                 "error": "device_id is required"}
 
+    # The approval card named a HOST. Refuse if the device's address has moved
+    # since — found in review. `_run_reconcile`/mDNS can repoint a device
+    # between the widget and the click (that is #193's whole subject), and
+    # re-reading the current host here would provision whatever is at the new
+    # address while the operator believes they approved the old one. An
+    # approval is for a specific device at a specific place; if either moved,
+    # it is a new decision.
+    approved_host = (action.get("host") or "").strip()
+    current_host = ""
+    try:
+        info = registry.get_device_info(device_id) or {}
+        current_host = str(info.get("host") or info.get("ip_address") or "").strip()
+    except Exception:  # noqa: BLE001 — treated as a mismatch below
+        current_host = ""
+    if approved_host and current_host and approved_host != current_host:
+        return {
+            "success": False, "action": "provision_device_credentials",
+            "device_id": device_id,
+            "error": (
+                f"Address changed since approval: approved {approved_host}, "
+                f"device is now at {current_host}. Re-run onboarding to get a "
+                "fresh approval for the current address."
+            ),
+        }
+
     ctx = get_context()
     onboarding = await onboard_device_credentials(
         device_id=device_id, registry=registry,
         catalog=ctx.catalog, executors=ctx.executors)
+    status = onboarding.get("status")
+
+    # `credentials_needed` here would otherwise strand the operator: the REST
+    # path adds a capture URL for that status and this executor bypasses it.
+    if status == CREDENTIALS_NEEDED and "capture_url" not in onboarding:
+        try:
+            from admz.api.capture import capture_store
+            session = capture_store.create_session(
+                device_id=device_id,
+                purpose="Approved provisioning — device needs credentials",
+            )
+            onboarding = {**onboarding, "capture_url": f"/capture/{session.token}"}
+        except Exception:  # noqa: BLE001 — never turn a status into a crash
+            logger.exception("could not open a capture session for %s", device_id)
+
+    # Success is the ONBOARDING outcome, not "the executor ran". Reporting
+    # True for provision_failed or credentials_needed would tell the operator
+    # their approval worked when the device was never provisioned.
+    ok = status == PROVISIONED
     return {
-        "success": True, "action": "provision_device_credentials",
+        "success": ok, "action": "provision_device_credentials",
         "device_id": device_id, "onboarding": onboarding,
-        "message": f"Onboarding re-run for '{device_id}' under approval. "
-                   f"Result: {onboarding.get('status')}.",
+        "status": status,
+        "message": (
+            f"Provisioned '{device_id}' under approval."
+            if ok else
+            f"Approved, but provisioning did not complete for '{device_id}': "
+            f"{status}."
+        ),
     }
 
 

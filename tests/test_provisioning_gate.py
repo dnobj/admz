@@ -226,6 +226,80 @@ class TestApprovedExecutorIsRegistered:
         assert "provision_device_credentials" in _ACTION_EXECUTORS
         assert "provision_device_credentials" in _PROVISIONING_APPROVAL_ACTIONS
 
+    @pytest.mark.asyncio
+    async def test_it_refuses_when_the_address_moved_since_approval(
+        self, registry, provision_spy
+    ):
+        """Found in review. The approval card names a host; mDNS reconcile can
+        repoint a device between the widget and the click (#193's subject).
+        Re-reading the current host would provision whatever is at the new
+        address while the operator believes they approved the old one."""
+        from admz.operations import _action_provision_device_credentials
+
+        registry.get_device_info.return_value = {"host": "192.0.2.99"}
+        out = await _action_provision_device_credentials(
+            {"action": "provision_device_credentials",
+             "device_id": "cam-fresh", "host": "192.0.2.50"},
+            registry,
+        )
+        assert out["success"] is False
+        assert "changed since approval" in out["error"]
+        provision_spy.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_provision_is_not_reported_as_success(
+        self, registry, provision_spy, monkeypatch
+    ):
+        """Also from review: the executor used to return success=True whatever
+        onboarding said, so a device that went unreachable between approval
+        and execution would report a successful provisioning."""
+        from admz import operations
+
+        monkeypatch.setattr(
+            "admz.provisioning.provision_factory_default",
+            AsyncMock(return_value={"success": False, "error": "vapix said no"}),
+        )
+        # Patched at the source module: the executor imports `get_context`
+        # inside its body, so patching `operations.get_context` binds nothing.
+        monkeypatch.setattr(
+            "admz.api.context.get_context",
+            lambda: MagicMock(catalog=MagicMock(), executors={"vapix": MagicMock()}),
+        )
+        # Wrapped as production wraps it: `execute_approved_session` enters the
+        # approved context before dispatching. See the test below for what
+        # happens without it.
+        with approved("provision_device_credentials", "tok-x"):
+            out = await operations._action_provision_device_credentials(
+                {"action": "provision_device_credentials",
+                 "device_id": "cam-fresh", "host": "192.0.2.50"},
+                registry,
+            )
+        assert out["success"] is False
+        assert out["status"] == "provision_failed"
+
+    @pytest.mark.asyncio
+    async def test_the_executor_does_not_self_approve(self, registry,
+                                                      provision_spy, monkeypatch):
+        """Called outside an approval it gates, rather than provisioning.
+
+        The executor is only ever reached through `execute_approved_session`,
+        which establishes the context — but it must not carry its own
+        authority, or anything that could invoke it directly would inherit
+        provisioning rights. Fail-closed."""
+        from admz import operations
+
+        monkeypatch.setattr(
+            "admz.api.context.get_context",
+            lambda: MagicMock(catalog=MagicMock(), executors={"vapix": MagicMock()}),
+        )
+        out = await operations._action_provision_device_credentials(
+            {"action": "provision_device_credentials",
+             "device_id": "cam-fresh", "host": "192.0.2.50"},
+            registry,
+        )
+        assert out["status"] == APPROVAL_REQUIRED
+        provision_spy.assert_not_awaited()
+
     def test_it_does_not_reuse_the_registering_executor(self):
         """`register_discovered_device` calls `registry.add_device`, which
         RAISES on a device that already exists — and this gate fires mostly for
