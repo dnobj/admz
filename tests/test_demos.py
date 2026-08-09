@@ -257,3 +257,105 @@ class TestActivitySince:
         events.append(_ev("1", 1000, "A", "motion"))
         out = events.activity_since(since_ms=0, device_id="ZZZ")
         assert out["count"] == 0 and out["last_ms"] is None
+
+
+# ---------------------------------------------------------------------------
+# GH #159 — the schema must not depend on a migration having succeeded
+# ---------------------------------------------------------------------------
+
+
+class TestRulesJsonSchema:
+    """`rules_json` existed only via an ALTER whose every error was swallowed,
+    while every SELECT and INSERT in the module requires the column.
+
+    The failure that motivated this: an ALTER that fails for any reason other
+    than "already there" — a locked database, a disk error, a damaged schema —
+    was absorbed silently, and the missing column then surfaced much later as
+    an inexplicable `no such column: rules_json` from a query. Far from the
+    cause, and shaped like a query bug rather than a migration that never ran.
+    """
+
+    def test_a_fresh_database_has_rules_json_from_create_table(self, tmp_path):
+        """Not from the migration — from the schema itself, so a fresh file is
+        complete even if the migration never runs."""
+        import sqlite3
+
+        from admz.demos.store import _SCHEMA
+
+        db = tmp_path / "fresh.db"
+        conn = sqlite3.connect(str(db))
+        try:
+            conn.executescript(_SCHEMA)          # schema ONLY, no migrations
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(demos)")}
+        finally:
+            conn.close()
+        assert "rules_json" in cols
+        assert "active" in cols
+
+    def test_a_real_alter_failure_is_not_swallowed(self, tmp_path, monkeypatch):
+        """Only "duplicate column name" is expected. Anything else must raise
+        here, where it is diagnosable."""
+        import sqlite3
+
+        from admz.demos.store import DemoStore
+
+        store = DemoStore(str(tmp_path / "demos.db"))
+
+        real_connect = sqlite3.connect
+
+        class _Boom:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+            def execute(self, sql, *a, **k):
+                if "ALTER TABLE demos" in sql:
+                    raise sqlite3.OperationalError("database is locked")
+                return self._inner.execute(sql, *a, **k)
+
+        monkeypatch.setattr(
+            sqlite3, "connect", lambda *a, **k: _Boom(real_connect(*a, **k)))
+
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            store._create_schema(str(tmp_path / "demos.db"))
+
+    def test_duplicate_column_is_still_swallowed(self, tmp_path):
+        """The migration must stay idempotent — running it twice is normal."""
+        from admz.demos.store import DemoStore
+
+        path = str(tmp_path / "demos.db")
+        store = DemoStore(path)
+        store._create_schema(path)
+        store._create_schema(path)   # second run hits "duplicate column name"
+
+    def test_an_old_database_missing_the_column_is_migrated(self, tmp_path):
+        """The case the ALTER exists for: a file created before the column."""
+        import sqlite3
+
+        from admz.demos.store import DemoStore
+
+        path = str(tmp_path / "old.db")
+        conn = sqlite3.connect(path)
+        try:
+            conn.execute(
+                "CREATE TABLE demos (id TEXT PRIMARY KEY, name TEXT NOT NULL "
+                "DEFAULT '', narrative TEXT NOT NULL DEFAULT '', tag TEXT, "
+                "device_ids_json TEXT NOT NULL DEFAULT '[]', roles_json TEXT "
+                "NOT NULL DEFAULT '{}', config_source TEXT NOT NULL DEFAULT "
+                "'baseline', signals_json TEXT NOT NULL DEFAULT '[]', enabled "
+                "INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL DEFAULT "
+                "'', created_at REAL NOT NULL DEFAULT 0)")
+            conn.commit()
+        finally:
+            conn.close()
+
+        DemoStore(path)._create_schema(path)
+
+        conn = sqlite3.connect(path)
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(demos)")}
+        finally:
+            conn.close()
+        assert {"active", "rules_json"} <= cols

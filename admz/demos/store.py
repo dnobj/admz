@@ -34,9 +34,25 @@ CREATE TABLE IF NOT EXISTS demos (
     enabled         INTEGER NOT NULL DEFAULT 1,
     created_by      TEXT NOT NULL DEFAULT '',
     created_at      REAL NOT NULL DEFAULT 0,
-    active          INTEGER NOT NULL DEFAULT 0
+    active          INTEGER NOT NULL DEFAULT 0,
+    -- ADR-0050 Phase B. Declared HERE as well as in _ADDED_COLUMNS (#159):
+    -- every SELECT and INSERT in this module names `rules_json`, so a fresh
+    -- database that only got it via the migration below would depend on that
+    -- migration having run and succeeded. Belt and braces is right for a
+    -- column the read path requires.
+    rules_json      TEXT NOT NULL DEFAULT '[]'
 );
 """
+
+#: Columns added after the table first shipped, for databases that predate
+#: them. Both are also in ``_SCHEMA`` above, so this list only matters to an
+#: existing file — a fresh one is created complete. Same shape as
+#: ``demos/inference/runs.py``, deliberately: one idiom, one place to get the
+#: error handling right.
+_ADDED_COLUMNS = (
+    ("active", "INTEGER NOT NULL DEFAULT 0"),
+    ("rules_json", "TEXT NOT NULL DEFAULT '[]'"),
+)
 
 
 def _default_db_path() -> Path:
@@ -146,26 +162,26 @@ class DemoStore:
         the schema and its migrations against the new file instead of
         assuming the previous one's columns exist.
 
-        Two ALTER TABLE ADD COLUMN (ADR-0047's `active`, ADR-0050's
-        `rules_json`), swallow-on-duplicate, byte-identical to before.
+        ``_ADDED_COLUMNS`` onto ``demos``, for files that predate them. **Only
+        "already there" is swallowed** (#159): the previous version caught
+        every ``OperationalError``, so a locked database, a disk error or a
+        damaged schema was silently absorbed here and then reappeared much
+        later as an inexplicable *"no such column: rules_json"* from a SELECT
+        — far from the cause, and looking like a query bug rather than a
+        migration that never ran.
+
+        Matches ``demos/inference/runs.py``, which already carried this fix and
+        whose comment named this module as the pattern it was copied from.
         """
         conn = sqlite3.connect(path)
         try:
             conn.executescript(_SCHEMA)
-            # ADR-0047: activation flag, added after the table first shipped.
-            try:
-                conn.execute(
-                    "ALTER TABLE demos ADD COLUMN active INTEGER NOT NULL DEFAULT 0"
-                )
-            except sqlite3.OperationalError:
-                pass  # column already exists
-            # ADR-0050 Phase B: rule-membership list, added after first ship.
-            try:
-                conn.execute(
-                    "ALTER TABLE demos ADD COLUMN rules_json TEXT NOT NULL DEFAULT '[]'"
-                )
-            except sqlite3.OperationalError:
-                pass
+            for name, decl in _ADDED_COLUMNS:
+                try:
+                    conn.execute(f"ALTER TABLE demos ADD COLUMN {name} {decl}")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
             conn.commit()
         finally:
             conn.close()
