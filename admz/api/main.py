@@ -193,158 +193,169 @@ async def lifespan(app: FastAPI):
     _log_active_capabilities()
     registry = create_device_registry()
     ctx = init_context(registry)
-
-    # One-time migration of the legacy schedules.json + pending_device_actions
-    # into the unified tasks table (ADR-0037). Idempotent + non-destructive, so
-    # safe to run every startup; the scheduler + sweep read the tasks store.
-    try:
-        from admz.tasks.migrate import migrate_legacy
-        migrate_legacy()
-    except Exception:  # noqa: BLE001
-        import logging
-        logging.getLogger(__name__).warning(
-            "tasks migration failed", exc_info=True
-        )
-
-    # Install the unified task-handler context (reprovision + scheduled handlers)
-    # so the health-monitor sweep can fire pre-approved detection tasks.
-    try:
-        from admz.recovery_actions import register_recovery_handlers
-        register_recovery_handlers(ctx)
-        # GH #172: and the module-supplied handlers the contract promises are
-        # merged. Built-ins register at import via @register_task_handler; this
-        # adds whatever the registered modules contribute.
-        from admz.tasks.handlers import install_module_task_handlers
-        install_module_task_handlers(ctx.module_registry)
-    except Exception:  # noqa: BLE001
-        import logging
-        logging.getLogger(__name__).warning(
-            "task context install failed", exc_info=True
-        )
-
-    # Seed shipped default ignore rules (observed network/DHCP churn) into
-    # the operator-editable store, once each — idempotent + deletion-safe.
-    try:
-        from admz.snapshot.ignore import seed_default_rules
-        seed_default_rules()
-    except Exception:  # noqa: BLE001
-        import logging
-        logging.getLogger(__name__).warning("ignore-rule seeding failed", exc_info=True)
-
-    # GH #307: eagerly convert any STORE_ENCRYPTED_SETTING_KEYS row still at
-    # legacy plaintext. fleet_settings.get() only migrates a key when
-    # something reads it, so a cold secret — the ACS webhook token is read
-    # only when ACS fires a rule or an operator opens its settings page — can
-    # sit in plaintext indefinitely even though it is declared encrypted.
-    # Idempotent (nothing left to convert on a later run) and does exactly
-    # what an ordinary read already does, so this is safe on every startup;
-    # per-key failures (locked/read-only DB) are counted and logged, never
-    # fatal to startup.
-    try:
-        from admz.fleet_settings import fleet_settings
-        _sweep = fleet_settings.migrate_encrypted_settings()
-        if _sweep["migrated"] or _sweep["failed"]:
-            import logging
-            logging.getLogger(__name__).info(
-                "eager encryption sweep (#307): checked %d, migrated %d, failed %d",
-                _sweep["checked"], _sweep["migrated"], _sweep["failed"],
-            )
-    except Exception:  # noqa: BLE001
-        import logging
-        logging.getLogger(__name__).warning(
-            "eager encryption sweep failed", exc_info=True)
-
-    # GH #172: retire the GitHub App client secret older versions stored and
-    # nothing ever read. save_app() and Disconnect also clear it, but both need
-    # the operator to *do* something — a connected install that is simply
-    # upgraded would keep the credential indefinitely without this.
-    try:
-        from admz.github_app.secrets import purge_legacy_client_secret
-        purge_legacy_client_secret()
-    except Exception:  # noqa: BLE001 — never fatal to startup
-        import logging
-        logging.getLogger(__name__).warning(
-            "legacy client-secret purge failed", exc_info=True)
-
-    # GH #172: drop fleet-setting rows for event knobs that no longer exist.
-    # Removing the code leaves the row, and every settings surface enumerates
-    # list_all(), so the operator would still see a control that does nothing.
-    try:
-        from admz.events.config import purge_retired_settings
-        purge_retired_settings()
-    except Exception:  # noqa: BLE001 — never fatal to startup
-        import logging
-        logging.getLogger(__name__).warning(
-            "retired event-setting purge failed", exc_info=True)
-
-    # GH #170: periodic sweep for orphaned rule-recipient secret stashes
-    # (deny and consume-on-approval already discard their own token; this is
-    # the backstop for a token nothing ever touches again — abandonment on a
-    # quiet install, where purge-on-access never fires). A bare asyncio loop,
-    # not a scheduler task: this enforces an already-fixed internal TTL, it
-    # is not an operator-schedulable action.
-    try:
-        from admz.rules.capture import start_background_purge
-        start_background_purge()
-    except Exception:  # noqa: BLE001
-        import logging
-        logging.getLogger(__name__).warning(
-            "rule-secret purge sweep failed to start", exc_info=True)
-
-    # #192: a demo-inference run left `running` by a process that stopped
-    # without reaching store.finish/store.fail (a hard kill, or — before this
-    # fix — a cancelled `fast` run) has no recovery path short of hand-editing
-    # SQLite, and a stuck row is read into the chat system prompt as an
-    # in-flight run. At this point in startup nothing can legitimately still
-    # be running, so every such row is reconciled to `failed` before the
-    # first request is served. Same shape as #315's orphaned-temp-credential
-    # startup sweep.
-    try:
-        from admz.demos.inference.collect import reconcile_interrupted_runs
-        reconcile_interrupted_runs(ctx.inference_run_store)
-    except Exception:  # noqa: BLE001
-        import logging
-        logging.getLogger(__name__).warning(
-            "demo inference run reconciliation failed", exc_info=True)
-
-    await ctx.scheduler.start()
-
-    # Device health monitor: opt-in via the health_monitor_enabled
-    # fleet setting. .start() is a no-op when the flag is off, so
-    # always safe to call here.
-    await ctx.health_monitor.start()
-
-    # ADR-0041: live device-event ingest supervisor. Opt-in via the
-    # event_ingest_enabled fleet setting; .start() is a no-op when off.
-    try:
-        await ctx.event_supervisor.start()
-    except Exception:  # noqa: BLE001
-        import logging
-        logging.getLogger(__name__).warning("event ingest start failed", exc_info=True)
-
-    # ADR-0041: ACS Pro action-rule poller. Opt-in via acs_event_ingest_enabled
-    # (and requires the ACS module connected); .start() is a no-op when off.
-    try:
-        await ctx.acs_event_poller.start()
-    except Exception:  # noqa: BLE001
-        import logging
-        logging.getLogger(__name__).warning("acs event poller start failed", exc_info=True)
-
-    # ADR-0041: ACS Pro Firebird firing poller — named rule firings read from a
-    # read-only copy of ACS's embedded DB (no per-rule edit). Opt-in via
-    # acs_firebird_enabled + ACS connected + driver/files present; no-op when off.
-    try:
-        await ctx.acs_firebird_poller.start()
-    except Exception:  # noqa: BLE001
-        import logging
-        logging.getLogger(__name__).warning("acs firebird poller start failed", exc_info=True)
-
-    # Phase 7: spin up the per-principal MCP subprocess pool so the
-    # first chat turn doesn't pay subprocess-spawn latency.
+    # Imported here, not beside its start() below, so the `finally` can always
+    # name it — a start that fails before that import would otherwise raise
+    # NameError out of the cleanup itself.
     from admz.chatbot.mcp_pool import mcp_pool
-    await mcp_pool.start()
 
+    # GH #381: everything from here is inside the cleanup scope. It used to open
+    # after the components were started, so a failing start() left every
+    # component before it running with no shutdown step reached at all — the
+    # sequence #379 made uniformly best-effort was simply unreachable. Both
+    # `registry` and `ctx` exist by this line, which is what the `finally`
+    # needs; a failure in `create_device_registry`/`init_context` has nothing
+    # built to clean up.
     try:
+
+        # One-time migration of the legacy schedules.json + pending_device_actions
+        # into the unified tasks table (ADR-0037). Idempotent + non-destructive, so
+        # safe to run every startup; the scheduler + sweep read the tasks store.
+        try:
+            from admz.tasks.migrate import migrate_legacy
+            migrate_legacy()
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning(
+                "tasks migration failed", exc_info=True
+            )
+
+        # Install the unified task-handler context (reprovision + scheduled handlers)
+        # so the health-monitor sweep can fire pre-approved detection tasks.
+        try:
+            from admz.recovery_actions import register_recovery_handlers
+            register_recovery_handlers(ctx)
+            # GH #172: and the module-supplied handlers the contract promises are
+            # merged. Built-ins register at import via @register_task_handler; this
+            # adds whatever the registered modules contribute.
+            from admz.tasks.handlers import install_module_task_handlers
+            install_module_task_handlers(ctx.module_registry)
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning(
+                "task context install failed", exc_info=True
+            )
+
+        # Seed shipped default ignore rules (observed network/DHCP churn) into
+        # the operator-editable store, once each — idempotent + deletion-safe.
+        try:
+            from admz.snapshot.ignore import seed_default_rules
+            seed_default_rules()
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning("ignore-rule seeding failed", exc_info=True)
+
+        # GH #307: eagerly convert any STORE_ENCRYPTED_SETTING_KEYS row still at
+        # legacy plaintext. fleet_settings.get() only migrates a key when
+        # something reads it, so a cold secret — the ACS webhook token is read
+        # only when ACS fires a rule or an operator opens its settings page — can
+        # sit in plaintext indefinitely even though it is declared encrypted.
+        # Idempotent (nothing left to convert on a later run) and does exactly
+        # what an ordinary read already does, so this is safe on every startup;
+        # per-key failures (locked/read-only DB) are counted and logged, never
+        # fatal to startup.
+        try:
+            from admz.fleet_settings import fleet_settings
+            _sweep = fleet_settings.migrate_encrypted_settings()
+            if _sweep["migrated"] or _sweep["failed"]:
+                import logging
+                logging.getLogger(__name__).info(
+                    "eager encryption sweep (#307): checked %d, migrated %d, failed %d",
+                    _sweep["checked"], _sweep["migrated"], _sweep["failed"],
+                )
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning(
+                "eager encryption sweep failed", exc_info=True)
+
+        # GH #172: retire the GitHub App client secret older versions stored and
+        # nothing ever read. save_app() and Disconnect also clear it, but both need
+        # the operator to *do* something — a connected install that is simply
+        # upgraded would keep the credential indefinitely without this.
+        try:
+            from admz.github_app.secrets import purge_legacy_client_secret
+            purge_legacy_client_secret()
+        except Exception:  # noqa: BLE001 — never fatal to startup
+            import logging
+            logging.getLogger(__name__).warning(
+                "legacy client-secret purge failed", exc_info=True)
+
+        # GH #172: drop fleet-setting rows for event knobs that no longer exist.
+        # Removing the code leaves the row, and every settings surface enumerates
+        # list_all(), so the operator would still see a control that does nothing.
+        try:
+            from admz.events.config import purge_retired_settings
+            purge_retired_settings()
+        except Exception:  # noqa: BLE001 — never fatal to startup
+            import logging
+            logging.getLogger(__name__).warning(
+                "retired event-setting purge failed", exc_info=True)
+
+        # GH #170: periodic sweep for orphaned rule-recipient secret stashes
+        # (deny and consume-on-approval already discard their own token; this is
+        # the backstop for a token nothing ever touches again — abandonment on a
+        # quiet install, where purge-on-access never fires). A bare asyncio loop,
+        # not a scheduler task: this enforces an already-fixed internal TTL, it
+        # is not an operator-schedulable action.
+        try:
+            from admz.rules.capture import start_background_purge
+            start_background_purge()
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning(
+                "rule-secret purge sweep failed to start", exc_info=True)
+
+        # #192: a demo-inference run left `running` by a process that stopped
+        # without reaching store.finish/store.fail (a hard kill, or — before this
+        # fix — a cancelled `fast` run) has no recovery path short of hand-editing
+        # SQLite, and a stuck row is read into the chat system prompt as an
+        # in-flight run. At this point in startup nothing can legitimately still
+        # be running, so every such row is reconciled to `failed` before the
+        # first request is served. Same shape as #315's orphaned-temp-credential
+        # startup sweep.
+        try:
+            from admz.demos.inference.collect import reconcile_interrupted_runs
+            reconcile_interrupted_runs(ctx.inference_run_store)
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning(
+                "demo inference run reconciliation failed", exc_info=True)
+
+        await ctx.scheduler.start()
+
+        # Device health monitor: opt-in via the health_monitor_enabled
+        # fleet setting. .start() is a no-op when the flag is off, so
+        # always safe to call here.
+        await ctx.health_monitor.start()
+
+        # ADR-0041: live device-event ingest supervisor. Opt-in via the
+        # event_ingest_enabled fleet setting; .start() is a no-op when off.
+        try:
+            await ctx.event_supervisor.start()
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning("event ingest start failed", exc_info=True)
+
+        # ADR-0041: ACS Pro action-rule poller. Opt-in via acs_event_ingest_enabled
+        # (and requires the ACS module connected); .start() is a no-op when off.
+        try:
+            await ctx.acs_event_poller.start()
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning("acs event poller start failed", exc_info=True)
+
+        # ADR-0041: ACS Pro Firebird firing poller — named rule firings read from a
+        # read-only copy of ACS's embedded DB (no per-rule edit). Opt-in via
+        # acs_firebird_enabled + ACS connected + driver/files present; no-op when off.
+        try:
+            await ctx.acs_firebird_poller.start()
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning("acs firebird poller start failed", exc_info=True)
+
+        # Phase 7: spin up the per-principal MCP subprocess pool so the
+        # first chat turn doesn't pay subprocess-spawn latency (imported above).
+        await mcp_pool.start()
+
         yield
     finally:
         # Every step is best-effort and MUST NOT be able to skip the ones after

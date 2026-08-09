@@ -235,3 +235,73 @@ class TestRunShutdown:
         def boom():
             raise RuntimeError("ordinary")
         _run(_run_shutdown([("a", boom), ("b", lambda: None)]))
+
+
+class TestStartupFailureIsCleanedUp:
+    """GH #381 — the other half of #379.
+
+    #379 made the shutdown sequence uniformly best-effort. It was still
+    *unreachable* on a startup failure: the cleanup `try:` opened after the
+    components were started, so a raising `start()` left every component before
+    it running and ran no shutdown step at all.
+
+    Three of the starts were unguarded (`scheduler`, `health_monitor`,
+    `mcp_pool`), so this was not hypothetical — any of them raising skipped the
+    whole teardown.
+    """
+
+    @pytest.fixture(autouse=True)
+    def isolate(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ADMZ_HOME", str(tmp_path))
+        monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
+        monkeypatch.setenv("ADMZ_KEY_PATH", str(tmp_path / "admz.key"))
+        monkeypatch.setenv("ADMZ_CONFIG_REPO_PATH", str(tmp_path / "config-repo"))
+        monkeypatch.setenv("DEVICE_REGISTRY_BACKEND", "sqlite")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    def test_a_failing_start_still_stops_what_was_already_started(self, monkeypatch):
+        """The scheduler starts first; make the health monitor — the very next
+        step — blow up, and the scheduler must still be stopped."""
+        from fastapi.testclient import TestClient
+
+        from admz.api.main import app
+        from admz.fleet.health import HealthMonitor
+        from admz.snapshot.scheduler import SnapshotScheduler
+
+        stopped = []
+        real_stop = SnapshotScheduler.stop
+
+        async def record_stop(self):
+            stopped.append("scheduler")
+            return await real_stop(self)
+
+        async def boom(self):
+            raise RuntimeError("health monitor failed to start")
+
+        monkeypatch.setattr(SnapshotScheduler, "stop", record_stop)
+        monkeypatch.setattr(HealthMonitor, "start", boom)
+
+        with pytest.raises(RuntimeError, match="health monitor failed to start"):
+            with TestClient(app):
+                pass                      # startup raises; never reached
+
+        # Before #381 this list was empty: the `finally` had not been entered,
+        # so the already-running scheduler was simply abandoned.
+        assert stopped == ["scheduler"]
+
+    def test_the_startup_error_still_propagates(self, monkeypatch):
+        """Cleaning up must not turn a failed startup into a silent one — the
+        service should refuse to come up, loudly."""
+        from fastapi.testclient import TestClient
+
+        from admz.api.main import app
+        from admz.fleet.health import HealthMonitor
+
+        async def boom(self):
+            raise RuntimeError("nope")
+
+        monkeypatch.setattr(HealthMonitor, "start", boom)
+        with pytest.raises(RuntimeError, match="nope"):
+            with TestClient(app):
+                pass
