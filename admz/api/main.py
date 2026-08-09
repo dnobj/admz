@@ -7,6 +7,9 @@ catalog query/execution, multi-step plans, configuration snapshot/
 restore/diff/drift, and scheduled snapshots.
 """
 
+import asyncio
+import inspect
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -126,6 +129,60 @@ def _advanced_capability_ids() -> list:
         return capabilities.active_ids()
     except Exception:  # noqa: BLE001
         return []
+
+
+def _stop_rule_secret_purge() -> None:
+    """GH #170's purge loop, imported at call time like its start counterpart."""
+    from admz.rules.capture import stop_background_purge
+    stop_background_purge()
+
+
+async def _shutdown_step(name: str, fn):
+    """Run one shutdown step. Returns the ``BaseException`` it raised, if any.
+
+    Ordinary failures are logged and swallowed — the old hand-written blocks
+    used bare ``except Exception: pass``, so a subsystem failing to stop left no
+    trace at all, and "the service did not shut down cleanly" is exactly the
+    line you want when the next start behaves oddly.
+
+    ``CancelledError`` / ``KeyboardInterrupt`` / ``SystemExit`` are **returned,
+    not re-raised**, so :func:`_run_shutdown` can finish the remaining steps and
+    re-raise afterwards. Re-raising here was the first version of this fix and
+    it reintroduced the bug: a cancellation mid-sequence skipped every step
+    behind it, including the registry close, which is the precise failure #379
+    exists to remove.
+    """
+    try:
+        result = fn()
+        if inspect.isawaitable(result):
+            await result
+    except Exception:  # noqa: BLE001 — one step must not skip the rest
+        logging.getLogger(__name__).warning(
+            "shutdown: %s did not stop cleanly", name, exc_info=True)
+    except BaseException as exc:  # noqa: BLE001 — cancellation / interrupt
+        logging.getLogger(__name__).warning(
+            "shutdown: %s interrupted by %s; continuing with the remaining "
+            "steps", name, type(exc).__name__)
+        return exc
+    return None
+
+
+async def _run_shutdown(steps) -> None:
+    """Run every step, then re-raise the first interrupt any of them raised.
+
+    Once the enclosing task is being cancelled, later awaits tend to raise
+    ``CancelledError`` immediately too — so those steps log and move on, while
+    synchronous ones (notably the registry close) still actually run. Finishing
+    the sequence and re-raising afterwards is strictly better than abandoning
+    it, and the loop stays cancellable.
+    """
+    interrupt = None
+    for name, fn in steps:
+        exc = await _shutdown_step(name, fn)
+        if exc is not None and interrupt is None:
+            interrupt = exc
+    if interrupt is not None:
+        raise interrupt
 
 
 @asynccontextmanager
@@ -290,46 +347,35 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        # Guarded like every step below it: an exception here used to skip the
-        # whole remaining shutdown sequence (found reviewing #372).
-        try:
-            await mcp_pool.stop()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            from admz.rules.capture import stop_background_purge
-            stop_background_purge()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            await ctx.event_supervisor.stop()
-        except Exception:  # noqa: BLE001
-            pass
-        # GH #172: the preview reaper is lazily started and self-terminating, so
-        # it is usually already gone; this closes the case where a picker is
-        # still open at shutdown.
-        try:
-            await ctx.preview_manager.aclose()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            await ctx.acs_event_poller.stop()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            await ctx.acs_firebird_poller.stop()
-        except Exception:  # noqa: BLE001
-            pass
-        await ctx.health_monitor.stop()
-        await ctx.scheduler.stop()
-        # Best-effort cleanup; close() is a no-op for backends that
-        # don't hold persistent connections, but exists for the few that do.
+        # Every step is best-effort and MUST NOT be able to skip the ones after
+        # it. That was three separate bugs — `mcp_pool.stop()` (#372),
+        # `health_monitor.stop()` and `scheduler.stop()` — each an unguarded
+        # await in a sequence of guarded ones, each skipping the registry close
+        # behind it. Rather than an eighth hand-written try/except, the steps are
+        # a list and `_shutdown_step` guards them uniformly, so the next one
+        # added is guarded by construction (#379).
+        #
+        # Order matters and is preserved: stop the things that USE the registry
+        # before closing it.
+        steps = [
+            ("chat MCP pool", mcp_pool.stop),
+            ("rule-secret purge loop", _stop_rule_secret_purge),
+            ("event supervisor", ctx.event_supervisor.stop),
+            # GH #172: the preview reaper is lazily started and self-terminating,
+            # so it is usually already gone; this covers a picker still open.
+            ("preview manager", ctx.preview_manager.aclose),
+            ("ACS action-rule poller", ctx.acs_event_poller.stop),
+            ("ACS Firebird poller", ctx.acs_firebird_poller.stop),
+            ("health monitor", ctx.health_monitor.stop),
+            ("scheduler", ctx.scheduler.stop),
+        ]
+        # close() is a no-op for backends that hold no persistent connections,
+        # but exists for the few that do. Last, and only if present.
         close = getattr(registry, "close", None)
         if callable(close):
-            try:
-                close()
-            except Exception:  # pragma: no cover — defensive
-                pass
+            steps.append(("registry", close))
+
+        await _run_shutdown(steps)
 
 app = FastAPI(
     title="ADMZ - Axis Device Management Zone",
