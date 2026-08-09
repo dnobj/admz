@@ -48,6 +48,13 @@ non-persisting preview** — never a standing firehose.
   never diverge). An event matching nothing is dropped outright: it can't fire any
   detection either, so it is never stored and never evaluated. This is what stops
   the firehose. The old category allow-list is removed (the gate subsumes it).
+  _Amended 2026-08-09 (GH #172):_ this decision was right but only half-applied
+  at the time — the **caller** was removed here, while `store_categories()`, its
+  default set, and the `event_store_categories` fleet key were left in place,
+  reading as an operator control that silently did nothing. They are now gone.
+  Wiring them back would be a regression, not a completion: a category filter
+  can discard an event the operator explicitly watched, which is exactly what
+  the gate exists to prevent.
 - **Retention backstop** = even watched-only capture is bounded
   (`EventStore.enforce_retention`: newest-N + age cutoff, fleet-overridable),
   swept each reconcile. A chatty watched topic can never runaway again.

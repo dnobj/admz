@@ -342,3 +342,58 @@ class TestPreview:
         assert s.idle_expired() is True
         s._queues.append(object())                       # a live subscriber
         assert s.idle_expired() is False
+
+
+# ---------------------------------------------------------------------------
+# The retired category allow-list (GH #172)
+# ---------------------------------------------------------------------------
+
+
+class TestNoCategoryAllowList:
+    """ADR-0048 replaced the ingest category allow-list with the watch gate, but
+    only the *caller* was deleted at the time: `store_categories()`, its default
+    set and the `event_store_categories` fleet key survived, reading like an
+    operator control that silently did nothing. GH #172 removed the remainder.
+
+    These tests exist because the obvious reading of #172 — "an unwired
+    mechanism, so wire it" — is wrong, and would be a regression. They pin the
+    reason, not just the deletion.
+    """
+
+    def test_the_mechanism_is_gone(self):
+        from admz.events import config as cfg
+        assert not hasattr(cfg, "store_categories")
+        assert not hasattr(cfg, "DEFAULT_STORE_CATEGORIES")
+
+    def test_the_fleet_key_is_undeclared(self):
+        """Declaration and code reference must come out together — `tests/
+        test_setting_policy.py::test_inventory_has_no_dead_entries` fails on a
+        declared key with no reference, which is what catches half a removal."""
+        from admz.setting_policy import KNOWN_SETTING_KEYS
+        assert "event_store_categories" not in KNOWN_SETTING_KEYS
+
+    def test_a_watched_other_category_event_is_still_stored(self):
+        """**The regression the allow-list would reintroduce.**
+
+        `other` was excluded from `DEFAULT_STORE_CATEGORIES`. So had the filter
+        been wired as #172 first proposed, an operator who explicitly watched an
+        `other`-category topic would get nothing stored, with no error anywhere
+        — the silent-drop failure the gate exists to prevent.
+        """
+        gate = _gate([_wev(device_id="a", match={"topic": "unclassified"})], [],
+                     [{"device_id": "a"}])
+        rec = _rec(device_id="a", topic="tns1:Vendor/Unclassified",
+                   category="other")
+        assert gate.matches(rec) is True
+
+    def test_an_unwatched_event_is_dropped_whatever_its_category(self):
+        """Why deleting the filter loses nothing: the gate is strictly narrower.
+
+        A category allow-list could only ever drop a subset of what the gate
+        already drops — including every `motion`/`io`/`tamper` event the
+        allow-list would have *admitted*.
+        """
+        gate = _gate([_wev(device_id="a", match={"category": "io"})], [],
+                     [{"device_id": "a"}])
+        for category in ("other", "motion", "tamper", "system"):
+            assert gate.matches(_rec(device_id="a", category=category)) is False

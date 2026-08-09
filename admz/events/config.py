@@ -9,20 +9,21 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import List, Optional, Set
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Device-side subscription. "//." = every topic (proven against the fleet). We
-# narrow what we *store* via STORE categories below; operators can later set a
-# tighter device-side filter list once per-model subtree syntax is confirmed.
+# Device-side subscription. "//." = every topic (proven against the fleet). What
+# we *store* is decided by the watch gate, not here (ADR-0048); operators can
+# later set a tighter device-side filter list once per-model subtree syntax is
+# confirmed.
 DEFAULT_TOPIC_FILTERS: List[str] = ["//."]
 
-# Ingest-side allow-list: which normalized categories get persisted (drops the
-# chattiest non-actionable "other" topics). None elsewhere would mean "store all".
-DEFAULT_STORE_CATEGORIES: Set[str] = {
-    "motion", "io", "ptz", "storage", "tamper", "audio", "call", "network", "light", "system",
-}
+# There is deliberately no category allow-list. ADR-0048 replaced it with the
+# watch gate — an event is stored only if it matches a watched-event or
+# detection spec (`WatchGate.matches`), which is strictly narrower than any
+# category filter and, unlike one, cannot discard something an operator
+# explicitly asked to watch. See GH #172.
 
 # Supervisor knobs.
 RECONCILE_INTERVAL_SECONDS = 60.0   # re-read watched scope to add/drop streams
@@ -94,19 +95,6 @@ def topic_filters() -> List[str]:
     except Exception:  # noqa: BLE001
         pass
     return list(DEFAULT_TOPIC_FILTERS)
-
-
-def store_categories() -> Optional[Set[str]]:
-    """Categories to persist; None means store everything."""
-    try:
-        raw = _settings().get("event_store_categories")
-        if raw:
-            val = json.loads(raw)
-            if isinstance(val, list):
-                return {str(x).lower() for x in val} or None
-    except Exception:  # noqa: BLE001
-        pass
-    return set(DEFAULT_STORE_CATEGORIES)
 
 
 def tag_filter() -> Optional[str]:
