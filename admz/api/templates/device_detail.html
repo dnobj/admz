@@ -322,7 +322,10 @@
 <script>
 const HEALTH = {
   online:{sem:'green',label:'Online'}, unreachable:{sem:'red',label:'Unreachable'},
-  // Up, but not speaking VAPIX (GH #138) — amber, not the red of an outage.
+  // Up and readable, just no JSON-RPC surface (GH #357) — green, with the
+  // caveat in the label.
+  limited_api:{sem:'green',label:'Online, limited API'},
+  // Up, but nothing ADMZ can read answers (GH #138) — amber, not outage red.
   reachable_no_api:{sem:'amber',label:'Reachable, no API'},
   auth_failed:{sem:'amber',label:'Auth failed'}, needs_setup:{sem:'amber',label:'Needs setup'},
   unknown:{sem:'grey',label:'Unknown'},

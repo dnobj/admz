@@ -161,19 +161,39 @@ class DeviceHealthStatus(str, Enum):
 
     **Reachability and API capability are separate questions** (GH #138).
     ``unreachable`` answers only the first one and means exactly what it says:
-    the host did not answer at all. A device that answers HTTP but doesn't
-    speak VAPIX — a T85 PoE switch serving its HTML login page, say — is
-    ``reachable_no_api``, not ``unreachable``: it is up, ADMZ just can't
-    manage it.
+    the host did not answer at all.
+
+    **API capability is not binary either** (GH #357). The original wording
+    here used a T85 PoE switch as the example of ``reachable_no_api`` — and
+    was wrong about that exact device. A T8516 does not serve the JSON-RPC
+    surface the health probe uses, but it answers ``param.cgi`` perfectly:
+    ADMZ reads its configuration into four facets and tracks drift against a
+    baseline on every audit cycle. Calling that "ADMZ can't manage it" while
+    committing its config is not defensible, and it parked the device in the
+    attention bucket permanently — a status that by design never escalates
+    (see ``_STABLE_STATUSES``) and never clears is a device that can no longer
+    signal anything. So the three states are:
+
+    * ``online`` — the full API answers.
+    * ``limited_api`` — up, and a **managed read succeeds**, but the JSON-RPC
+      surface does not answer. ADMZ can read and track this device; an
+      operator asking "can I push arbitrary config to it?" still deserves the
+      honest no, which is why this is not folded into ``online``.
+    * ``reachable_no_api`` — up, and **no** managed read succeeds. The genuine
+      "cannot manage it" case, and the only one of the three that wants
+      attention.
     """
 
     ONLINE = "online"
     UNREACHABLE = "unreachable"     # no TCP connect
     AUTH_FAILED = "auth_failed"     # TCP up, VAPIX rejected creds
     NEEDS_SETUP = "needs_setup"     # reachable but factory-defaulted (needsetup=yes)
-    # TCP up + the host answered, but the answer wasn't usable VAPIX (unparsable
-    # body, wrong content type, an unexpected-but-valid HTTP status). "Up, but
-    # ADMZ can't manage it" — an attention state, never a network failure.
+    # TCP up, the JSON-RPC probe didn't answer usefully, but an authenticated
+    # legacy-CGI read DID. Manageable, just not over the surface we probed.
+    LIMITED_API = "limited_api"
+    # TCP up + the host answered, but nothing ADMZ can read did — not the
+    # JSON-RPC probe and not the legacy-CGI fallback. "Up, but ADMZ can't
+    # manage it" — an attention state, never a network failure.
     REACHABLE_NO_API = "reachable_no_api"
     UNKNOWN = "unknown"             # never checked
 
@@ -182,8 +202,18 @@ class DeviceHealthStatus(str, Enum):
 # ``consecutive_failures`` instead of incrementing it: a device that simply
 # doesn't speak VAPIX is in a stable state, and counting each sweep as a
 # failure is what produced the meaningless five-figure counters of GH #138.
+#
+# NOTE (GH #357): "settled" and "needs attention" are two DIFFERENT questions
+# asked of this enum, and both answers were right in isolation — which is how
+# the T8516 ended up parked. This set answers "settled?"; the UI's ``bucket``
+# answers "needs attention?". Do not make one match the other; give a status
+# the right answer to each.
 _STABLE_STATUSES = frozenset(
-    {DeviceHealthStatus.ONLINE, DeviceHealthStatus.REACHABLE_NO_API}
+    {
+        DeviceHealthStatus.ONLINE,
+        DeviceHealthStatus.LIMITED_API,
+        DeviceHealthStatus.REACHABLE_NO_API,
+    }
 )
 
 
@@ -1021,6 +1051,39 @@ async def probe_device(
                         last_check=now,
                         last_error=err[:200],
                         consecutive_failures=1,
+                    )
+                # GH #357: the host is up and one probe failed — that is not
+                # yet enough to say ADMZ cannot manage it. This exact path is
+                # where the T8516 landed: `systemready` is JSON-RPC, the switch
+                # serves HTML, the parse fails, and the device was filed as
+                # unmanageable *while ADMZ was committing its config every
+                # cycle over `param.cgi`*. So ask the legacy-CGI surface before
+                # concluding anything. Same op the 401 branch already uses, on
+                # a path that has by definition already failed — no extra
+                # request on any healthy sweep.
+                legacy_ok, _facts, _learned = await _corroborate_rejection(
+                    catalog=catalog, executor=executor, device_info=device_info,
+                    device_id=device_id, credentials=credentials,
+                    timeout_seconds=timeout_seconds, refused_op=SYSTEMREADY_OP,
+                )
+                if legacy_ok is True:
+                    logger.info(
+                        "health: %s did not answer usefully for %s (%s), but %s "
+                        "did — classifying limited_api, not reachable_no_api",
+                        SYSTEMREADY_OP, device_id, err[:80], CORROBORATION_OP,
+                    )
+                    return DeviceHealthRecord(
+                        device_id=device_id,
+                        status=DeviceHealthStatus.LIMITED_API,
+                        last_check=now,
+                        last_seen_online=now,
+                        latency_ms=elapsed_ms,
+                        consecutive_failures=0,
+                        last_error=(
+                            f"{SYSTEMREADY_OP} unusable ({err[:120]}); "
+                            f"{CORROBORATION_OP} answers — managed reads work, "
+                            "no JSON-RPC surface"
+                        ),
                     )
                 return DeviceHealthRecord(
                     device_id=device_id,

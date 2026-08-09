@@ -20,12 +20,15 @@ Full history is the audit log's / a future time-series store's job.
 
 ### FR-HLT-002 — Coarse reachability status ✅
 `DeviceHealthStatus` ∈ `online` | `unreachable` (no TCP connect) |
-`reachable_no_api` (host answered, but not with usable VAPIX) |
+`limited_api` (host answered, the JSON-RPC probe did not, but an authenticated
+legacy-CGI read **did** — manageable, just not over the probed surface) |
+`reachable_no_api` (host answered, and **nothing** ADMZ can read did) |
 `auth_failed` (TCP up, VAPIX rejected creds) | `needs_setup` (reachable but
 factory-defaulted) | `unknown` (never checked).
 Status reflects the last successful probe; `last_seen_online` is the
 **reachability** clock — it advances on every result that proved the host
-answered (`online`, `auth_failed`, `needs_setup`, `reachable_no_api`), so
+answered (`online`, `limited_api`, `auth_failed`, `needs_setup`,
+`reachable_no_api`), so
 operators can read "was online 2 minutes ago" for flapping devices. It says
 the host replied; it asserts nothing about what ADMZ verified.
 
@@ -50,15 +53,36 @@ never share a verdict (GH #138). When the authenticated tier fails with
 anything other than a connect-class error — an unparsable body, an unexpected
 content type, an unexpected-but-valid HTTP status — `probe_device` **confirms
 reachability with a TCP connect** rather than reading the error string:
-connect OK → `reachable_no_api`, connect fail → `unreachable`. So
+connect OK → the API question below, connect fail → `unreachable`. So
 `unreachable` keeps its documented meaning (the host did not answer), and a
 record can never carry a measured `latency_ms` while claiming the device is
-unreachable. `reachable_no_api` advances `last_seen_online` and does **not**
-accumulate `consecutive_failures` — it is a settled state, not a failing
-probe. The UI renders it amber ("Reachable, no API") in the *needs attention*
-bucket: up, but ADMZ can't manage it. Real-world case: the AXIS T8516 PoE
-switch, which answers HTTP in ~80 ms with an HTML login page and had logged
-10,795 consecutive "failures" while never once reading as reachable.
+unreachable.
+
+**"Can ADMZ speak its API?" is itself two questions (GH #357).** Once TCP
+confirms the host is up, the probe asks the legacy-CGI surface
+(`param.cgi:list`, the same op the 401 corroboration already uses) before
+concluding anything:
+
+| Legacy read | Status | Bucket |
+|---|---|---|
+| answers | `limited_api` | **online** — ADMZ reads and tracks this device |
+| also fails | `reachable_no_api` | needs attention — genuinely unmanageable |
+
+Both advance `last_seen_online` and neither accumulates `consecutive_failures`
+— they are settled states, not failing probes. The extra call costs nothing on
+a healthy sweep: it runs only on a path that has already failed.
+
+Real-world case, and the one that forced the split: the **AXIS T8516** PoE
+switch. It answers HTTP in ~80 ms, serves HTML where the JSON-RPC probe expects
+JSON — and answers `param.cgi` perfectly, which is why ADMZ commits four config
+facets from it every audit cycle and tracks 245 drift alerts against its
+baseline. It was nonetheless reported as `reachable_no_api`, i.e. unmanageable,
+**while being managed**. Because that status is settled by design it never
+escalated, and because it never cleared either, the device sat in *needs
+attention* permanently with `consecutive_failures = 0` — a device parked there
+can no longer signal a real fault, which is alert fatigue built into the data
+model rather than the UI. (The earlier 10,795-consecutive-failures counter on
+this same switch was the #138 half of the story; #357 is the other half.)
 
 ### FR-HLT-008 — Auth-aware: a `systemready` 200 is not proof of valid creds ✅
 On some Axis firmware `systemready.cgi:systemReady` answers `200` **without
@@ -161,8 +185,13 @@ Each sweep carries the prior `last_seen_online` forward **when the new probe
 didn't establish one** (a fresh reachability stamp is never overwritten by a
 stale one) and increments `consecutive_failures` when a probe fails, so a
 device down for several cycles shows a rising failure count rather than
-resetting each sweep. `online` and `reachable_no_api` reset the counter —
-both are settled answers, not failures.
+resetting each sweep. `online`, `limited_api` and `reachable_no_api` reset the
+counter — all three are settled answers, not failures. Note that "settled" and
+"needs attention" are **different questions asked of the same enum**: all three
+are settled, but only `reachable_no_api` belongs in the attention bucket. Both
+predicates were individually correct while the T8516 stayed parked (#357), so
+give a new status the right answer to each rather than making one match the
+other.
 
 ## Non-functional requirements
 
@@ -190,13 +219,21 @@ the intended owner; pool-spawned MCP subprocesses should not run their own
 gated behind its opt-in fleet flag, which subprocesses inherit but typically
 leave off).
 
-### KL-HLT-004 — `reachable_no_api` is only reachable from the authenticated tier ⚠️
-The status is produced when the *authenticated* probe gets an unusable answer.
-The credential-less TCP tier still reports a bare connect as `online`
+### KL-HLT-004 — `limited_api` / `reachable_no_api` are only reachable from the authenticated tier ⚠️
+Both statuses are produced when the *authenticated* probe gets an unusable
+answer. The credential-less TCP tier still reports a bare connect as `online`
 (FR-HLT-003 §2) — "no credentials stored yet" is a different situation from
 "this device doesn't speak VAPIX", and reclassifying it would relabel every
 device awaiting credential capture. Per-device-class probes (a plain `GET /`
 for a T85, say) and per-class credential verification are GH #15.
+
+The #357 split narrows what is left here rather than closing it: the probe now
+consults a **second real surface** (`param.cgi`) before declaring a device
+unmanageable, so the common T85 case is classified from evidence instead of
+from one op's parse failure. What it still does not do is read the device's
+*capability profile* to decide which surfaces to try at all — #15's territory,
+and the reason a device class ADMZ has never met can still be judged against an
+operation it was never going to answer.
 
 ### KL-HLT-003 — No push alerting ⚠️
 Health is pull-based current-state. Transition alerting (online→unreachable

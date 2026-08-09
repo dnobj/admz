@@ -360,10 +360,15 @@ echo, or pass a password as a tool argument in chat.
   and say what actually happened — never default to "the device is
   unreachable."
 - **`reachable_no_api` is not offline.** That status means the device
-  answered — it is up on the network — but it doesn't speak VAPIX (a T85
-  PoE switch, say). Say "it's up, but ADMZ can't manage it over VAPIX",
-  never "it's unreachable/offline". Only `unreachable` means the host
-  didn't answer at all.
+  answered — it is up on the network — but nothing ADMZ can read answered.
+  Say "it's up, but ADMZ can't manage it over VAPIX", never
+  "it's unreachable/offline". Only `unreachable` means the host didn't
+  answer at all.
+- **`limited_api` is a healthy device, not a problem.** Up, and ADMZ reads
+  and tracks its config every cycle over legacy CGI — it just has no
+  JSON-RPC surface (a T85 PoE switch is the usual case). Report it as
+  working. The one thing to be honest about: arbitrary config pushes may
+  not be available, so don't promise them for such a device.
 
 # Device automation rules
 

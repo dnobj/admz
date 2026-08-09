@@ -13,7 +13,8 @@ trouble without checking each device by hand.
 **Acceptance criteria:**
 1. `get_fleet_health()` (MCP) / `GET /api/fleet/health` (REST) return a
    per-device list plus `counts` by status (`online`, `unreachable`,
-   `reachable_no_api`, `auth_failed`, `needs_setup`, `unknown`).
+   `limited_api`, `reachable_no_api`, `auth_failed`, `needs_setup`,
+   `unknown`).
 2. Each entry carries `status`, `last_check`, `last_seen_online`,
    `latency_ms`, and `consecutive_failures`; authenticated probes also
    include `uptime_seconds` and `bootid`.
@@ -30,16 +31,24 @@ talk VAPIX to but that is demonstrably up to read as *up*, **so that** a red
 
 **Acceptance criteria:**
 1. A device that answers but whose reply isn't usable VAPIX (unparsable body,
-   wrong content type, unexpected status) reads `reachable_no_api`, not
-   `unreachable` — confirmed by a TCP connect, not inferred from the error.
+   wrong content type, unexpected status) never reads `unreachable` — the
+   host is confirmed up by a TCP connect, not inferred from the error.
 2. `unreachable` is reserved for a genuine connect failure (timeout, refused,
    no route). A record can never show a measured `latency_ms` **and**
    `unreachable`.
-3. The UI shows it amber ("Reachable, no API") in the *needs attention*
-   bucket — distinct from both the green of `online` and the red of an
-   outage.
-4. It doesn't accumulate `consecutive_failures` (it's a stable state, not a
-   failing probe), and it advances `last_seen_online` — the host answered.
+3. **"Can't manage it" must be earned, not assumed from one probe (#357).**
+   Before concluding anything, the probe tries the legacy-CGI read
+   (`param.cgi:list`). If that answers, the device reads `limited_api` and is
+   shown green ("Online, limited API") in the **online** bucket: ADMZ reads
+   and tracks it every cycle. Only when that also fails does it read
+   `reachable_no_api`, amber, in *needs attention*.
+4. Neither accumulates `consecutive_failures` (both are stable states, not
+   failing probes), and both advance `last_seen_online` — the host answered.
+5. A device in the attention bucket must be able to leave it. A status that by
+   design never escalates and in practice never clears makes the device
+   permanently invisible to the operator, which is what happened to the T8516:
+   parked at `reachable_no_api` with `consecutive_failures = 0` while ADMZ
+   committed its config on every audit cycle.
 
 **Related requirements:** [fleet-health](../requirements/fleet-health.md).
 

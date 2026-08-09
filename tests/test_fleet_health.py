@@ -14,10 +14,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from admz.fleet.health import (
+    CORROBORATION_OP,
     DeviceHealthRecord,
     DeviceHealthStatus,
     DeviceHealthStore,
     HealthMonitor,
+    SYSTEMREADY_OP,
     probe_device,
 )
 
@@ -356,8 +358,18 @@ class TestReachableNoApi:
     """
 
     @pytest.mark.asyncio
-    async def test_parse_failure_with_tcp_up_is_reachable_no_api(self, monkeypatch):
-        """The T8516 case: unparsable body + host answers TCP."""
+    async def test_parse_failure_with_tcp_up_and_no_legacy_read_is_reachable_no_api(
+        self, monkeypatch
+    ):
+        """Unparsable body, host answers TCP, and the legacy CGI read ALSO
+        fails — the genuine "cannot manage it" case.
+
+        This used to be labelled "the T8516 case" and was not: on the real
+        T8516 `param.cgi` answers, which is why #357 reclassified it. The
+        shared harness here returns the same failure for every op, so both
+        surfaces fail and `reachable_no_api` remains correct — that is what
+        this test now pins.
+        """
         catalog, executor = _vapix_catalog_and_executor(
             MagicMock(
                 success=False, status_code=200,
@@ -562,6 +574,150 @@ class TestReachableNoApi:
             await monitor.sweep_once()
 
         assert store.get("a").last_seen_online == pytest.approx(earlier)
+
+
+def _per_op_catalog_and_executor(results_by_op):
+    """Catalog + executor that returns a DIFFERENT result per operation id.
+
+    The shared harness above answers every op identically, which cannot
+    express the shape #357 is about: one surface failing while another
+    answers. That uniformity is precisely why the T8516 misclassification had
+    no failing test.
+    """
+    catalog = MagicMock()
+
+    def _get_operation(family, op_id):
+        op = MagicMock()
+        op.to_executor_dict.return_value = {"id": op_id}
+        op._op_id = op_id
+        return op
+
+    catalog.get_operation.side_effect = _get_operation
+
+    async def _execute(op_dict, device_info, credentials, params):
+        return results_by_op[op_dict["id"]]
+
+    executor = MagicMock()
+    executor.execute = AsyncMock(side_effect=_execute)
+    return catalog, executor
+
+
+class TestLimitedApi:
+    """GH #357 — a device ADMZ can actually read is not 'no API'.
+
+    The T8516 answered `param.cgi` on every audit cycle (four config facets,
+    245 tracked drift alerts) while being reported as unmanageable, because
+    one JSON-RPC probe's parse failure stood in for "any API". Worse, the
+    status is in ``_STABLE_STATUSES`` — by design it never escalates — and it
+    never cleared either, so the device sat in *needs attention* permanently
+    with `consecutive_failures = 0`. A device parked there can no longer
+    signal a real fault.
+    """
+
+    def _t8516_ops(self):
+        return {
+            SYSTEMREADY_OP: MagicMock(
+                success=False, status_code=200,
+                error=("Failed to parse JSON response: Expecting value: "
+                       "line 1 column 1 (char 0)"),
+            ),
+            CORROBORATION_OP: MagicMock(
+                success=True, status_code=200, error=None,
+                data={"root.Brand.Brand": "AXIS"},
+            ),
+        }
+
+    @pytest.mark.asyncio
+    async def test_json_probe_fails_but_legacy_read_answers(self, monkeypatch):
+        """The real T8516 shape, end to end."""
+        catalog, executor = _per_op_catalog_and_executor(self._t8516_ops())
+        monkeypatch.setattr(
+            "admz.fleet.health._tcp_probe", AsyncMock(return_value=3)
+        )
+
+        rec = await probe_device(
+            device_id="t8516",
+            device_info={"host": "192.0.2.124"},
+            credentials={"username": "root", "password": "x"},
+            catalog=catalog, executor=executor,
+        )
+
+        assert rec.status == DeviceHealthStatus.LIMITED_API
+        assert rec.status != DeviceHealthStatus.REACHABLE_NO_API
+        assert rec.last_seen_online is not None
+        assert rec.consecutive_failures == 0
+        # The error field still says what could not be read — the operator
+        # asking "can I push config to this?" deserves the honest answer.
+        assert CORROBORATION_OP in rec.last_error
+
+    @pytest.mark.asyncio
+    async def test_limited_api_is_a_settled_answer(self):
+        """It must not accumulate failures — the #138 lesson still applies."""
+        from admz.fleet.health import _STABLE_STATUSES
+        assert DeviceHealthStatus.LIMITED_API in _STABLE_STATUSES
+
+    def test_limited_api_is_not_an_attention_state(self):
+        """The half that actually clears the T8516 from the operator's queue.
+
+        `_STABLE_STATUSES` and the UI bucket are two different questions asked
+        of this enum (#357's follow-up), and both were individually right while
+        the device stayed parked. This pins the *second* one.
+        """
+        import re
+        from pathlib import Path
+
+        index = Path("admz/api/templates/index.html").read_text(
+            encoding="utf-8", errors="replace")
+        entry = re.search(r"limited_api:\s*\{[^}]*\}", index)
+        assert entry, "limited_api missing from the dashboard HEALTH map"
+        assert "bucket: 'online'" in entry.group(0)
+        assert "attention" not in entry.group(0)
+
+    def test_reachable_no_api_remains_an_attention_state(self):
+        """The fix must not sweep the genuine case under the rug too."""
+        import re
+        from pathlib import Path
+
+        index = Path("admz/api/templates/index.html").read_text(
+            encoding="utf-8", errors="replace")
+        entry = re.search(r"reachable_no_api:\s*\{[^}]*\}", index)
+        assert entry and "bucket: 'attention'" in entry.group(0)
+
+    def test_every_status_has_a_label_and_a_colour(self):
+        """Adding an enum member without teaching the renderers is how a
+        status ends up rendering as a raw string in the UI."""
+        from admz.api.templating import HEALTH_LABEL, HEALTH_SEM
+
+        for status in DeviceHealthStatus:
+            assert status.value in HEALTH_SEM, f"{status.value} has no colour"
+            assert status.value in HEALTH_LABEL, f"{status.value} has no label"
+
+    @pytest.mark.asyncio
+    async def test_legacy_read_is_only_attempted_after_a_failure(self, monkeypatch):
+        """No extra request on a healthy sweep — the probe runs only on a path
+        that has already failed."""
+        catalog, executor = _per_op_catalog_and_executor({
+            SYSTEMREADY_OP: MagicMock(
+                success=True, status_code=200, error=None,
+                data={"uptime": 1234, "bootid": "abc"},
+            ),
+        })
+        monkeypatch.setattr(
+            "admz.fleet.health._tcp_probe", AsyncMock(return_value=1)
+        )
+
+        rec = await probe_device(
+            device_id="healthy",
+            device_info={"host": "192.0.2.10"},
+            credentials={"username": "root", "password": "x"},
+            catalog=catalog, executor=executor,
+        )
+
+        assert rec.status == DeviceHealthStatus.ONLINE
+        called = [c.args[0]["id"] for c in executor.execute.call_args_list]
+        assert CORROBORATION_OP not in called, (
+            f"healthy sweep made an extra call: {called}"
+        )
 
 
 class TestReachableNoApiSurfaces:

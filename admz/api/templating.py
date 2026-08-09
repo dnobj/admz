@@ -25,6 +25,9 @@ from typing import Any, Dict, List, Optional
 HEALTH_SEM = {
     "online": "green",
     "unreachable": "red",
+    # GH #357: up AND a managed read works — it is not an attention state, so
+    # it is not amber. The caveat lives in the label, not the colour.
+    "limited_api": "green",
     "reachable_no_api": "amber",
     "auth_failed": "amber",
     "auth-failed": "amber",
@@ -36,6 +39,7 @@ HEALTH_SEM = {
 HEALTH_LABEL = {
     "online": "Online",
     "unreachable": "Unreachable",
+    "limited_api": "Online, limited API",
     "reachable_no_api": "Reachable, no API",
     "auth_failed": "Auth failed",
     "auth-failed": "Auth failed",

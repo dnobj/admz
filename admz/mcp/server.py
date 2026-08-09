@@ -510,10 +510,14 @@ class ADMZMCPServer:
                         "essentially free — no network call. Status values: "
                         "'online' (the device responded to the last probe), "
                         "'unreachable' (TCP connect failed — the host did not "
-                        "answer at all), 'reachable_no_api' (the host IS up and "
-                        "answered, but not with usable VAPIX — e.g. a T85 PoE "
-                        "switch; ADMZ can't manage it, but never call it "
-                        "offline), 'auth_failed' (device responded but rejected "
+                        "answer at all), 'limited_api' (up, and ADMZ CAN read "
+                        "and track it over legacy CGI, but it has no JSON-RPC "
+                        "surface — e.g. a T85 PoE switch; treat as healthy, "
+                        "but do not promise arbitrary config pushes), "
+                        "'reachable_no_api' (the host IS up and answered, but "
+                        "nothing ADMZ can read did; it cannot be managed — "
+                        "still never call it offline), "
+                        "'auth_failed' (device responded but rejected "
                         "credentials), 'needs_setup' (reachable but "
                         "factory-defaulted), 'unknown' "
                         "(never checked — monitor likely disabled or just started). "
@@ -2008,7 +2012,7 @@ class ADMZMCPServer:
         seen = {r.device_id: r for r in records}
         entries = []
         counts: Dict[str, int] = {
-            "online": 0, "unreachable": 0, "reachable_no_api": 0,
+            "online": 0, "unreachable": 0, "limited_api": 0, "reachable_no_api": 0,
             "auth_failed": 0, "needs_setup": 0, "unknown": 0,
         }
         for d in all_devices:
