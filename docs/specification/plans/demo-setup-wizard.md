@@ -1,5 +1,11 @@
 # Plan: Demo setup wizard — activation pushes, rule↔demo correlation, guided setup (ADR-0047 slice 3+)
 
+Status: **implemented** — the decision record is
+[ADR-0050](../decisions/0050-demo-setup-wizard.md) (Accepted 2026-07-18), shipped in
+PR #118. This header was added by #206: the file previously opened straight into
+Context, so a reader had no cue whether the work had landed — unlike every plan in
+`docs/plans/`, which all carry one.
+
 ## Context
 
 The operator's goal: *"a demo would automatically make any necessary configuration changes, prompt
@@ -118,7 +124,15 @@ Handlers:
   → ingest offered via `set_event_ingest` when off → `demo_setup_status` verify + checklist report;
   hooks the existing compound-intent rule (gated stages count when their card is presented; continue
   on approval notes).
-- Docs: ADR-0048 (wizard + completion hook), tool-count bumps, US-DW-013, MCP reference entries.
+- Docs: **ADR-0050** (wizard + completion hook), tool-count bumps, MCP reference entries.
+
+  Two corrections from #206. This line said **ADR-0048**, which is the events
+  watch-scoping decision shipped the same day — ADR-0050's own header records the
+  collision and the renumbering, but this plan was never updated to match. It also cited
+  **US-DW-013**, which belongs to the ADR-0051 *inference* story ("ADMZ already knows my
+  demos"); `demo-workflows.md` ends at US-DW-013, so **no user story was ever written for
+  the wizard.** The citation is dropped rather than repointed, because the honest state is
+  a gap, not a different id.
 
 ## Tests (per phase; all fixtures rebind confirm_store/audit singletons per test_rule_tools.py:23-43)
 
