@@ -621,9 +621,13 @@ class TestLimitedApi:
                 error=("Failed to parse JSON response: Expecting value: "
                        "line 1 column 1 (char 0)"),
             ),
+            # `parsed_data`, not `data` — the field production actually reads.
+            # The first draft of this test set `data`, which meant it passed
+            # only because the code trusted the 2xx; the review caught that the
+            # mock did not match the type it stands in for.
             CORROBORATION_OP: MagicMock(
                 success=True, status_code=200, error=None,
-                data={"root.Brand.Brand": "AXIS"},
+                parsed_data="root.Brand.Brand=AXIS\nroot.Brand.ProdNbr=T8516",
             ),
         }
 
@@ -649,6 +653,98 @@ class TestLimitedApi:
         # The error field still says what could not be read — the operator
         # asking "can I push config to this?" deserves the honest answer.
         assert CORROBORATION_OP in rec.last_error
+
+    @pytest.mark.asyncio
+    async def test_html_body_at_200_does_not_count_as_a_managed_read(
+        self, monkeypatch
+    ):
+        """A 2xx is not evidence — this is the original bug, inverted.
+
+        For text-format ops the executor sets ``success=True`` on any non-error
+        2xx and passes the raw body through, so a device serving an HTML login
+        page from ``param.cgi`` produces a "successful" result with no
+        parameters in it. Promoting that to ``limited_api`` would be the same
+        trust-the-shape error that classified the T8516 wrongly to begin with.
+        """
+        catalog, executor = _per_op_catalog_and_executor({
+            SYSTEMREADY_OP: MagicMock(
+                success=False, status_code=200,
+                error="Failed to parse JSON response: Expecting value",
+            ),
+            CORROBORATION_OP: MagicMock(
+                success=True, status_code=200, error=None,
+                parsed_data="<html><body>Please log in</body></html>",
+            ),
+        })
+        monkeypatch.setattr(
+            "admz.fleet.health._tcp_probe", AsyncMock(return_value=4)
+        )
+
+        rec = await probe_device(
+            device_id="html-switch",
+            device_info={"host": "192.0.2.200"},
+            credentials={"username": "root", "password": "x"},
+            catalog=catalog, executor=executor,
+        )
+        assert rec.status == DeviceHealthStatus.REACHABLE_NO_API
+
+    @pytest.mark.asyncio
+    async def test_empty_body_at_200_does_not_count_either(self, monkeypatch):
+        catalog, executor = _per_op_catalog_and_executor({
+            SYSTEMREADY_OP: MagicMock(
+                success=False, status_code=200, error="parse failure",
+            ),
+            CORROBORATION_OP: MagicMock(
+                success=True, status_code=200, error=None, parsed_data="",
+            ),
+        })
+        monkeypatch.setattr(
+            "admz.fleet.health._tcp_probe", AsyncMock(return_value=4)
+        )
+        rec = await probe_device(
+            device_id="empty", device_info={"host": "192.0.2.201"},
+            credentials={"username": "root", "password": "x"},
+            catalog=catalog, executor=executor,
+        )
+        assert rec.status == DeviceHealthStatus.REACHABLE_NO_API
+
+    def test_param_data_predicate(self):
+        """The predicate itself, since it is what stands between a real read
+        and a login page."""
+        from admz.fleet.health import _looks_like_param_data
+
+        # `error=None` on every one of these: the repo's mock-faithfulness
+        # lint (#291) requires it wherever a result-shaped mock is built, and
+        # it is right to be unconditional — `StepResult.error` is always
+        # present, and a MagicMock without it hands back a child mock.
+        def _r(parsed):
+            return MagicMock(parsed_data=parsed, error=None)
+
+        assert _looks_like_param_data(
+            _r("root.Brand.Brand=AXIS\nroot.Brand.ProdNbr=T8516")
+        )
+        assert _looks_like_param_data(_r({"root.Brand": "AXIS"}))
+        assert not _looks_like_param_data(_r("<html>hi</html>"))
+        assert not _looks_like_param_data(_r("   "))
+        assert not _looks_like_param_data(_r(None))
+        assert not _looks_like_param_data(_r({}))
+        # Prose that happens to contain '=' is not parameter data.
+        assert not _looks_like_param_data(_r("Error: session = expired"))
+
+    def test_consumers_treat_limited_api_as_reachable(self):
+        """A new enum member leaks past its own tests unless the things that
+        *branch* on it are updated too — found in review, so pinned here.
+
+        Each of these compared against the literal ``"online"``, so a
+        `limited_api` device would have counted as offline in a demo checklist,
+        never satisfied an `on_online` task trigger, and shown as a permanent
+        site issue.
+        """
+        from admz.demos.readiness import _HEALTHY
+        from admz.tasks.store import EVENT_ONLINE, event_for_status
+
+        assert "limited_api" in _HEALTHY
+        assert event_for_status("limited_api") == EVENT_ONLINE
 
     @pytest.mark.asyncio
     async def test_limited_api_is_a_settled_answer(self):

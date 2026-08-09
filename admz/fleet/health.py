@@ -585,6 +585,38 @@ async def _run_auth_op(
         return _OP_ERRORED
 
 
+def _looks_like_param_data(result: Any) -> bool:
+    """True if a ``param.cgi`` result actually carries parameter data.
+
+    **A 2xx is not enough here, and assuming otherwise would repeat the very
+    bug #357 fixes.** For text-format operations the executor sets
+    ``success=True`` on any non-error 2xx and hands the raw body through as
+    ``parsed_data`` (``executor/vapix.py``, the ``else`` branch of
+    ``_parse_response``) — it only fails on a declared ``error_prefix``. So a
+    device serving an HTML login page from ``param.cgi`` with HTTP 200 yields
+    a "successful" result containing no parameters at all. Classifying that as
+    ``limited_api`` would be the same mistake as classifying the T8516 as
+    ``reachable_no_api``: trusting one signal's shape instead of reading what
+    came back.
+
+    A genuine ``param.cgi:list`` response is ``key=value`` lines. Accept a
+    non-empty mapping, or text with at least one ``<dotted.key>=`` line; reject
+    anything that opens like markup.
+    """
+    data = getattr(result, "parsed_data", None)
+    if isinstance(data, dict):
+        return bool(data)
+    if not isinstance(data, str):
+        return False
+    body = data.strip()
+    if not body or body.startswith("<"):
+        return False
+    return any(
+        re.match(r"^[A-Za-z][\w.]*=", line.strip())
+        for line in body.splitlines()
+    )
+
+
 def _is_authenticated_2xx(result: Any) -> bool:
     sc = getattr(result, "status_code", None)
     return bool(
@@ -1061,12 +1093,28 @@ async def probe_device(
                 # concluding anything. Same op the 401 branch already uses, on
                 # a path that has by definition already failed — no extra
                 # request on any healthy sweep.
-                legacy_ok, _facts, _learned = await _corroborate_rejection(
+                # ONE call, direct. Not `_corroborate_rejection`: that helper
+                # answers "are the credentials bad?" for the 401 path and folds
+                # several outcomes into one tri-state, whereas the question
+                # here is narrower — did a managed read actually return data?
+                # Reusing it would also cost a second request to say so.
+                legacy = await _run_auth_op(
                     catalog=catalog, executor=executor, device_info=device_info,
                     device_id=device_id, credentials=credentials,
-                    timeout_seconds=timeout_seconds, refused_op=SYSTEMREADY_OP,
+                    timeout_seconds=timeout_seconds, op_id=CORROBORATION_OP,
                 )
-                if legacy_ok is True:
+                # Authenticated AND carrying real parameter data. The second
+                # half is not belt-and-braces: a text-format 2xx counts as
+                # "successful" even when the body is an HTML login page, so
+                # without it a switch that serves HTML from param.cgi too would
+                # be promoted to limited_api on no evidence — the same
+                # trust-the-shape error this issue is about.
+                if (
+                    legacy is not _OP_MISSING
+                    and legacy is not _OP_ERRORED
+                    and _is_authenticated_2xx(legacy)
+                    and _looks_like_param_data(legacy)
+                ):
                     logger.info(
                         "health: %s did not answer usefully for %s (%s), but %s "
                         "did — classifying limited_api, not reachable_no_api",
