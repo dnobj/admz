@@ -5180,6 +5180,17 @@ class ADMZMCPServer:
 
         _pool_subprocess = _capabilities.is_active("runtime.no_scheduler")
         if not _pool_subprocess:
+            # GH #172: standalone `python -m admz mcp` runs its own scheduler
+            # and never goes through the API lifespan, so the module task
+            # handlers must be installed here too — otherwise a scheduled
+            # module action dispatches to nothing and fails with "no handler
+            # registered". Idempotent, so the two entry points cannot conflict.
+            try:
+                from admz.tasks.handlers import install_module_task_handlers
+                install_module_task_handlers(self.module_registry)
+            except Exception:  # noqa: BLE001 — never block the server starting
+                logger.warning("module task-handler install failed",
+                               exc_info=True)
             await self.scheduler.start()
         cleanup_task = asyncio.create_task(self._temp_credential_cleanup_loop())
         try:

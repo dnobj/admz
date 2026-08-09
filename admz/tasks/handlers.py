@@ -43,6 +43,9 @@ class TaskContext:
 TaskHandler = Callable[["Task", "TaskContext"], Awaitable[Dict[str, Any]]]
 
 _HANDLERS: Dict[str, TaskHandler] = {}
+#: Action types installed from a module, so a re-install can tell "refresh my
+#: own handler" from "collide with a built-in" (GH #172).
+_MODULE_INSTALLED: set = set()
 _CONTEXT: Optional[TaskContext] = None
 
 
@@ -94,15 +97,36 @@ def install_module_task_handlers(module_registry: Any) -> int:
     quietly taking over ``snapshot`` or ``reprovision`` for the whole fleet —
     load-order-dependent and invisible. Refused and logged; the module's other
     handlers still install.
+
+    This is a guard against accident, **not a boundary**: ``register_task_handler``
+    is public and unconditional, so a module that calls it directly at import
+    still wins. Making that impossible means giving registration an ownership
+    model, which is a larger change than #172 and is not attempted here.
+
+    Re-running (a second lifespan, a reload, a test) is a no-op for identical
+    handlers and a **refresh** for changed ones — a module's own previous
+    installation is not a built-in and must not be reported as one.
     """
     installed = 0
     for action_type, handler in (module_registry.task_handlers_all() or {}).items():
-        if action_type in _HANDLERS:
+        existing = _HANDLERS.get(action_type)
+        if existing is handler:
+            continue          # same install re-run (a second lifespan): no-op
+        if action_type in _MODULE_INSTALLED:
+            # A module handler we installed before, now different: this is a
+            # refresh, not an override. Refusing it would pin the *stale*
+            # callable — and report it as a built-in clash, which it is not.
+            _HANDLERS[action_type] = handler
+            installed += 1
+            continue
+        if existing is not None:
             logger.warning(
-                "module task handler for %r refused: a handler is already "
-                "registered and modules may not replace built-ins", action_type)
+                "module task handler for %r refused: %r is already registered "
+                "as a built-in, and modules may not replace built-ins",
+                action_type, action_type)
             continue
         _HANDLERS[action_type] = handler
+        _MODULE_INSTALLED.add(action_type)
         installed += 1
     if installed:
         logger.info("installed %d module task handler(s)", installed)

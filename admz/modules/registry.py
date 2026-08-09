@@ -13,9 +13,12 @@ bundle, so the MCP server (tools), the web layer (nav), and the chatbot host
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 
 from admz.modules.contract import Module, NavSection, ToolSpec
+
+logger = logging.getLogger(__name__)
 
 
 class ModuleRegistry:
@@ -94,10 +97,23 @@ class ModuleRegistry:
         return out
 
     def task_handlers_all(self) -> Dict[str, Any]:
-        """Merge every module's unified-task action handlers (ADR-0037)."""
+        """Merge every module's unified-task action handlers (ADR-0037).
+
+        Later modules win on a clash, as with every merge helper here — but
+        loudly. A plain ``dict.update`` hid module-vs-module collisions
+        entirely, so the install step downstream saw one handler and had nothing
+        to refuse (GH #172).
+        """
         merged: Dict[str, Any] = {}
+        owner: Dict[str, str] = {}
         for m in self._modules:
-            merged.update(m.task_handlers())
+            for action_type, handler in (m.task_handlers() or {}).items():
+                if action_type in merged:
+                    logger.warning(
+                        "module %r overrides task handler %r already supplied "
+                        "by module %r", m.id, action_type, owner[action_type])
+                merged[action_type] = handler
+                owner[action_type] = m.id
         return merged
 
     def self_heals(self, family: str) -> bool:

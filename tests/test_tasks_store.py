@@ -274,3 +274,97 @@ class TestBaselineBootidIsGone:
         from admz import recovery
         assert "baseline_bootid" in inspect.signature(
             recovery.await_device_recovery).parameters
+
+
+class TestModuleHandlerInstallEdgeCases:
+    """Review findings on #373 — the cases the first pass missed."""
+
+    def _clean(self, monkeypatch):
+        from admz.tasks import handlers as h
+        monkeypatch.setattr(h, "_HANDLERS", dict(h._HANDLERS))
+        monkeypatch.setattr(h, "_MODULE_INSTALLED", set(h._MODULE_INSTALLED))
+        return h
+
+    class _Reg:
+        def __init__(self, mapping):
+            self._m = mapping
+
+        def task_handlers_all(self):
+            return self._m
+
+    def test_a_second_lifespan_is_a_no_op(self, monkeypatch):
+        h = self._clean(monkeypatch)
+
+        async def handler(task, ctx):
+            return {}
+
+        reg = self._Reg({"acs_sync": handler})
+        assert h.install_module_task_handlers(reg) == 1
+        assert h.install_module_task_handlers(reg) == 0     # identical → no-op
+        assert h.get_task_handler("acs_sync") is handler
+
+    def test_a_changed_module_handler_refreshes(self, monkeypatch):
+        """Not an override: refusing here would pin the stale callable and log
+        it as a built-in clash, which it is not."""
+        h = self._clean(monkeypatch)
+
+        async def v1(task, ctx):
+            return {}
+
+        async def v2(task, ctx):
+            return {}
+
+        h.install_module_task_handlers(self._Reg({"acs_sync": v1}))
+        assert h.install_module_task_handlers(self._Reg({"acs_sync": v2})) == 1
+        assert h.get_task_handler("acs_sync") is v2
+
+    def test_a_builtin_is_still_refused_after_a_module_install(self, monkeypatch):
+        """The refresh path must not become a way in."""
+        h = self._clean(monkeypatch)
+        builtin = h.get_task_handler("snapshot")
+
+        async def usurper(task, ctx):
+            return {}
+
+        h.install_module_task_handlers(self._Reg({"acs_sync": usurper}))
+        assert h.install_module_task_handlers(self._Reg({"snapshot": usurper})) == 0
+        assert h.get_task_handler("snapshot") is builtin
+
+
+class TestModuleVsModuleCollision:
+    """A plain `dict.update` in `task_handlers_all` hid module-vs-module
+    clashes: the install step saw one handler and had nothing to refuse."""
+
+    def test_the_merge_warns_when_two_modules_claim_one_action(self, caplog):
+        import logging
+        from admz.modules.registry import ModuleRegistry
+
+        async def a(task, ctx):
+            return {}
+
+        async def b(task, ctx):
+            return {}
+
+        class _M:
+            def __init__(self, mid, handlers):
+                self.id, self._h = mid, handlers
+
+            def task_handlers(self):
+                return self._h
+
+        reg = ModuleRegistry()
+        reg._modules = [_M("alpha", {"sync": a}), _M("beta", {"sync": b})]
+        with caplog.at_level(logging.WARNING):
+            merged = reg.task_handlers_all()
+        assert merged["sync"] is b                      # last wins, as before
+        assert "alpha" in caplog.text and "beta" in caplog.text
+
+
+class TestPendingActionShimCompat:
+    def test_it_still_accepts_the_removed_kwarg(self):
+        """It is a back-compat shim; removing a parameter it always took would
+        TypeError on exactly the callers it exists to keep working."""
+        import inspect
+        from admz.fleet.pending_actions import PendingActionStore
+        assert "baseline_bootid" in inspect.signature(
+            PendingActionStore.create).parameters
