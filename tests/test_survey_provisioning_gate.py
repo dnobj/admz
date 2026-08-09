@@ -88,27 +88,76 @@ class TestTheSurveyIsGated:
                            json=SURVEY).json()["blocked"] is True
 
 
-class TestTheMcpPathIsGatedByTheSameGate:
-    def test_register_discovered_device_is_blocked(self, monkeypatch):
-        """The second route. A gate on the survey alone leaves this open —
-        `discover_network_devices` then this is two tool calls."""
+class TestTheMcpEntryGateWasRetired:
+    """ADR-0059 slice 3 removed this gate, and that is the intended change.
+
+    #199 added it as the second discovery-driven path into provisioning.
+    Provisioning is now gated at the decision point inside
+    `onboard_device_credentials`, so the root-account creation is still held —
+    by a widget that names the actual device and fires only when the device
+    really is factory-defaulted.
+
+    What remained here was a gate on the REGISTRY WRITE, justified by "the
+    model discovered this device rather than a human naming it". That does not
+    survive: `register_device` performs the same `registry.add_device` with no
+    gate, one tool call away, and ADR-0059's own argument is that the
+    distinction is unenforceable for an autonomous caller. A gate one tool call
+    from an ungated equivalent is false assurance.
+    """
+
+    def test_it_registers_without_an_entry_widget(self, monkeypatch):
+        import asyncio
+
+        from admz.mcp.server import ADMZMCPServer
+
+        added = []
+        srv = ADMZMCPServer.__new__(ADMZMCPServer)
+        srv.registry = NS(add_device=lambda did, info: added.append(did))
+        srv.catalog = None
+        srv.executors = {}
+
+        async def _onboard(**kwargs):
+            return {"status": "credentials_needed", "device_id": kwargs["device_id"]}
+
+        monkeypatch.setattr("admz.onboarding.onboard_device_credentials", _onboard)
+        out = asyncio.new_event_loop().run_until_complete(
+            srv._register_discovered_device(
+                {"device_id": "AABBCCDDEE01", "ip_address": "10.20.0.9"}))
+
+        assert out["success"] is True
+        assert added == ["AABBCCDDEE01"]
+        assert not out.get("blocked")
+
+    def test_but_provisioning_still_gates_downstream(self, monkeypatch):
+        """The protection that actually matters is unchanged — it just moved.
+        A factory-defaulted device still cannot get a root account without an
+        approval, and now the widget names that device."""
         import asyncio
 
         from admz.mcp.server import ADMZMCPServer
 
         srv = ADMZMCPServer.__new__(ADMZMCPServer)
-        srv.registry = NS(add_device=lambda *a, **k: pytest.fail(
-            "the device was registered without approval"))
+        srv.registry = NS(add_device=lambda did, info: None)
+        srv.catalog = None
+        srv.executors = {}
+
+        async def _onboard(**kwargs):
+            # What the real chokepoint returns for an unapproved factory-default.
+            return {"status": "approval_required", "blocked": True,
+                    "device_id": kwargs["device_id"]}
+
+        monkeypatch.setattr("admz.onboarding.onboard_device_credentials", _onboard)
         out = asyncio.new_event_loop().run_until_complete(
             srv._register_discovered_device(
                 {"device_id": "AABBCCDDEE01", "ip_address": "10.20.0.9"}))
-        assert out["blocked"] is True and out["success"] is False
-        assert out["risk_level"] == "service-affecting"
-        assert "10.20.0.9" in out["reason"]
 
-    def test_both_routes_use_one_gate_not_two(self):
-        """#255's shape is two implementations of one predicate drifting. There
-        is exactly one, and both entry points name it."""
+        assert out["onboarding"]["status"] == "approval_required"
+
+
+class TestTheSurveyGateRemains:
+    def test_the_survey_is_the_one_remaining_entry_gate(self):
+        """#255's shape is two implementations of one predicate drifting. After
+        slice 3 there is one entry gate, not two, and the survey is it."""
         import ast
         import pathlib
 
@@ -119,8 +168,9 @@ class TestTheMcpPathIsGatedByTheSameGate:
                 if isinstance(n, ast.Call) and getattr(
                         n.func, "id", None) == "gate_scan_write":
                     callers.append(path)
-        assert sorted(callers) == ["admz/api/routes/demos.py",
-                                   "admz/mcp/server.py"]
+        assert sorted(callers) == ["admz/api/routes/demos.py"], (
+            "the MCP entry gate was retired in ADR-0059 slice 3; a new "
+            "gate_scan_write caller needs its own justification")
 
         # And neither entry point hand-rolls its own session beside the shared
         # gate. Scoped to these two functions on purpose: six other ADR-0034
@@ -129,14 +179,17 @@ class TestTheMcpPathIsGatedByTheSameGate:
         import inspect
 
         from admz.api.routes.demos import start_inference_run
+        src = inspect.getsource(start_inference_run)
+        assert "gate_scan_write" in src
+        assert "create_action_session" not in src, (
+            "start_inference_run builds its own session instead of using "
+            "the one shared gate")
+
+        # The MCP path no longer gates at entry (slice 3) — it must also not
+        # have grown a hand-rolled replacement.
         from admz.mcp.server import ADMZMCPServer
-        for fn in (start_inference_run,
-                   ADMZMCPServer._register_discovered_device):
-            src = inspect.getsource(fn)
-            assert "gate_scan_write" in src
-            assert "create_action_session" not in src, (
-                f"{fn.__qualname__} builds its own session instead of using "
-                "the one shared gate")
+        mcp_src = inspect.getsource(ADMZMCPServer._register_discovered_device)
+        assert "create_action_session" not in mcp_src
 
 
 # ── what must still work ─────────────────────────────────────────────────────

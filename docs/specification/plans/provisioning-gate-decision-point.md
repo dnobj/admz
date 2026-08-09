@@ -1,6 +1,6 @@
 # Plan: move the provisioning gate to the decision point (ADR-0059)
 
-Status: **planning** — the decision is made
+Status: **implemented** (2026-08-09; slices #361, #363, #364) — the decision is made
 ([ADR-0059](../decisions/0059-gate-provisioning-at-the-decision-point.md),
 adopted by the owner 2026-08-07 via `q_f66d6e50`); this is how to build it.
 Anchors: [#199](https://github.com/dnobj/admz/issues/199) item 3,
@@ -152,11 +152,24 @@ part is reviewable on its own.
 `gate_scan_write` call at the `needsetup` branch, plus the caller updates and
 the audit rows. This is the behaviour change.
 
-**Slice 3 — retire the entry-point gate.** Remove the #299 gate from
-`discovery/gated.py`'s two call sites now that the chokepoint covers them, and
-rewrite the *"Why the gate is here and not on `provision_factory_default`"*
-section that ADR-0059 supersedes. Flip ADR-0059 `Proposed → Accepted` here, not
-in slice 1 — it is not accepted until it is true.
+**Slice 3 — reconcile the entry-point gates and flip the ADR.**
+
+> **Corrected during slice 3 (PR #364).** This slice originally said "remove the
+> #299 gate from `discovery/gated.py`'s two call sites now that the chokepoint
+> covers them". **That was wrong.** The chokepoint covers *provisioning*; those
+> two gates approve a **scan blast radius** and a **registry write**, neither of
+> which the chokepoint can express. And removing the survey gate would have been
+> actively harmful: approving it is what establishes the approved context the
+> background survey inherits, so ungating it would make the chokepoint fire once
+> **per device**, from a background task, with nobody watching — the exact
+> failure §3 exists to prevent. The instruction generalised from the ADR's
+> argument without re-checking it against the approved-context section.
+
+What slice 3 actually does: **keep both gates**, rewrite the superseded
+*"Why the gate is here and not on `provision_factory_default`"* section to
+describe the two-layer arrangement honestly, and flip ADR-0059
+`Proposed → Accepted` — here, not in slice 1, because it is not accepted until
+it is true.
 
 Slices 2 and 3 could merge together; keep them apart if slice 2's review raises
 anything, because deleting the old gate is the irreversible half.

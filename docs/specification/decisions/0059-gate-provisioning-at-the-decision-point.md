@@ -1,8 +1,48 @@
 # ADR-0059 — Gate provisioning at the decision point, not at the entry points
 
-**Status:** Proposed (2026-08-05). Docs-only; no implementation. Supersedes the
+**Status:** **Accepted** — adopted by the owner 2026-08-07, implemented 2026-08-09
+in three slices (PRs #361 marker, #363 gate, #364 this). Supersedes the
 *"Why the gate is here and not on `provision_factory_default`"* section of
-[`admz/discovery/gated.py`](../../../admz/discovery/gated.py) once implemented.
+[`admz/discovery/gated.py`](../../../admz/discovery/gated.py), which is rewritten
+rather than deleted — see the amendment below.
+
+> ### Amendment on implementation (2026-08-09): one entry gate retired, one kept
+>
+> The build plan said slice 3 would remove **both** `discovery/gated.py` call
+> sites "now that the chokepoint covers them". **Half of that was wrong**, and
+> the two halves failed for opposite reasons — which is why this amendment is
+> longer than the change.
+>
+> The chokepoint covers *provisioning*. It does not cover what the **survey**
+> gate approves: a **blast radius** (scan this subnet), which cannot be
+> expressed at the chokepoint because by then the scan has already happened.
+>
+> Removing the survey gate would in fact have been actively harmful. Approving it
+> is what runs the survey inside the approved context, and `create_task` copies
+> that context into the background run — so one approval covers every device the
+> survey provisions. Ungated, the survey would run unapproved and the chokepoint
+> would fire **per device**, from a background task, with nobody on the page.
+> One approval becomes N widgets nobody sees — precisely the failure the
+> "Approved context" section below exists to prevent. The plan generalised
+> "retire the entry points" from this ADR's argument without re-checking it
+> against that section.
+>
+> **The MCP gate went the other way, and slice 3's own review is why.** The
+> first draft kept it too. The reviewer showed that justification does not
+> hold: it nominally guarded a registry write,
+> while `register_device` performs the same `registry.add_device` ungated one
+> tool call away — and this ADR's own argument is that "discovered by a scan"
+> versus "named by a human" is unenforceable for an autonomous caller. So that
+> gate WAS retired; only the survey gate remains, and it remains for the
+> context reason above rather than for anything about provisioning.
+>
+> Whether registry additions should be gated at all is now open as #365 —
+> which is the question the retired gate was standing in for.
+>
+> What the three slices actually changed: provisioning is gated at the decision
+> point, so `register_device` and `onboard_device` — previously ungated paths to
+> a root account — now gate, and the register/onboard asymmetry is gone.
+
 **Relates to:** ADR-0034 (one human gate; risk → level), GH #199 (the survey
 provisioning gap this continues), GH #299 (the entry-point gate this revises),
 GH #313 (the sibling gap this does **not** close — see *Why #313's refutation
