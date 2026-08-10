@@ -22,6 +22,9 @@ Default mapping from risk level → confirmation level:
   read-only         → none
   action            → url_only   (ACS Pro and other server-target families)
   read              → none       (ditto)
+  <anything else>   → url_only   (GH #397: the gate fails CLOSED on a risk
+                                  class the table does not know; it used to
+                                  fall back to `none`)
 
 The table itself lives in :mod:`admz.confirm_policy`, a leaf module, so that
 ``fleet_settings`` can derive the protected ``confirm_level_*`` keys from it
@@ -59,10 +62,12 @@ from typing import Dict, List, Optional
 # Same pattern, and same reason, as the PROTECTED_SETTING_KEYS re-export.
 from admz.confirm_policy import (  # noqa: E402,F401
     _DEFAULT_CONFIRMATION_LEVELS,
+    UNKNOWN_RISK_CONFIRMATION,
     VALID_CONFIRMATION_LEVELS,
     CONFIRM_LEVEL_KEY_PREFIX,
     confirm_level_key,
     is_confirm_level_key,
+    unknown_risk_levels,
 )
 
 # Fleet-setting keys that are protected from anonymous / MCP writes.
@@ -680,6 +685,11 @@ def get_confirmation_level(risk_level: str) -> str:
 
     Checks fleet_settings for overrides (e.g. 'confirm_level_dangerous'),
     falling back to built-in defaults.
+
+    A risk class the table does not know resolves to
+    :data:`~admz.confirm_policy.UNKNOWN_RISK_CONFIRMATION` — the gate fails
+    CLOSED (GH #397). It used to fall back to ``none``, which meant an
+    unrecognised ``risk_level`` ran inline with no human.
     """
     from admz.fleet_settings import fleet_settings
 
@@ -688,7 +698,7 @@ def get_confirmation_level(risk_level: str) -> str:
     if override and override in VALID_CONFIRMATION_LEVELS:
         return override
 
-    return _DEFAULT_CONFIRMATION_LEVELS.get(risk_level, "none")
+    return _DEFAULT_CONFIRMATION_LEVELS.get(risk_level, UNKNOWN_RISK_CONFIRMATION)
 
 
 # Module-level singleton.
