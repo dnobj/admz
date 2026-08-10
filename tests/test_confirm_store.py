@@ -423,13 +423,21 @@ class TestConfirmationLevel:
         assert get_confirmation_level("dangerous") == "url_and_password"
 
     def test_unknown_risk_level(self, monkeypatch, tmp_path):
-        """Unknown risk levels default to 'none'."""
+        """An unknown risk class fails CLOSED (#397).
+
+        This test previously asserted ``== "none"`` — it pinned the fail-open
+        default as though it were the intended design. It was not; it was the
+        behaviour of ``dict.get(risk, "none")``, and the test made the gap look
+        deliberate to everyone who read it afterwards.
+        """
+        from admz.confirm_policy import UNKNOWN_RISK_CONFIRMATION
         from admz.fleet_settings import FleetSettings
         fs = FleetSettings(db_path=str(tmp_path / "test.db"))
         import admz.fleet_settings
         monkeypatch.setattr(admz.fleet_settings, "fleet_settings", fs)
 
-        assert get_confirmation_level("unknown_risk") == "none"
+        assert get_confirmation_level("unknown_risk") == UNKNOWN_RISK_CONFIRMATION
+        assert get_confirmation_level("unknown_risk") != "none"
 
 
 class TestProtectedKeys:
