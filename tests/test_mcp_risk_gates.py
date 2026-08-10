@@ -428,3 +428,69 @@ class TestReasonText:
             family="vapix",
         )
         assert "Streams restart" in result["reason"]
+
+
+class TestTheTwoGatesAreDifferent:
+    """GH #275 asked whether `catalog.py` and `acs_pro/routes.py` gating every
+    principal — including the console operator — was deliberate or an
+    inconsistency with the task/demo write routes, which exempt interactive
+    callers.
+
+    It is deliberate, and the enforcement is structural rather than a
+    convention someone has to remember: **`execute_gated_operation` takes no
+    principal**, so it cannot exempt anyone. These pin that, because the risk
+    the issue named is real — the asymmetry reads as an oversight, and the
+    "fix" would quietly widen an intentionally narrow gate.
+    """
+
+    def test_the_adr_0034_gate_cannot_see_who_is_calling(self):
+        """The structural guarantee. If a `principal` parameter ever appears
+        here, exempting the console becomes expressible — and that is the point
+        at which someone should have to argue for it."""
+        import inspect
+
+        from admz import operations
+        params = inspect.signature(operations.execute_gated_operation).parameters
+        assert "principal" not in params
+        assert not any("princip" in p or p == "caller" for p in params), sorted(params)
+
+    def test_the_write_gates_do_take_one(self):
+        """The contrast, so this pair fails if the two mechanisms are ever
+        collapsed into one."""
+        import inspect
+
+        from admz.tasks.gated import gate_task_write, is_interactive
+        assert "principal" in inspect.signature(is_interactive).parameters
+        # gate_task_write is called only after the caller has checked
+        # is_interactive, so the principal lives at the call site.
+        assert "principal" not in inspect.signature(gate_task_write).parameters
+
+    def test_no_execute_gated_caller_exempts_the_console(self):
+        """The behavioural half: whatever the comments say, no caller may thread
+        an interactive check around this gate."""
+        import ast
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parent.parent / "admz"
+        offenders = []
+        for path in root.rglob("*.py"):
+            src = path.read_text(encoding="utf-8")
+            if "execute_gated_operation" not in src:
+                continue
+            tree = ast.parse(src)
+            for fn in ast.walk(tree):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                # Identifiers actually referenced -- NOT `ast.dump`, which
+                # includes the docstring, so a function merely *describing* the
+                # distinction (like `is_interactive` now does) tripped this.
+                names = {
+                    n.id for n in ast.walk(fn) if isinstance(n, ast.Name)
+                } | {
+                    n.attr for n in ast.walk(fn) if isinstance(n, ast.Attribute)
+                }
+                if {"execute_gated_operation", "is_interactive"} <= names:
+                    offenders.append(f"{path.name}::{fn.name}")
+        assert not offenders, (
+            "these thread an interactive exemption around ADR-0034's gate:\n  "
+            + "\n  ".join(offenders))

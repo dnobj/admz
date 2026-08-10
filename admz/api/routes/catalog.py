@@ -75,6 +75,11 @@ async def execute_operation(
     envelope (``confirm_token`` + ``/confirm/{token}`` URL) is returned. This
     replaces the old hardcoded ``if risk == "dangerous"`` check so REST honors
     the per-risk policy (incl. fleet overrides) exactly like MCP.
+
+    **No interactive exemption here, deliberately** -- unlike the task/demo
+    write routes. This gate is about what the operation does to the device, not
+    about who authorized an automation; see
+    ``admz/tasks/gated.py::is_interactive`` for why the two differ (GH #275).
     """
     from admz import operations
     from admz.audit import record_event
