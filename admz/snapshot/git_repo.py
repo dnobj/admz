@@ -627,6 +627,25 @@ class GitRepo:
         ref_b: str = "HEAD",
         path: Optional[str] = None,
     ) -> str:
+        """Unified diff between two refs, optionally scoped to ``path``.
+
+        **Both refs are validated here, not only at the route (GH #162).**
+        They land in argv *before* the ``--`` separator, so a ref beginning
+        with ``-`` is parsed by git as an option — `--output=<path>` turns this
+        read into an arbitrary file create/truncate running as the ADMZ service
+        account. Validating at the sink means a future caller cannot
+        reintroduce the hole by forgetting, which is exactly how this one
+        survived: five sibling handlers in `api/routes/snapshot.py` validate
+        their refs and this path did not.
+
+        ``path`` is not validated because it is placed *after* ``--``, where
+        git treats it as a pathspec and never as an option. Its callers build
+        it server-side.
+        """
+        from admz.validators import validate_git_ref
+
+        validate_git_ref(ref_a)
+        validate_git_ref(ref_b)
         args = ["diff", ref_a, ref_b]
         if path:
             args += ["--", path]
