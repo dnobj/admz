@@ -104,7 +104,21 @@ class GitHubSubmitter:
 
     def _req(self, method: str, path: str, *, json: Optional[Dict] = None,
              ok=(200, 201)) -> Dict:
-        url = path if path.startswith("http") else f"{GITHUB_API}{path}"
+        # Every request here carries the survey PAT as a bearer token, so the
+        # target must never be caller-influenced. This used to be
+        # `path if path.startswith("http") else ...`, which would send the token
+        # to any absolute URL handed in. No caller does that today — but GitHub
+        # responses are full of absolute URLs (`url`, `html_url`, and pagination
+        # `Link` headers most of all), and threading one back in is the natural
+        # next change. Found by the outbound-target sweep #355 asked for; same
+        # class as #160, where an SPN derived from a caller-supplied host leaked
+        # the service account's NTLM response.
+        if not path.startswith("/"):
+            raise GitHubError(
+                f"refusing to send the survey token to a non-relative target: "
+                f"{path!r}. Pass an api.github.com path beginning with '/'."
+            )
+        url = f"{GITHUB_API}{path}"
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/vnd.github+json",
