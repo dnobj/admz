@@ -72,7 +72,7 @@ def _probe(result, corroborator=None):
             return result if calls["n"] == 1 else corroborator
 
         executor.execute = _execute
-    return asyncio.new_event_loop().run_until_complete(probe_device(
+    return asyncio.run(probe_device(
         device_id="cam-01", device_info={"host": "192.0.2.1"},
         credentials={"username": "root", "password": "x"},
         catalog=_catalog(), executor=executor))

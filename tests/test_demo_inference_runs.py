@@ -383,7 +383,7 @@ class TestSurveyOrchestration:
             catalog, executors = object(), {}
 
         monkeypatch.setattr("admz.modules.acs_pro.config.acs_enabled", lambda: False)
-        asyncio.new_event_loop().run_until_complete(
+        asyncio.run(
             collect.run_survey(_Ctx(), store, run.id, register_new=False))
 
         done = store.get(run.id)
@@ -401,7 +401,7 @@ class TestSurveyOrchestration:
             raise RuntimeError("store gone")
 
         monkeypatch.setattr(store, "progress", _explode)
-        asyncio.new_event_loop().run_until_complete(
+        asyncio.run(
             collect.run_survey(object(), store, run.id))
         assert store.get(run.id).status == STATUS_FAILED
         assert "store gone" in store.get(run.id).error
@@ -422,7 +422,7 @@ class TestMcpTool:
         server.registry.add_device("AABBCCDDEE01",
                                    {"host": "192.0.2.1", "nickname": "Gate",
                                     "model": "AXIS TEST", "tags": []})
-        res = asyncio.new_event_loop().run_until_complete(
+        res = asyncio.run(
             server._survey_demo_evidence())
         assert res["success"] is True and res["status"] == "complete"
         assert res["summary"]["device_count"] == 1
@@ -431,14 +431,14 @@ class TestMcpTool:
         assert res["rules"] == [] and res["edges"] == []
 
     def test_a_stored_run_can_be_replayed_by_id(self, server):
-        first = asyncio.new_event_loop().run_until_complete(
+        first = asyncio.run(
             server._survey_demo_evidence())
-        again = asyncio.new_event_loop().run_until_complete(
+        again = asyncio.run(
             server._survey_demo_evidence(first["run_id"]))
         assert again["run_id"] == first["run_id"]
         assert again["summary"] == first["summary"]
 
     def test_unknown_run_id_is_an_error_not_a_crash(self, server):
-        res = asyncio.new_event_loop().run_until_complete(
+        res = asyncio.run(
             server._survey_demo_evidence("nope"))
         assert res["success"] is False and "nope" in res["error"]

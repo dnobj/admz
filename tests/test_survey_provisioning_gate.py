@@ -120,7 +120,7 @@ class TestTheMcpEntryGateWasRetired:
             return {"status": "credentials_needed", "device_id": kwargs["device_id"]}
 
         monkeypatch.setattr("admz.onboarding.onboard_device_credentials", _onboard)
-        out = asyncio.new_event_loop().run_until_complete(
+        out = asyncio.run(
             srv._register_discovered_device(
                 {"device_id": "AABBCCDDEE01", "ip_address": "10.20.0.9"}))
 
@@ -147,7 +147,7 @@ class TestTheMcpEntryGateWasRetired:
                     "device_id": kwargs["device_id"]}
 
         monkeypatch.setattr("admz.onboarding.onboard_device_credentials", _onboard)
-        out = asyncio.new_event_loop().run_until_complete(
+        out = asyncio.run(
             srv._register_discovered_device(
                 {"device_id": "AABBCCDDEE01", "ip_address": "10.20.0.9"}))
 
@@ -343,7 +343,7 @@ class TestApprovalActuallyRuns:
             return NS(id="run-x", header=lambda: {"id": "run-x"})
         monkeypatch.setattr(collect, "start_survey_core", _fake_start)
 
-        out = asyncio.new_event_loop().run_until_complete(
+        out = asyncio.run(
             operations._ACTION_EXECUTORS["start_demo_survey"](
                 {"action": "start_demo_survey", "register_new": True,
                  "subnet": "10.20.0.0/24", "timeout": 7.0,
@@ -363,7 +363,7 @@ class TestApprovalActuallyRuns:
 
         from admz import operations
         ctx.inference_run_store.start(mode="survey")
-        out = asyncio.new_event_loop().run_until_complete(
+        out = asyncio.run(
             operations._ACTION_EXECUTORS["start_demo_survey"](
                 {"action": "start_demo_survey"}, ctx.registry))
         assert out["success"] is False and "already running" in out["error"]
@@ -384,7 +384,7 @@ class TestApprovalActuallyRuns:
         monkeypatch.setattr("admz.onboarding.onboard_device_credentials", _creds)
 
         registry = NS(add_device=lambda d, i: added.update(id=d, info=i))
-        out = asyncio.new_event_loop().run_until_complete(
+        out = asyncio.run(
             operations._ACTION_EXECUTORS["register_discovered_device"](
                 {"action": "register_discovered_device",
                  "device_id": "AABBCCDDEE01",
@@ -400,7 +400,7 @@ class TestApprovalActuallyRuns:
         import asyncio
 
         from admz import operations
-        out = asyncio.new_event_loop().run_until_complete(
+        out = asyncio.run(
             operations._ACTION_EXECUTORS["register_discovered_device"](
                 {"action": "register_discovered_device"},
                 NS(add_device=lambda *a: pytest.fail("registered nothing"))))

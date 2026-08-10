@@ -681,7 +681,7 @@ class TestMcpTools:
         return ADMZMCPServer()
 
     def _run(self, coro):
-        return asyncio.new_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def test_infer_demos_proposes_and_creates_nothing(self, server):
         _seed_fleet(lambda did, **kw: server.registry.add_device(
