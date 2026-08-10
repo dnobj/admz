@@ -348,10 +348,20 @@ class TestDiffRefOptionInjection:
         with pytest.raises(ValueError):
             repo.diff("HEAD~1", "--output=C:/evil.txt")
 
-    def test_a_pathspec_after_the_separator_is_not_validated(self):
-        """Stated so the asymmetry is deliberate, not an oversight: `path` sits
-        after `--`, where git treats it as a pathspec and never an option."""
-        import inspect
+    def test_every_pre_separator_sink_is_guarded(self):
+        """The review's finding: validating `diff` alone left `get_file`
+        (`git show ref:path`), `diff_commit` (`git rev-parse sha^`),
+        `create_tag` and `push` reachable with an option-shaped value. None had
+        a production caller with attacker input, which is the state `diff` was
+        in until someone wired a route to it."""
+        import pytest
         from admz.snapshot.git_repo import GitRepo
-        src = inspect.getsource(GitRepo.diff)
-        assert 'args += ["--", path]' in src
+        repo = GitRepo.__new__(GitRepo)
+        bad = "--output=C:/evil.txt"
+        for call in (lambda: repo.get_file("f.yaml", bad),
+                     lambda: repo.diff_commit(bad),
+                     lambda: repo.create_tag(bad),
+                     lambda: repo.push(bad),
+                     lambda: repo.push("origin", bad)):
+            with pytest.raises(ValueError):
+                call()
