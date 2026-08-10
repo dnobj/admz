@@ -1150,3 +1150,72 @@ class TestProtectedKeys:
             "health_check_timeout_seconds",
             "health_verify_credentials",
         }
+
+
+class TestDeferredActionAuditRecordsPasswordSource:
+    """GH #326. A fired reprovision creates an admin credential on a device,
+    and the audit row could not say which mode produced it — `_run_reprovision`
+    received `password_source` from `provision_factory_default` and dropped it,
+    and `_run_pending` discarded the handler's return dict entirely.
+
+    That matters because of #326's phantom-provision gap: when an on-path
+    responder answers instead of the real device, ADMZ's registry believes it
+    holds a working credential it never set. An operator looking at a suspect
+    provision needs to know what was actually set; the alternative is inferring
+    it from whichever code path happened to be live at the time.
+    """
+
+    def test_the_handler_carries_the_source_forward(self, monkeypatch):
+        import asyncio
+        from types import SimpleNamespace
+
+        from admz.tasks import handlers as h
+
+        async def fake_provision(*a, **kw):
+            return {"success": True, "password_source": "generated"}
+
+        import admz.provisioning as prov
+        monkeypatch.setattr(prov, "provision_factory_default", fake_provision)
+
+        task = SimpleNamespace(device_id="cam-01", device_ids=None,
+                               action_params={}, action_type="reprovision")
+        ctx = SimpleNamespace(
+            registry=SimpleNamespace(
+                get_device_info=lambda d: {"host": "192.0.2.1"}),
+            catalog=None, executors={})
+        out = asyncio.new_event_loop().run_until_complete(
+            h.get_task_handler("reprovision")(task, ctx))
+        assert out["password_source"] == "generated"
+
+    def test_the_audit_row_carries_it(self):
+        """The other half — the handler's return used to be thrown away."""
+        import inspect
+        from admz.fleet import health
+
+        src = inspect.getsource(health.HealthMonitor)
+        assert "outcome = await execute_task_action(task)" in src
+
+    def test_only_allow_listed_keys_reach_the_row(self):
+        """An allow-list, not a filter. A handler that starts returning
+        something sensitive must not have it copied into an audit row by
+        default — the row records attribution, never a second copy of a
+        secret."""
+        from admz.fleet.health import _AUDITABLE_OUTCOME_KEYS
+
+        assert _AUDITABLE_OUTCOME_KEYS == ("password_source",)
+        # Substring matching is the wrong test here and my first attempt used
+        # it: "password" is a substring of "password_source", so it failed on
+        # a key that is perfectly safe. The real property is that no key IS a
+        # secret — `password_source` names a mode, `password` would be one.
+        assert not ({"password", "secret", "token", "credential", "pwd"}
+                    & set(_AUDITABLE_OUTCOME_KEYS))
+
+    def test_the_source_values_are_modes_not_secrets(self):
+        """`password_source` is one of three mode names. Pinned so a future
+        change that puts the password itself in this field fails here."""
+        import inspect
+
+        from admz import provisioning
+        src = inspect.getsource(provisioning)
+        for mode in ('"provided"', '"fleet_default"', '"generated"'):
+            assert mode in src

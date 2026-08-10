@@ -1262,6 +1262,12 @@ async def probe_device(
 # ---------------------------------------------------------------------------
 
 
+#: Keys a task handler may surface into the `deferred_action_fired` audit row.
+#: An allow-list, not a filter: a handler that starts returning something
+#: sensitive must not have it copied into an audit row by default (GH #326).
+_AUDITABLE_OUTCOME_KEYS = ("password_source",)
+
+
 class HealthMonitor:
     """Async background loop that polls every device on an interval.
 
@@ -1494,11 +1500,22 @@ class HealthMonitor:
             source="deferred-trigger",
         )
         try:
-            await execute_task_action(task)
+            outcome = await execute_task_action(task)
             tasks_store.mark(pid, "done")
+            # GH #326: handlers return a result dict and this discarded it, so
+            # the row could never carry anything action-specific. Only a small
+            # allow-list of NON-SECRET keys is copied through — `password_source`
+            # is a mode name (provided / fleet_default / generated), never the
+            # password, and an audit row records attribution rather than a
+            # second copy of a secret.
+            details = {"id": pid, "action": task.action_type, "trigger": task.event}
+            if isinstance(outcome, dict):
+                for key in _AUDITABLE_OUTCOME_KEYS:
+                    if outcome.get(key) is not None:
+                        details[key] = outcome[key]
             record_event(
                 principal, "deferred_action_fired", resource=f"device:{did}",
-                details={"id": pid, "action": task.action_type, "trigger": task.event},
+                details=details,
             )
         except Exception as exc:  # noqa: BLE001
             tasks_store.mark(pid, "failed", str(exc)[:300])

@@ -316,4 +316,16 @@ async def _run_reprovision(task: Task, ctx: TaskContext) -> Dict[str, Any]:
     if not result.get("success"):
         raise RuntimeError(result.get("error") or "provision failed")
     logger.info("deferred reprovision succeeded for %s", device_id)
-    return {"success": True, "summary": f"re-provisioned {device_id}"}
+    # Carry the SOURCE forward, never the password (GH #326). `provisioning`
+    # already distinguishes provided / fleet_default / generated, and this
+    # handler was dropping it on the floor — so the audit row for a fired
+    # reprovision could not say which mode produced the credential it just
+    # created. That is the forensic question #326's phantom-provision gap makes
+    # worth answering: an operator looking at a suspect provision needs to know
+    # what was set, and the alternative is inferring it from the code path that
+    # was live at the time.
+    return {
+        "success": True,
+        "summary": f"re-provisioned {device_id}",
+        "password_source": result.get("password_source"),
+    }
