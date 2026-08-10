@@ -95,9 +95,14 @@ def save_acs_config(
     client_machine_name: str = "",
 ) -> Dict[str, Any]:
     """Persist the ACS Pro config; returns the normalized stored config."""
+    # GH #160: the test path stripped userinfo and the save path did not, so
+    # `https://real@evil/` was refused for an unsaved probe and then accepted —
+    # and authenticated — once stored. Same treatment on both sides.
+    from admz.modules.acs_pro.routes import _strip_userinfo
+
     cfg = {
         "enabled": bool(enabled),
-        "server_url": (server_url or "").strip(),
+        "server_url": _strip_userinfo((server_url or "").strip()),
         "port": int(port or DEFAULT_PORT),
         "verify_tls": bool(verify_tls),
         "client_machine_name": (client_machine_name or "").strip(),

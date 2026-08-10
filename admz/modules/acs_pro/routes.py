@@ -70,6 +70,36 @@ def _base_from_body(body: dict) -> str:
     return f"https://{host}:{port}"
 
 
+def _canonical(url: str) -> str:
+    """Fold the harmless spellings of one URL together, for comparison only.
+
+    Raw string equality produced false *mismatches* that silently dropped
+    authentication against the real server — a case difference, a trailing dot,
+    an explicit `:443`, or a full URL posted where the stored form was
+    host+port. Lowercasing the authority, dropping a default port and a
+    trailing dot fixes those.
+
+    It deliberately does no DNS and no certificate check, so it cannot make the
+    comparison an *identity* proof: whoever controls resolution for the
+    configured name still receives the credential. That is inherent to naming a
+    host, and is why the write that chooses the name is now reveal-gated.
+    """
+    u = _strip_userinfo((url or "").strip().rstrip("/"))
+    scheme, sep, rest = u.partition("://")
+    if not sep:
+        return u.lower()
+    authority, slash, path = rest.partition("/")
+    host, colon, port = authority.rpartition(":")
+    if not colon or not port.isdigit():          # no port, or IPv6 with no port
+        host, port = authority, ""
+    host = host.lower().rstrip(".")
+    default = {"http": "80", "https": "443"}.get(scheme.lower())
+    if port and port == default:
+        port = ""
+    authority = f"{host}:{port}" if port else host
+    return f"{scheme.lower()}://{authority}" + (slash + path if slash else "")
+
+
 @router.get("/api/acs/config")
 async def acs_get_config():
     return acs_config()
@@ -92,10 +122,21 @@ async def acs_save_config(request: Request):
     """
     from admz.audit import record_event
     from admz.auth import get_current_principal
-    from admz.authz import require_authenticated_principal
+    from admz.authz import require_reveal_permission
 
+    # GH #160: this is the write that decides WHERE ADMZ points the service
+    # account's Windows credentials. Every later ACS call — including the
+    # background pollers — authenticates against whatever is stored here, so an
+    # ordinary authenticated user who could save `https://attacker` obtained the
+    # NetNTLMv2 response for the service account on the poller's own schedule.
+    #
+    # Escalated to the reveal gate, matching this file's own precedent for
+    # `webhook-token/regenerate`: "both hand over a live credential". Choosing
+    # the host is that, one step removed. Testing a connection is deliberately
+    # NOT escalated — an ordinary operator must still be able to check
+    # reachability while setting the module up (see `acs_test`).
     principal = await get_current_principal(request)
-    require_authenticated_principal(principal)
+    reason = require_reveal_permission(principal)
 
     body = await request.json()
     cfg = save_acs_config(
@@ -110,7 +151,8 @@ async def acs_save_config(request: Request):
     record_event(principal, "fleet_setting.write", resource="acs_pro",
                  details={"enabled": cfg.get("enabled"),
                           "server_url": cfg.get("server_url"),
-                          "verify_tls": cfg.get("verify_tls")})
+                          "verify_tls": cfg.get("verify_tls"),
+                          "decision": reason})
     return {"success": True, "config": cfg}
 
 
@@ -155,7 +197,38 @@ async def acs_test(request: Request):
             {"success": False, "error": "NoServer", "message": "Enter a server address."},
             status_code=400,
         )
-    server = {"device_id": "acs-server", "host": base, "verify_tls": bool(body.get("verify_tls"))}
+    # GH #160. Authenticate ONLY when the posted host is the one already saved
+    # as the ACS server. Against anything else this is a bare reachability
+    # probe with no Authorization header.
+    #
+    # Why: `negotiate.spn_for` derives the SPN from this very host, so probing
+    # an attacker-supplied address made ADMZ mint a Windows token for the
+    # attacker's service principal and send it to them. Kerberos fails for an
+    # unregistered SPN, SSPI falls back to NTLM, and the 401 challenge leg then
+    # returned a NetNTLMv2 response for the ADMZ service account — the account
+    # with rights against the live ACS install. That is credential relay, not
+    # the reachability oracle #355's docstring described.
+    #
+    # The Test button still works before the config is saved, which is the
+    # workflow #355 was right to protect — it just can no longer prove
+    # "and my credentials work there" against an unsaved host. Save, then test
+    # again for the full authenticated check. A 401 carrying
+    # `WWW-Authenticate: Negotiate` is itself good evidence an ACS-like server
+    # is listening, and is reported as such.
+    #
+    # This is deliberately NOT the host-allowlist decision, which is still with
+    # the owner (`q_9f8bbdd1`, #355). Restricting *which* hosts may be probed is
+    # a policy call; not handing credentials to an unconfirmed host is not.
+    from admz.modules.acs_pro.config import base_url
+
+    configured = base_url() or ""
+    is_configured_host = bool(configured) and _canonical(base) == _canonical(configured)
+    server = {
+        "device_id": "acs-server",
+        "host": base,
+        "verify_tls": bool(body.get("verify_tls")),
+        "no_negotiate": not is_configured_host,
+    }
     ctx = get_context()
     # Recorded in `finally`, carrying the REAL outcome. Recording before the
     # call was the first instinct — "a probe that hangs still leaves a trace" —
@@ -171,6 +244,23 @@ async def acs_test(request: Request):
             ctx.catalog, ctx.executors, "VersionFacade:GetApiVersion", {}, server
         )
         ok = bool(isinstance(res, dict) and res.get("success"))
+        # GH #160: an unauthenticated probe of a REAL ACS server returns 401,
+        # and the executor reports every non-2xx as a failure — so the operator
+        # saw "✗ ACS Pro returned HTTP 401" for a server that is up and
+        # correctly refusing an anonymous caller. That is the opposite of what
+        # the Test button is for. This route claimed to report it as reachable;
+        # now it does.
+        if (not ok and server["no_negotiate"]
+                and isinstance(res, dict) and res.get("status_code") == 401):
+            res = dict(res)
+            res["success"] = True
+            res["reachable_unauthenticated"] = True
+            res["message"] = (
+                "Reachable — the server answered and requires Windows "
+                "authentication. Save this configuration, then test again for "
+                "the full authenticated check."
+            )
+            ok = True
         return res
     finally:
         record_event(
