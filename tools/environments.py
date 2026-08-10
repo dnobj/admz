@@ -32,7 +32,18 @@ WATCHED = ("starlette", "fastapi", "mcp", "axis-api-atlas")
 
 #: What an unset ADMZ_HOME resolves to. The whole point of the launch-config
 #: audit: an ABSENT value is invisible in the file and lands on production.
-ADMZ_HOME_DEFAULT = r"C:\ProgramData\admz"
+#:
+#: This constant was first given a name with the same prefix as the variable it
+#: describes, and the drift guard in ``tests/test_advanced_capabilities.py`` —
+#: which scans source for that prefix — correctly reported it as an
+#: unclassified environment variable. A constant that looks like an env var
+#: will be read as one, by tools and by people; registering a variable that
+#: does not exist, to accommodate the name, would have been the wrong way round.
+#:
+#: The offending name is deliberately not repeated here. Writing it into this
+#: very comment re-tripped the guard on the next run, because the scan reads
+#: source text and cannot tell an explanation from a declaration.
+HOME_WHEN_UNSET = r"C:\ProgramData\admz"
 
 
 # ── the declaration ─────────────────────────────────────────────────────────
@@ -190,7 +201,7 @@ def audit_launch_configs(roots) -> list:
             for cfg in data.get("configurations", []):
                 env = cfg.get("env") or {}
                 home = env.get("ADMZ_HOME")
-                effective = home or f"{ADMZ_HOME_DEFAULT}  <-- UNSET, i.e. PRODUCTION"
+                effective = home or f"{HOME_WHEN_UNSET}  <-- UNSET, i.e. PRODUCTION"
                 rows.append(
                     (str(path), cfg.get("name", "?"), str(cfg.get("port", "?")), effective)
                 )
