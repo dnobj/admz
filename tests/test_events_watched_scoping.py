@@ -18,7 +18,24 @@ import pytest
 
 
 def _run(coro):
-    return asyncio.new_event_loop().run_until_complete(coro)
+    """Run one coroutine on a throwaway loop, and CLOSE it (GH #353).
+
+    This used to be `asyncio.new_event_loop().run_until_complete(coro)` with no
+    close, so every call leaked a loop for the rest of the session. That is the
+    most plausible surviving mechanism behind #353 — a flake in this module that
+    only ever appeared in full-suite runs — though it has not been reproduced,
+    so this is hardening, not a proven cause.
+
+    It is worth doing either way: #372's review established that an unclosed
+    loop here is how a task-owning object ends up "destroyed pending", and a
+    test module that leaks loops makes every later module's asyncio behaviour
+    depend on how many tests ran before it.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 def _rec(*, device_id="a", source="device", topic="tns1:Device/tnsaxis:IO/Port",
