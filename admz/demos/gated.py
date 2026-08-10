@@ -20,6 +20,10 @@ def is_interactive(principal) -> bool:
 
     Same rule as tasks: windows-local sessions (/login password or SSO) are a
     person clicking; api-key, chat/MCP, and anonymous principals are not.
+
+    As in ``tasks/gated.py``, whose docstring carries the reasoning: this
+    exemption is for *write* gates only and must not be extended to ADR-0034's
+    ``execute_gated_operation`` (GH #275).
     """
     return getattr(principal, "source", "") == "windows"
 

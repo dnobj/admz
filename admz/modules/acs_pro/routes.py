@@ -380,6 +380,10 @@ async def acs_action(request: Request):
     """
     from admz.api.context import get_context
 
+    # Gated for every caller including the console operator, deliberately:
+    # this is ADR-0034 (what the op does to the target), not a write gate
+    # (who authorized an automation). See tasks/gated.py::is_interactive --
+    # GH #275.
     from admz.operations import execute_gated_operation
     from admz.modules.acs_pro.config import client_machine_name
     from admz.modules.acs_pro.registry_view import ACS_DEVICE_ID, AcsRegistryView

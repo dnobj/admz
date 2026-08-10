@@ -33,6 +33,27 @@ def is_interactive(principal: Any) -> bool:
     Windows-local sessions (/login and SSO both mint ``source='windows'``
     principals) are the console; api-key, anonymous, and everything else
     takes the widget path.
+
+    **This exemption belongs to the write gates only. Do not extend it to
+    ADR-0034** (GH #275, which asked whether the difference was deliberate).
+
+    There are two gates in this codebase and they answer different questions:
+
+    * ``gate_task_write`` / ``gate_demo_write`` / ``gate_scan_write`` ask
+      *"who authorized creating this automation?"*. A human doing it by hand at
+      the console **is** the authorizer, so there is no absent person to
+      approve on their behalf — hence this exemption.
+    * ``operations.execute_gated_operation`` (ADR-0034) asks *"what will this
+      operation do to the device?"*. Risk level → confirmation level, and a
+      human clicking *reboot* should still confirm. That is the whole point of
+      ``url_only`` / ``url_and_password``.
+
+    So `catalog.py` and `acs_pro/routes.py` gating every caller is not an
+    inconsistency with the routes above; it is a different mechanism. Note
+    ``execute_gated_operation`` **takes no principal at all** — it cannot
+    exempt anyone, by construction, which is the enforcement behind the
+    invariant that capabilities may change *who may approve* but never remove
+    a gate.
     """
     return getattr(principal, "source", "") == "windows"
 
