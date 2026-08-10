@@ -105,3 +105,71 @@ def test_submit_creates_fork_when_missing(tmp_path):
     res = sub.submit(bundle, branch="contrib/ec/x-1", title="t", body="b")
     assert res.created
     assert any("/forks" in url for (m, url, _) in fake.calls if m == "POST")
+
+
+class TestTheTokenOnlyGoesToGitHub:
+    """Found by the outbound-target sweep #355 asked for and nobody had run.
+
+    `_req` built its URL as `path if path.startswith("http") else GITHUB_API +
+    path`, and every request carries the survey PAT as a bearer token. So an
+    absolute URL passed as `path` sent the token to that host.
+
+    **No caller did that** — all current call sites pass `/`-prefixed paths. But
+    GitHub responses are full of absolute URLs (`url`, `html_url`, and
+    pagination `Link` headers above all), and threading one back in is the
+    natural next change. Same class as #160, where an SPN derived from a
+    caller-supplied host leaked the service account's NTLM response.
+    """
+
+    def _client(self):
+        from admz.survey.github import GitHubSubmitter
+        return GitHubSubmitter(token="ghp_fake", upstream_repo="owner/name")
+
+    def test_an_absolute_url_is_refused(self):
+        import pytest
+        from admz.survey.github import GitHubError
+
+        for target in ("https://attacker.example/x",
+                       "http://attacker.example/x",
+                       "https://api.github.com.evil.example/x"):
+            with pytest.raises(GitHubError, match="non-relative"):
+                self._client()._req("GET", target)
+
+    def test_the_refusal_happens_before_any_request(self, monkeypatch):
+        """It must not leak by sending and then complaining."""
+        import pytest
+        from admz.survey import github as gh
+
+        sent = []
+
+        class _Sess:
+            def request(self, *a, **k):
+                sent.append(a)
+                raise AssertionError("a request was made")
+
+        c = self._client()
+        monkeypatch.setattr(c, "_sess", lambda: _Sess())
+        with pytest.raises(gh.GitHubError):
+            c._req("GET", "https://attacker.example/x")
+        assert sent == []
+
+    def test_a_relative_path_still_works(self, monkeypatch):
+        """Guard the guard — if every path were refused these would pass for
+        the wrong reason."""
+        seen = {}
+
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return {"ok": True}
+
+        class _Sess:
+            def request(self, method, url, **k):
+                seen["url"] = url
+                return _Resp()
+
+        c = self._client()
+        monkeypatch.setattr(c, "_sess", lambda: _Sess())
+        assert c._req("GET", "/user") == {"ok": True}
+        assert seen["url"] == "https://api.github.com/user"
