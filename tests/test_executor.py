@@ -916,3 +916,63 @@ class TestBearerAuth:
         credentials = {"username": "root", "password": "pass"}
         auth = VapixExecutor._resolve_auth(device, credentials, "http")
         assert auth is None
+
+
+class TestSoapActionHeaderIsSent:
+    """GH #245. `_build_soap` populated a `headers_extra` dict and then built
+    an `ExecutionRequest` without it — and `ExecutionRequest` had no field to
+    take it. `git log -S` shows one commit, the introducing one: never wired,
+    not deliberately retired.
+
+    This fixes no current failure. Nothing in the catalog sets `soap_action`,
+    and all 26 live `vapix/ws/` operations work without the header. It is worth
+    wiring because a catalog author adding `soap_action:` to a YAML would
+    reasonably expect it to be sent, and it would silently do nothing — the
+    trap is the silence, not the missing header.
+    """
+
+    def _build(self, operation):
+        from admz.executor.vapix import VapixExecutor
+        return VapixExecutor()._build_soap(operation, {})
+
+    def test_the_header_reaches_the_request(self):
+        req = self._build({
+            "id": "action-service:GetActionRules",
+            "soap_action": "http://www.axis.com/vapix/ws/action1/GetActionRules",
+            "request": {"body_xml": "<x/>"},
+        })
+        assert req.headers_extra == {
+            "SOAPAction": "http://www.axis.com/vapix/ws/action1/GetActionRules"}
+
+    def test_no_soap_action_means_no_header(self):
+        """The 26 live ops today. `None`, not an empty dict — httpx treats
+        those differently enough not to want to think about it."""
+        req = self._build({"id": "x", "request": {"body_xml": "<x/>"}})
+        assert req.headers_extra is None
+
+    def test_the_merge_keeps_content_type_and_adds_the_action(self):
+        from admz.executor.models import ExecutionRequest
+        from admz.executor.vapix import _merge_headers
+
+        req = ExecutionRequest(method="POST", path="/vapix/services",
+                               raw_body="<x/>", content_type="application/xml",
+                               headers_extra={"SOAPAction": "urn:go"})
+        assert _merge_headers(req, req.content_type) == {
+            "Content-Type": "application/xml", "SOAPAction": "urn:go"}
+
+    def test_an_operation_cannot_override_content_type(self):
+        """The send path chooses the body encoding; an operation spec must not
+        be able to contradict it from a header."""
+        from admz.executor.models import ExecutionRequest
+        from admz.executor.vapix import _merge_headers
+
+        req = ExecutionRequest(method="POST", path="/p", raw_body="<x/>",
+                               content_type="application/xml",
+                               headers_extra={"content-type": "text/plain"})
+        assert _merge_headers(req, req.content_type)["Content-Type"] == "application/xml"
+
+    def test_nothing_to_send_is_none(self):
+        from admz.executor.models import ExecutionRequest
+        from admz.executor.vapix import _merge_headers
+
+        assert _merge_headers(ExecutionRequest(method="GET", path="/p"), None) is None

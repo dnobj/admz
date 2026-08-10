@@ -23,6 +23,10 @@ class ExecutionRequest:
     raw_body: Optional[str] = None
     # Per-operation timeout override (seconds)
     timeout_override: Optional[float] = None
+    # Extra request headers from the operation spec (GH #245). SOAP's
+    # ``SOAPAction`` is the only current user; ``Content-Type`` stays separate
+    # because the send path already derives it per body kind.
+    headers_extra: Optional[Dict[str, str]] = None
 
 
 @dataclass

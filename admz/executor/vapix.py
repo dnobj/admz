@@ -290,6 +290,24 @@ class _BearerAuth(httpx.Auth):
         yield request
 
 
+def _merge_headers(request, content_type):
+    """Content-Type plus any per-operation headers (GH #245).
+
+    Returns None when there is nothing to send, because httpx treats an empty
+    dict and None differently enough to be worth not thinking about.
+    ``Content-Type`` is applied first so an operation cannot silently override
+    the body encoding the send path just chose.
+    """
+    headers = {}
+    if content_type:
+        headers["Content-Type"] = content_type
+    for key, value in (getattr(request, "headers_extra", None) or {}).items():
+        if key.lower() == "content-type":
+            continue
+        headers[key] = value
+    return headers or None
+
+
 class VapixExecutor(BaseExecutor):
     """Executor for VAPIX operations on Axis cameras/devices."""
 
@@ -533,15 +551,16 @@ class VapixExecutor(BaseExecutor):
                 return await client.request(
                     method=request.method, url=url, content=request.raw_body,
                     auth=auth,
-                    headers={"Content-Type": request.content_type}
-                    if request.content_type else None,
+                    headers=_merge_headers(request, request.content_type),
                 )
             return await client.request(
                 method=request.method, url=url, params=request.query_params,
                 json=request.json_body, auth=auth,
-                headers={"Content-Type": request.content_type}
-                if request.content_type
-                and request.content_type != "multipart/form-data" else None,
+                headers=_merge_headers(
+                    request,
+                    request.content_type
+                    if request.content_type != "multipart/form-data" else None,
+                ),
             )
 
     async def _send_self_healing(
@@ -1047,6 +1066,17 @@ class VapixExecutor(BaseExecutor):
         timeout_val = request_spec.get("timeout")
         timeout_override = float(timeout_val) if timeout_val else None
 
+        # GH #245: this dict was built and then dropped — the ExecutionRequest
+        # below simply never took it, and `ExecutionRequest` had no field for
+        # it. `git log -S` shows one commit, the introducing one, so it was
+        # never wired rather than deliberately retired.
+        #
+        # Nothing in the catalog sets `soap_action` today and all 26 live
+        # `vapix/ws/` operations work without the header, so this fixes no
+        # current failure. It is worth wiring anyway: a catalog author adding
+        # `soap_action:` to a YAML would reasonably expect it to be sent, and
+        # it would silently do nothing — which is the trap, not the missing
+        # header.
         headers_extra = {}
         soap_action = operation.get("soap_action")
         if soap_action:
@@ -1058,6 +1088,7 @@ class VapixExecutor(BaseExecutor):
             raw_body=body_xml,
             content_type="application/xml",
             timeout_override=timeout_override,
+            headers_extra=headers_extra or None,
         )
 
     def _build_multipart(
