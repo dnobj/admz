@@ -78,11 +78,24 @@ Two files live in `C:\admz\.claude\` — deliberately **not** in the repo, becau
 
 ## Environments — read this before running anything
 
-| | Port | `ADMZ_HOME` | Code from | venv |
-|---|---|---|---|---|
-| **Production** | 4242 | `C:\ProgramData\admz` | `C:\admz\admz-prod` (detached, pinned) | `C:\admz\admz-prod\.venv` |
-| **Staging** | 4243 | `C:\ProgramData\admz-staging` | `C:\admz\admz-staging-code` (detached, **~94 commits behind master**) | *none — and it can no longer borrow the dev venv: see below* |
-| **Dev** | — | — | `C:\admz\admz` | `C:\admz\admz\.venv` |
+**[`docs/ENVIRONMENTS.md`](docs/ENVIRONMENTS.md) is the declaration, and it is checkable.** The
+table that used to sit here has been removed rather than updated: it is exactly the kind of
+observable fact that goes silently false, and it had (it said staging was "~94 commits behind"
+when the figure was 122). Two copies is how the last one drifted, so there is now one.
+
+Before running anything:
+
+```
+python tools/environments.py
+```
+
+Read-only — port state comes from `netstat`, nothing is connected to and nothing is started.
+It prints observed reality beside the declaration and **exits non-zero when they disagree**,
+including an audit of every `launch.json` on the machine showing the `ADMZ_HOME` each would
+actually resolve to. That last part is not incidental: #399 is a config named `admz`, on
+staging's port, with no `ADMZ_HOME` — so starting it yields a second instance on
+**production's** data with authentication off. An absent variable is more dangerous than a
+wrong one, because a wrong path is visible in the file and an absent one is not.
 
 **Production manages a live Axis fleet and a live ACS install.** It runs as the Shawl-supervised Windows service `admz`. Never point tests, agents, or experiments at `:4242` or `C:\ProgramData\admz`. Restarting it, migrating its DB, or driving its devices requires explicit human authorization.
 
