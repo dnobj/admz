@@ -290,3 +290,122 @@ class TestMcpSurface:
             s.tool.name == "acs_get_api_version"
             for s in srv.module_registry.tool_specs_all()
         )
+
+
+class TestNoNegotiateToUnconfirmedHost:
+    """GH #160 — outbound credential relay, not a reachability oracle.
+
+    `negotiate.spn_for` derives the SPN from the host being probed, so
+    `POST /api/acs/test` against an attacker-supplied address made ADMZ mint a
+    Windows token for the attacker's service principal and send it to them.
+    Kerberos fails for an unregistered SPN, SSPI falls back to NTLM, and the
+    401 challenge leg returned a NetNTLMv2 response for the ADMZ service
+    account — the account with rights against the live ACS install.
+
+    #355 added authentication and an audit row to this route but left the
+    target unvalidated, and its docstring called the residual risk a
+    reachability oracle. It is worse than that, which is what these pin.
+    """
+
+    def test_the_spn_really_is_derived_from_the_probed_host(self):
+        """The premise. If this stops being true the rest is moot."""
+        from admz.modules.acs_pro.negotiate import spn_for
+        assert spn_for("http://attacker.example:8080") == "HTTP/attacker.example"
+
+    def test_executor_sends_no_authorization_when_forbidden(self):
+        """`no_negotiate` must suppress the header entirely — not send an empty
+        one, and not fall back to some other scheme."""
+        import inspect
+        from admz.modules.acs_pro import executor as ex
+        src = inspect.getsource(ex.AcsProExecutor.execute)
+        assert 'no_auth = bool(device.get("no_negotiate"))' in src
+        assert "if not no_auth:" in src
+        assert 'if auth_header is not None:' in src
+
+    def test_the_401_challenge_leg_is_skipped_without_a_client(self):
+        """The Type-3 message is where the NetNTLMv2 response actually leaves.
+        Suppressing only the first header would still leak on the retry."""
+        import inspect
+        from admz.modules.acs_pro import executor as ex
+        src = inspect.getsource(ex.AcsProExecutor.execute)
+        assert "if status == 401 and neg_client is not None:" in src
+
+    def test_probing_an_unconfigured_host_forbids_negotiate(self, monkeypatch):
+        captured = {}
+
+        from admz.modules.acs_pro import routes
+
+        async def fake_run(catalog, executors, op, params, server):
+            captured.update(server)
+            class _R:
+                success, error, parsed_data = True, None, {}
+            return _R()
+
+        monkeypatch.setattr(routes, "run_acs_op_direct", fake_run, raising=False)
+        monkeypatch.setattr("admz.modules.acs_pro.config.base_url",
+                            lambda: "https://real-acs.example:55756")
+        self._post(routes, {"server_url": "http://attacker.example:8080"})
+        assert captured.get("no_negotiate") is True
+
+    def test_probing_the_configured_host_still_authenticates(self, monkeypatch):
+        """The legitimate case must not regress: once the operator has saved a
+        server, testing it is a full authenticated check."""
+        captured = {}
+
+        from admz.modules.acs_pro import routes
+
+        async def fake_run(catalog, executors, op, params, server):
+            captured.update(server)
+            class _R:
+                success, error, parsed_data = True, None, {}
+            return _R()
+
+        monkeypatch.setattr(routes, "run_acs_op_direct", fake_run, raising=False)
+        monkeypatch.setattr("admz.modules.acs_pro.config.base_url",
+                            lambda: "https://real-acs.example:55756")
+        self._post(routes, {"server_url": "https://real-acs.example:55756"})
+        assert captured.get("no_negotiate") is False
+
+    @staticmethod
+    def _post(routes, body):
+        """Drive `acs_test` directly — the route is the unit under test, and a
+        full TestClient would pull in the whole lifespan for one branch."""
+        import asyncio
+
+        class _Req:
+            async def json(self):
+                return body
+            headers = {}
+            client = None
+            scope = {"type": "http", "headers": []}
+
+        async def _go():
+            import admz.api.context as ctxmod
+            import admz.audit as audit
+            import admz.auth as auth
+            import admz.authz as authz
+
+            async def _principal(_req):
+                class _P:
+                    name, is_anonymous, groups = "test\agent", False, []
+                return _P()
+
+            class _Ctx:
+                catalog = None
+                executors = {}
+
+            saved = (auth.get_current_principal,
+                     authz.require_authenticated_principal,
+                     ctxmod.get_context, audit.record_event)
+            auth.get_current_principal = _principal
+            authz.require_authenticated_principal = lambda p: None
+            ctxmod.get_context = lambda: _Ctx()
+            audit.record_event = lambda *a, **k: None      # no real audit row
+            try:
+                return await routes.acs_test(_Req())
+            finally:
+                (auth.get_current_principal,
+                 authz.require_authenticated_principal,
+                 ctxmod.get_context, audit.record_event) = saved
+
+        return asyncio.new_event_loop().run_until_complete(_go())

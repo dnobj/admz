@@ -94,12 +94,21 @@ class AcsProExecutor(BaseExecutor):
         verify = bool(device.get("verify_tls", False))
         timeout = operation.get("timeout_override") or self._timeout
 
+        # GH #160: a caller may forbid authentication for this call. Used by
+        # the "Test connection" probe against a host nobody has confirmed is
+        # the ACS server — see the route for why that matters. When set we
+        # never mint a token, never send Authorization, and never continue a
+        # 401 challenge, so no credential material leaves this machine.
+        no_auth = bool(device.get("no_negotiate"))
+
         # Negotiate as the process identity. Off Windows / SSPI failure → a
         # clean, gated error rather than a crash.
         from admz.modules.acs_pro import negotiate
 
+        auth_header, neg_client = None, None
         try:
-            auth_header, neg_client = negotiate.initial_header(base)
+            if not no_auth:
+                auth_header, neg_client = negotiate.initial_header(base)
         except Exception as exc:  # noqa: BLE001 — WinAuthUnavailable etc.
             return StepResult(
                 operation_id=op_id, device_id=dev_id, success=False,
@@ -115,7 +124,9 @@ class AcsProExecutor(BaseExecutor):
         try:
             import httpx
 
-            headers = {"Authorization": auth_header, "Content-Type": "application/json"}
+            headers = {"Content-Type": "application/json"}
+            if auth_header is not None:
+                headers["Authorization"] = auth_header
             body = dict(params or {})
             # ONE keep-alive connection for the whole exchange — NTLM binds the
             # handshake to a single TCP connection (a new connection per leg
@@ -127,7 +138,7 @@ class AcsProExecutor(BaseExecutor):
                 )
                 # NTLM challenge leg: re-send the continued token on the SAME
                 # connection. ACS challenges with HTTP 401 + WWW-Authenticate.
-                if status == 401:
+                if status == 401 and neg_client is not None:
                     token = _negotiate_challenge(
                         resp_headers.get("www-authenticate", "")
                     )

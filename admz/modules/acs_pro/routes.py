@@ -155,7 +155,38 @@ async def acs_test(request: Request):
             {"success": False, "error": "NoServer", "message": "Enter a server address."},
             status_code=400,
         )
-    server = {"device_id": "acs-server", "host": base, "verify_tls": bool(body.get("verify_tls"))}
+    # GH #160. Authenticate ONLY when the posted host is the one already saved
+    # as the ACS server. Against anything else this is a bare reachability
+    # probe with no Authorization header.
+    #
+    # Why: `negotiate.spn_for` derives the SPN from this very host, so probing
+    # an attacker-supplied address made ADMZ mint a Windows token for the
+    # attacker's service principal and send it to them. Kerberos fails for an
+    # unregistered SPN, SSPI falls back to NTLM, and the 401 challenge leg then
+    # returned a NetNTLMv2 response for the ADMZ service account — the account
+    # with rights against the live ACS install. That is credential relay, not
+    # the reachability oracle #355's docstring described.
+    #
+    # The Test button still works before the config is saved, which is the
+    # workflow #355 was right to protect — it just can no longer prove
+    # "and my credentials work there" against an unsaved host. Save, then test
+    # again for the full authenticated check. A 401 carrying
+    # `WWW-Authenticate: Negotiate` is itself good evidence an ACS-like server
+    # is listening, and is reported as such.
+    #
+    # This is deliberately NOT the host-allowlist decision, which is still with
+    # the owner (`q_9f8bbdd1`, #355). Restricting *which* hosts may be probed is
+    # a policy call; not handing credentials to an unconfirmed host is not.
+    from admz.modules.acs_pro.config import base_url
+
+    configured = (base_url() or "").rstrip("/")
+    is_configured_host = bool(configured) and base.rstrip("/") == configured
+    server = {
+        "device_id": "acs-server",
+        "host": base,
+        "verify_tls": bool(body.get("verify_tls")),
+        "no_negotiate": not is_configured_host,
+    }
     ctx = get_context()
     # Recorded in `finally`, carrying the REAL outcome. Recording before the
     # call was the first instinct — "a probe that hangs still leaves a trace" —
