@@ -22,11 +22,21 @@ not. Atlas fixed the YAML in ``mrdnlabs/axis-api-atlas@635c395`` and pins the
 three files with its own test; this test pins the *resolved* behaviour, which
 is the thing #165 was actually about and which no atlas test can see.
 
-The invariant is relative, not absolute. It does not assert
-``service-affecting`` — a future catalog may reasonably decide account
-changes are ``dangerous``, and that must not turn this red. It asserts only
-that the create side is never *weaker* than the remove side, which is the
-asymmetry that existed.
+There are two assertions, and the first exists because the second is not
+enough on its own:
+
+**A floor** — creating an account is gated *at all*. This is what #165 asked
+for, and a purely relative test would accept a catalog that downgraded both
+sides to ``normal``: create and remove would then be equal, the comparison
+would pass, and account creation would be completely ungated again.
+
+**A relative check** — creating is never weaker than removing. This is the
+specific asymmetry that existed, and it keeps holding if the remove side is
+later escalated further.
+
+Neither asserts ``service-affecting`` by name. A future catalog may decide
+these are ``dangerous`` and that must not turn this red; what may not happen
+is the gate disappearing.
 
 WHY THIS TEST SKIPS ON A DEV BOX
 --------------------------------
@@ -38,6 +48,18 @@ developer's working tree rather than on ADMZ, so it runs only when the
 installed distribution is the pinned commit. CI installs from git at
 ``setup.py:ATLAS_SHA`` (``.github/actions/setup-admz``) and separately proves
 it with ``assert_atlas_provenance.py``, so CI is where this binds.
+
+The reviewer of the PR that added this argued the two properties are
+separable — "does the atlas I have satisfy the invariant?" is worth answering
+locally even though "is it the pinned commit?" is not — and that skipping
+discards useful feedback exactly when a developer is editing atlas. That is a
+fair point and it was weighed rather than missed. The cost is concrete: at the
+time of writing, the atlas checkout on the reference machine sits on a survey
+feature branch based on the *pre-fix* commit, so running these assertions
+locally would redden the ADMZ suite over the state of a different repository's
+working tree, which the developer may have branched deliberately. A red suite
+that is not about this repository gets muted, and then it is worth nothing
+anywhere. The pin is the thing ADMZ ships and the thing ADMZ can be held to.
 """
 
 from __future__ import annotations
@@ -85,16 +107,18 @@ def _pinned_sha() -> str | None:
 
 
 def _installed_atlas_commit() -> str | None:
-    """The commit the installed atlas came from, or None if it cannot be known.
+    """The commit the imported atlas came from, or None if it cannot be known.
 
-    None covers both "installed from a local directory" (the developer case —
-    ``direct_url.json`` carries ``dir_info`` and there is no commit to compare)
-    and "no metadata at all".
+    None covers "installed from a local directory" (the developer case —
+    ``direct_url.json`` carries ``dir_info`` and there is no commit to
+    compare), "no metadata at all", and the case below where the metadata
+    cannot be shown to describe the code actually under test.
     """
     try:
-        raw = distribution("axis-api-atlas").read_text("direct_url.json")
+        dist = distribution("axis-api-atlas")
     except PackageNotFoundError:
         return None
+    raw = dist.read_text("direct_url.json")
     if not raw:
         return None
     try:
@@ -102,18 +126,40 @@ def _installed_atlas_commit() -> str | None:
     except ValueError:
         return None
     commit = info.get("vcs_info", {}).get("commit_id")
-    return commit.lower() if isinstance(commit, str) else None
+    if not isinstance(commit, str):
+        return None
+
+    # ``distribution()`` finds *metadata*; the assertions exercise whatever
+    # ``import axis_api_atlas`` resolves to. Those are the same install in any
+    # healthy environment, but a stale or duplicated ``*.dist-info`` earlier on
+    # sys.path makes them disagree — and this function would then vouch for a
+    # commit that is not the code being tested, which is the one failure mode
+    # that would make the whole module lie. Refuse to answer unless they match.
+    import axis_api_atlas
+
+    try:
+        declared = Path(str(dist.locate_file("axis_api_atlas/__init__.py"))).resolve()
+        imported = Path(axis_api_atlas.__file__).resolve()
+    except (OSError, TypeError, ValueError):
+        return None
+    if declared != imported:
+        return None
+
+    return commit.lower()
 
 
 _PINNED = _pinned_sha()
 _INSTALLED = _installed_atlas_commit()
 
+_DESCRIBED = _INSTALLED or (
+    "a local/editable checkout, or otherwise not identifiable as a git install"
+)
+
 running_the_pinned_catalog = pytest.mark.skipif(
     _INSTALLED is None or _PINNED is None or _INSTALLED != _PINNED,
     reason=(
-        "this asserts the behaviour of the PINNED atlas catalog; installed "
-        f"commit is {_INSTALLED or 'a local/editable checkout'}, pin is "
-        f"{_PINNED or 'unreadable'}"
+        "this asserts the behaviour of the PINNED atlas catalog; the imported "
+        f"atlas is {_DESCRIBED}, pin is {_PINNED or 'unreadable'}"
     ),
 )
 
@@ -155,6 +201,14 @@ def test_creating_an_account_is_not_less_gated_than_removing_one(
     # No fleet-settings override is in play: conftest redirects ADMZ_HOME to a
     # throwaway, so this is the shipped default posture rather than whatever a
     # particular install has configured.
+
+    # The floor. Without this the comparison below is satisfied by downgrading
+    # BOTH sides to 'normal' — equal, and equally ungated.
+    assert _STRENGTH[create] > _STRENGTH["none"], (
+        f"{create_op} confirms at {create!r}: creating a device account runs "
+        f"inline with no human. That is #165 exactly."
+    )
+
     assert _STRENGTH[create] >= _STRENGTH[remove], (
         f"{create_op} confirms at {create!r} but {remove_op} confirms at "
         f"{remove!r} — creating an account is easier than deleting one (#165)."
