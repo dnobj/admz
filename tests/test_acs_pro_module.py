@@ -409,3 +409,227 @@ class TestNoNegotiateToUnconfirmedHost:
                  ctxmod.get_context, audit.record_event) = saved
 
         return asyncio.new_event_loop().run_until_complete(_go())
+
+
+class TestExecutorHonoursNoNegotiate:
+    """Behavioural, not source-string (review finding on #160).
+
+    The first pass asserted on `inspect.getsource` phrasing, which pins wording
+    and permits an equivalent leak written differently. These drive the real
+    executor and assert on what left the process.
+    """
+
+    def _op(self):
+        return {"id": "VersionFacade:GetApiVersion", "path": "/Acs/Api/v", "method": "GET"}
+
+    def _run(self, monkeypatch, *, no_negotiate, status=401):
+        """Execute one operation, capturing every request the executor makes."""
+        import asyncio
+
+        from admz.modules.acs_pro import executor as ex
+        from admz.modules.acs_pro import negotiate
+
+        sent, minted, continued = [], [], []
+
+        # Recorded, not raised. The executor wraps `initial_header` in
+        # `except Exception`, so an AssertionError thrown here is swallowed and
+        # turns into a clean error result — which would let the leak tests pass
+        # for the wrong reason. (Found writing these: the first version raised.)
+        class _Client:
+            def close(self):
+                pass
+
+        def _record(host):
+            minted.append(host)
+            return "Negotiate AAAA", _Client()
+
+        monkeypatch.setattr(negotiate, "initial_header", _record)
+
+        def _cont(_client, _token):
+            continued.append(_token)
+            return "Negotiate BBBB"
+
+        monkeypatch.setattr(negotiate, "continued_header", _cont)
+
+        async def _fake_send(http, method, url, headers, body):
+            sent.append({"url": url, "headers": dict(headers)})
+            # NTLM over HTTP: the 401 carries the Type-2 challenge token, and
+            # that token is what a leaky client answers with a Type-3. A bare
+            # `Negotiate` with no token cannot be continued at all, so using one
+            # would make the leak tests pass without proving anything.
+            return status, "", {"www-authenticate": "Negotiate T2TOKEN"}, "Unauthorized"
+
+        monkeypatch.setattr(ex, "_send", _fake_send)
+
+        server = {"device_id": "acs-server", "host": "https://attacker.example",
+                  "verify_tls": False, "no_negotiate": no_negotiate}
+        res = asyncio.new_event_loop().run_until_complete(
+            ex.AcsProExecutor().execute(self._op(), server, {}, {}))
+        return res, sent, minted, continued
+
+    def test_no_token_is_minted_and_no_authorization_is_sent(self, monkeypatch):
+        res, sent, minted, _ = self._run(monkeypatch, no_negotiate=True)
+        assert minted == [], "a token was minted for a host nobody confirmed"
+        assert len(sent) == 1, "the 401 challenge leg must not re-send"
+        assert not any(k.lower() == "authorization" for k in sent[0]["headers"]), \
+            f"Authorization leaked: {sent[0]['headers']}"
+        assert res.status_code == 401          # reported, not retried
+
+    def test_the_401_leg_does_not_run(self, monkeypatch):
+        """The Type-3 message is where the NetNTLMv2 response actually leaves,
+        so suppressing only the first header would still leak on the retry.
+        `continued_header` raises if reached."""
+        _res, sent, _minted, continued = self._run(monkeypatch, no_negotiate=True)
+        assert continued == [], "the Type-3 leg ran — that is where the response leaves"
+        assert len(sent) == 1
+
+    def test_without_the_flag_it_still_authenticates(self, monkeypatch):
+        """Guard the guard: if the executor never negotiated at all, the tests
+        above would pass for the wrong reason."""
+        _res, sent, minted, continued = self._run(monkeypatch, no_negotiate=False)
+        assert minted == ["https://attacker.example"]      # it did negotiate
+        assert continued == ["T2TOKEN"]                    # and ran the 401 leg
+        assert len(sent) == 2
+        assert any(k.lower() == "authorization" for k in sent[0]["headers"])
+
+
+async def _async(v):
+    return v
+
+
+class _MemSettings:
+    def __init__(self):
+        self._d = {}
+
+    def set(self, k, v):
+        self._d[k] = v
+
+    def get(self, k, d=None):
+        return self._d.get(k, d)
+
+
+class TestConfigWriteIsPrivileged:
+    """GH #160, the review's critical finding: the first fix was bypassable one
+    request earlier.
+
+    `no_negotiate` keys off "is this the saved host?", and saving needed only a
+    non-anonymous identity. So an ordinary authenticated user saved
+    `https://attacker`, and from then on it *was* the configured host — Test
+    authenticated against it, and the pollers did too, on their own schedule.
+
+    Escalated to the reveal gate, matching this file's precedent for
+    `webhook-token/regenerate`: both hand over a live credential. Testing is
+    deliberately not escalated, so an ordinary operator can still check
+    reachability while setting the module up.
+    """
+
+    @staticmethod
+    def _call(routes, fn, body, *, groups):
+        """Drive a route with a principal holding `groups`, through the REAL
+        authz helpers. Asserting on `inspect.getsource` was the first attempt
+        and it did not work: dropping the *call* while leaving the import left
+        the phrase in the source, so a positive control that removed the gate
+        still passed."""
+        import asyncio
+
+        from admz.api import context as ctxmod
+        from admz import audit, auth
+
+        class _P:
+            name, is_anonymous = "test\agent", False
+
+            def __init__(self, g):
+                self.groups = g
+
+        class _Req:
+            async def json(self):
+                return body
+
+        class _Ctx:
+            catalog = None
+            executors = {}
+
+        async def _go():
+            saved = (auth.get_current_principal, ctxmod.get_context, audit.record_event)
+            auth.get_current_principal = lambda _r: _async(_P(groups))
+            ctxmod.get_context = lambda: _Ctx()
+            audit.record_event = lambda *a, **k: None
+            try:
+                return await fn(_Req())
+            finally:
+                (auth.get_current_principal, ctxmod.get_context,
+                 audit.record_event) = saved
+
+        return asyncio.new_event_loop().run_until_complete(_go())
+
+    def test_an_unprivileged_user_cannot_point_admz_at_a_host(self, monkeypatch):
+        """The critical one. Behavioural, through the real reveal check."""
+        from fastapi import HTTPException
+        import pytest
+
+        from admz.modules.acs_pro import config as cfgmod
+        from admz.modules.acs_pro import routes
+
+        monkeypatch.setattr(cfgmod, "_settings", lambda: _MemSettings())
+        with pytest.raises(HTTPException) as exc:
+            self._call(routes, routes.acs_save_config,
+                       {"enabled": True, "server_url": "https://attacker.example"},
+                       groups=[])
+        assert exc.value.status_code == 403
+
+    def test_testing_a_connection_stays_open_to_any_authenticated_user(self):
+        """The asymmetry is the point — escalating this one would stop an
+        operator setting the module up at all. An unprivileged caller must get
+        past the gate (the probe itself then fails on a nonexistent host)."""
+        from admz.modules.acs_pro import routes
+
+        res = self._call(routes, routes.acs_test,
+                         {"server_url": "http://127.0.0.1:9"}, groups=[])
+        assert res is not None          # reached the probe, not a 403
+
+    def test_userinfo_does_not_survive_into_the_stored_config(self, monkeypatch):
+        """The test path stripped it and the save path did not, so
+        `https://real@evil/` was refused unsaved and authenticated once saved."""
+        from admz.modules.acs_pro import config as cfgmod
+        saved = {}
+
+        class _S:
+            def set(self, k, v):
+                saved[k] = v
+
+            def get(self, k, d=None):
+                return saved.get(k, d)
+
+        monkeypatch.setattr(cfgmod, "_settings", lambda: _S())
+        out = cfgmod.save_acs_config(enabled=True, server_url="https://real@evil/",
+                                     port=55756, verify_tls=False,
+                                     client_machine_name="")
+        assert "@" not in out["server_url"], out["server_url"]
+
+
+class TestCanonicalHostComparison:
+    """Raw string equality dropped authentication against the real server for
+    harmless spelling differences (review finding)."""
+
+    def _c(self, u):
+        from admz.modules.acs_pro.routes import _canonical
+        return _canonical(u)
+
+    def test_equivalent_spellings_fold_together(self):
+        base = self._c("https://acs.example:55756")
+        for other in ("https://ACS.Example:55756/",
+                      "https://acs.example.:55756",
+                      "https://acs.example:55756"):
+            assert self._c(other) == base, other
+
+    def test_default_ports_fold(self):
+        assert self._c("https://acs.example:443") == self._c("https://acs.example")
+        assert self._c("http://acs.example:80") == self._c("http://acs.example")
+
+    def test_different_hosts_do_not_fold(self):
+        assert self._c("https://acs.example") != self._c("https://evil.example")
+        assert self._c("https://acs.example:55756") != self._c("https://acs.example:1234")
+
+    def test_userinfo_cannot_smuggle_a_match(self):
+        """`https://real@evil` must not canonicalise to the real host."""
+        assert self._c("https://acs.example@evil.example") != self._c("https://acs.example")

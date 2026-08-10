@@ -159,10 +159,14 @@ class AcsProExecutor(BaseExecutor):
                 duration_ms=(time.monotonic() - started) * 1000.0,
             )
         finally:
-            try:
-                neg_client.close()
-            except Exception:  # noqa: BLE001
-                pass
+            # None whenever `no_negotiate` was set — no context was ever
+            # acquired. The blanket except below would have swallowed the
+            # AttributeError, but relying on that reads like an accident.
+            if neg_client is not None:
+                try:
+                    neg_client.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
         dur = (time.monotonic() - started) * 1000.0
 
