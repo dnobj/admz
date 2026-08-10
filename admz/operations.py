@@ -885,8 +885,16 @@ async def _action_register_discovered_device(
 
     Onboarding is what makes this more than a registry write: a factory-default
     unit gets an admin account created on it. The registry add and the onboard
-    stay together here exactly as the tool does them — decoupling the two is
-    item 3 of #199 and deliberately not done under cover of this gate.
+    stay together here exactly as the tool does them.
+
+    **#366 asked whether they should be separable, and the answer is that the
+    separated path already exists**: ``POST /api/discovery/register``
+    (``api/routes/discovery.py``) does registry-add only and tells the caller to
+    use the capture flow. So there are two deliberate shapes, not one coupling
+    waiting to be split — the REST route for a UI that will show a capture
+    widget next, and this coupled pair for an agent that wants one call. What
+    was missing was anyone saying so; the MCP tool's own description claimed the
+    REST behaviour while this code onboarded.
     """
     from admz.onboarding import onboard_device_credentials
 

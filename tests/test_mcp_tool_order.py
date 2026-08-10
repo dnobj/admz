@@ -141,3 +141,44 @@ def test_dispatch_table_matches_device_tools():
     }
     # Every device tool is actually advertised by list_tools.
     assert set(TOOL_HANDLERS) <= set(_live_tool_order())
+
+
+class TestRegisterDiscoveredDescriptionMatchesBehaviour:
+    """GH #366. The tool description the model reads at runtime said the device
+    "will be created without credentials — use capture_credentials", while the
+    handler registers **and onboards** (its own comment says "Register, then
+    onboard"). `docs/MCP_TOOLS_REFERENCE.md` had it right; only the string the
+    LLM actually consumes was wrong.
+
+    Asserting on this string is not the source-string theatre I have removed
+    four times this session. There the string was *source code* standing in for
+    behaviour; here the string **is the artefact** — the tool description is the
+    contract the model selects on, so its content is the thing under test.
+    """
+
+    def _description(self):
+        import inspect
+        from admz.mcp import server
+        src = inspect.getsource(server)
+        i = src.index('name="register_discovered_device"')
+        j = src.index("inputSchema", i)
+        return src[i:j]
+
+    def test_it_does_not_claim_the_device_is_left_without_credentials(self):
+        """The specific falsehood: onboarding resolves credentials, and on a
+        factory-defaulted unit it creates an admin account."""
+        assert "without credentials" not in self._description()
+
+    def test_it_says_onboarding_happens(self):
+        d = self._description().lower()
+        assert "onboard" in d
+
+    def test_it_names_the_approval_outcome(self):
+        """A model that does not expect `approval_required` treats it as a
+        failure and retries — the exact behaviour #214 corrected in the docs."""
+        assert "approval_required" in self._description()
+
+    def test_it_points_at_the_register_only_route(self):
+        """The answer to #366: the separated path exists, and the tool should
+        say where."""
+        assert "/api/discovery/register" in self._description()
