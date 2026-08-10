@@ -128,8 +128,17 @@ stretching it to try would conflate two different things. Add the read operation
 
 **[#165](https://github.com/dnobj/admz/issues/165) already requires a production
 atlas reinstall + service restart** — its catalog fix (`pwdgrp.cgi:add-user`
-risk level `normal` → `service-affecting`) is on atlas `main` but production runs
-an older non-editable copy, so the gate is still downgraded on the live fleet.
+risk level `normal` → `service-affecting`) is on atlas `main`, and production
+runs an older non-editable copy, so the gate is still downgraded on the live
+fleet.
+
+> **Amended (#392).** This section used to say the fix was on atlas `main` and
+> only production lagged. That understated it: `setup.py:ATLAS_SHA` was pinned
+> to `af92f83`, the commit **immediately before** the fix, so ADMZ was *asking*
+> for the ungated catalog. A clean install from this repository — not just the
+> long-lived production box — would have reproduced the downgrade. The pin now
+> reads `635c395` and `tests/test_atlas_account_gating.py` asserts the resolved
+> gate, so what remains for #165 really is only the deployment step below.
 
 This sweep needs an atlas addition deployed to production too. **They are the
 same maintenance action.** Doing them separately means two restarts of a service

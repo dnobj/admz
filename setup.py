@@ -38,7 +38,7 @@ HERE = Path(__file__).parent
 # exact `ATLAS_SHA = "<40 hex>"` shape, or both of those stop finding it.
 #
 # To bump: change ATLAS_SHA, run the suite, and say in the PR why atlas moved.
-ATLAS_SHA = "af92f832f042e09e29d4c4bc9c5dc11b27ab0b21"
+ATLAS_SHA = "635c395d1afbaac9bd89ed22324ef2d91b5e6c88"
 ATLAS_REPO = "mrdnlabs/axis-api-atlas"
 ATLAS_REQUIREMENT = (
     f"axis-api-atlas @ git+ssh://git@github.com/{ATLAS_REPO}.git@{ATLAS_SHA}"
