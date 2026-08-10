@@ -1533,10 +1533,16 @@ class ADMZMCPServer:
                 Tool(
                     name="register_discovered_device",
                     description=(
-                        "Add a previously-discovered device to the registry. "
-                        "Provide the discovery result fields. The device will "
-                        "be created without credentials — use capture_credentials "
-                        "to set them via the out-of-band URL flow."
+                        "Add a previously-discovered device to the registry AND "
+                        "onboard it — the two happen together in this tool. "
+                        "Provide the discovery result fields. Onboarding resolves "
+                        "credentials automatically where it can; if the device "
+                        "turns out to be factory-defaulted, `onboarding` comes "
+                        "back with status 'approval_required' and a confirm_url "
+                        "— surface that link, do not retry. If onboarding cannot "
+                        "resolve credentials, use capture_credentials. "
+                        "To register WITHOUT onboarding, the REST route "
+                        "POST /api/discovery/register does registry-add only."
                     ),
                     inputSchema={
                         "type": "object",

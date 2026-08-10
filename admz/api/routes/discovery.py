@@ -81,6 +81,18 @@ async def register_discovered(
     req: RegisterDiscoveredRequest,
     ctx: AppContext = Depends(get_context),
 ):
+    """Register a discovered device — **registry add only, no onboarding**.
+
+    This is the separated half of the pair #366 asked about. The MCP tool of
+    almost the same name (``register_discovered_device``) registers *and*
+    onboards in one call, which suits an agent; this route suits a UI that will
+    show the capture widget next, which is what the response says to do.
+
+    The difference is deliberate. It is written down here because it was not
+    written down anywhere for a long time, and the MCP tool's description
+    actually described *this* route's behaviour while its handler did the other
+    thing (#366).
+    """
     from admz.audit import record_event
     from admz.auth import get_current_principal
 
