@@ -616,6 +616,17 @@ class GitRepo:
         return yaml.safe_load(content)
 
     def get_file(self, path: str, ref: str = "HEAD") -> Optional[str]:
+        """Read one file at ``ref``. The `git show` sink (GH #162).
+
+        ``read_facet`` validates before calling here, but this is a public
+        method and `demos/fragments.py` calls it directly — the guard belongs
+        at the sink, not in each caller's memory. ``path`` needs none: it is
+        interpolated *after* ``ref:``, so it can never be argv position zero
+        and never begins the argument.
+        """
+        from admz.validators import validate_git_ref
+
+        validate_git_ref(ref)
         result = self._run_git("show", f"{ref}:{path}", check=False)
         if result.returncode == 0:
             return result.stdout
@@ -627,6 +638,25 @@ class GitRepo:
         ref_b: str = "HEAD",
         path: Optional[str] = None,
     ) -> str:
+        """Unified diff between two refs, optionally scoped to ``path``.
+
+        **Both refs are validated here, not only at the route (GH #162).**
+        They land in argv *before* the ``--`` separator, so a ref beginning
+        with ``-`` is parsed by git as an option — `--output=<path>` turns this
+        read into an arbitrary file create/truncate running as the ADMZ service
+        account. Validating at the sink means a future caller cannot
+        reintroduce the hole by forgetting, which is exactly how this one
+        survived: five sibling handlers in `api/routes/snapshot.py` validate
+        their refs and this path did not.
+
+        ``path`` is not validated because it is placed *after* ``--``, where
+        git treats it as a pathspec and never as an option. Its callers build
+        it server-side.
+        """
+        from admz.validators import validate_git_ref
+
+        validate_git_ref(ref_a)
+        validate_git_ref(ref_b)
         args = ["diff", ref_a, ref_b]
         if path:
             args += ["--", path]
@@ -647,6 +677,12 @@ class GitRepo:
         # Git's well-known empty-tree object id, so a ROOT commit still shows
         # everything it added rather than erroring on a missing parent.
         empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        # Validate BEFORE the rev-parse, not just at the `diff` below: `sha`
+        # reaches `git rev-parse` argv first, so relying on diff()'s guard
+        # would leave one command unprotected (GH #162 review).
+        from admz.validators import validate_git_ref
+
+        validate_git_ref(sha)
         parent = self._run_git(
             "rev-parse", "--verify", "--quiet", f"{sha}^", check=False
         )
@@ -658,6 +694,12 @@ class GitRepo:
         return result.stdout.strip().split("\n") if result.stdout.strip() else []
 
     def create_tag(self, name: str, message: Optional[str] = None):
+        """Tag names are ref-shaped, so they get the ref guard. No production
+        caller today (tests only) — validated anyway, because "nothing calls it
+        yet" is the state every one of these sinks was in first (GH #162)."""
+        from admz.validators import validate_git_ref
+
+        validate_git_ref(name)
         args = ["tag"]
         if message:
             args += ["-a", "-m", message]
@@ -665,6 +707,14 @@ class GitRepo:
         self._run_git(*args)
 
     def push(self, remote: str = "origin", ref: Optional[str] = None):
+        """Same reasoning as ``create_tag``: no production caller (the
+        auto-push path builds its own fixed remote and branch), guarded anyway.
+        A remote name is ref-shaped for this purpose."""
+        from admz.validators import validate_git_ref
+
+        validate_git_ref(remote)
+        if ref is not None:
+            validate_git_ref(ref)
         args = ["push", remote]
         if ref:
             args.append(ref)

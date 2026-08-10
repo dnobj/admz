@@ -42,7 +42,14 @@ _IDENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 # Git refs — wider charset for slash-separated names (refs/heads/main,
 # tags/v1.0, etc.). Still rejects path separators that aren't "/", spaces,
 # and ".." per the explicit check.
-_GIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
+# `~` and `^` are rev-parse suffixes (`HEAD~1`, `HEAD^`) and are safe here:
+# refs reach git as argv, never through a shell, so neither is expanded by
+# anything. They were missing while the docstring below promised `HEAD~N`,
+# and nothing noticed because the one route that defaults to `HEAD~1` was
+# also the one route that never validated (GH #162). The leading character
+# stays restricted to alphanumerics — THAT is the security property, since a
+# ref beginning with `-` is parsed by git as an option.
+_GIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/~^-]{0,199}$")
 
 
 def validate_identifier(value: object, kind: str = "identifier") -> str:

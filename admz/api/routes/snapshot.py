@@ -683,6 +683,22 @@ async def diff_device(
     ref_b: str = Query("HEAD"),
     ctx: AppContext = Depends(get_context),
 ):
+    """Diff one device's config between two refs.
+
+    GH #162: this was the one handler in this file validating neither its refs
+    nor its device id, while five siblings validate both. The refs reach `git
+    diff` argv before `--`, so `ref_a=--output=C:/...` was an arbitrary file
+    write as the service account; the device id is interpolated into a pathspec.
+    """
+    try:
+        validate_identifier(device_id, "device_id")
+        validate_git_ref(ref_a)
+        validate_git_ref(ref_b)
+    except ValueError as e:
+        # 400, not the 500 an uncaught ValueError would produce: this is
+        # caller input, and the file's own restore handler already answers
+        # bad input this way.
+        raise HTTPException(status_code=400, detail=str(e))
     device_path = f"fleet/{device_id}/"
     diff_text = ctx.git_repo.diff(ref_a, ref_b, path=device_path)
     history = ctx.git_repo.log(path=device_path, max_count=10)

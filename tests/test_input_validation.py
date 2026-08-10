@@ -295,3 +295,73 @@ class TestMcpInputValidation:
             {"device_id": "ok-cam", "ref_a": "HEAD..HEAD~1"},
         )
         assert result.get("error") == "InvalidInput"
+
+
+class TestDiffRefOptionInjection:
+    """GH #162. `git diff <ref_a> <ref_b> -- <path>` puts both refs in argv
+    **before** the `--` separator, so a ref beginning with `-` is parsed by git
+    as an option. `--output=<path>` turns a read endpoint into an arbitrary file
+    create/truncate running as the ADMZ service account.
+
+    `GET /api/snapshot/diff/{device_id}` was the one handler in
+    `api/routes/snapshot.py` validating neither its refs nor its device id,
+    while five siblings validate both.
+    """
+
+    def test_the_dangerous_shape_is_rejected(self):
+        import pytest
+        from admz.validators import validate_git_ref
+        for ref in ("--output=C:/evil.txt", "-o/tmp/evil", "--upload-pack=calc"):
+            with pytest.raises(ValueError):
+                validate_git_ref(ref)
+
+    def test_the_leading_character_is_the_security_property(self):
+        """`-` is fine inside a ref (`my-branch`) and fatal at the front."""
+        from admz.validators import validate_git_ref
+        import pytest
+        assert validate_git_ref("my-branch") == "my-branch"
+        with pytest.raises(ValueError):
+            validate_git_ref("-my-branch")
+
+    def test_rev_parse_suffixes_are_accepted(self):
+        """They were not, while the docstring promised `HEAD~N` — and the one
+        route defaulting to `HEAD~1` was the one that never validated, so
+        nothing caught the contradiction. Applying the validator did."""
+        from admz.validators import validate_git_ref
+        for ref in ("HEAD~1", "HEAD^", "HEAD~10", "main~2", "v1.0.0"):
+            assert validate_git_ref(ref) == ref
+
+    def test_ranges_are_still_rejected(self):
+        import pytest
+        from admz.validators import validate_git_ref
+        with pytest.raises(ValueError):
+            validate_git_ref("HEAD~5..HEAD")
+
+    def test_the_sink_validates_even_if_a_caller_forgets(self):
+        """Validating only at the route is how this survived: five siblings did
+        and this one didn't. `GitRepo.diff` now refuses regardless of caller."""
+        import pytest
+        from admz.snapshot.git_repo import GitRepo
+        repo = GitRepo.__new__(GitRepo)          # no filesystem needed
+        with pytest.raises(ValueError):
+            repo.diff("--output=C:/evil.txt", "HEAD")
+        with pytest.raises(ValueError):
+            repo.diff("HEAD~1", "--output=C:/evil.txt")
+
+    def test_every_pre_separator_sink_is_guarded(self):
+        """The review's finding: validating `diff` alone left `get_file`
+        (`git show ref:path`), `diff_commit` (`git rev-parse sha^`),
+        `create_tag` and `push` reachable with an option-shaped value. None had
+        a production caller with attacker input, which is the state `diff` was
+        in until someone wired a route to it."""
+        import pytest
+        from admz.snapshot.git_repo import GitRepo
+        repo = GitRepo.__new__(GitRepo)
+        bad = "--output=C:/evil.txt"
+        for call in (lambda: repo.get_file("f.yaml", bad),
+                     lambda: repo.diff_commit(bad),
+                     lambda: repo.create_tag(bad),
+                     lambda: repo.push(bad),
+                     lambda: repo.push("origin", bad)):
+            with pytest.raises(ValueError):
+                call()
