@@ -118,6 +118,7 @@ Architecture decision records (ADRs) capturing the *why* behind load-bearing des
 - [0024 — Bundled web chatbot](decisions/0024-bundled-web-chatbot.md) ✅ (live)
 - [0025 — Gemini for the chatbot (manual MCP tool loop)](decisions/0025-gemini-chatbot-mcp-native.md) ✅ (amended — shipped the manual tool loop, not SDK-native MCP; default gemini-2.5-flash)
 - [0038 — Chat conversation history (named, listable conversations)](decisions/0038-chat-conversation-history.md) ✅
+- [0060 — Model profiles: derive what the API knows, declare what it doesn't, check the difference](decisions/0060-model-profiles.md) 📋 — model identifiers are hardcoded in six files and pricing in two; `gemini-3.7-flash` replaced `thinking_budget` with `thinking_level`, so a new model is now a code change rather than a data change
 
 ### Authentication & secrets
 
