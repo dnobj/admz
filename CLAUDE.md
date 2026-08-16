@@ -97,6 +97,12 @@ staging's port, with no `ADMZ_HOME` — so starting it yields a second instance 
 **production's** data with authentication off. An absent variable is more dangerous than a
 wrong one, because a wrong path is visible in the file and an absent one is not.
 
+It also answers **which atlas commit each environment is running** (#424), by digesting the
+installed data tree against `ATLAS_SHA` — a directory install records no commit, so the CI
+provenance script's revision check skips it, and that exemption silently covered production.
+A content mismatch on a **non-editable** install fails the run; on an editable one it does
+not, because pointing at a working tree is the point of an editable install.
+
 **Production manages a live Axis fleet and a live ACS install.** It runs as the Shawl-supervised Windows service `admz`. Never point tests, agents, or experiments at `:4242` or `C:\ProgramData\admz`. Restarting it, migrating its DB, or driving its devices requires explicit human authorization.
 
 ### Production has its own tree and interpreter (ADR-0054, live 2026-08-04)

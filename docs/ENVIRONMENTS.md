@@ -43,6 +43,39 @@ block and asserts every claim in it is one the checker knows how to observe — 
 unverifiable claim cannot be added to this page silently. That test observes nothing and
 does not care what machine it runs on.
 
+### It also answers "which atlas is this running?" (#424)
+
+`axis-api-atlas` reports `__version__ = "0.1.0"` forever, which is why #232 pinned it by SHA
+instead. But a **directory install records no commit**: PEP 610 writes a `dir_info` block, and
+`.github/scripts/assert_atlas_provenance.py` skips its revision check for that shape — a
+deliberate exemption so developer laptops keep working, which silently covered **production
+too**, because ADR-0054's non-editable install is also a directory install.
+
+That blind spot had a cost. Production ran an atlas in which `pwdgrp.cgi:add-user`,
+`ssh:addUser` and `ssh:modifyUser` were `risk_level: normal` — which the confirmation gate maps
+to `none` — so creating a root-group admin account on a camera ran inline with no human, while
+*deleting* one required approval. It stayed live for six days after the fix merged, and nothing
+on the machine could have said so.
+
+The checker now compares **content** rather than trusting metadata: it digests the installed
+data tree and the tree at `ATLAS_SHA` (read straight from the object store with `git archive`,
+so no checkout is disturbed) and reports one of three verdicts.
+
+| Verdict | Fails the run? |
+|---|---|
+| `content MATCHES pin <sha>` | no |
+| `content DOES NOT MATCH pin <sha>` on a **non-editable** install | **yes** |
+| `content DOES NOT MATCH pin <sha>` on an **editable** install | no — that is ordinary atlas development |
+| `cannot verify — no atlas repo` | no — a reason to look, not to block |
+
+Comparing content beats recording a commit at install time: a stamp says what an installer
+*intended*, while this observes what is actually on disk, and cannot be fooled by a source
+directory that has moved on since. Line endings are flattened before hashing, because a git blob
+holds LF and a Windows checkout writes CRLF — without that every file reads as different on this
+machine, and a check that cries wolf is worse than no check.
+
+The atlas repo is found next to this one, or at `ADMZ_ATLAS_REPO`.
+
 ## The declaration
 
 <!-- tools/environments.py parses this block. Keep it valid YAML. -->
