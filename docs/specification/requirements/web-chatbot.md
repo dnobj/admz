@@ -107,6 +107,10 @@ explicitly or set `ADMZ_GEMINI_DEFAULT_MODEL`. Selection persists per
 principal. (Pricing shifts with Google's tiers; see
 `admz/chatbot/usage.py` `PRICING` for the values ADMZ bills against.)
 
+The model list above is restated here because it is small and stable
+today; **FR-CB-015 moves the authoritative copy into the profile table**,
+after which this paragraph should cite it rather than enumerate.
+
 ### FR-CB-009 — Disabled by default ✅
 With no Gemini API key configured (neither
 `ADMZ_GEMINI_API_KEY` env nor `gemini_api_key` fleet setting),
@@ -169,6 +173,38 @@ the nav bar. Top-level nav order: Chat, Devices, Search,
 Add Device, Fleet Settings, Confirmation Settings, Chat Settings,
 API Docs.
 
+### FR-CB-015 — Model profiles carry capability and request dialect 📋
+Every model ADMZ will use has one profile entry, and that entry — not a
+literal in a call path — decides how a request is shaped. See
+[ADR-0060](../decisions/0060-model-profiles.md).
+
+A profile combines three layers: facts **derived** from the provider's
+`models.list` (token limits, `supportedGenerationMethods`, whether the
+model thinks), facts **declared** because nothing reports them (pricing
+with a `price_valid_until` date, the thinking dialect, GA/preview status,
+whether ADMZ offers the model at all), and a **checker** that fails when
+the two disagree (NFR-CB-008).
+
+Two consequences are the point of the requirement:
+
+- **A dialect adapter translates intent into wire format.** Callers say
+  `reasoning="default" | "off" | "hard"`; the adapter emits
+  `thinking_config.thinking_budget` for the 2.5/3.1/3.5/3.6 families and
+  `thinking_level` for 3.7+, and emits sampling parameters only for
+  families that still accept them. This is what makes `gemini-3.7-flash`
+  addable — it removed `thinking_budget`, so a list edit alone would make
+  it selectable and broken.
+- **Selection is by capability, not by identifier.** A caller asks for
+  what it needs (`bidiGenerateContent` for live audio, tools + vision for
+  chat) instead of maintaining its own list. This retires the separate
+  model lists in `admz/chatbot/voice.py` and the duplicated pricing table
+  in `admz/api/templates/chat_settings.html`.
+
+Derivation is **optional by construction**: with no API key, no network,
+or a failed refresh, ADMZ falls back to the declared table. FR-CB-009
+requires ADMZ to run fine with no Gemini key at all, so this must never
+become a startup dependency on the provider being reachable.
+
 ## Non-functional requirements
 
 ### NFR-CB-001 — Gemini API key never in client code ✅
@@ -221,6 +257,25 @@ model, the token counts, and the estimated USD cost. Failed
 turns include the error message. Audit-log filters can
 distinguish chatbot-initiated work from direct MCP / REST
 calls via the flag.
+
+### NFR-CB-008 — The model table is checkable, not merely written down 📋
+`python tools/models.py` prints the declared profiles beside what the
+provider actually reports and **exits non-zero when they disagree** —
+a declared model the API has never heard of, a model that has vanished,
+a token limit that moved, or a `price_valid_until` that has passed.
+Read-only; no model is invoked.
+
+Without a reachable API it reports "could not verify" and exits zero,
+because FR-CB-009 forbids a hard dependency on the provider.
+
+This exists because a hand-maintained table is a claim about the world,
+and three of this project's costliest staleness bugs were exactly that:
+the environments table that went false three times (#398), the atlas pin
+that sat on a pre-security-fix commit for five days under a weekly job
+calling it routine (#392), and the staging row that was already stale the
+week it was written (#238). Pricing makes it load-bearing rather than
+cosmetic — NFR-CB-003 bills operators against these numbers, and
+`gemini-3.7-flash`'s introductory rate expires 2026-12-31.
 
 ## Known limitations
 
