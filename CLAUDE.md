@@ -100,8 +100,11 @@ wrong one, because a wrong path is visible in the file and an absent one is not.
 It also answers **which atlas commit each environment is running** (#424), by digesting the
 installed data tree against `ATLAS_SHA` — a directory install records no commit, so the CI
 provenance script's revision check skips it, and that exemption silently covered production.
-A content mismatch on a **non-editable** install fails the run; on an editable one it does
-not, because pointing at a working tree is the point of an editable install.
+Each environment **declares** the install shape it should have (`atlas: copy | editable | none`)
+and the checker compares observed against declared, rather than asking the installation whether
+it qualifies for inspection. A wrong install kind fails the run; so does a content mismatch on a
+`copy`, an unreadable tree on a `copy`, or an index install. A content mismatch on an `editable`
+install does not — pointing at a working tree is the point of one.
 
 **Production manages a live Axis fleet and a live ACS install.** It runs as the Shawl-supervised Windows service `admz`. Never point tests, agents, or experiments at `:4242` or `C:\ProgramData\admz`. Restarting it, migrating its DB, or driving its devices requires explicit human authorization.
 

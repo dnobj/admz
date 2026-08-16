@@ -59,14 +59,24 @@ on the machine could have said so.
 
 The checker now compares **content** rather than trusting metadata: it digests the installed
 data tree and the tree at `ATLAS_SHA` (read straight from the object store with `git archive`,
-so no checkout is disturbed) and reports one of three verdicts.
+so no checkout is disturbed).
 
-| Verdict | Fails the run? |
+**Each environment declares the install shape it should have** — the `atlas:` key below, one of
+`copy`, `editable` or `none` — and the checker compares observed against declared. That
+direction matters. The first version of this asked the *installed package* what kind it was and
+only checked it if the answer was `copy`, so every way an install could deviate — rebuilt
+editable, pinned at a stale commit, atlas missing altogether — quietly exempted itself. A gate
+keyed on the thing it is inspecting is not a gate.
+
+| Observation | Fails the run? |
 |---|---|
-| `content MATCHES pin <sha>` | no |
-| `content DOES NOT MATCH pin <sha>` on a **non-editable** install | **yes** |
-| `content DOES NOT MATCH pin <sha>` on an **editable** install | no — that is ordinary atlas development |
-| `cannot verify — no atlas repo` | no — a reason to look, not to block |
+| observed kind ≠ declared kind (either direction) | **yes** — that is the ADR-0054 violation |
+| installed from a package index | **yes** — #179 |
+| `content DOES NOT MATCH pin <sha>`, declared `copy` | **yes** |
+| installed tree missing, empty or unreadable, declared `copy` | **yes** — for a deployment that is as alarming as being wrong |
+| `content DOES NOT MATCH pin <sha>`, declared `editable` | no — ordinary atlas development |
+| `BROKEN: …` — the check itself cannot run | **yes**, for either kind |
+| `cannot verify` — no atlas repo, or a pin this clone has not fetched | no — a reason to look, not to block |
 
 Comparing content beats recording a commit at install time: a stamp says what an installer
 *intended*, while this observes what is actually on disk, and cannot be fooled by a source
@@ -74,7 +84,13 @@ directory that has moved on since. Line endings are flattened before hashing, be
 holds LF and a Windows checkout writes CRLF — without that every file reads as different on this
 machine, and a check that cries wolf is worse than no check.
 
-The atlas repo is found next to this one, or at `ADMZ_ATLAS_REPO`.
+`cannot verify` names its actual cause, because the earlier single message sent an operator
+after a repo that was present while the real fix — fetch the clone, the pin moved — went
+unmentioned. `BROKEN` is separated from it for the same reason: an atlas layout change would
+otherwise disable this check permanently while blaming a missing repo.
+
+The atlas repo is taken from `ADMZ_ATLAS_REPO` if set, otherwise the sibling directory beside
+this repo.
 
 ## The declaration
 
@@ -87,6 +103,7 @@ environments:
     admz_home: 'C:\ProgramData\admz'
     checkout: 'C:\admz\admz-prod'
     venv: 'C:\admz\admz-prod\.venv'
+    atlas: copy
     expect_listening: true
     touch: 'never without explicit authorization'
     note: >-
@@ -97,6 +114,7 @@ environments:
     admz_home: 'C:\ProgramData\admz-staging'
     checkout: 'C:\admz\admz-staging-code'
     venv: null
+    atlas: none
     expect_listening: false
     touch: 'not runnable'
     note: >-
@@ -108,6 +126,7 @@ environments:
     admz_home: null
     checkout: 'C:\admz\admz'
     venv: 'C:\admz\admz\.venv'
+    atlas: editable
     expect_listening: false
     touch: 'freely, but it is the human working tree — never commit there'
     note: >-

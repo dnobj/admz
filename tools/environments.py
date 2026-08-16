@@ -305,25 +305,49 @@ def _atlas_repo() -> Path | None:
     return None
 
 
-def atlas_digest_at(sha: str) -> tuple[str | None, int]:
-    """Digest of the data tree at ``sha``, read straight out of the object store.
+def atlas_digest_at(sha: str) -> tuple[str | None, int, str | None]:
+    """``(digest, file count, reason it failed)`` for the data tree at ``sha``.
 
     ``git archive`` rather than a checkout: it needs no working tree, cannot
     disturb the shared clone's branch, and emits blob content (LF), which
     ``_normalize`` accounts for.
+
+    The reasons are separated deliberately. Collapsing them into one "no atlas
+    repo" message sent an operator after a repo that was present, while the real
+    fix — fetch the clone, the pin was bumped — went unnamed. Worse, a repo
+    layout change would have disabled the whole mechanism permanently while
+    still blaming a missing repo, so that case is reported as BROKEN rather than
+    unverifiable.
     """
     repo = _atlas_repo()
     if repo is None:
-        return None, 0
+        return None, 0, f"no atlas repo beside this one (set {ATLAS_REPO_ENV})"
+    try:
+        have = subprocess.run(
+            ["git", "-C", str(repo), "cat-file", "-e", f"{sha}^{{commit}}"],
+            capture_output=True, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, 0, f"git unusable in {repo}: {type(exc).__name__}"
+    if have.returncode != 0:
+        return None, 0, (
+            f"pin {sha[:7]} is not in {repo} — fetch that clone "
+            f"(the pin moved and this copy has not caught up)"
+        )
     try:
         r = subprocess.run(
             ["git", "-C", str(repo), "archive", "--format=tar", sha, ATLAS_DATA_PREFIX],
             capture_output=True, timeout=120,
         )
-    except (OSError, subprocess.SubprocessError):
-        return None, 0
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, 0, f"git archive failed: {type(exc).__name__}"
     if r.returncode != 0 or not r.stdout:
-        return None, 0
+        # The commit exists, so the pathspec is what did not resolve.
+        return None, 0, (
+            f"BROKEN: {ATLAS_DATA_PREFIX!r} matches nothing at {sha[:7]} — "
+            f"atlas layout moved and this check is disabled until the prefix "
+            f"is updated"
+        )
     entries: dict[str, bytes] = {}
     try:
         with tarfile.open(fileobj=io.BytesIO(r.stdout), mode="r:") as tar:
@@ -335,37 +359,63 @@ def atlas_digest_at(sha: str) -> tuple[str | None, int]:
                     continue
                 rel = member.name[len(ATLAS_DATA_PREFIX):].lstrip("/")
                 entries[rel] = fh.read()
-    except (tarfile.TarError, OSError):
-        return None, 0
-    return (_digest(entries), len(entries)) if entries else (None, 0)
+    except (tarfile.TarError, OSError) as exc:
+        return None, 0, f"BROKEN: archive of {sha[:7]} is unreadable ({type(exc).__name__})"
+    if not entries:
+        return None, 0, f"BROKEN: {ATLAS_DATA_PREFIX!r} is empty at {sha[:7]}"
+    return _digest(entries), len(entries), None
+
+
+#: What ``atlas_revision`` concluded. ``broken`` means the check itself cannot
+#: run and must be repaired; ``unverifiable`` means this machine lacks something
+#: to compare against, which is a reason to look rather than to block.
+MATCH, MISMATCH, UNREADABLE, UNVERIFIABLE, BROKEN = (
+    "match", "mismatch", "unreadable", "unverifiable", "broken"
+)
 
 
 @functools.lru_cache(maxsize=None)
-def atlas_revision(python: Path) -> tuple[str, bool]:
-    """``(message, is_mismatch)`` for the installed atlas versus the pin.
+def atlas_revision(python: Path) -> tuple[str, str]:
+    """``(message, status)`` for the installed atlas versus the pin.
 
     Cached because the report prints it and ``main()`` re-asks in order to fail
     the run — hashing 800-odd files twice per environment for one answer.
     """
     sha = expected_atlas_sha()
     if not sha:
-        return "pin unreadable (setup.py has no ATLAS_SHA)", False
+        return "pin unreadable (setup.py has no ATLAS_SHA)", UNVERIFIABLE
+
+    # A VCS install DOES record its commit, so compare that directly. The CI
+    # provenance script does the same check — but only in CI, against CI's own
+    # venv, so it says nothing about this machine. Trusting it here is how a
+    # production venv pinned at a stale commit would have passed clean.
+    kind, detail = install_kind(python)
+    if kind == "commit":
+        if detail.lower() == sha:
+            return f"git install at pin {sha[:7]}", MATCH
+        return (
+            f"git install at {detail[:7]}, but the pin is {sha[:7]} — see #424",
+            MISMATCH,
+        )
+
     installed, n_installed = installed_atlas_digest(python)
     if installed is None:
-        return "content unreadable", False
-    pinned, n_pinned = atlas_digest_at(sha)
-    if pinned is None:
         return (
-            f"cannot verify against {sha[:7]} — no atlas repo "
-            f"(set {ATLAS_REPO_ENV})",
-            False,
+            "installed data tree is missing, empty or unreadable — "
+            "nothing to compare",
+            UNREADABLE,
         )
+    pinned, n_pinned, reason = atlas_digest_at(sha)
+    if pinned is None:
+        assert reason is not None
+        status = BROKEN if reason.startswith("BROKEN") else UNVERIFIABLE
+        return f"cannot verify against {sha[:7]} — {reason}", status
     if installed == pinned:
-        return f"content MATCHES pin {sha[:7]} ({n_installed} files)", False
+        return f"content MATCHES pin {sha[:7]} ({n_installed} files)", MATCH
     return (
         f"content DOES NOT MATCH pin {sha[:7]} "
         f"(installed {n_installed} files, pin has {n_pinned}) — see #424",
-        True,
+        MISMATCH,
     )
 
 
@@ -373,29 +423,54 @@ def _revision_suffix(python: Path) -> str:
     return f"\n                 revision: {atlas_revision(python)[0]}"
 
 
-def atlas_problem(name: str, venv: str | None) -> str | None:
-    """The mismatch worth failing the run over, or ``None``.
+def atlas_problem(name: str, venv: str | None, declared: str | None) -> str | None:
+    """The atlas fact worth failing the run over, or ``None``.
 
-    Only a NON-EDITABLE install can fail. An editable one points at a working
-    tree deliberately, so a mismatch there is ordinary atlas development —
-    failing on it would train every reader to skip this line, which is worse
-    than not having it. "Cannot verify" never fails: no atlas repo on the
-    machine is a reason to look, not a reason to block.
+    ``declared`` is the environment's ``atlas:`` key — ``copy``, ``editable`` or
+    ``none``. Reading it from the declaration rather than from the installation
+    is the whole point: the first version of this asked the *installed* package
+    what kind it was and only checked it if the answer was ``copy``, so every
+    way an install could deviate — reinstalled editable, pinned at a stale
+    commit, atlas missing entirely — turned the check off. A gate keyed on the
+    thing it is inspecting is not a gate.
 
-    Extracted from ``main`` so the rule is testable without a real venv, a real
-    ``netstat`` and a real ``docs/ENVIRONMENTS.md``.
+    Rules, in order:
+
+    * observed kind ≠ declared kind → **fail**, whichever way round. That is the
+      ADR-0054 violation the environments page exists to catch.
+    * declared ``copy``: a mismatch, an unreadable tree, or a BROKEN check all
+      fail. For a deployment, "I cannot read what is on disk" is at least as
+      alarming as "it is the wrong thing".
+    * declared ``editable``: only a BROKEN check fails. A content mismatch is
+      ordinary atlas development, and failing on it would train every reader to
+      skip the line — worse than not having it.
+    * ``unverifiable`` never fails, for either. No atlas repo on this machine,
+      or a pin this clone has not fetched, is a reason to look, not to block.
     """
-    if not venv:
+    if not venv or declared in (None, "none"):
         return None
     python = Path(venv) / "Scripts" / "python.exe"
     if not python.exists():
         python = Path(venv) / "bin" / "python"
     if not python.exists():
         return None
-    if install_kind(python)[0] != "copy":
-        return None
-    message, mismatch = atlas_revision(python)
-    return f"{name}: atlas {message}" if mismatch else None
+
+    observed = install_kind(python)[0]
+    if observed == "index":
+        return f"{name}: atlas was installed FROM AN INDEX (see #179)"
+    expected_kinds = {"copy": ("copy",), "editable": ("editable",)}.get(declared, ())
+    if observed not in expected_kinds:
+        return (
+            f"{name}: declares atlas {declared!r} but the installed one is "
+            f"{observed!r} — see ADR-0054 and #424"
+        )
+
+    message, status = atlas_revision(python)
+    if status == BROKEN:
+        return f"{name}: atlas {message}"
+    if declared == "copy" and status in (MISMATCH, UNREADABLE):
+        return f"{name}: atlas {message}"
+    return None
 
 
 # ── launch configs ──────────────────────────────────────────────────────────
@@ -464,7 +539,7 @@ def main() -> int:
             )
 
         if observed_venv != "MISSING":
-            atlas_issue = atlas_problem(name, venv)
+            atlas_issue = atlas_problem(name, venv, spec.get("atlas"))
             if atlas_issue:
                 problems.append(atlas_issue)
         print()
