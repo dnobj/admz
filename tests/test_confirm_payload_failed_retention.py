@@ -303,7 +303,7 @@ def _step_result(success: bool):
 
 def _run(coro):
     import asyncio
-    return asyncio.new_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def _consume(store, token, *, success, monkeypatch):

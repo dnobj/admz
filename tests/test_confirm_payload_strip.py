@@ -39,7 +39,7 @@ _PAYLOAD_COLS = ("params_json", "action_json", "plan_summary_json", "plan_steps_
 
 
 def _run(coro):
-    return asyncio.new_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 @pytest.fixture

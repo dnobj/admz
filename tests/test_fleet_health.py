@@ -1183,7 +1183,7 @@ class TestDeferredActionAuditRecordsPasswordSource:
             registry=SimpleNamespace(
                 get_device_info=lambda d: {"host": "192.0.2.1"}),
             catalog=None, executors={})
-        out = asyncio.new_event_loop().run_until_complete(
+        out = asyncio.run(
             h.get_task_handler("reprovision")(task, ctx))
         assert out["password_source"] == "generated"
 

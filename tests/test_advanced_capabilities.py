@@ -807,7 +807,7 @@ def _live_mcp_tool_names(tmp_path, monkeypatch):
     from admz.mcp.server import ADMZMCPServer
 
     server = ADMZMCPServer()
-    names = asyncio.new_event_loop().run_until_complete(
+    names = asyncio.run(
         mcp_harness.tool_names(server)
     )
     return server, names

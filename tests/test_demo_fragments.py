@@ -423,7 +423,7 @@ class TestAttributedSignature:
         import asyncio
 
         detector = _setup(repo, live, demos)
-        return asyncio.new_event_loop().run_until_complete(
+        return asyncio.run(
             detector.check_drift("cam-01"))
 
     def test_field_count_is_unclaimed_only(self, repo, tmp_path):

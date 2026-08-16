@@ -56,7 +56,7 @@ class _Exec:
 
 def _run(heals: bool):
     reg = _Registry()
-    asyncio.new_event_loop().run_until_complete(
+    asyncio.run(
         run_execution_tail(
             device_id="cam",
             operation_id="op",

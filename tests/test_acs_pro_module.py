@@ -141,7 +141,7 @@ class TestCorrelation:
 # Executor (mocked transport + Negotiate)
 # --------------------------------------------------------------------------
 def _run(coro):
-    return asyncio.new_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 class TestExecutor:
@@ -408,7 +408,7 @@ class TestNoNegotiateToUnconfirmedHost:
                  authz.require_authenticated_principal,
                  ctxmod.get_context, audit.record_event) = saved
 
-        return asyncio.new_event_loop().run_until_complete(_go())
+        return asyncio.run(_go())
 
 
 class TestExecutorHonoursNoNegotiate:
@@ -463,7 +463,7 @@ class TestExecutorHonoursNoNegotiate:
 
         server = {"device_id": "acs-server", "host": "https://attacker.example",
                   "verify_tls": False, "no_negotiate": no_negotiate}
-        res = asyncio.new_event_loop().run_until_complete(
+        res = asyncio.run(
             ex.AcsProExecutor().execute(self._op(), server, {}, {}))
         return res, sent, minted, continued
 
@@ -560,7 +560,7 @@ class TestConfigWriteIsPrivileged:
                 (auth.get_current_principal, ctxmod.get_context,
                  audit.record_event) = saved
 
-        return asyncio.new_event_loop().run_until_complete(_go())
+        return asyncio.run(_go())
 
     def test_an_unprivileged_user_cannot_point_admz_at_a_host(self, monkeypatch):
         """The critical one. Behavioural, through the real reveal check."""

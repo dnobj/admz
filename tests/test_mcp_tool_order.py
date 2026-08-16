@@ -105,7 +105,7 @@ EXPECTED_TOOL_ORDER = [
 
 def _live_tool_order():
     srv = ADMZMCPServer()
-    return asyncio.new_event_loop().run_until_complete(
+    return asyncio.run(
         mcp_harness.tool_names(srv)
     )
 
