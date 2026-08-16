@@ -85,6 +85,11 @@ their phone while on the floor).
 
 ## Known limitations
 
+> The cross-cutting list of UI surfaces that are *deliberately* absent — including
+> ones owned by other requirement files (Org switching, Site management, discovery
+> page) — is [ui-deferred.md](../ui-deferred.md). The `KL-UI-*` entries below are the
+> web-UI-owned subset; the register points back at them.
+
 ### KL-UI-001 — Limited interactivity ⚠️
 No live updates, no progress streaming, no inline approval cards.
 The bundled chatbot (deferred — [ADR-0024](../decisions/0024-bundled-web-chatbot.md))
