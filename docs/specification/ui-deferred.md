@@ -22,21 +22,21 @@ Rows are removed when the surface ships — in the same PR, per process.md.
 
 | Surface (what a user would look for) | What exists today | Owning spec ID(s) | Tracking issue |
 |---|---|---|---|
-| **Organization selection / switching** — pick or change the active Org | The topbar shows an org *label* (`build_nav` picks the first non-default Org, else `default`); no switcher, no Org CRUD in the UI | [hierarchy.md](requirements/hierarchy.md) FR-HIER-013 📋, KL-HIER-004 | _to be filed_ |
-| **Site management** — create / rename / move devices between Sites from the UI | The sidebar Site *switcher* works (`/ui/site/{site_id}`, cookie-scoped); management is registry-level only | [hierarchy.md](requirements/hierarchy.md) FR-HIER-013 📋 | _to be filed_ |
-| **Site-scoped authorization** — restrict who sees which Site | Every authenticated principal sees the whole fleet | [hierarchy.md](requirements/hierarchy.md) NFR-HIER-004, KL-HIER-001 | _to be filed_ |
-| **Per-Site settings** — a different `default_password` etc. per Site | `fleet_settings` is global | [hierarchy.md](requirements/hierarchy.md) KL-HIER-002 | _to be filed_ |
-| **Saved tag selectors ("smart groups")** in the sidebar | Flat tags only | [hierarchy.md](requirements/hierarchy.md) KL-HIER-003, ADR-0032 | _to be filed_ |
+| **Organization selection / switching** — pick or change the active Org | The topbar shows an org *label* (`build_nav` picks the first non-default Org, else `default`); no switcher, no Org CRUD in the UI | [hierarchy.md](requirements/hierarchy.md) FR-HIER-013 📋, KL-HIER-004 | [#412](https://github.com/dnobj/admz/issues/412) |
+| **Site management** — create / rename / move devices between Sites from the UI | The sidebar Site *switcher* works (`/ui/site/{site_id}`, cookie-scoped); management is registry-level only | [hierarchy.md](requirements/hierarchy.md) FR-HIER-013 📋 | [#413](https://github.com/dnobj/admz/issues/413) |
+| **Site-scoped authorization** — restrict who sees which Site | Every authenticated principal sees the whole fleet | [hierarchy.md](requirements/hierarchy.md) NFR-HIER-004, KL-HIER-001 | [#414](https://github.com/dnobj/admz/issues/414) |
+| **Per-Site settings** — a different `default_password` etc. per Site | `fleet_settings` is global | [hierarchy.md](requirements/hierarchy.md) KL-HIER-002 | [#415](https://github.com/dnobj/admz/issues/415) |
+| **Saved tag selectors ("smart groups")** in the sidebar | Flat tags only | [hierarchy.md](requirements/hierarchy.md) KL-HIER-003, ADR-0032 | [#416](https://github.com/dnobj/admz/issues/416) |
 | **Network discovery page** — run a scan and review results in the browser | No route, template or nav entry; only `POST /api/discovery/scan` and the chat tool. The Settings card's *Run discovery* control currently links to the API docs. Direction is being designed by the owner | [discovery.md](requirements/discovery.md); [#404](https://github.com/dnobj/admz/issues/404) (`status: planning`) | #404 |
-| **Drift dashboard** — a page listing drifted devices/keys fleet-wide | Drift renders per device (grouped by rule, #247); no fleet-wide page. English rendering of a rule diff is separately deferred | [web-ui.md](requirements/web-ui.md) KL-UI-003 📋 | [#248](https://github.com/dnobj/admz/issues/248) (rendering); dashboard: _to be filed_ |
-| **Bulk device edit** — edit many devices at once | Per-device forms only | [web-ui.md](requirements/web-ui.md) KL-UI-004 📋 | _to be filed_ |
+| **Drift dashboard** — a page listing drifted devices/keys fleet-wide | Drift renders per device (grouped by rule, #247); no fleet-wide page. English rendering of a rule diff is separately deferred | [web-ui.md](requirements/web-ui.md) KL-UI-003 📋 | [#248](https://github.com/dnobj/admz/issues/248) (rendering); dashboard: [#417](https://github.com/dnobj/admz/issues/417) |
+| **Bulk device edit** — edit many devices at once | Per-device forms only | [web-ui.md](requirements/web-ui.md) KL-UI-004 📋 | [#418](https://github.com/dnobj/admz/issues/418) |
 | **Attention-first UI (no persistent left nav)** | The current page-based nav | — (idea stage) | [#122](https://github.com/dnobj/admz/issues/122) |
 | **Strict CSP (no `unsafe-inline`)** | 699 inline constructs remain | — | [#277](https://github.com/dnobj/admz/issues/277) |
 | **Restyle of the create-demo / add-signal dialogs** | Plan merged, awaiting a Build session — a known inconsistency, not a new finding | plan `docs/plans/demo-modal-restyle.md` | [#116](https://github.com/dnobj/admz/issues/116) (`status: ready`) |
 
-_"to be filed"_ rows are the bootstrap debt of this register: the first run of the UI audit
-loop files one `status: future` issue per row (after searching open **and** closed issues
-for an existing one) and replaces the placeholder with the number in a docs PR.
+The register was seeded with _to be filed_ placeholders; run 0 of the UI audit loop
+(2026-08-16) searched open **and** closed issues for each, found none, and filed
+#412–#418. A new row is added together with its `status: future` issue, in one docs PR.
 
 ## What is **not** deferred — do not add these here
 
