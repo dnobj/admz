@@ -107,9 +107,11 @@ explicitly or set `ADMZ_GEMINI_DEFAULT_MODEL`. Selection persists per
 principal. (Pricing shifts with Google's tiers; see
 `admz/chatbot/usage.py` `PRICING` for the values ADMZ bills against.)
 
-The model list above is restated here because it is small and stable
-today; **FR-CB-015 moves the authoritative copy into the profile table**,
-after which this paragraph should cite it rather than enumerate.
+**The authoritative list is now `admz/chatbot/models.py`** (FR-CB-015), not
+the enumeration above, which is retained only as a reader's summary. As of
+#407 it also offers `gemini-3.7-flash`, `gemini-3.6-flash` and
+`gemini-3.5-flash-lite`. Pricing is derived from the same table, so
+`usage.py` and the settings page can no longer disagree.
 
 ### FR-CB-009 — Disabled by default ✅
 With no Gemini API key configured (neither
@@ -173,7 +175,7 @@ the nav bar. Top-level nav order: Chat, Devices, Search,
 Add Device, Fleet Settings, Confirmation Settings, Chat Settings,
 API Docs.
 
-### FR-CB-015 — Model profiles carry capability and request dialect 📋
+### FR-CB-015 — Model profiles carry capability and request dialect 🚧
 Every model ADMZ will use has one profile entry, and that entry — not a
 literal in a call path — decides how a request is shaped. See
 [ADR-0060](../decisions/0060-model-profiles.md).
@@ -199,6 +201,13 @@ Two consequences are the point of the requirement:
   chat) instead of maintaining its own list. This retires the separate
   model lists in `admz/chatbot/voice.py` and the duplicated pricing table
   in `admz/api/templates/chat_settings.html`.
+
+**Shipped in #407 (slice 1 of 3):** the profile table, the dialect adapter, and
+the collapse of the duplicate model/pricing lists in `chatbot/config.py`,
+`chatbot/usage.py`, `chatbot/voice.py` and `chat_settings.html`. **Not yet
+shipped:** the derived layer and its checker (NFR-CB-008) — the table is
+hand-declared until then, which is the half ADR-0060 warns is a claim about the
+world rather than an observation of it.
 
 Derivation is **optional by construction**: with no API key, no network,
 or a failed refresh, ADMZ falls back to the declared table. FR-CB-009

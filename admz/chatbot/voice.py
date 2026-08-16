@@ -25,6 +25,8 @@ without audio, so the bridge is exercisable without a microphone.
 
 from __future__ import annotations
 
+from admz.chatbot import models as _models
+
 import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
 
@@ -38,12 +40,10 @@ logger = logging.getLogger(__name__)
 #   - gemini-2.5-flash-native-audio-latest     : rolling 2.5 native-audio alias.
 #   - gemini-2.5-flash-native-audio-preview-12-2025 : pinned newer 2.5 native.
 #   - gemini-2.5-flash-native-audio-preview-09-2025 : the first one we shipped.
-VOICE_MODELS = [
-    "gemini-3.1-flash-live-preview",
-    "gemini-2.5-flash-native-audio-latest",
-    "gemini-2.5-flash-native-audio-preview-12-2025",
-    "gemini-2.5-flash-native-audio-preview-09-2025",
-]
+VOICE_MODELS = _models.live_audio_models()
+# ^ from the profile table (ADR-0060). This was a hand-maintained literal;
+# the models.list probe for #424 showed the same set is derivable from
+# supportedGenerationMethods == bidiGenerateContent, which is NFR-CB-008.
 DEFAULT_VOICE_MODEL = "gemini-3.1-flash-live-preview"
 # Back-compat alias.
 VOICE_MODEL = DEFAULT_VOICE_MODEL

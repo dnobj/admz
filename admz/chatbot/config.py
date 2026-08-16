@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from admz.chatbot import models as _models
 from typing import List, Optional
 
 import admz.fleet_settings as _fs_module
@@ -45,16 +46,10 @@ def _fs():
 # ADMZ_GEMINI_DEFAULT_MODEL. See ADR-0025.
 DEFAULT_MODEL = "gemini-2.5-flash"
 
-SELECTABLE_MODELS: List[str] = [
-    # --- Gemini 3.x ---
-    "gemini-3.1-pro-preview",   # most capable (preview)
-    "gemini-3.5-flash",         # stable, agent-tuned (newer + more $$ than 2.5-flash)
-    "gemini-3.1-flash-lite",    # stable budget tier on the 3.x line
-    # --- Gemini 2.5 (proven stable line) ---
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-]
+# The table in admz.chatbot.models is the single source (ADR-0060). It used
+# to be this literal, with pricing repeated in usage.py and again as HTML in
+# chat_settings.html -- three places to update and two to forget.
+SELECTABLE_MODELS: List[str] = _models.selectable_models()
 
 
 # Fleet-setting keys (also listed in PROTECTED_SETTING_KEYS).
