@@ -63,6 +63,13 @@ uses the right scheme per request. See
 Password source: explicit arg > fleet `default_password` > 24-char
 generated.
 
+> **This ordering is changed by [ADR-0061](../decisions/0061-entry-credentials-and-the-admz-account.md).**
+> Preferring the shared fleet password is least appropriate exactly here —
+> writing a brand-new account on a factory-default device — and #327 already
+> moved unattended reprovision to always generate. Under FR-CRED-011 the
+> generated password wins and the fleet credential is an *input for
+> authentication*, never a value written to a device.
+
 ### FR-CRED-008 — Temporary device-side users ✅
 `create_temp_credentials(device_id, permissions, ttl_seconds)`
 creates an `at_<8 hex>` user on the device, returns the plaintext
@@ -71,6 +78,48 @@ is that the LLM uses these creds directly for a brief window).
 
 Max 3 temp creds per device. TTL 60–3600s. Background loop cleans
 expired ones via `pwdgrp.cgi:remove-user`.
+
+### FR-CRED-011 — Entry credentials get in; the `admz` account stays in 📋
+A fleet credential authenticates ADMZ to a device it does not yet manage. It
+is **never** stored as that device's ongoing credential. See
+[ADR-0061](../decisions/0061-entry-credentials-and-the-admz-account.md).
+
+- **Entry credentials are a list of `(username, password)` pairs.** Usernames
+  vary by setup era as much as passwords do — production today has
+  `default_username = 'operator'` while none of its nine stored device
+  accounts use it.
+- **ADMZ creates an `admz` administrator account per device**, with a password
+  generated for that device and stored encrypted. That is the ongoing
+  credential.
+- **ADMZ never deletes, rotates or disables the account it authenticated
+  with.** If ADMZ's database is lost, the entry credential is the only way
+  back in — which makes the entry list recovery material and #405 (encryption
+  at rest) a prerequisite, not an adjacent cleanup.
+- **Creating the account is a gated write.** `pwdgrp.cgi:add-user` with
+  `group=root` is ADR-0059's decision point. This path reaches it on devices
+  that are *not* factory-defaulted, which ADR-0059 did not cover; adoption
+  must not create an account merely because a password answered.
+- **Attempts are bounded.** Stop on first success, order by
+  most-recently-successful, cap the count. N credentials is N failed
+  authentications, and Axis brute-force behaviour varies by model and
+  firmware — measure once against a spare device before shipping.
+
+Existing devices are **not** migrated automatically. Creating accounts on nine
+live devices as a deploy side effect is a decision, not a consequence.
+
+### FR-CRED-012 — Captured credentials may be promoted to the entry list 📋
+When nothing authenticates, the capture flow (FR-CRED-003 / ADR-0009) offers an
+opt-in *"also try this on other devices."*
+
+This is a **scope promotion**, not a save: the secret becomes something ADMZ
+will offer to every device in the fleet. So it defaults **unchecked**, the label
+says what it does rather than "save", and the promotion is audited as its own
+event, separate from the capture.
+
+MCP callers may **propose** the flag in the capture response; the widget
+displays it and the human confirms. The person typing the secret is the only one
+who knows whether it is safe to spray at the whole fleet, and that judgement
+cannot live in a tool argument.
 
 ### FR-CRED-009 — Device passwords are never displayed; no LLM retrieval ✅
 Device-account passwords are **never displayed** through any web/REST
