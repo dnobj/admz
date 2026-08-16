@@ -22,7 +22,16 @@ from tools.environments import load_declaration
 
 #: Keys the checker reads for every environment. Adding a key here without
 #: teaching the checker to observe it makes test_no_unobservable_keys fail.
-REQUIRED = {"port", "admz_home", "checkout", "venv", "expect_listening", "touch"}
+REQUIRED = {
+    "port", "admz_home", "checkout", "venv", "expect_listening", "touch",
+    # The install shape the checker must compare against, rather than asking
+    # the installation itself (#424). Without it here, an environment could be
+    # added with no declared atlas and would silently skip the whole check.
+    "atlas",
+}
+
+#: The only values the checker knows how to act on.
+ATLAS_KINDS = {"copy", "editable", "none"}
 
 #: Keys that are allowed but optional.
 OPTIONAL = {"note"}
@@ -53,6 +62,54 @@ def test_every_environment_declares_every_required_key(declared, key):
         f"environment, and a missing key reads as 'not applicable' rather than "
         f"'nobody filled this in'."
     )
+
+
+def test_every_declared_atlas_kind_is_one_the_checker_acts_on(declared):
+    """Belt, to the code's braces.
+
+    A typo like ``coppy`` already fails **closed** at runtime: ``atlas_problem``
+    looks the declared value up in a table of expected observed-kinds and gets an
+    empty tuple, so every observed kind trips the mismatch branch. This test
+    catches it earlier and says *why*, rather than leaving an operator to read
+    "declares atlas 'coppy' but the installed one is 'copy'" and work it out.
+
+    Both are worth having. The runtime path is what makes an unrecognised value
+    safe; do not "simplify" it away on the strength of this test.
+    """
+    wrong = {
+        name: spec["atlas"] for name, spec in declared.items()
+        if spec.get("atlas") not in ATLAS_KINDS
+    }
+    assert not wrong, f"unrecognised atlas kinds: {wrong} (expected one of {sorted(ATLAS_KINDS)})"
+
+
+def test_no_environment_declares_atlas_none_with_a_venv(declared):
+    """``atlas: none`` means "there is no atlas here to check".
+
+    The checker skips the content comparison for it. That is right for an
+    environment with no venv of its own, and wrong for one that has an
+    interpreter — the declaration would then exempt a real installation from
+    everything except the index check. Nothing in the checker can notice the
+    combination, so it is pinned here.
+    """
+    wrong = [
+        name for name, spec in declared.items()
+        if spec.get("atlas") == "none" and spec.get("venv")
+    ]
+    assert not wrong, (
+        f"{wrong} declare atlas 'none' but have a venv. Either the venv has an "
+        f"atlas (declare copy/editable) or it does not (declare venv: null)."
+    )
+
+
+def test_production_declares_a_non_editable_atlas(declared):
+    """ADR-0054's requirement, as a claim the checker enforces.
+
+    Production's atlas must be a copy, never editable — an editable install
+    re-creates the dev/prod coupling the split removed, and until #424 nothing
+    would have noticed the reinstall.
+    """
+    assert declared["production"]["atlas"] == "copy"
 
 
 def test_no_unobservable_keys(declared):

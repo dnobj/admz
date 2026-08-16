@@ -43,6 +43,63 @@ block and asserts every claim in it is one the checker knows how to observe — 
 unverifiable claim cannot be added to this page silently. That test observes nothing and
 does not care what machine it runs on.
 
+### It also answers "which atlas is this running?" (#424)
+
+`axis-api-atlas` reports `__version__ = "0.1.0"` forever, which is why #232 pinned it by SHA
+instead. But a **directory install records no commit**: PEP 610 writes a `dir_info` block, and
+`.github/scripts/assert_atlas_provenance.py` skips its revision check for that shape — a
+deliberate exemption so developer laptops keep working, which silently covered **production
+too**, because ADR-0054's non-editable install is also a directory install.
+
+That blind spot had a cost. Production ran an atlas in which `pwdgrp.cgi:add-user`,
+`ssh:addUser` and `ssh:modifyUser` were `risk_level: normal` — which the confirmation gate maps
+to `none` — so creating a root-group admin account on a camera ran inline with no human, while
+*deleting* one required approval. It stayed live for six days after the fix merged, and nothing
+on the machine could have said so.
+
+The checker now compares **content** rather than trusting metadata: it digests the installed
+data tree and the tree at `ATLAS_SHA` (read straight from the object store with `git archive`,
+so no checkout is disturbed).
+
+**Each environment declares the install shape it should have** — the `atlas:` key below, one of
+`copy`, `editable` or `none` — and the checker compares observed against declared. That
+direction matters. The first version of this asked the *installed package* what kind it was and
+only checked it if the answer was `copy`, so every way an install could deviate — rebuilt
+editable, pinned at a stale commit, atlas missing altogether — quietly exempted itself. A gate
+keyed on the thing it is inspecting is not a gate.
+
+| Observation | Fails the run? |
+|---|---|
+| installed from a package index | **yes** — #179, and this one is checked even for `atlas: none` |
+| observed kind ≠ declared kind (either direction) | **yes** — that is the ADR-0054 violation |
+| `content DOES NOT MATCH pin <sha>`, declared `copy` | **yes** |
+| installed tree missing, empty or unreadable, declared `copy` | **yes** — for a deployment that is as alarming as being wrong |
+| `content DOES NOT MATCH pin <sha>`, declared `editable` | no — ordinary atlas development |
+| `BROKEN: …` — the check itself cannot run | **yes**, for either kind |
+| `cannot verify` — no atlas repo, or a pin this clone has not fetched | no — a reason to look, not to block |
+
+Comparing content beats recording a commit at install time: a stamp says what an installer
+*intended*, while this observes what is actually on disk, and cannot be fooled by a source
+directory that has moved on since. Line endings are flattened before hashing, because a git blob
+holds LF and a Windows checkout writes CRLF — without that every file reads as different on this
+machine, and a check that cries wolf is worse than no check.
+
+`cannot verify` names its actual cause, because the earlier single message sent an operator
+after a repo that was present while the real fix — fetch the clone, the pin moved — went
+unmentioned. `BROKEN` is separated from it for the same reason: an atlas layout change would
+otherwise disable this check permanently while blaming a missing repo.
+
+The atlas repo is taken from `ADMZ_ATLAS_REPO`, otherwise the sibling directory beside this
+repo. An override that is set but is **not** a git repo is reported as its own cause rather
+than silently falling back to the sibling — an operator who set it deliberately would
+otherwise be verifying against a repo they did not choose, with nothing on screen to say so.
+
+`atlas: none` means there is no atlas in that environment to compare, and the content check
+is skipped for it. The index check is not: #179 is about someone else's code running inside
+the venv the service runs as LocalSystem, and declaring no atlas is not a reason to permit
+that. A test keeps `atlas: none` and `venv: null` from drifting apart, since the checker
+itself cannot notice the combination.
+
 ## The declaration
 
 <!-- tools/environments.py parses this block. Keep it valid YAML. -->
@@ -54,6 +111,7 @@ environments:
     admz_home: 'C:\ProgramData\admz'
     checkout: 'C:\admz\admz-prod'
     venv: 'C:\admz\admz-prod\.venv'
+    atlas: copy
     expect_listening: true
     touch: 'never without explicit authorization'
     note: >-
@@ -64,6 +122,7 @@ environments:
     admz_home: 'C:\ProgramData\admz-staging'
     checkout: 'C:\admz\admz-staging-code'
     venv: null
+    atlas: none
     expect_listening: false
     touch: 'not runnable'
     note: >-
@@ -75,6 +134,7 @@ environments:
     admz_home: null
     checkout: 'C:\admz\admz'
     venv: 'C:\admz\admz\.venv'
+    atlas: editable
     expect_listening: false
     touch: 'freely, but it is the human working tree — never commit there'
     note: >-

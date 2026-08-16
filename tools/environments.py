@@ -17,15 +17,27 @@ a diagnostic that pokes it is not a diagnostic.
 
 from __future__ import annotations
 
+import functools
+import hashlib
+import io
 import json
 import os
 import re
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 DOC = REPO / "docs" / "ENVIRONMENTS.md"
+SETUP_PY = REPO / "setup.py"
+
+#: Where the atlas source repo lives, so the installed copy can be compared
+#: against the pin. Overridable because it is a sibling by convention, not by
+#: rule. Absent → the revision check degrades to "cannot verify", never to a
+#: false pass (GH #424).
+ATLAS_REPO_ENV = "ADMZ_ATLAS_REPO"
+ATLAS_DATA_PREFIX = "src/axis_api_atlas/data"
 
 #: Packages whose version has actually broken something here, so worth showing.
 WATCHED = ("starlette", "fastapi", "mcp", "axis-api-atlas")
@@ -143,17 +155,13 @@ def venv_state(path: str | None) -> str:
     return f"{shown}\n                 atlas: {atlas_provenance(py)}"
 
 
-def atlas_provenance(python: Path) -> str:
-    """Where this interpreter's atlas came from — the only meaningful "version".
+@functools.lru_cache(maxsize=None)
+def install_kind(python: Path) -> tuple[str, str]:
+    """``(kind, detail)`` from PEP 610 metadata.
 
-    Its version string is ``0.1.0`` forever, which is why #232 pinned by SHA.
-
-    Three outcomes, and the distinction is load-bearing. ADR-0054 requires
-    production's copy to be **non-editable**, so reporting a local-directory
-    install as "editable" would accuse it of the exact coupling the dev/prod
-    split removed. PEP 610 marks a real editable install with
-    ``dir_info: {"editable": true}``; a plain ``dir_info`` is a *copy* taken
-    from that directory, which is a different thing entirely.
+    ``commit`` | ``editable`` | ``copy`` | ``index`` | ``unknown``. Split out so
+    the provenance line and the revision verdict agree about what they are
+    looking at instead of probing separately (#424).
     """
     code = (
         "import importlib.metadata as m, json\n"
@@ -173,17 +181,315 @@ def atlas_provenance(python: Path) -> str:
             [str(python), "-c", code], capture_output=True, text=True, timeout=60
         )
     except (OSError, subprocess.SubprocessError):
-        return "?"
+        return "unknown", ""
     kind, _, detail = (r.stdout.strip() or "unknown:").partition(":")
+    return kind, detail
+
+
+def atlas_provenance(python: Path) -> str:
+    """Where this interpreter's atlas came from — the only meaningful "version".
+
+    Its version string is ``0.1.0`` forever, which is why #232 pinned by SHA.
+
+    Three outcomes, and the distinction is load-bearing. ADR-0054 requires
+    production's copy to be **non-editable**, so reporting a local-directory
+    install as "editable" would accuse it of the exact coupling the dev/prod
+    split removed. PEP 610 marks a real editable install with
+    ``dir_info: {"editable": true}``; a plain ``dir_info`` is a *copy* taken
+    from that directory, which is a different thing entirely.
+    """
+    kind, detail = install_kind(python)
     if kind == "commit":
-        return f"git@{detail[:7]}"
+        # A VCS install records its commit, so compare it to the pin here too.
+        # An earlier version returned the bare sha on the grounds that "the CI
+        # script's revision check already covers it" — false on this machine,
+        # since that script runs in CI against CI's own venv. No environment
+        # currently declares a VCS install, so this line is reached only if one
+        # appears; printing it uncompared would be the same blind spot again.
+        return f"git@{detail[:7]}{_revision_suffix(python)}"
     if kind == "editable":
-        return f"EDITABLE from {detail}"
+        return f"EDITABLE from {detail}{_revision_suffix(python)}"
     if kind == "copy":
-        return f"copy of {detail}"
+        return f"copy of {detail}{_revision_suffix(python)}"
     if kind == "index":
         return "FROM AN INDEX (see #179)"
     return "?"
+
+
+# ── which atlas commit is this, really (GH #424) ─────────────────────────────
+#
+# A directory install records ``dir_info`` and NO commit, so
+# ``.github/scripts/assert_atlas_provenance.py``'s revision check explicitly
+# skips it — a decision made so developer laptops keep working, which silently
+# covers production too, because ADR-0054's non-editable install is also a
+# directory install. Production therefore ran an atlas whose commit nothing
+# could name, and an ungated ``pwdgrp.cgi:add-user`` (risk_level normal ->
+# confirmation level none) sat live for six days after the fix merged.
+#
+# The commit cannot be recovered from metadata, so this compares CONTENT: the
+# installed data tree against the tree at ``ATLAS_SHA``. That is stronger than
+# a stamp — a stamp records what an installer *intended*, this observes what is
+# actually on disk, and it cannot be fooled by a source directory that has
+# moved on since.
+
+def expected_atlas_sha() -> str | None:
+    """``ATLAS_SHA`` from setup.py — the single source of truth for the pin.
+
+    Deliberately the same regex as ``_expected_sha()`` in
+    ``.github/scripts/assert_atlas_provenance.py``. Two parsers of one literal
+    is two things to break, so ``tests/test_atlas_revision.py`` asserts the two
+    return the same value rather than trusting them to stay in step.
+    """
+    try:
+        src = SETUP_PY.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r'^ATLAS_SHA\s*=\s*"([0-9a-fA-F]{40})"', src, re.MULTILINE)
+    return match.group(1).lower() if match else None
+
+
+def _normalize(raw: bytes) -> bytes:
+    """Content, with line endings flattened.
+
+    A git blob holds LF; a Windows checkout with ``core.autocrlf=true`` writes
+    CRLF, and the installed copy is taken from a checkout. Comparing raw bytes
+    would report every file as different on this machine, which is a false
+    mismatch — the worst outcome, because it trains a reader to ignore the
+    check. Binary content is hashed as-is.
+    """
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw
+    return raw.replace(b"\r\n", b"\n")
+
+
+def _digest(entries: dict[str, bytes]) -> str:
+    """One digest over {relative path: content}. Order-independent by sorting."""
+    h = hashlib.sha256()
+    for path in sorted(entries):
+        h.update(path.encode("utf-8"))
+        h.update(b"\0")
+        h.update(hashlib.sha256(_normalize(entries[path])).digest())
+    return h.hexdigest()
+
+
+def installed_atlas_digest(python: Path) -> tuple[str | None, int]:
+    """Digest of the atlas data tree this interpreter would actually load."""
+    code = (
+        "import axis_api_atlas, pathlib\n"
+        "print(pathlib.Path(axis_api_atlas.__file__).parent / 'data')\n"
+    )
+    try:
+        r = subprocess.run(
+            [str(python), "-c", code], capture_output=True, text=True, timeout=60
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, 0
+    root = Path(r.stdout.strip())
+    if not r.stdout.strip() or not root.is_dir():
+        return None, 0
+    entries: dict[str, bytes] = {}
+    for path in root.rglob("*"):
+        if path.is_file():
+            try:
+                entries[path.relative_to(root).as_posix()] = path.read_bytes()
+            except OSError:
+                return None, 0
+    return (_digest(entries), len(entries)) if entries else (None, 0)
+
+
+def _atlas_repo() -> tuple[Path | None, str | None]:
+    """``(repo, why not)``. An override that is not a repo is an error, not a
+    reason to quietly use the sibling — an operator who set it deliberately
+    would otherwise verify against a repo they did not choose, with no signal.
+    """
+    override = os.environ.get(ATLAS_REPO_ENV)
+    if override:
+        path = Path(override)
+        if (path / ".git").exists():
+            return path, None
+        return None, f"{ATLAS_REPO_ENV}={override} is not a git repo"
+    sibling = REPO.parent / "axis-api-atlas"
+    if (sibling / ".git").exists():
+        return sibling, None
+    return None, f"no atlas repo beside this one (set {ATLAS_REPO_ENV})"
+
+
+def atlas_digest_at(sha: str) -> tuple[str | None, int, str | None]:
+    """``(digest, file count, reason it failed)`` for the data tree at ``sha``.
+
+    ``git archive`` rather than a checkout: it needs no working tree, cannot
+    disturb the shared clone's branch, and emits blob content (LF), which
+    ``_normalize`` accounts for.
+
+    The reasons are separated deliberately. Collapsing them into one "no atlas
+    repo" message sent an operator after a repo that was present, while the real
+    fix — fetch the clone, the pin was bumped — went unnamed. Worse, a repo
+    layout change would have disabled the whole mechanism permanently while
+    still blaming a missing repo, so that case is reported as BROKEN rather than
+    unverifiable.
+    """
+    repo, why_not = _atlas_repo()
+    if repo is None:
+        return None, 0, why_not
+    try:
+        have = subprocess.run(
+            ["git", "-C", str(repo), "cat-file", "-e", f"{sha}^{{commit}}"],
+            capture_output=True, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, 0, f"git unusable in {repo}: {type(exc).__name__}"
+    if have.returncode != 0:
+        return None, 0, (
+            f"pin {sha[:7]} is not in {repo} — fetch that clone "
+            f"(the pin moved and this copy has not caught up)"
+        )
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(repo), "archive", "--format=tar", sha, ATLAS_DATA_PREFIX],
+            capture_output=True, timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, 0, f"git archive failed: {type(exc).__name__}"
+    if r.returncode != 0 or not r.stdout:
+        # The commit exists, so the pathspec is what did not resolve.
+        return None, 0, (
+            f"BROKEN: {ATLAS_DATA_PREFIX!r} matches nothing at {sha[:7]} — "
+            f"atlas layout moved and this check is disabled until the prefix "
+            f"is updated"
+        )
+    entries: dict[str, bytes] = {}
+    try:
+        with tarfile.open(fileobj=io.BytesIO(r.stdout), mode="r:") as tar:
+            for member in tar.getmembers():
+                if not member.isfile():
+                    continue
+                fh = tar.extractfile(member)
+                if fh is None:
+                    continue
+                rel = member.name[len(ATLAS_DATA_PREFIX):].lstrip("/")
+                entries[rel] = fh.read()
+    except (tarfile.TarError, OSError) as exc:
+        return None, 0, f"BROKEN: archive of {sha[:7]} is unreadable ({type(exc).__name__})"
+    if not entries:
+        return None, 0, f"BROKEN: {ATLAS_DATA_PREFIX!r} is empty at {sha[:7]}"
+    return _digest(entries), len(entries), None
+
+
+#: What ``atlas_revision`` concluded. ``broken`` means the check itself cannot
+#: run and must be repaired; ``unverifiable`` means this machine lacks something
+#: to compare against, which is a reason to look rather than to block.
+MATCH, MISMATCH, UNREADABLE, UNVERIFIABLE, BROKEN = (
+    "match", "mismatch", "unreadable", "unverifiable", "broken"
+)
+
+
+@functools.lru_cache(maxsize=None)
+def atlas_revision(python: Path) -> tuple[str, str]:
+    """``(message, status)`` for the installed atlas versus the pin.
+
+    Cached because the report prints it and ``main()`` re-asks in order to fail
+    the run — hashing 800-odd files twice per environment for one answer.
+    """
+    sha = expected_atlas_sha()
+    if not sha:
+        return "pin unreadable (setup.py has no ATLAS_SHA)", UNVERIFIABLE
+
+    # A VCS install DOES record its commit, so compare that directly. The CI
+    # provenance script does the same check — but only in CI, against CI's own
+    # venv, so it says nothing about this machine. Trusting it here is how a
+    # production venv pinned at a stale commit would have passed clean.
+    kind, detail = install_kind(python)
+    if kind == "commit":
+        if detail.lower() == sha:
+            return f"git install at pin {sha[:7]}", MATCH
+        return (
+            f"git install at {detail[:7]}, but the pin is {sha[:7]} — see #424",
+            MISMATCH,
+        )
+
+    installed, n_installed = installed_atlas_digest(python)
+    if installed is None:
+        return (
+            "installed data tree is missing, empty or unreadable — "
+            "nothing to compare",
+            UNREADABLE,
+        )
+    pinned, n_pinned, reason = atlas_digest_at(sha)
+    if pinned is None:
+        assert reason is not None
+        status = BROKEN if reason.startswith("BROKEN") else UNVERIFIABLE
+        return f"cannot verify against {sha[:7]} — {reason}", status
+    if installed == pinned:
+        return f"content MATCHES pin {sha[:7]} ({n_installed} files)", MATCH
+    return (
+        f"content DOES NOT MATCH pin {sha[:7]} "
+        f"(installed {n_installed} files, pin has {n_pinned}) — see #424",
+        MISMATCH,
+    )
+
+
+def _revision_suffix(python: Path) -> str:
+    return f"\n                 revision: {atlas_revision(python)[0]}"
+
+
+def atlas_problem(name: str, venv: str | None, declared: str | None) -> str | None:
+    """The atlas fact worth failing the run over, or ``None``.
+
+    ``declared`` is the environment's ``atlas:`` key — ``copy``, ``editable`` or
+    ``none``. Reading it from the declaration rather than from the installation
+    is the whole point: the first version of this asked the *installed* package
+    what kind it was and only checked it if the answer was ``copy``, so every
+    way an install could deviate — reinstalled editable, pinned at a stale
+    commit, atlas missing entirely — turned the check off. A gate keyed on the
+    thing it is inspecting is not a gate.
+
+    Rules, in order:
+
+    * observed kind ≠ declared kind → **fail**, whichever way round. That is the
+      ADR-0054 violation the environments page exists to catch.
+    * declared ``copy``: a mismatch, an unreadable tree, or a BROKEN check all
+      fail. For a deployment, "I cannot read what is on disk" is at least as
+      alarming as "it is the wrong thing".
+    * declared ``editable``: only a BROKEN check fails. A content mismatch is
+      ordinary atlas development, and failing on it would train every reader to
+      skip the line — worse than not having it.
+    * ``unverifiable`` never fails, for either. No atlas repo on this machine,
+      or a pin this clone has not fetched, is a reason to look, not to block.
+    """
+    if not venv or declared is None:
+        return None
+    python = Path(venv) / "Scripts" / "python.exe"
+    if not python.exists():
+        python = Path(venv) / "bin" / "python"
+    if not python.exists():
+        return None
+
+    # The index check runs even for ``declared: none``. #179 is about someone
+    # else's code executing inside the venv the service runs as LocalSystem, and
+    # "this environment declares no atlas" is not a reason to allow that. The
+    # skip below is for environments with no atlas to check, not a blanket
+    # exemption — `test_no_environment_declares_atlas_none_with_a_venv` keeps
+    # the two from drifting apart.
+    observed = install_kind(python)[0]
+    if observed == "index":
+        return f"{name}: atlas was installed FROM AN INDEX (see #179)"
+    if declared == "none":
+        return None
+    expected_kinds = {"copy": ("copy",), "editable": ("editable",)}.get(declared, ())
+    if observed not in expected_kinds:
+        return (
+            f"{name}: declares atlas {declared!r} but the installed one is "
+            f"{observed!r} — see ADR-0054 and #424"
+        )
+
+    message, status = atlas_revision(python)
+    if status == BROKEN:
+        return f"{name}: atlas {message}"
+    if declared == "copy" and status in (MISMATCH, UNREADABLE):
+        return f"{name}: atlas {message}"
+    return None
 
 
 # ── launch configs ──────────────────────────────────────────────────────────
@@ -250,6 +556,11 @@ def main() -> int:
             problems.append(
                 f"{name}: declared to have no venv, but one exists in its checkout"
             )
+
+        if observed_venv != "MISSING":
+            atlas_issue = atlas_problem(name, venv, spec.get("atlas"))
+            if atlas_issue:
+                problems.append(atlas_issue)
         print()
 
     rows = audit_launch_configs([r"C:\admz"])
