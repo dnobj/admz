@@ -253,11 +253,24 @@ def test_a_BROKEN_check_fails_even_on_an_editable_install(monkeypatch, fake_venv
     assert env.atlas_problem("dev", str(venv), "editable") is not None
 
 
-def test_declared_none_skips_the_check(monkeypatch, fake_venv):
-    """Staging declares no atlas; it has no venv of its own."""
+def test_declared_none_skips_the_content_check(monkeypatch, fake_venv):
+    """Staging declares no atlas; there is nothing to compare against the pin."""
+    venv, _ = fake_venv
+    _patch(monkeypatch, "copy", BROKEN_MSG)
+    assert env.atlas_problem("staging", str(venv), "none") is None
+
+
+def test_declared_none_does_NOT_skip_the_index_check(monkeypatch, fake_venv):
+    """Control for the test above, and the reason the two are separate.
+
+    #179 is about someone else's code executing inside the venv the service runs
+    as LocalSystem. "This environment declares no atlas" is not a reason to allow
+    that — an earlier version returned None before this branch and would have.
+    """
     venv, _ = fake_venv
     _patch(monkeypatch, "index", BROKEN_MSG)
-    assert env.atlas_problem("staging", str(venv), "none") is None
+    problem = env.atlas_problem("staging", str(venv), "none")
+    assert problem and "INDEX" in problem
 
 
 def test_no_venv_declared_is_not_a_problem(monkeypatch):
@@ -266,6 +279,41 @@ def test_no_venv_declared_is_not_a_problem(monkeypatch):
 
 def test_a_venv_path_that_does_not_exist_is_not_a_problem(tmp_path):
     assert env.atlas_problem("ghost", str(tmp_path / "nope"), "copy") is None
+
+
+# ── where the reference repo comes from ─────────────────────────────────────
+
+def test_a_valid_override_is_used(monkeypatch, tmp_path):
+    repo = tmp_path / "atlas"
+    (repo / ".git").mkdir(parents=True)
+    monkeypatch.setenv(env.ATLAS_REPO_ENV, str(repo))
+    found, why_not = env._atlas_repo()
+    assert found == repo and why_not is None
+
+
+def test_an_override_that_is_not_a_repo_is_an_error_not_a_fallback(monkeypatch, tmp_path):
+    """Control for the test above, and the point of the pair.
+
+    Falling back to the sibling would have the operator verifying against a repo
+    they did not choose, with nothing on screen saying so — the same
+    message-accuracy failure that made one 'no atlas repo' message cover four
+    different causes.
+    """
+    not_a_repo = tmp_path / "not-a-repo"
+    not_a_repo.mkdir()
+    monkeypatch.setenv(env.ATLAS_REPO_ENV, str(not_a_repo))
+    found, why_not = env._atlas_repo()
+    assert found is None
+    assert why_not and env.ATLAS_REPO_ENV in why_not and "not a git repo" in why_not
+
+
+def test_with_no_override_the_sibling_is_used_or_named(monkeypatch):
+    monkeypatch.delenv(env.ATLAS_REPO_ENV, raising=False)
+    found, why_not = env._atlas_repo()
+    # Whichever this machine has, the two must never both be set or both unset.
+    assert (found is None) != (why_not is None)
+    if why_not:
+        assert env.ATLAS_REPO_ENV in why_not
 
 
 # ── the REAL atlas_revision, not the mock ───────────────────────────────────

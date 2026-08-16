@@ -70,8 +70,8 @@ keyed on the thing it is inspecting is not a gate.
 
 | Observation | Fails the run? |
 |---|---|
+| installed from a package index | **yes** — #179, and this one is checked even for `atlas: none` |
 | observed kind ≠ declared kind (either direction) | **yes** — that is the ADR-0054 violation |
-| installed from a package index | **yes** — #179 |
 | `content DOES NOT MATCH pin <sha>`, declared `copy` | **yes** |
 | installed tree missing, empty or unreadable, declared `copy` | **yes** — for a deployment that is as alarming as being wrong |
 | `content DOES NOT MATCH pin <sha>`, declared `editable` | no — ordinary atlas development |
@@ -89,8 +89,16 @@ after a repo that was present while the real fix — fetch the clone, the pin mo
 unmentioned. `BROKEN` is separated from it for the same reason: an atlas layout change would
 otherwise disable this check permanently while blaming a missing repo.
 
-The atlas repo is taken from `ADMZ_ATLAS_REPO` if set, otherwise the sibling directory beside
-this repo.
+The atlas repo is taken from `ADMZ_ATLAS_REPO`, otherwise the sibling directory beside this
+repo. An override that is set but is **not** a git repo is reported as its own cause rather
+than silently falling back to the sibling — an operator who set it deliberately would
+otherwise be verifying against a repo they did not choose, with nothing on screen to say so.
+
+`atlas: none` means there is no atlas in that environment to compare, and the content check
+is skipped for it. The index check is not: #179 is about someone else's code running inside
+the venv the service runs as LocalSystem, and declaring no atlas is not a reason to permit
+that. A test keeps `atlas: none` and `venv: null` from drifting apart, since the checker
+itself cannot notice the combination.
 
 ## The declaration
 

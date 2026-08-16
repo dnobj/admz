@@ -200,9 +200,13 @@ def atlas_provenance(python: Path) -> str:
     """
     kind, detail = install_kind(python)
     if kind == "commit":
-        # A VCS install records the commit, so the CI script's revision check
-        # already covers it. Nothing to compare by content.
-        return f"git@{detail[:7]}"
+        # A VCS install records its commit, so compare it to the pin here too.
+        # An earlier version returned the bare sha on the grounds that "the CI
+        # script's revision check already covers it" — false on this machine,
+        # since that script runs in CI against CI's own venv. No environment
+        # currently declares a VCS install, so this line is reached only if one
+        # appears; printing it uncompared would be the same blind spot again.
+        return f"git@{detail[:7]}{_revision_suffix(python)}"
     if kind == "editable":
         return f"EDITABLE from {detail}{_revision_suffix(python)}"
     if kind == "copy":
@@ -295,14 +299,21 @@ def installed_atlas_digest(python: Path) -> tuple[str | None, int]:
     return (_digest(entries), len(entries)) if entries else (None, 0)
 
 
-def _atlas_repo() -> Path | None:
+def _atlas_repo() -> tuple[Path | None, str | None]:
+    """``(repo, why not)``. An override that is not a repo is an error, not a
+    reason to quietly use the sibling — an operator who set it deliberately
+    would otherwise verify against a repo they did not choose, with no signal.
+    """
     override = os.environ.get(ATLAS_REPO_ENV)
-    candidates = [Path(override)] if override else []
-    candidates.append(REPO.parent / "axis-api-atlas")
-    for path in candidates:
+    if override:
+        path = Path(override)
         if (path / ".git").exists():
-            return path
-    return None
+            return path, None
+        return None, f"{ATLAS_REPO_ENV}={override} is not a git repo"
+    sibling = REPO.parent / "axis-api-atlas"
+    if (sibling / ".git").exists():
+        return sibling, None
+    return None, f"no atlas repo beside this one (set {ATLAS_REPO_ENV})"
 
 
 def atlas_digest_at(sha: str) -> tuple[str | None, int, str | None]:
@@ -319,9 +330,9 @@ def atlas_digest_at(sha: str) -> tuple[str | None, int, str | None]:
     still blaming a missing repo, so that case is reported as BROKEN rather than
     unverifiable.
     """
-    repo = _atlas_repo()
+    repo, why_not = _atlas_repo()
     if repo is None:
-        return None, 0, f"no atlas repo beside this one (set {ATLAS_REPO_ENV})"
+        return None, 0, why_not
     try:
         have = subprocess.run(
             ["git", "-C", str(repo), "cat-file", "-e", f"{sha}^{{commit}}"],
@@ -447,7 +458,7 @@ def atlas_problem(name: str, venv: str | None, declared: str | None) -> str | No
     * ``unverifiable`` never fails, for either. No atlas repo on this machine,
       or a pin this clone has not fetched, is a reason to look, not to block.
     """
-    if not venv or declared in (None, "none"):
+    if not venv or declared is None:
         return None
     python = Path(venv) / "Scripts" / "python.exe"
     if not python.exists():
@@ -455,9 +466,17 @@ def atlas_problem(name: str, venv: str | None, declared: str | None) -> str | No
     if not python.exists():
         return None
 
+    # The index check runs even for ``declared: none``. #179 is about someone
+    # else's code executing inside the venv the service runs as LocalSystem, and
+    # "this environment declares no atlas" is not a reason to allow that. The
+    # skip below is for environments with no atlas to check, not a blanket
+    # exemption — `test_no_environment_declares_atlas_none_with_a_venv` keeps
+    # the two from drifting apart.
     observed = install_kind(python)[0]
     if observed == "index":
         return f"{name}: atlas was installed FROM AN INDEX (see #179)"
+    if declared == "none":
+        return None
     expected_kinds = {"copy": ("copy",), "editable": ("editable",)}.get(declared, ())
     if observed not in expected_kinds:
         return (
