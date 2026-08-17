@@ -191,6 +191,9 @@ async def chat_page(
             "configured": config.configured,
             "selectable_models": config.selectable_models,
             "default_model": config.default_model,
+            # The pricing table renders from the profile table (ADR-0060)
+            # instead of a second hand-written copy in the template.
+            "model_rows": _model_rows(config.default_model),
             "last_model": last_model,
             # No persisted transcript: Phase 5A shows only the
             # current turn's response. Phase 5B may add an
@@ -323,6 +326,9 @@ async def chat_submit(
             "configured": True,
             "selectable_models": config.selectable_models,
             "default_model": config.default_model,
+            # The pricing table renders from the profile table (ADR-0060)
+            # instead of a second hand-written copy in the template.
+            "model_rows": _model_rows(config.default_model),
             "last_model": chosen_model,
             "answer": answer_text,
             "user_message": message,
@@ -1062,6 +1068,22 @@ async def chat_json(
 # ---------------------------------------------------------------------------
 
 
+
+def _model_rows(default_model: str) -> list:
+    """Selectable models as template rows — one source, not a second copy."""
+    from admz.chatbot import models as _models
+
+    return [
+        {
+            "id": p.id, "label": p.label, "note": p.note,
+            "input_usd": p.input_usd, "output_usd": p.output_usd,
+            "preview": p.preview, "price_valid_until": p.price_valid_until,
+            "default": p.id == default_model,
+        }
+        for p in _models.PROFILES if p.selectable
+    ]
+
+
 @router.get("/settings/chat", response_class=HTMLResponse)
 async def chat_settings_page(
     request: Request,
@@ -1080,6 +1102,9 @@ async def chat_settings_page(
             "configured": config.configured,
             "selectable_models": config.selectable_models,
             "default_model": config.default_model,
+            # The pricing table renders from the profile table (ADR-0060)
+            # instead of a second hand-written copy in the template.
+            "model_rows": _model_rows(config.default_model),
             "daily_token_budget": get_daily_budget(),
             "today_usage": _token_usage().today_summary(principal.name),
             "success": None,
@@ -1177,6 +1202,9 @@ async def chat_settings_save(
             "configured": config.configured,
             "selectable_models": config.selectable_models,
             "default_model": config.default_model,
+            # The pricing table renders from the profile table (ADR-0060)
+            # instead of a second hand-written copy in the template.
+            "model_rows": _model_rows(config.default_model),
             "daily_token_budget": get_daily_budget(),
             "today_usage": _token_usage().today_summary(principal.name),
             "success": success,

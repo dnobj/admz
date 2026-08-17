@@ -27,6 +27,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from admz.chatbot import models as _models
+
 logger = logging.getLogger(__name__)
 
 
@@ -447,7 +449,7 @@ async def generate_conversation_title(
             "max_output_tokens": 24,
             # No thinking — titling is trivial and budget=0 sidesteps the
             # empty-candidate quirk that dynamic (-1) can trigger.
-            "thinking_config": {"thinking_budget": 0},
+            **_models.thinking_config(model, _models.REASONING_OFF),
         }
         resp = await gen(
             model=model,
@@ -907,9 +909,11 @@ async def _stream_via_models_api(
         config["system_instruction"] = sys_inst
     if mcp_session is not None:
         config["tools"] = [mcp_session]
-    # ADMZ_GEMINI_THINKING_BUDGET: -1 dynamic (default), 0 disables, >0 fixed.
-    # Dynamic is required for reliable tool use and for the *-pro models.
-    config["thinking_config"] = {"thinking_budget": _get_thinking_budget()}
+    # Dialect per model (ADR-0060): 2.5/3.1/3.5/3.6 take thinking_budget,
+    # 3.7+ takes thinking_level. ADMZ_GEMINI_THINKING_BUDGET still applies to
+    # the budget dialect only -- 3.7 removed the numeric parameter.
+    config.update(_models.thinking_config(
+        request_kwargs["model"], budget_override=_get_thinking_budget()))
 
     call_kwargs = {
         "model": request_kwargs["model"],
@@ -1390,16 +1394,18 @@ async def _run_manual_tool_loop(models, model, contents, sys_inst, mcp_session):
         config["system_instruction"] = sys_inst
     config["tools"] = await _mcp_declarations(mcp_session, types)
     config["automatic_function_calling"] = {"disable": True}
-    config["thinking_config"] = {"thinking_budget": _get_thinking_budget()}
+    config.update(_models.thinking_config(model, budget_override=_get_thinking_budget()))
     config_obj = _build_generate_config(config)
 
     # Config for retrying an EMPTY candidate: identical, but with a FIXED
     # thinking budget. The dynamic default (-1) is what lets the model emit an
     # empty STOP candidate on a cold turn; a fixed budget forces it to engage.
     _retry_cfg = dict(config)
-    _retry_cfg["thinking_config"] = {
-        "thinking_budget": _get_empty_retry_thinking_budget()
-    }
+    _retry_cfg.pop("thinking_config", None)
+    _retry_cfg.pop("thinking_level", None)
+    _retry_cfg.update(_models.thinking_config(
+        model, _models.REASONING_HARD,
+        budget_override=_get_empty_retry_thinking_budget()))
     retry_config_obj = _build_generate_config(_retry_cfg)
 
     convo = _normalize_contents(contents)

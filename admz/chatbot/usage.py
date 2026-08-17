@@ -26,6 +26,7 @@ import logging
 import os
 import sqlite3
 import threading
+from admz.chatbot import models as _models
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,20 +49,12 @@ class ModelPricing:
     output_per_million_usd: float
 
 
+# Derived from the profile table (ADR-0060) rather than restated. The two
+# copies of these numbers -- here and in chat_settings.html -- disagreed by
+# construction the moment either was edited alone.
 PRICING: dict[str, ModelPricing] = {
-    # Approximate $/1M tokens as of May 2026. The cost telemetry is
-    # informational — refer to ai.google.dev/pricing for authoritative
-    # billing. Pricing entries below the published <=200K tier; jobs
-    # with prompts larger than 200K may cost more.
-    #
-    # Gemini 3.x line (newer):
-    "gemini-3.1-pro-preview": ModelPricing(2.00, 12.00),
-    "gemini-3.5-flash": ModelPricing(1.50, 9.00),
-    "gemini-3.1-flash-lite": ModelPricing(0.25, 1.50),
-    # Gemini 2.5 line (proven stable, still recommended for most uses):
-    "gemini-2.5-pro": ModelPricing(1.25, 10.00),
-    "gemini-2.5-flash": ModelPricing(0.30, 2.50),
-    "gemini-2.5-flash-lite": ModelPricing(0.10, 0.40),
+    p.id: ModelPricing(p.input_usd, p.output_usd)
+    for p in _models.PROFILES if not p.live_audio
 }
 
 
