@@ -154,13 +154,13 @@ def test_every_profile_declares_a_known_dialect():
     assert not wrong, f"unknown dialect on {wrong}"
 
 
-# ── the contract test that would have caught #437 ───────────────────────────
+# ── the contract test that would have caught #436 ───────────────────────────
 
 @pytest.mark.parametrize("profile", [p for p in m.PROFILES], ids=lambda p: p.id)
 def test_every_profiles_config_is_accepted_by_the_SDK(profile):
     """The adapter's output must satisfy the object that consumes it.
 
-    #437: the REST API documents `thinking_level` in the generation config, so
+    #436: the REST API documents `thinking_level` in the generation config, so
     the adapter emitted it as a top-level key. google-genai's
     GenerateContentConfig forbids extra fields, so every gemini-3.7 turn died
     with `extra_forbidden` — in production, on the first real use. The field
