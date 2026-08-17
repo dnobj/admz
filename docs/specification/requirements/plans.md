@@ -116,6 +116,27 @@ fleet semaphore (`ADMZ_SNAPSHOT_FLEET_CONCURRENCY`, default in
 `admz/snapshot/engine.py`). Phase 3D, validated by
 [test_fleet_concurrency.py](../../../tests/test_fleet_concurrency.py).
 
+### FR-PLN-013 — A plan approval authorises an envelope 📋
+An approval covers a **device set + risk ceiling + operation set**, not a fixed
+list of steps. Execution inside it needs no further approval; any step outside
+stops the plan and re-gates. An envelope may only ever **narrow** — a replan may
+drop devices, drop operations or lower risk, never widen. See
+[ADR-0062](../decisions/0062-approve-an-envelope-not-a-step-list.md).
+
+This is what makes replanning compatible with the up-front approval FR-PLN-005
+already implements. The security property of plan-then-execute is control-flow
+integrity — untrusted content cannot hijack the sequence — and a plan that
+changes after approval destroys it. Narrow-only restores it: the operator knows
+the true blast radius is at most what they saw.
+
+The approval widget presents the envelope **as an envelope**. Showing a step
+list that then changes is a lie even when the envelope holds.
+
+### NFR-PLN-004 — The record shows what was approved AND what ran 📋
+One `confirm.approve` row covering a plan is no longer sufficient once the plan
+can change. Every replan is audited with what changed and why: a plan that
+rewrote itself four times inside its envelope is compliant and worth seeing.
+
 ## Known limitations
 
 ### KL-PLN-001 — `condition:` is parsed but not yet evaluated ⚠️
