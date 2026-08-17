@@ -79,7 +79,7 @@ is that the LLM uses these creds directly for a brief window).
 Max 3 temp creds per device. TTL 60–3600s. Background loop cleans
 expired ones via `pwdgrp.cgi:remove-user`.
 
-### FR-CRED-011 — Entry credentials get in; the `admz` account stays in 📋
+### FR-CRED-011 — Entry credentials get in; the `admz` account stays in 🚧
 A fleet credential authenticates ADMZ to a device it does not yet manage. It
 is **never** stored as that device's ongoing credential. See
 [ADR-0061](../decisions/0061-entry-credentials-and-the-admz-account.md).
@@ -103,6 +103,14 @@ is **never** stored as that device's ongoing credential. See
   most-recently-successful, cap the count. N credentials is N failed
   authentications, and Axis brute-force behaviour varies by model and
   firmware — measure once against a spare device before shipping.
+
+**Shipped (#411 slice 1):** `admz/entry_credentials.py` — the list, stored as
+one Fernet-encrypted `entry_credentials` fleet setting, with the legacy
+`default_username`/`default_password` pair read as entry #1 so an existing
+install keeps working with no migration step and no window in which nothing
+resolves. Attempts are capped (`MAX_ATTEMPTS`) because N credentials is N failed
+authentications. **Not yet shipped:** trying them during onboarding, creating
+the `admz` account, and the promote checkbox (FR-CRED-012).
 
 Existing devices are **not** migrated automatically. Creating accounts on nine
 live devices as a deploy side effect is a decision, not a consequence.

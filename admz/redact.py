@@ -105,6 +105,12 @@ _SENSITIVE_KEY_PARTS = (
     "token",
     "api_key",
     "apikey",
+    # GH #411 / ADR-0061. `entry_credentials` holds a LIST of (username,
+    # password) pairs, and none of the parts above appear in that name — the
+    # same gap `pwd` and `pass` fell through in #336, arriving by a new route.
+    # Safe as a bare substring, unlike the discrete tokens below: no ordinary
+    # non-secret identifier contains "credential" without being about one.
+    "credential",
 )
 
 # Short, ambiguous spellings that must match as a discrete, delimiter-bounded
