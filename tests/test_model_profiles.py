@@ -20,8 +20,8 @@ from admz.chatbot import models as m
 
 def test_a_37_model_gets_thinking_level_and_NOT_thinking_budget():
     cfg = m.thinking_config("gemini-3.7-flash")
-    assert cfg == {"thinking_level": "medium"}
-    assert "thinking_config" not in cfg, (
+    assert cfg == {"thinking_config": {"thinking_level": "medium"}}
+    assert "thinking_budget" not in cfg["thinking_config"], (
         "3.7 removed the numeric parameter; sending it is the 'selectable and "
         "broken' failure this table exists to prevent"
     )
@@ -31,12 +31,12 @@ def test_a_25_model_gets_thinking_budget_and_NOT_thinking_level():
     """Control for the test above — the other direction must also hold."""
     cfg = m.thinking_config("gemini-2.5-flash")
     assert cfg == {"thinking_config": {"thinking_budget": -1}}
-    assert "thinking_level" not in cfg
+    assert "thinking_level" not in cfg["thinking_config"]
 
 
 @pytest.mark.parametrize("model_id", ["gemini-3.7-flash", "gemini-3.6-flash"])
 def test_every_level_family_member_uses_the_level_dialect(model_id):
-    assert "thinking_level" in m.thinking_config(model_id)
+    assert "thinking_level" in m.thinking_config(model_id)["thinking_config"]
 
 
 @pytest.mark.parametrize(
@@ -46,7 +46,7 @@ def test_every_level_family_member_uses_the_level_dialect(model_id):
      "gemini-2.5-flash-lite"],
 )
 def test_every_budget_family_member_uses_the_budget_dialect(model_id):
-    assert "thinking_config" in m.thinking_config(model_id)
+    assert "thinking_budget" in m.thinking_config(model_id)["thinking_config"]
 
 
 def test_default_reasoning_is_DYNAMIC_on_the_budget_dialect():
@@ -63,9 +63,9 @@ def test_off_and_hard_map_to_both_dialects():
     assert m.thinking_config("gemini-2.5-flash", m.REASONING_OFF) == {
         "thinking_config": {"thinking_budget": 0}}
     assert m.thinking_config("gemini-3.7-flash", m.REASONING_OFF) == {
-        "thinking_level": "low"}
+        "thinking_config": {"thinking_level": "low"}}
     assert m.thinking_config("gemini-3.7-flash", m.REASONING_HARD) == {
-        "thinking_level": "high"}
+        "thinking_config": {"thinking_level": "high"}}
 
 
 def test_a_budget_override_applies_to_the_budget_dialect_only():
@@ -77,7 +77,7 @@ def test_a_budget_override_applies_to_the_budget_dialect_only():
     assert m.thinking_config("gemini-2.5-flash", budget_override=1024) == {
         "thinking_config": {"thinking_budget": 1024}}
     assert m.thinking_config("gemini-3.7-flash", budget_override=1024) == {
-        "thinking_level": "medium"}
+        "thinking_config": {"thinking_level": "medium"}}
 
 
 def test_a_live_audio_model_gets_no_thinking_parameter_at_all():
@@ -87,7 +87,7 @@ def test_a_live_audio_model_gets_no_thinking_parameter_at_all():
 def test_an_unknown_model_falls_back_to_the_budget_dialect():
     """A guess either way; guessing the older form means an unknown model
     behaves like the nine before it rather than like the one that changed."""
-    assert "thinking_config" in m.thinking_config("gemini-99-nonexistent")
+    assert "thinking_budget" in m.thinking_config("gemini-99-nonexistent")["thinking_config"]
 
 
 # ── the table is the single source ──────────────────────────────────────────
@@ -152,3 +152,32 @@ def test_every_profile_declares_a_known_dialect():
     known = {m.DIALECT_BUDGET, m.DIALECT_LEVEL, m.DIALECT_NONE}
     wrong = [p.id for p in m.PROFILES if p.dialect not in known]
     assert not wrong, f"unknown dialect on {wrong}"
+
+
+# ── the contract test that would have caught #437 ───────────────────────────
+
+@pytest.mark.parametrize("profile", [p for p in m.PROFILES], ids=lambda p: p.id)
+def test_every_profiles_config_is_accepted_by_the_SDK(profile):
+    """The adapter's output must satisfy the object that consumes it.
+
+    #437: the REST API documents `thinking_level` in the generation config, so
+    the adapter emitted it as a top-level key. google-genai's
+    GenerateContentConfig forbids extra fields, so every gemini-3.7 turn died
+    with `extra_forbidden` — in production, on the first real use. The field
+    had been on ThinkingConfig since 2.5.0; only the envelope was wrong.
+
+    The unit tests could not catch it: they asserted the adapter returned what
+    I believed the shape to be, which is the same belief that was wrong. This
+    asserts against the SDK instead of against my reading of the docs.
+    """
+    types = pytest.importorskip("google.genai.types")
+    for reasoning in (m.REASONING_DEFAULT, m.REASONING_OFF, m.REASONING_HARD):
+        cfg = m.thinking_config(profile.id, reasoning)
+        types.GenerateContentConfig(**cfg)
+
+
+def test_a_budget_override_also_produces_a_valid_config():
+    """The env override and the empty-retry's fixed budget travel the same path."""
+    types = pytest.importorskip("google.genai.types")
+    for model_id in m.selectable_models():
+        types.GenerateContentConfig(**m.thinking_config(model_id, budget_override=1024))

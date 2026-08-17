@@ -223,10 +223,16 @@ def thinking_config(
     if dialect == DIALECT_NONE:
         return {}
     if dialect == DIALECT_LEVEL:
-        return {"thinking_level": {
+        # NESTED under thinking_config, beside thinking_budget -- not a
+        # top-level key (GH #436). The REST API documents `thinking_level` in
+        # the generation config, and google-genai's GenerateContentConfig
+        # forbids extra fields, so emitting it at the top level raised
+        # `extra_forbidden` and every 3.7 turn failed. ThinkingConfig has
+        # carried the field since 2.5.0; only the envelope was wrong.
+        return {"thinking_config": {"thinking_level": {
             REASONING_OFF: "low",
             REASONING_HARD: "high",
-        }.get(reasoning, "medium")}
+        }.get(reasoning, "medium")}}
     if budget_override is not None:
         return {"thinking_config": {"thinking_budget": budget_override}}
     budget = {
