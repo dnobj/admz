@@ -1,33 +1,41 @@
-"""Which build is this? (GH #432)
+"""Which build is this? (GH #432, fixed for the service in #434)
 
 ``__version__`` is ``2.0.0`` and has been for months, so it cannot answer the
-question an operator actually asks after a deploy: *am I looking at the latest
-code, or the previous one?* Nothing on screen or in ``/api/health`` distinguished
-two builds of the same version.
+question an operator asks after a deploy: *am I looking at the latest code, or
+the previous one?*
 
-This is the third form of that question in this project, and the other two each
-cost something:
+READ THE FILES, NOT `git`
+------------------------
+The first version shelled out to ``git rev-parse``. It worked everywhere it was
+tested and returned ``None`` in the one place it was built for.
 
-* #424 — which **atlas** commit is production running? Nothing could say, and an
-  ungated ``pwdgrp.cgi:add-user`` sat live for six days behind that gap.
-* #426 — there is no written deploy procedure, so "did the deploy work?" had no
-  defined answer either.
+Production runs as the Windows service ``admz`` under **LocalSystem**, while the
+checkout is owned by the operator's account. Git refuses to operate on a
+repository owned by another user — *"detected dubious ownership"* — and exits
+non-zero, with no ``safe.directory`` configured on this machine. So the service
+asked git, git said no, and ``/api/health`` reported ``"build": null``.
 
-READ FROM THE CHECKOUT, NOT A BUILD STAMP
------------------------------------------
-ADR-0054 gives production its own clone, detached at a pinned commit, so the
-commit is already on disk and true by construction. A stamp written at deploy
-time would instead record what a deploy *intended* — and there is no deploy
-script to write one (#426). Same reasoning as #424's content comparison: observe
-the artefact, do not trust a note attached to it.
+Every test passed, because tests run as the user who owns the tree. **"It works
+on my machine" for a service means "it works as the service account", and that
+is a different machine.**
 
-The dirty flag matters more than it looks. Production is supposed to be a clean
-detached checkout; ``abc1234-dirty`` means someone edited files in place, which
-is exactly the state that makes "which build is this?" unanswerable from the
-commit alone.
+So the commit is read from ``.git`` directly. A file read has no ownership
+opinion, it is faster than a subprocess, and it is a more literal reading of the
+principle the first version claimed: observe the artefact, do not ask something
+else about it. (Compare #424, which compares atlas *content* rather than
+trusting recorded metadata.)
 
-Resolved once and cached — a page render must not shell out to git, and the
-answer cannot change without a restart.
+THE DIRTY FLAG STILL NEEDS `git`
+--------------------------------
+Nothing short of re-implementing index comparison can tell a clean tree from a
+modified one, so that half still shells out — and when it cannot answer, it says
+``-unverified`` rather than falling through to clean. "Clean" is the reassuring
+answer and the wrong one to guess at, which is exactly the mistake that produced
+``null`` above: a failure that renders as reassurance.
+
+So in production the marker reads ``fcd22e1-unverified``: the commit is known
+and true, and ADMZ is being honest that it cannot check for local edits from
+where it stands.
 """
 
 from __future__ import annotations
@@ -40,36 +48,113 @@ from typing import Optional
 #: The repo root, relative to this file (``admz/build_info.py`` → repo).
 _ROOT = Path(__file__).resolve().parents[1]
 
+_SHORT = 7
+
+
+def _common_dir(git_dir: Path) -> Path:
+    """Where refs live for ``git_dir``.
+
+    A linked worktree's gitdir holds its own ``HEAD`` but **not** its refs —
+    those live in the main repository, named by a ``commondir`` file. Resolving
+    refs against the worktree gitdir finds nothing, which is how this returned
+    None in every dev worktree while working in production's plain clone.
+    """
+    try:
+        raw = (git_dir / "commondir").read_text(encoding="utf-8").strip()
+    except OSError:
+        return git_dir
+    common = Path(raw)
+    return common if common.is_absolute() else (git_dir / common).resolve()
+
+
+def _read_head(git_dir: Path) -> Optional[str]:
+    """The commit ``.git`` points at, without invoking git.
+
+    Three shapes occur here: a detached checkout (production — ``HEAD`` holds
+    the sha directly), a branch with a loose ref file, and a branch whose ref is
+    packed (a freshly cloned or gc'd repo has no loose file).
+    """
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not head.startswith("ref:"):
+        return head[:_SHORT] if len(head) >= _SHORT else None
+
+    ref = head.split(":", 1)[1].strip()
+    for base in (git_dir, _common_dir(git_dir)):
+        try:
+            return (base / ref).read_text(encoding="utf-8").strip()[:_SHORT]
+        except OSError:
+            pass
+        try:
+            packed = (base / "packed-refs").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in packed:
+            if line.startswith("#") or " " not in line:
+                continue
+            sha, _, name = line.partition(" ")
+            if name.strip() == ref:
+                return sha[:_SHORT]
+    return None
+
+
+def _worktree_is_dirty(root: Path) -> Optional[bool]:
+    """``True``/``False``, or ``None`` when git cannot be asked.
+
+    ``None`` is a real answer here, not an error to swallow: it is what the
+    service gets, and reporting it as "clean" would hide exactly the state the
+    flag exists to reveal.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return bool(r.stdout.strip())
+
 
 @functools.lru_cache(maxsize=1)
 def build_id() -> Optional[str]:
-    """Short commit of the running code, ``-dirty`` if the tree is modified.
+    """Short commit of the running code, with a suffix when relevant.
 
-    ``None`` when this is not a git checkout — an installed wheel, a container
-    layer, a source tarball. That is a real deployment shape, so callers render
-    nothing rather than "unknown", which would read as a fault.
+    * ``fcd22e1`` — clean tree.
+    * ``fcd22e1-dirty`` — files edited in place. Production is meant to be a
+      clean detached checkout, so this is the state that makes a commit alone a
+      lie about what is running.
+    * ``fcd22e1-unverified`` — the commit is known; git could not be asked about
+      local edits. Normal for the service (see the module docstring).
+
+    ``None`` only when there is no readable ``.git`` at all — an installed
+    wheel, a container layer, a source tarball. Those are real deployment
+    shapes, and ``None`` renders as nothing while "unknown" would read as a
+    fault.
     """
-    if not (_ROOT / ".git").exists():
+    git_dir = _ROOT / ".git"
+    if not git_dir.exists():
         return None
-    try:
-        sha = subprocess.run(
-            ["git", "-C", str(_ROOT), "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if sha.returncode != 0 or not sha.stdout.strip():
+    # A worktree's .git is a file containing "gitdir: <path>"; production is a
+    # clone, but dev work happens in worktrees and both must resolve.
+    if git_dir.is_file():
+        try:
+            pointer = git_dir.read_text(encoding="utf-8").strip()
+        except OSError:
             return None
-        build = sha.stdout.strip()
-        status = subprocess.run(
-            ["git", "-C", str(_ROOT), "status", "--porcelain"],
-            capture_output=True, text=True, timeout=10,
-        )
-        # A failed status check must not silently claim the tree is clean —
-        # "clean" is the reassuring answer and the one it would be wrong to
-        # guess at.
-        if status.returncode != 0:
-            return f"{build}-unverified"
-        if status.stdout.strip():
-            build += "-dirty"
-        return build
-    except (OSError, subprocess.SubprocessError):
+        if not pointer.startswith("gitdir:"):
+            return None
+        git_dir = Path(pointer.split(":", 1)[1].strip())
+        if not git_dir.is_absolute():
+            git_dir = (_ROOT / git_dir).resolve()
+
+    build = _read_head(git_dir)
+    if not build:
         return None
+    dirty = _worktree_is_dirty(_ROOT)
+    if dirty is None:
+        return f"{build}-unverified"
+    return f"{build}-dirty" if dirty else build
