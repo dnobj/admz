@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from admz.hierarchy import device_is_in_site
+
 
 # Health → semantic colour key (mirrors tokens.jsx HEALTH map).
 # Keys are the raw ``DeviceHealthStatus`` values (underscored) plus the
@@ -263,7 +265,14 @@ def _build_nav_data(request) -> Dict[str, Any]:
             dev_site[did] = None
 
     def _site_devices(site_id: str) -> List[Dict[str, Any]]:
-        return [d for d in all_devices if dev_site.get(d.get("device_id")) == site_id]
+        # Shared with the roster's own scoping (GH #427). This used to be a
+        # strict `== site_id`, which dropped every device whose site was NULL,
+        # while `routes/web.py` kept them — same registry, 5 in the nav and 11
+        # on the page.
+        return [
+            d for d in all_devices
+            if device_is_in_site(dev_site.get(d.get("device_id")), site_id)
+        ]
 
     try:
         sites = reg.list_sites(org_id) if org_id else reg.list_sites()

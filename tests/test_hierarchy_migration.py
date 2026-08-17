@@ -51,6 +51,27 @@ def _registry(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _strand(registry, *device_ids):
+    """Put a device into the pre-#427 state: NULL org_id/site_id.
+
+    `add_device` now assigns the local site, so a device created through the
+    API is no longer a subject for this migration. Six production devices ARE
+    in the NULL state — added while `add_device` did not assign one — so the
+    backfill still has to find and fix exactly that, and these tests still have
+    to reproduce it. `set_device_org_site` refuses None (it validates the org
+    exists), which is right for the API and useless here.
+    """
+    import sqlite3
+
+    with sqlite3.connect(registry._db_path) as conn:
+        for did in device_ids:
+            conn.execute(
+                "UPDATE devices SET org_id=NULL, site_id=NULL WHERE device_id=?",
+                (did,),
+            )
+        conn.commit()
+
+
 class TestHierarchyBackfill:
     def test_empty_registry(self, tmp_path, monkeypatch):
         registry = _registry(tmp_path, monkeypatch)
@@ -61,9 +82,9 @@ class TestHierarchyBackfill:
 
     def test_backfills_pre_hierarchy_devices(self, tmp_path, monkeypatch):
         registry = _registry(tmp_path, monkeypatch)
-        # Devices added via add_device have NULL org_id/site_id.
         for i in range(3):
             registry.add_device(f"cam-{i:02d}", {"host": f"10.0.0.{i}"})
+        _strand(registry, *(f"cam-{i:02d}" for i in range(3)))
         result = migrate_hierarchy_backfill(registry)
         assert result["devices_total"] == 3
         assert result["backfilled"] == 3
@@ -76,6 +97,7 @@ class TestHierarchyBackfill:
     def test_idempotent_when_rerun(self, tmp_path, monkeypatch):
         registry = _registry(tmp_path, monkeypatch)
         registry.add_device("cam-01", {"host": "10.0.0.1"})
+        _strand(registry, "cam-01")
         first = migrate_hierarchy_backfill(registry)
         assert first["backfilled"] == 1
         second = migrate_hierarchy_backfill(registry)
@@ -85,6 +107,7 @@ class TestHierarchyBackfill:
     def test_dry_run_writes_nothing(self, tmp_path, monkeypatch):
         registry = _registry(tmp_path, monkeypatch)
         registry.add_device("cam-01", {"host": "10.0.0.1"})
+        _strand(registry, "cam-01")
         result = migrate_hierarchy_backfill(registry, dry_run=True)
         assert result["dry_run"] is True
         assert result["backfilled"] == 1  # would have
@@ -108,6 +131,7 @@ class TestHierarchyBackfill:
         registry = _registry(tmp_path, monkeypatch)
         registry.add_device("cam-01", {"host": "10.0.0.1"})
         registry.add_device("cam-02", {"host": "10.0.0.2"})
+        _strand(registry, "cam-01", "cam-02")
 
         original = registry.set_device_org_site
 

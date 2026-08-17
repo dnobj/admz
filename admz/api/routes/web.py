@@ -16,6 +16,7 @@ from admz.exceptions import (
     BackendError,
 )
 from admz.device_registry import DeviceRegistry
+from admz.hierarchy import device_is_in_site
 from admz.api.context import AppContext, get_context
 from admz.fleet_settings import fleet_settings, is_sensitive_setting_key
 from admz.api.confirm_store import (
@@ -134,12 +135,22 @@ async def devices_page(
             scoped = []
             for d in devices:
                 did = d.get("device_id")
-                # site membership
+                # Site membership. A device with NO site counts as being in the
+                # active one (GH #427): every device in the registry belongs to
+                # a site, so a NULL is a gap in the data rather than a device
+                # that lives somewhere else, and hiding it from the roster would
+                # make it unmanageable rather than merely miscounted.
+                #
+                # `templating.py`'s nav count applies the SAME rule, via the
+                # shared `device_is_in_site` predicate. They used to disagree —
+                # this loop kept a NULL device and the nav's strict equality
+                # dropped it — which is how one registry produced 5 in the nav
+                # and 11 on this page.
                 try:
                     os_ = registry.get_device_org_site(did) or {}
                 except Exception:
                     os_ = {}
-                if active_site and os_.get("site_id") and os_.get("site_id") != active_site:
+                if not device_is_in_site(os_.get("site_id"), active_site):
                     continue
                 scoped.append(d)
             devices = scoped

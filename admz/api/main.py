@@ -227,6 +227,27 @@ async def lifespan(app: FastAPI):
                 "tasks migration failed", exc_info=True
             )
 
+        # Every device belongs to a site (GH #427). `add_device` now assigns one,
+        # so this only heals devices added while it did not — but it runs every
+        # startup for the same reason the tasks migration does: it is idempotent
+        # (a device that already has org_id + site_id is left alone), and a
+        # migration that runs once and is then never wired in is how those
+        # devices were stranded. It existed as a module that nothing called.
+        try:
+            from admz.migrations.hierarchy_backfill import migrate_hierarchy_backfill
+            result = migrate_hierarchy_backfill(registry)
+            if result.get("backfilled"):
+                import logging
+                logging.getLogger(__name__).info(
+                    "hierarchy backfill: assigned a site to %d device(s)",
+                    result["backfilled"],
+                )
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning(
+                "hierarchy backfill failed", exc_info=True
+            )
+
         # Install the unified task-handler context (reprovision + scheduled handlers)
         # so the health-monitor sweep can fire pre-approved detection tasks.
         try:

@@ -474,6 +474,30 @@ class SQLiteDeviceRegistry(DeviceRegistry):
 
     # -- write operations --------------------------------------------------
 
+    def _default_org_site(self) -> tuple[Optional[str], Optional[str]]:
+        """The site a new device joins: the local one (GH #427).
+
+        "Local" is the first declared site of the first org — with a single
+        org and site, which is what ADR-0032 expects of a normal install, that
+        is simply the default site. Read rather than hard-coded to
+        ``"default"`` so an operator who renamed or replaced their site still
+        gets devices in it instead of in a site id that no longer exists.
+
+        Returns ``(None, None)`` when no hierarchy exists at all, which leaves
+        the previous behaviour intact for a registry that has none — an add
+        must never fail because the hierarchy is missing.
+        """
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT site_id, org_id FROM sites ORDER BY created_at LIMIT 1"
+                ).fetchone()
+        except Exception:  # noqa: BLE001 — an add must not fail on this
+            return None, None
+        if not row:
+            return None, None
+        return row[1], row[0]
+
     def add_device(
         self,
         device_id: str,
@@ -489,11 +513,23 @@ class SQLiteDeviceRegistry(DeviceRegistry):
             device_info = {**device_info, "mac_address": device_id}
         self._assert_no_mac_collision(device_id, device_info)
 
+        # Every device in the registry belongs to a site (GH #427). The columns
+        # used to be left NULL here and assigned only by a one-shot migration,
+        # so every device added after that migration ran had no site — and the
+        # two places that count devices disagreed about what NULL meant, giving
+        # an operator 5 in the nav and 11 on the page from the same registry.
+        #
+        # Assigned in the INSERT rather than by each caller: there are four
+        # callers today (REST create, REST discovery-register, and two MCP
+        # tools) and the fifth would be the one that forgot. Same reasoning as
+        # ADR-0059 — put it at the decision point, not the entry points.
+        org_id, site_id = self._default_org_site()
+
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO devices (device_id, info_json, created_at) "
-                "VALUES (?, ?, ?)",
-                (device_id, json.dumps(device_info), time.time()),
+                "INSERT INTO devices (device_id, info_json, created_at, org_id, site_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (device_id, json.dumps(device_info), time.time(), org_id, site_id),
             )
             conn.commit()
 

@@ -273,8 +273,29 @@ class TestDeviceOrgSite:
         result = registry.get_device_org_site(cam)
         assert result == {"org_id": site[0], "site_id": site[1]}
 
-    def test_get_for_unassigned_returns_none(self, registry, cam):
-        # Brand-new device, no migration yet → both columns NULL.
+    def test_get_for_a_new_device_returns_the_local_site(self, registry, cam):
+        """A brand-new device belongs to a site (GH #427).
+
+        This test previously asserted the opposite — that a new device had NULL
+        columns — which was an accurate description of the defect: `add_device`
+        never wrote them, a one-shot migration assigned them once, and every
+        device added afterwards was outside every site. That produced 5 in the
+        nav and 11 on the roster from one registry.
+        """
+        got = registry.get_device_org_site(cam) or {}
+        assert got.get("site_id"), "a device in the registry must belong to a site"
+
+    def test_get_for_a_device_stranded_before_the_fix_returns_none(self, registry, cam):
+        """The NULL state still has to be readable — six production devices are
+        in it, and the startup backfill has to be able to find them."""
+        import sqlite3
+
+        with sqlite3.connect(registry._db_path) as conn:
+            conn.execute(
+                "UPDATE devices SET org_id=NULL, site_id=NULL WHERE device_id=?",
+                (cam,),
+            )
+            conn.commit()
         assert registry.get_device_org_site(cam) is None
 
     def test_site_must_belong_to_org(self, registry, cam):
