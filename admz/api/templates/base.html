@@ -147,6 +147,14 @@
     </main>
     {% endblock %}
 
+{% if build_id %}
+    <div class="build-id" title="Running commit. '-dirty' means files were edited in place; '-unverified' means git could not be asked."
+         style="position:fixed;right:10px;bottom:6px;z-index:5;font-size:11px;
+                font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+                color:var(--ink-3,#8b8b8b);opacity:.65;pointer-events:auto;user-select:all;">
+      build {{ build_id }}
+    </div>
+    {% endif %}
     <div class="console-dock" id="console-dock"></div>
   </div>
 </div>

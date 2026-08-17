@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from admz.hierarchy import device_is_in_site
+from admz import build_info
 
 
 # Health → semantic colour key (mirrors tokens.jsx HEALTH map).
@@ -471,6 +472,12 @@ def configure(templates) -> None:
     """Register ADMZ globals + filters on a Jinja2Templates instance."""
     env = templates.env
     env.globals["admz_nav"] = build_nav
+    # A Jinja global, not a per-route context key (GH #432). The question it
+    # answers — "am I looking at the latest build?" — is asked from whatever
+    # page the operator happens to be on, and a route that forgot to pass it
+    # would answer by showing nothing, which reads as "no build info" rather
+    # than "this route forgot". Resolved once and cached in build_info.
+    env.globals["build_id"] = build_info.build_id()
     env.filters["health_sem"] = health_sem
     env.filters["health_label"] = health_label
     env.filters["risk_sem"] = risk_sem
