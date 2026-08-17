@@ -47,7 +47,13 @@ _DISABLE_CAPABILITY = "test.no_onboarding_probes"
 ALREADY_CREDENTIALED = "already_credentialed"
 PROVISIONED = "provisioned"
 PROVISION_FAILED = "provision_failed"
-FLEET_CREDENTIALS_SAVED = "fleet_credentials_saved"
+#: Kept as the wire value so existing callers/tests are unaffected; the name
+#: now means "adopted on the entry credential", which is the fallback path
+#: rather than the good one (ADR-0061).
+ENTRY_CREDENTIALS_SAVED = "fleet_credentials_saved"
+FLEET_CREDENTIALS_SAVED = ENTRY_CREDENTIALS_SAVED
+#: The good path: ADMZ created and stored its own per-device account.
+OWN_ACCOUNT_CREATED = "admz_account_created"
 CREDENTIALS_NEEDED = "credentials_needed"
 #: ADR-0059. The device is factory-defaulted, so onboarding is about to create
 #: a root admin account on it — and nobody has approved that yet. The dict also
@@ -211,48 +217,123 @@ async def onboard_device_credentials(
         return {"status": PROVISION_FAILED, "device_id": device_id,
                 "error": result.get("error")}
 
-    # ---- 3. Fleet credential pair ----------------------------------------
-    fleet_password = fleet_settings.get("default_password")
-    if fleet_password:
-        fleet_username = fleet_settings.get("default_username") or "root"
+    # ---- 3. Entry credentials, then ADMZ's own account -------------------
+    #
+    # ADR-0061 / FR-CRED-011. This step used to try ONE fleet pair and, on
+    # success, store that pair as the device's ongoing credential — so a single
+    # shared password became the standing key to every device onboarded this
+    # way. Now the list gets ADMZ *in*, and ADMZ creates its own account to
+    # stay in.
+    #
+    # The entry credential is never removed or rotated. After a database loss
+    # every generated password is gone and it is the only way back.
+    from admz import entry_credentials as _entry
+    from admz.provisioning import adopt_with_admz_account
+
+    candidates = _entry.attempt_order()
+    if not candidates:
+        reason = ("no entry credentials configured"
+                  if not _entry.prompt_always() else
+                  "this installation stores no entry credentials by policy")
+        return {"status": CREDENTIALS_NEEDED, "device_id": device_id, "reason": reason}
+
+    reason = "every entry credential was rejected by the device"
+    for cred in candidates:
+        pair = {"username": cred.username, "password": cred.password}
         # strict: only an authenticated 2xx proves the pair — saving on a
         # lenient "not rejected" once stored a bad password (P3408, 2026-07-02).
         # A 2xx from the corroborating param.cgi read counts (GH #149): strict
         # rejects *non-auth* answers as proof, and that is real proof.
         ok, facts, learned = await _confirm_credentials(
             catalog=catalog, executor=executor, device_info=probe_info,
-            device_id=device_id,
-            credentials={"username": fleet_username, "password": fleet_password},
+            device_id=device_id, credentials=pair,
             timeout_seconds=timeout_seconds, strict=True,
         )
-        if ok is True:
-            store_provisioned_creds(
-                registry, device_id, fleet_username, fleet_password,
-                purpose="Fleet default credentials verified at onboarding",
+        if ok is not True:
+            if ok is None:
+                # Unreachable, not rejected. Trying the rest would be N more
+                # timeouts against a device that is not answering.
+                reason = "device did not answer the credential check"
+                break
+            continue
+
+        # This credential works. Persist what we learned about REACHING the
+        # device before anything else — the health monitor reads it, and a
+        # device whose profile is missing reports auth_failed while a working
+        # credential sits in the store (observed on the A1210, 2026-08-17).
+        if learned:
+            _persist_probe_marker(registry, device_id, device_info, learned)
+        if facts:
+            changed = {k: v for k, v in facts.items()
+                       if v and str(device_info.get(k) or "") != str(v)}
+            if changed:
+                try:
+                    registry.update_device_info(device_id, changed)
+                except Exception:  # noqa: BLE001 - best effort
+                    pass
+
+        # THE GATE, second decision point (ADR-0059 shape, ADR-0061 case).
+        # The next call creates a root admin account on a device that is NOT
+        # factory-defaulted — it already has an owner, and this adds ADMZ's
+        # account beside theirs. Same approval as step 2, not a second one: an
+        # operator who approved "onboard this device" approved ADMZ setting up
+        # its own access, and prompting again for the same decision is the gate
+        # fatigue ADR-0034 warns about. Placed here rather than before the loop
+        # because until a credential works there is nothing to gate — an add
+        # that falls through to capture must not raise a widget for an account
+        # write that never happens.
+        from admz.approval_context import is_approved_for
+
+        if not is_approved_for(*_APPROVAL_ACTIONS):
+            from admz.audit import record_event
+            from admz.discovery.gated import gate_scan_write
+
+            env = gate_scan_write(
+                "provision_device_credentials", device_id,
+                {"device_id": device_id, "host": host},
+                reason=(
+                    f"Device '{device_id}' at {host} accepted an entry credential "
+                    f"({cred.username}). Approving creates ADMZ's own 'admz' admin "
+                    "account on it; the entry credential is left in place."
+                ),
             )
-            if learned:
-                _persist_probe_marker(registry, device_id, device_info, learned)
-            # Same opportunistic backfill as the health monitor: the verify
-            # response is basicdeviceinfo, so lift model/serial/firmware. Empty
-            # on the corroborated path (a param dump, not basicdeviceinfo's
-            # shape) — the ``if facts`` / ``if v`` guards below mean that
-            # never erases an already-stored model/serial.
-            if facts:
-                changed = {
-                    k: v for k, v in facts.items()
-                    if v and str(device_info.get(k) or "") != str(v)
-                }
-                if changed:
-                    try:
-                        registry.update_device_info(device_id, changed)
-                    except Exception:  # noqa: BLE001 - best effort
-                        pass
-            return {"status": FLEET_CREDENTIALS_SAVED, "device_id": device_id,
-                    "username": fleet_username}
-        reason = ("fleet credentials rejected by the device"
-                  if ok is False else
-                  "device did not answer the credential check")
-    else:
-        reason = "no fleet default_password configured"
+            record_event(
+                None, "provision.gated", resource=f"device:{device_id}",
+                details={"host": host, "reason": "adopt",
+                         "entry_username": cred.username},
+            )
+            return {**env, "status": APPROVAL_REQUIRED, "device_id": device_id}
+
+        # Reach the device the way the probe just did. `learned` carries the
+        # scheme/auth the successful attempt discovered; without it the account
+        # write would guess again and could fail on a device the very same
+        # credential just read.
+        reach = dict(device_info)
+        if learned:
+            reach.update(learned)
+        result = await adopt_with_admz_account(
+            catalog, executors, registry,
+            device_id=device_id, host=host, entry=pair, device_info=reach,
+        )
+        if result.get("success"):
+            return {"status": OWN_ACCOUNT_CREATED, "device_id": device_id,
+                    "username": result["username"],
+                    "entry_username": cred.username}
+
+        # Creating the account failed but the entry credential works. Store it
+        # rather than lose the device: a managed device on a shared credential
+        # is worse than one on its own, and much better than an unmanaged one.
+        # The status says which happened so nobody reads it as the good path.
+        store_provisioned_creds(
+            registry, device_id, cred.username, cred.password,
+            purpose="Entry credential verified at onboarding; admz account not created",
+        )
+        logger.warning(
+            "device %s adopted on its entry credential — creating the admz "
+            "account failed: %s", device_id, result.get("error"),
+        )
+        return {"status": ENTRY_CREDENTIALS_SAVED, "device_id": device_id,
+                "username": cred.username,
+                "admz_account_error": result.get("error")}
 
     return {"status": CREDENTIALS_NEEDED, "device_id": device_id, "reason": reason}

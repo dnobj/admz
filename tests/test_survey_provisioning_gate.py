@@ -65,7 +65,23 @@ class TestTheSurveyIsGated:
         body = client.post("/api/demos/inference/runs",
                            json={**SURVEY, "subnet": "10.20.0.0/24"}).json()
         assert "10.20.0.0/24" in body["reason"]
-        assert "provision" in body["reason"]
+
+    def test_the_card_names_EVERY_write_the_one_approval_authorises(self, client, ctx):
+        """This approval is in onboarding._APPROVAL_ACTIONS, so no branch will
+        prompt again. It therefore has to say up front everything it covers
+        (ADR-0061, #411): a fresh root account on a factory-defaulted device
+        AND ADMZ's own 'admz' account on one an entry credential opens.
+
+        The first draft named only the factory-default write. The operator
+        would have approved admz-account creation without the card ever
+        mentioning it."""
+        body = client.post("/api/demos/inference/runs",
+                           json={**SURVEY, "subnet": "10.20.0.0/24"}).json()
+        reason = body["reason"].lower()
+        assert "factory-defaulted" in reason
+        assert "admz" in reason and "entry credential" in reason
+        # and it says the entry credential survives — that is ADR-0061's rule
+        assert "left in place" in reason
 
     def test_an_auto_detected_sweep_says_so_rather_than_inventing_a_cidr(
             self, client, ctx):

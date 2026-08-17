@@ -104,13 +104,27 @@ is **never** stored as that device's ongoing credential. See
   authentications, and Axis brute-force behaviour varies by model and
   firmware — measure once against a spare device before shipping.
 
-**Shipped (#411 slice 1):** `admz/entry_credentials.py` — the list, stored as
-one Fernet-encrypted `entry_credentials` fleet setting, with the legacy
+**Shipped (#411 slices 1–2):** `admz/entry_credentials.py` — the list, stored
+as one Fernet-encrypted `entry_credentials` fleet setting, with the legacy
 `default_username`/`default_password` pair read as entry #1 so an existing
-install keeps working with no migration step and no window in which nothing
-resolves. Attempts are capped (`MAX_ATTEMPTS`) because N credentials is N failed
-authentications. **Not yet shipped:** trying them during onboarding, creating
-the `admz` account, and the promote checkbox (FR-CRED-012).
+install keeps working with no migration step. Storage is capped at three
+(FR-CRED-013). Onboarding step 3 walks the list; the first credential that
+authenticates is used to create ADMZ's own `admz` account
+(`provisioning.adopt_with_admz_account`), and *that* is stored. If the account
+write fails but the entry credential works, the entry credential is stored under
+a status and purpose that say so — a managed device on a shared credential beats
+an unmanaged one, but nobody should read it as the good path.
+
+**The account write is gated at the same decision point as factory-default
+provisioning**, with the same approval — not a second one. An operator who
+approved "onboard this device" approved ADMZ setting up its own access; a
+second prompt for the same decision is the gate fatigue ADR-0034 names. The gate
+sits after a credential is *confirmed to work*, not before the loop: an add that
+falls through to capture must not raise a widget for an account write that never
+happens.
+
+**Not yet shipped:** the promote checkbox (FR-CRED-012), and reordering the
+list most-recently-successful-first.
 
 Existing devices are **not** migrated automatically. Creating accounts on nine
 live devices as a deploy side effect is a decision, not a consequence.

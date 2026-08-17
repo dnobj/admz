@@ -108,8 +108,17 @@ def survey_reason(subnet: Any, register_new: bool) -> str:
     auto-detected sweep and a named CIDR are the same click otherwise.
     """
     where = str(subnet).strip() if subnet else "the local subnet (auto-detected)"
-    tail = ("register unknown devices it finds and provision an admin account "
-            "on any that are factory-defaulted"
+    # This ONE approval covers everything onboarding may then do — it is in
+    # `onboarding._APPROVAL_ACTIONS`, so no branch will prompt again. The card
+    # therefore has to name every write it authorises, up front, at the risk
+    # level of the riskiest one (both are pwdgrp.cgi:add-user → service-
+    # affecting, so the level is already the max). Under-describing it here
+    # would mean the operator approved something the card never mentioned,
+    # which is the failure #411's review caught in the first draft.
+    tail = ("register unknown devices it finds and, on each, create an admin "
+            "account for ADMZ — a fresh root account if the device is "
+            "factory-defaulted, or ADMZ's own 'admz' account if an entry "
+            "credential can log in (the entry credential is left in place)"
             if register_new else "register unknown devices it finds")
     return (f"Deep survey: scan {where}, then {tail}. This writes to devices "
             f"ADMZ has never seen.")

@@ -218,3 +218,89 @@ class TestReprovisionHandler:
             "the unattended reprovision handler sent the shared fleet-wide "
             "default password to an unverified peer (GH #185 regression)")
         assert reg.accounts[("cam-1", "default")]["password"] == sent_password
+
+
+class TestAdoptWithAdmzAccount:
+    """ADR-0061 / FR-CRED-011: use a working entry credential to create ADMZ's
+    own per-device account. The entry credential gets ADMZ in; this is what
+    keeps it in."""
+
+    @pytest.mark.asyncio
+    async def test_creates_admz_with_a_generated_password_and_stores_it(self):
+        execr = _Executor()
+        reg = _Registry()
+        entry = {"username": "root", "password": "entry-secret"}
+        res = await provisioning.adopt_with_admz_account(
+            _Catalog(), {"vapix": execr}, reg,
+            device_id="cam-1", host="1.2.3.4", entry=entry,
+        )
+        assert res["success"] is True
+        assert res["status"] == "admz_account_created"
+        assert res["username"] == "admz"
+        # the generated password is NEVER in the result
+        assert "password" not in res
+        acc = reg.accounts[("cam-1", "default")]
+        assert acc["username"] == "admz"
+        assert acc["password"] and acc["password"] != "entry-secret", (
+            "ADMZ must store its OWN generated password, not the entry credential"
+        )
+        assert "ADR-0061" in acc["purpose"]
+
+    @pytest.mark.asyncio
+    async def test_authenticates_AS_the_entry_credential(self):
+        """The one way this differs from provision_factory_default: that writes
+        to a device with no account (auth none); this writes to a device that
+        already has an owner, as that owner."""
+        execr = _Executor()
+        entry = {"username": "root", "password": "entry-secret"}
+        await provisioning.adopt_with_admz_account(
+            _Catalog(), {"vapix": execr}, _Registry(),
+            device_id="cam-1", host="1.2.3.4", entry=entry,
+        )
+        op, device, creds, params = execr.last
+        assert creds == entry
+        assert params["username"] == "admz" and params["group"] == "root"
+
+    @pytest.mark.asyncio
+    async def test_the_written_password_is_the_stored_password(self):
+        """Control: what went to the device is what ADMZ kept."""
+        execr = _Executor()
+        reg = _Registry()
+        await provisioning.adopt_with_admz_account(
+            _Catalog(), {"vapix": execr}, reg,
+            device_id="cam-1", host="1.2.3.4",
+            entry={"username": "root", "password": "x"},
+        )
+        assert execr.last[3]["password"] == reg.accounts[("cam-1", "default")]["password"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_stores_nothing_and_says_so(self):
+        """The caller falls back to the entry credential; this must not have
+        half-stored an account for a device that never got one."""
+        execr = _Executor(result=_Result(success=False, error="device said no"))
+        reg = _Registry()
+        res = await provisioning.adopt_with_admz_account(
+            _Catalog(), {"vapix": execr}, reg,
+            device_id="cam-1", host="1.2.3.4",
+            entry={"username": "root", "password": "x"},
+        )
+        assert res["success"] is False
+        assert res["status"] == "admz_account_failed"
+        assert "device said no" in res["error"]
+        assert ("cam-1", "default") not in reg.accounts
+
+    @pytest.mark.asyncio
+    async def test_reaches_the_device_the_way_the_probe_did(self):
+        """A device the probe found HTTPS-only+Basic must be written to that way,
+        or the account write guesses again and fails on a device the same
+        credential just read (the A1210, 2026-08-17)."""
+        execr = _Executor()
+        info = {"auth_method": "basic", "auth": {"scheme": "https", "https": "basic"}}
+        await provisioning.adopt_with_admz_account(
+            _Catalog(), {"vapix": execr}, _Registry(),
+            device_id="cam-1", host="1.2.3.4",
+            entry={"username": "root", "password": "x"}, device_info=info,
+        )
+        op, device, creds, params = execr.last
+        assert device.get("auth_method") == "basic"
+        assert (device.get("auth") or {}).get("scheme") == "https"

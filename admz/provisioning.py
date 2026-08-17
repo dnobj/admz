@@ -109,6 +109,65 @@ def store_provisioned_creds(
     registry.add_account(device_id, "default", account_data)
 
 
+#: The account ADMZ creates for its own ongoing use (ADR-0061, FR-CRED-011).
+OWN_ACCOUNT_USERNAME = "admz"
+
+
+async def adopt_with_admz_account(
+    catalog: Any,
+    executors: Any,
+    registry: Any,
+    *,
+    device_id: str,
+    host: str,
+    entry: Dict[str, str],
+    device_info: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Use a working entry credential to create ADMZ's own account.
+
+    ADR-0061: fleet credentials get ADMZ **in**; the per-device ``admz`` account
+    keeps it in. This is the second half — the caller has already proved
+    ``entry`` authenticates, and this converts that one-time access into a
+    credential nothing else holds.
+
+    Differs from :func:`provision_factory_default` in the one way that matters:
+    that function writes to a device with **no** account and therefore uses
+    ``auth_method="none"``. This one authenticates *as* the entry credential,
+    because the device is already set up.
+
+    **The entry credential is never removed or rotated.** If ADMZ's database is
+    lost, every generated password goes with it and the entry credential is the
+    only way back in. That is a rule, not a preference — see ADR-0061.
+
+    Returns a result dict; the generated password is never in it.
+    """
+    new_password = generate_device_password()
+    ok, error = await execute_on_host(
+        catalog, executors, host, "pwdgrp.cgi:add-user",
+        params={
+            "username": OWN_ACCOUNT_USERNAME,
+            "password": new_password,
+            "group": "root",
+            "secondary_groups": "admin:operator:viewer:ptz",
+        },
+        credentials=entry,
+        auth_method=(device_info or {}).get("auth_method") or "digest",
+        auth=(device_info or {}).get("auth"),
+    )
+    if not ok:
+        # The entry credential still works even though this did not, so the
+        # caller can fall back to storing it rather than losing the device.
+        return {"success": False, "status": "admz_account_failed",
+                "device_id": device_id, "error": error}
+
+    store_provisioned_creds(
+        registry, device_id, OWN_ACCOUNT_USERNAME, new_password,
+        purpose="ADMZ's own account, created at adoption (ADR-0061)",
+    )
+    return {"success": True, "status": "admz_account_created",
+            "device_id": device_id, "username": OWN_ACCOUNT_USERNAME}
+
+
 async def provision_factory_default(
     catalog: Any,
     executors: Any,
