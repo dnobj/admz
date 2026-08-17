@@ -102,6 +102,10 @@ KNOWN_SETTING_KEYS: FrozenSet[str] = frozenset({
     # with no migration step. Deliberately NOT LLM-writable — it holds
     # passwords, and widening it widens what ADMZ tries against every device.
     "entry_credentials",
+    # FR-CRED-013 posture: store none, prompt every time. A boolean, not a
+    # secret — declared here so it is a known key, and deliberately not
+    # LLM-writable, since turning it OFF would re-enable stored credentials.
+    "entry_credentials_prompt_always",
     # --- confirmation / credential gates (ADR-0006, ADR-0020) -------------
     "confirm_password_hash",
     # Who may APPROVE a confirmation session (GH #178). Deliberately absent
@@ -245,6 +249,13 @@ NOT_ENCRYPTED_SENSITIVE_KEYS: FrozenSet[str] = frozenset({
     # UI is the cheap side of that trade; the expensive side would be a list of
     # passwords the predicate did not recognise.
     "health_verify_credentials",
+    # Also a BOOLEAN — the FR-CRED-013 posture flag ("store none, prompt every
+    # time"), not a credential. Second false positive from the same substring.
+    # Worth noting rather than absorbing: if a third arrives, "credential"
+    # should become a delimiter-bounded match like `pat`/`pwd`/`pass` instead
+    # of this list growing. The trade still favours the substring today — a
+    # missed list of passwords costs more than a masked flag.
+    "entry_credentials_prompt_always",
 })
 
 

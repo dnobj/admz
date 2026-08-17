@@ -115,6 +115,33 @@ the `admz` account, and the promote checkbox (FR-CRED-012).
 Existing devices are **not** migrated automatically. Creating accounts on nine
 live devices as a deploy side effect is a decision, not a consequence.
 
+### FR-CRED-013 — At most three entry credentials, or none at all 🚧
+The list is capped at **three**, enforced when a credential is **stored** and
+not when one is tried. Capping attempts while letting the list grow would be
+worse than no cap: the settings page would show six credentials, ADMZ would try
+three, and the other three would be a lie the operator had no way to see. The
+legacy `default_username`/`default_password` pair occupies a slot, because it is
+one of the credentials that gets tried.
+
+Three is a conservative guess, not a measurement. ADR-0061 requires the lockout
+risk be measured against a spare device before the trying half ships; the number
+should be revisited **with** that measurement rather than defended as if it were
+one.
+
+An installation may also **store none and prompt every time**
+(`entry_credentials_prompt_always`). That is a posture, not an empty list:
+adds are refused while it holds, and any value already stored is ignored rather
+than used — so turning it on stops ADMZ using a credential immediately, with
+nothing to delete first. Nothing is deleted on the operator's behalf, so turning
+it off restores what was there.
+
+It costs less than it appears. Nothing requires a stored fleet password:
+`provision_factory_default` prefers one but falls back to
+`generate_device_password()`, and #185 already made the deferred/scheduled
+reprovision path generate unconditionally. The only thing the posture gives up
+is that adopting an **already-set-up** device always asks a human — which is
+precisely what it is choosing.
+
 ### FR-CRED-012 — Captured credentials may be promoted to the entry list 📋
 When nothing authenticates, the capture flow (FR-CRED-003 / ADR-0009) offers an
 opt-in *"also try this on other devices."*

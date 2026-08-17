@@ -98,30 +98,103 @@ def test_a_half_credential_is_refused(isolated_settings, user, password):
         ec.add_entry_credential(user, password)
 
 
-# ── the attempt cap ─────────────────────────────────────────────────────────
+# ── the storage cap ─────────────────────────────────────────────────────────
 
-def test_attempts_are_capped(isolated_settings):
-    """N credentials is N failed authentications, and Axis brute-force
-    behaviour varies by model. Adding a fifth credential must not be the thing
-    that locks ADMZ out of the fleet."""
-    for i in range(ec.MAX_ATTEMPTS + 3):
-        ec.add_entry_credential(f"user{i}", f"pass{i}")
-    assert len(ec.list_entry_credentials()) == ec.MAX_ATTEMPTS + 3
-    assert len(ec.attempt_order()) == ec.MAX_ATTEMPTS
+def test_storing_more_than_the_cap_is_refused(isolated_settings):
+    """Capped on STORAGE, not on attempts.
+
+    Capping attempts while letting the list grow would be worse than no cap:
+    the settings page would show six credentials, ADMZ would try three, and the
+    other three would be a lie the operator had no way to see.
+    """
+    for i in range(ec.MAX_STORED):
+        assert ec.add_entry_credential(f"user{i}", f"pass{i}") is True
+    with pytest.raises(ValueError, match="at most"):
+        ec.add_entry_credential("one-too-many", "p")
+    assert len(ec.list_entry_credentials()) == ec.MAX_STORED
 
 
-def test_under_the_cap_everything_is_tried(isolated_settings):
+def test_under_the_cap_adds_succeed(isolated_settings):
     """Control for the test above."""
-    ec.add_entry_credential("a", "1")
-    ec.add_entry_credential("b", "2")
-    assert len(ec.attempt_order()) == 2
+    for i in range(ec.MAX_STORED - 1):
+        assert ec.add_entry_credential(f"user{i}", f"pass{i}") is True
+    assert len(ec.list_entry_credentials()) == ec.MAX_STORED - 1
 
 
-def test_the_cap_preserves_order(isolated_settings):
+def test_the_legacy_pair_occupies_a_slot(isolated_settings):
+    """It is one of the credentials that gets tried, so it counts."""
     isolated_settings.set(ec.LEGACY_PASS_KEY, "legacy")
-    for i in range(6):
-        ec.add_entry_credential(f"user{i}", f"pass{i}")
+    for i in range(ec.MAX_STORED - 1):
+        assert ec.add_entry_credential(f"user{i}", f"pass{i}") is True
+    with pytest.raises(ValueError, match="at most"):
+        ec.add_entry_credential("extra", "p")
+
+
+def test_attempt_order_is_the_stored_list(isolated_settings):
+    """Nothing is trimmed at try-time, because nothing over-large is stored."""
+    isolated_settings.set(ec.LEGACY_PASS_KEY, "legacy")
+    ec.add_entry_credential("a", "1")
+    assert ec.attempt_order() == ec.list_entry_credentials()
     assert ec.attempt_order()[0].password == "legacy"
+
+
+# ── the "store none, prompt every time" posture ─────────────────────────────
+
+def test_prompt_always_yields_no_credentials(isolated_settings):
+    """A decision, not a state. Turning it on stops ADMZ using a stored
+    credential immediately, with nothing to delete first."""
+    ec.add_entry_credential("root", "stored")
+    assert len(ec.list_entry_credentials()) == 1
+    isolated_settings.set(ec.PROMPT_ALWAYS_KEY, "true")
+    assert ec.list_entry_credentials() == []
+    assert ec.attempt_order() == []
+
+
+def test_prompt_always_does_not_destroy_what_was_stored(isolated_settings):
+    """Turning the posture off restores them — which is why nothing is deleted
+    on the operator's behalf."""
+    ec.add_entry_credential("root", "stored")
+    isolated_settings.set(ec.PROMPT_ALWAYS_KEY, "true")
+    assert ec.list_entry_credentials() == []
+    isolated_settings.set(ec.PROMPT_ALWAYS_KEY, "false")
+    assert [c.password for c in ec.list_entry_credentials()] == ["stored"]
+
+
+def test_prompt_always_refuses_new_credentials(isolated_settings):
+    """Otherwise it would be a state the next add silently overturns."""
+    isolated_settings.set(ec.PROMPT_ALWAYS_KEY, "true")
+    with pytest.raises(ValueError, match="stores no entry credentials"):
+        ec.add_entry_credential("root", "p")
+
+
+def test_prompt_always_also_ignores_the_LEGACY_pair(isolated_settings):
+    """The legacy pair is read from different keys; the posture must cover it
+    too, or 'store none' would quietly still try one."""
+    isolated_settings.set(ec.LEGACY_PASS_KEY, "legacy")
+    isolated_settings.set(ec.PROMPT_ALWAYS_KEY, "true")
+    assert ec.list_entry_credentials() == []
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("true", True), ("1", True), ("yes", True), ("on", True), ("TRUE", True),
+    ("false", False), ("0", False), ("", False), ("maybe", False),
+])
+def test_the_posture_flag_parses_conservatively(isolated_settings, raw, expected):
+    """An unrecognised value means OFF — the posture must be chosen, never
+    arrived at by a typo."""
+    isolated_settings.set(ec.PROMPT_ALWAYS_KEY, raw)
+    assert ec.prompt_always() is expected
+
+
+def test_describe_distinguishes_stored_from_in_use(isolated_settings):
+    """An operator reading '0 credentials' should know whether that is a policy
+    or an empty box."""
+    ec.add_entry_credential("root", "stored", "batch A")
+    isolated_settings.set(ec.PROMPT_ALWAYS_KEY, "true")
+    d = ec.describe()
+    assert d["prompt_always"] is True
+    assert len(d["stored"]) == 1 and d["in_use"] == []
+    assert "stored" not in json.dumps(d["stored"])  # the password, not the key
 
 
 # ── stored encrypted, never leaked ──────────────────────────────────────────

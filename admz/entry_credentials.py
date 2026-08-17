@@ -49,14 +49,34 @@ SETTING_KEY = "entry_credentials"
 LEGACY_USER_KEY = "default_username"
 LEGACY_PASS_KEY = "default_password"
 
-#: Ceiling on how many credentials a single device adoption may try.
+#: Ceiling on how many entry credentials may be STORED — not merely tried.
 #:
-#: Not arbitrary caution: N credentials is N failed authentications, and Axis
-#: brute-force behaviour varies by model and firmware. ADR-0061 requires this be
-#: measured against a spare device before the trying half ships; until then the
-#: cap is the guard. Adding a fourth credential must not be the thing that locks
-#: ADMZ out of the fleet.
-MAX_ATTEMPTS = 4
+#: Capping attempts while letting the list grow would be worse than no cap: the
+#: settings page would show six credentials, ADMZ would try three, and the other
+#: three would be a lie the operator had no way to see. A limit enforced where
+#: the decision is made is visible; one enforced at try-time is not.
+#:
+#: Three rather than an arbitrary larger number because N credentials is N
+#: failed authentications, and Axis brute-force behaviour varies by model and
+#: firmware. ADR-0061 requires that be MEASURED against a spare device before
+#: the trying half ships — until then this number is a conservative guess and
+#: should be revisited with the measurement, not defended as if it were one.
+MAX_STORED = 3
+
+#: Posture: this installation stores NO entry credentials and prompts for a
+#: device credential every time (FR-CRED-013).
+#:
+#: Distinct from the list merely being empty. Empty is a state — the next add
+#: changes it. This is a decision: adds are refused while it holds, and any
+#: value already stored is ignored rather than used.
+#:
+#: Viable because nothing requires a stored fleet password.
+#: ``provision_factory_default`` prefers it but falls back to
+#: ``generate_device_password()``, and #185 already made the deferred/scheduled
+#: reprovision path generate unconditionally. The only thing this posture costs
+#: is that adopting an already-set-up device always asks a human — which is
+#: precisely what it is choosing.
+PROMPT_ALWAYS_KEY = "entry_credentials_prompt_always"
 
 
 @dataclass(frozen=True)
@@ -91,19 +111,32 @@ def _parse(raw: Optional[str]) -> List[EntryCredential]:
         user, password = item.get("username"), item.get("password")
         if not user or not password:
             # A half-written entry cannot authenticate anything, and keeping it
-            # would burn one of MAX_ATTEMPTS on a guaranteed failure.
+            # would occupy one of the MAX_STORED slots on a guaranteed failure.
             continue
         out.append(EntryCredential(str(user), str(password), str(item.get("label") or "")))
     return out
 
 
+def prompt_always() -> bool:
+    """True when this installation stores no entry credentials by policy."""
+    raw = fleet_settings.get(PROMPT_ALWAYS_KEY)
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 def list_entry_credentials() -> List[EntryCredential]:
     """Every credential ADMZ may try, in the order it should try them.
 
-    The legacy pair comes first when set. It is the one an operator has most
-    recently confirmed by hand, and trying it first means an install that has
-    never touched this feature behaves exactly as it did before.
+    Empty under :func:`prompt_always`, whatever is stored. Turning the posture
+    on therefore stops ADMZ using a credential immediately, without requiring
+    the operator to delete anything first — and turning it off restores what
+    was there, which is why nothing is deleted on their behalf.
+
+    Otherwise the legacy pair comes first when set: it is the one an operator
+    has most recently confirmed by hand, and trying it first means an install
+    that has never touched this feature behaves exactly as it did before.
     """
+    if prompt_always():
+        return []
     creds: List[EntryCredential] = []
     legacy_pass = fleet_settings.get(LEGACY_PASS_KEY)
     if legacy_pass:
@@ -122,20 +155,14 @@ def list_entry_credentials() -> List[EntryCredential]:
 
 
 def attempt_order() -> List[EntryCredential]:
-    """What an adoption should actually try — the list, capped.
+    """What an adoption should try. Identical to the stored list, by design.
 
-    Separate from :func:`list_entry_credentials` so the settings surface can
-    show every configured credential while the device-facing path stays bounded.
-    A list that grows past the cap is a configuration problem to surface, not a
-    reason to hammer a camera.
+    The cap is enforced on storage, so there is nothing to trim here. This
+    function exists as the device-facing name for the same thing: a later slice
+    may reorder it (ADR-0061 suggests most-recently-successful first) without
+    changing what the settings page shows.
     """
-    creds = list_entry_credentials()
-    if len(creds) > MAX_ATTEMPTS:
-        logger.warning(
-            "%d entry credentials configured; only the first %d will be tried "
-            "(see entry_credentials.MAX_ATTEMPTS)", len(creds), MAX_ATTEMPTS,
-        )
-    return creds[:MAX_ATTEMPTS]
+    return list_entry_credentials()
 
 
 def add_entry_credential(username: str, password: str, label: str = "") -> bool:
@@ -150,6 +177,11 @@ def add_entry_credential(username: str, password: str, label: str = "") -> bool:
     ADR-0061 requires both. Nothing here should be called as a side effect of a
     successful capture.
     """
+    if prompt_always():
+        raise ValueError(
+            f"this installation stores no entry credentials ({PROMPT_ALWAYS_KEY} "
+            f"is on); clear that posture first if you want to store one"
+        )
     username, password = (username or "").strip(), password or ""
     if not username or not password:
         raise ValueError("an entry credential needs both a username and a password")
@@ -163,6 +195,15 @@ def add_entry_credential(username: str, password: str, label: str = "") -> bool:
     if (fleet_settings.get(LEGACY_PASS_KEY) == password
             and (fleet_settings.get(LEGACY_USER_KEY) or "root") == username):
         return False
+    # Counted against the legacy pair too: it occupies one of the slots,
+    # because it is one of the credentials that gets tried.
+    total = len(existing) + (1 if fleet_settings.get(LEGACY_PASS_KEY) else 0)
+    if total >= MAX_STORED:
+        raise ValueError(
+            f"at most {MAX_STORED} entry credentials may be stored (currently "
+            f"{total}); remove one before adding another. Each is another failed "
+            f"authentication against every device ADMZ adopts."
+        )
     existing.append(EntryCredential(username, password, label))
     fleet_settings.set(SETTING_KEY, json.dumps([
         {"username": c.username, "password": c.password, "label": c.label}
@@ -171,6 +212,20 @@ def add_entry_credential(username: str, password: str, label: str = "") -> bool:
     return True
 
 
-def describe() -> List[dict]:
-    """The list, redacted — for a settings page, an API response or a log."""
-    return [c.redacted() for c in list_entry_credentials()]
+def describe() -> dict:
+    """The redacted state, for a settings page, an API response or a log.
+
+    Reports what is STORED separately from what is in USE, because under
+    :func:`prompt_always` those differ and an operator reading "0 credentials"
+    would not know whether that is a policy or an empty box.
+    """
+    stored = _parse(fleet_settings.get(SETTING_KEY))
+    if fleet_settings.get(LEGACY_PASS_KEY):
+        stored.insert(0, EntryCredential(
+            fleet_settings.get(LEGACY_USER_KEY) or "root", "", "fleet default"))
+    return {
+        "prompt_always": prompt_always(),
+        "max_stored": MAX_STORED,
+        "stored": [c.redacted() for c in stored],
+        "in_use": [c.redacted() for c in list_entry_credentials()],
+    }
