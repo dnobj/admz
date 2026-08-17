@@ -249,6 +249,28 @@ async def lifespan(app: FastAPI):
                 "hierarchy backfill failed", exc_info=True
             )
 
+        # Per-device state that outlived its device (GH #428). `remove_device`
+        # now purges these in-transaction; this heals what accumulated before it
+        # did. Idempotent, so it runs every startup like the two above — a
+        # one-shot cleanup nobody re-runs is how the hierarchy rows were
+        # stranded, and a health row for a deleted device is worse than a
+        # missing site: it reports the ghost as UNREACHABLE.
+        try:
+            purge = getattr(registry, "purge_orphaned_device_state", None)
+            if purge is not None:
+                result = purge()
+                if result:
+                    import logging
+                    logging.getLogger(__name__).info(
+                        "orphaned device state purged: %s",
+                        ", ".join(f"{t}={n}" for t, n in sorted(result.items())),
+                    )
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning(
+                "orphaned device state purge failed", exc_info=True
+            )
+
         # Install the unified task-handler context (reprovision + scheduled handlers)
         # so the health-monitor sweep can fire pre-approved detection tasks.
         try:

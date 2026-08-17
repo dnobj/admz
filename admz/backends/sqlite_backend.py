@@ -668,16 +668,85 @@ class SQLiteDeviceRegistry(DeviceRegistry):
             conn.commit()
             return cur.rowcount > 0
 
+    #: Per-device STATE that must not outlive the device (GH #428). These live
+    #: in the same SQLite file but are owned by other stores, so they have no
+    #: foreign key to ``devices`` — ``accounts`` and ``device_baselines`` do, and
+    #: cascade correctly, which is the pattern this completes by hand.
+    #:
+    #: Deliberately NOT here, and why:
+    #:   confirm_sessions, capture_sessions, drift_reports — records of what
+    #:     happened, audit-adjacent. Deleting history because its subject left
+    #:     is a separate decision; #408 is about exactly how much weight the
+    #:     audit trail carries.
+    #:   tasks, watched_events — user-authored. A schedule or a bookmark scoped
+    #:     to a removed device is dead, but silently deleting something the
+    #:     operator wrote is not this issue's call.
+    #:   temp_credentials — an account ON the device (#314). Dropping the record
+    #:     without removing the account is the orphan problem, not its fix.
+    _DEVICE_STATE_TABLES = (
+        "device_health", "drift_signatures", "drift_alerts",
+        "pending_device_actions",
+    )
+
+    def _purge_device_state(self, conn, device_id: str) -> Dict[str, int]:
+        """Delete ``device_id``'s rows from the state tables. Same transaction.
+
+        Tolerates a table that does not exist yet: each is created by its own
+        store on first use, and a fresh install may remove a device before the
+        health monitor has ever run.
+        """
+        purged: Dict[str, int] = {}
+        for table in self._DEVICE_STATE_TABLES:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            if not exists:
+                continue
+            cur = conn.execute(f"DELETE FROM {table} WHERE device_id=?", (device_id,))
+            if cur.rowcount:
+                purged[table] = cur.rowcount
+        return purged
+
     def remove_device(self, device_id: str) -> None:
         if not self.device_exists(device_id):
             raise DeviceNotFoundError(f"Device '{device_id}' not found")
 
-        # Foreign key cascade deletes accounts
+        # Foreign key cascade deletes accounts + baselines; the state tables
+        # other stores own are purged explicitly, in the SAME transaction, so a
+        # removed device cannot leave a health row reporting it "unreachable"
+        # — which is how a fleet summary came to say 3 devices were down when
+        # none were (#428).
         with self._connect() as conn:
+            self._purge_device_state(conn, device_id)
             conn.execute(
                 "DELETE FROM devices WHERE device_id=?", (device_id,)
             )
             conn.commit()
+
+    def purge_orphaned_device_state(self) -> Dict[str, int]:
+        """Remove state rows whose device no longer exists. Idempotent.
+
+        Heals what accumulated before ``remove_device`` purged (four health rows
+        on production at the time of #428, including one keyed on a MODEL NAME
+        — ``P8815-2`` — from a device once registered under the wrong id). Runs
+        at startup beside the hierarchy backfill; a second run finds nothing.
+        """
+        purged: Dict[str, int] = {}
+        with self._connect() as conn:
+            for table in self._DEVICE_STATE_TABLES:
+                exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                ).fetchone()
+                if not exists:
+                    continue
+                cur = conn.execute(
+                    f"DELETE FROM {table} WHERE device_id IS NOT NULL AND "
+                    f"device_id NOT IN (SELECT device_id FROM devices)"
+                )
+                if cur.rowcount:
+                    purged[table] = cur.rowcount
+            conn.commit()
+        return purged
 
     def add_account(
         self, device_id: str, account_id: str, account_data: Dict[str, Any]
