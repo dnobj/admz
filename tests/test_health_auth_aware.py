@@ -421,16 +421,39 @@ def test_onboarding_saves_fleet_creds_when_only_param_cgi_authenticates(monkeypa
                               "default_username": "root"}.get(key),
     )
 
-    execs = _Executor({AUTH_CHECK_OP: _result(401), CORROBORATION_OP: _param_ok()})
-    out = asyncio.run(onboard_device_credentials(
-        device_id="p8815", registry=_Reg(), catalog=_Catalog(),
-        executors={"vapix": execs},
-    ))
+    # ADR-0061 / #411: a credential that authenticates is now used to CREATE
+    # ADMZ's own account rather than being stored itself, and that write is
+    # gated. Run under the same approval the factory-default path uses, and
+    # stand in for the account write so this test stays about #149's subject:
+    # the corroboration path accepting the credential.
+    from admz.approval_context import approved
 
-    assert out["status"] == "fleet_credentials_saved"
-    assert saved["creds"] == ("root", "fleet-pw")
-    # ...and onboarding learned to lead with param.cgi too.
+    adopted = {}
+
+    async def _adopt(*a, **k):
+        adopted["entry"] = k.get("entry")
+        adopted["marker_already_persisted"] = PROBE_MARKER_KEY in saved.get("info", {})
+        return {"success": True, "status": "admz_account_created",
+                "username": "admz", "device_id": k.get("device_id")}
+
+    monkeypatch.setattr("admz.provisioning.adopt_with_admz_account", _adopt)
+
+    execs = _Executor({AUTH_CHECK_OP: _result(401), CORROBORATION_OP: _param_ok()})
+    with approved("register_discovered_device", "tok-test"):
+        out = asyncio.run(onboard_device_credentials(
+            device_id="p8815", registry=_Reg(), catalog=_Catalog(),
+            executors={"vapix": execs},
+        ))
+
+    assert out["status"] == "admz_account_created"
+    # The corroborated credential is what ADMZ used to get in...
+    assert adopted["entry"] == {"username": "root", "password": "fleet-pw"}
+    # ...and onboarding learned to lead with param.cgi too — persisted BEFORE
+    # the account write, so the write reaches the device the way the probe
+    # did (the A1210 had a working credential and no profile, and read
+    # auth_failed while the credential demonstrably worked).
     assert saved["info"][PROBE_MARKER_KEY] == {"auth_check_op": CORROBORATION_OP}
+    assert adopted["marker_already_persisted"] is True
     assert "password" not in out  # the standing secrecy rule
 
 

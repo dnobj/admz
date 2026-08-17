@@ -110,7 +110,7 @@ def store_provisioned_creds(
 
 
 #: The account ADMZ creates for its own ongoing use (ADR-0061, FR-CRED-011).
-ADMZ_ACCOUNT_USERNAME = "admz"
+OWN_ACCOUNT_USERNAME = "admz"
 
 
 async def adopt_with_admz_account(
@@ -145,7 +145,7 @@ async def adopt_with_admz_account(
     ok, error = await execute_on_host(
         catalog, executors, host, "pwdgrp.cgi:add-user",
         params={
-            "username": ADMZ_ACCOUNT_USERNAME,
+            "username": OWN_ACCOUNT_USERNAME,
             "password": new_password,
             "group": "root",
             "secondary_groups": "admin:operator:viewer:ptz",
@@ -161,11 +161,11 @@ async def adopt_with_admz_account(
                 "device_id": device_id, "error": error}
 
     store_provisioned_creds(
-        registry, device_id, ADMZ_ACCOUNT_USERNAME, new_password,
+        registry, device_id, OWN_ACCOUNT_USERNAME, new_password,
         purpose="ADMZ's own account, created at adoption (ADR-0061)",
     )
     return {"success": True, "status": "admz_account_created",
-            "device_id": device_id, "username": ADMZ_ACCOUNT_USERNAME}
+            "device_id": device_id, "username": OWN_ACCOUNT_USERNAME}
 
 
 async def provision_factory_default(

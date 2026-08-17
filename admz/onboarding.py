@@ -53,7 +53,7 @@ PROVISION_FAILED = "provision_failed"
 ENTRY_CREDENTIALS_SAVED = "fleet_credentials_saved"
 FLEET_CREDENTIALS_SAVED = ENTRY_CREDENTIALS_SAVED
 #: The good path: ADMZ created and stored its own per-device account.
-ADMZ_ACCOUNT_CREATED = "admz_account_created"
+OWN_ACCOUNT_CREATED = "admz_account_created"
 CREDENTIALS_NEEDED = "credentials_needed"
 #: ADR-0059. The device is factory-defaulted, so onboarding is about to create
 #: a root admin account on it — and nobody has approved that yet. The dict also
@@ -316,7 +316,7 @@ async def onboard_device_credentials(
             device_id=device_id, host=host, entry=pair, device_info=reach,
         )
         if result.get("success"):
-            return {"status": ADMZ_ACCOUNT_CREATED, "device_id": device_id,
+            return {"status": OWN_ACCOUNT_CREATED, "device_id": device_id,
                     "username": result["username"],
                     "entry_username": cred.username}
 
