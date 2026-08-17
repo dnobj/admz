@@ -1401,8 +1401,9 @@ async def _run_manual_tool_loop(models, model, contents, sys_inst, mcp_session):
     # thinking budget. The dynamic default (-1) is what lets the model emit an
     # empty STOP candidate on a cold turn; a fixed budget forces it to engage.
     _retry_cfg = dict(config)
+    # Both dialects live under thinking_config (#436), so one pop clears
+    # whichever the model uses before the adapter writes the retry's setting.
     _retry_cfg.pop("thinking_config", None)
-    _retry_cfg.pop("thinking_level", None)
     _retry_cfg.update(_models.thinking_config(
         model, _models.REASONING_HARD,
         budget_override=_get_empty_retry_thinking_budget()))
