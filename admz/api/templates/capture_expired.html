@@ -1,13 +1,19 @@
 {% extends "base.html" %}
 
-{% block title %}Link Expired{% endblock %}
+{# Shared dead-link page: capture.py, rule_capture.py AND confirm.py render it
+   for expired / used / denied tokens. Every caller passes ``title`` ("Link
+   Expired", or "Request Denied" for a declined confirmation) — so the heading
+   comes from the route, and the body says only what is true of all three
+   surfaces. Naming one surface here ("credential capture link") was wrong
+   for the other two. #}
+{% block title %}{{ title|default("Link Expired") }}{% endblock %}
 
 {% block content %}
 <div style="max-width:480px;margin:60px auto;text-align:center;">
   <div style="font-size:48px;margin-bottom:16px;">&#8987;</div>
-  <h1>Link Expired</h1>
+  <h1>{{ title|default("Link Expired") }}</h1>
   <p style="color:#666;">
-    This credential capture link has expired or has already been used.
+    This link is no longer valid: it has expired, been used, or been declined.
   </p>
   <p style="color:#666;font-size:14px;margin-top:24px;">
     Return to your chat session and request a new link.
