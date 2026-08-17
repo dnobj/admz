@@ -86,11 +86,21 @@ def patch_probes(monkeypatch):
         state["provision_called"] = True
         return state["provision"]
 
+    # ADR-0061 / #411 slice 2: a verified entry credential is now used to
+    # CREATE ADMZ's own per-device account rather than being stored itself.
+    state["adopt"] = {"success": True, "status": "admz_account_created",
+                      "username": "admz"}
+
+    async def _adopt(*a, **k):
+        state["adopt_called"] = k.get("entry")
+        return {**state["adopt"], "device_id": k.get("device_id")}
+
     monkeypatch.setattr("admz.fleet.health._confirm_credentials", _confirm)
     monkeypatch.setattr("admz.fleet.systemready.read_systemready", _ready)
     monkeypatch.setattr(
         "admz.provisioning.provision_factory_default", _provision
     )
+    monkeypatch.setattr("admz.provisioning.adopt_with_admz_account", _adopt)
     return state
 
 
@@ -142,16 +152,22 @@ class TestResolutionOrder:
             onboarding.fleet_settings, "get",
             lambda k: {"default_password": FLEET_PW, "default_username": "admin"}.get(k),
         )
+        from admz.approval_context import approved
+
         patch_probes["confirm"] = [(True, {"model": "P3408-VE",
                                            "firmware_version": "11.11.0"})]
         reg = _Registry()
-        out = _run(registry=reg)
-        assert out["status"] == "fleet_credentials_saved"
-        assert out["username"] == "admin"
-        # saved server-side with an accurate purpose…
-        assert reg.accounts["default"]["password"] == FLEET_PW
-        assert "onboarding" in reg.accounts["default"]["purpose"]
-        # …and the verify response backfilled device facts
+        with approved("register_discovered_device", "tok-test"):
+            out = _run(registry=reg)
+        # ADR-0061: the entry credential gets ADMZ in; ADMZ then creates its
+        # own account. This used to store the fleet pair itself, which made one
+        # shared password the standing key to every device onboarded this way.
+        assert out["status"] == "admz_account_created"
+        assert out["username"] == "admz"
+        assert out["entry_username"] == "admin"
+        # the entry credential is what authenticated the account write…
+        assert patch_probes["adopt_called"]["password"] == FLEET_PW
+        # …and the verify response still backfilled device facts
         assert reg.info_updates.get("model") == "P3408-VE"
 
     def test_stale_stored_creds_repaired_by_fleet_pair(self, patch_probes, monkeypatch):
@@ -161,10 +177,65 @@ class TestResolutionOrder:
         )
         # stored creds rejected, fleet pair accepted
         patch_probes["confirm"] = [(False, {}), (True, {})]
+        from admz.approval_context import approved
+
         reg = _Registry(stored={"username": "root", "password": "stale"})
-        out = _run(registry=reg)
+        with approved("register_discovered_device", "tok-test"):
+            out = _run(registry=reg)
+        assert out["status"] == "admz_account_created"
+        assert patch_probes["adopt_called"]["password"] == FLEET_PW
+
+    def test_adoption_GATES_when_not_approved(self, patch_probes, monkeypatch):
+        """ADR-0061's second decision point. An entry credential that works is
+        about to create a root admin account on a device that already has an
+        owner. Same approval as the factory-default path — not a second one —
+        but it MUST be there: a device merely being adopted must not get an
+        account created just because it answered a password."""
+        monkeypatch.setattr(
+            onboarding.fleet_settings, "get",
+            lambda k: {"default_password": FLEET_PW}.get(k),
+        )
+        patch_probes["confirm"] = [(True, {})]
+        out = _run()
+        assert out["status"] == "approval_required"
+        assert "confirm_url" in out or "confirm_token" in out
+        assert "adopt_called" not in patch_probes, "the account write ran ungated"
+        # The card names what is about to happen, not a generic "onboard".
+        assert "admz" in out.get("reason", "").lower()
+
+    def test_adoption_does_NOT_gate_when_no_credential_works(self, patch_probes, monkeypatch):
+        """Control: the gate sits at the decision point, not the entry. An add
+        that falls through to capture must not raise a widget for an account
+        write that never happens — that is the every-add gate ADR-0059 refuses."""
+        monkeypatch.setattr(
+            onboarding.fleet_settings, "get",
+            lambda k: {"default_password": FLEET_PW}.get(k),
+        )
+        patch_probes["confirm"] = [(False, {})]
+        out = _run()
+        assert out["status"] == "credentials_needed"
+        assert "adopt_called" not in patch_probes
+
+    def test_adoption_falls_back_to_the_entry_credential_if_the_account_write_fails(
+        self, patch_probes, monkeypatch
+    ):
+        """A managed device on a shared credential beats an unmanaged one — but
+        the status must say which happened, so nobody reads it as the good path."""
+        from admz.approval_context import approved
+
+        monkeypatch.setattr(
+            onboarding.fleet_settings, "get",
+            lambda k: {"default_password": FLEET_PW}.get(k),
+        )
+        patch_probes["confirm"] = [(True, {})]
+        patch_probes["adopt"] = {"success": False, "error": "device said no"}
+        reg = _Registry()
+        with approved("register_discovered_device", "tok-test"):
+            out = _run(registry=reg)
         assert out["status"] == "fleet_credentials_saved"
+        assert out["admz_account_error"] == "device said no"
         assert reg.accounts["default"]["password"] == FLEET_PW
+        assert "not created" in reg.accounts["default"]["purpose"]
 
     def test_fleet_pair_rejected_needs_capture(self, patch_probes, monkeypatch):
         monkeypatch.setattr(
@@ -180,7 +251,7 @@ class TestResolutionOrder:
         monkeypatch.setattr(onboarding.fleet_settings, "get", lambda k: None)
         out = _run()
         assert out["status"] == "credentials_needed"
-        assert "default_password" in out["reason"]
+        assert "entry credentials" in out["reason"]
 
     def test_unknown_device_degrades(self, patch_probes):
         class _Boom(_Registry):
