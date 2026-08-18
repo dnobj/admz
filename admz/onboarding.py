@@ -28,6 +28,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from admz.fleet_settings import fleet_settings
+from admz.provisioning import OWN_ACCOUNT_USERNAME
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,39 @@ logger = logging.getLogger(__name__)
 # name — it is what the registry declares and what tests/conftest.py sets.
 _DISABLE_ENV = "ADMZ_DISABLE_ONBOARDING_PROBES"
 _DISABLE_CAPABILITY = "test.no_onboarding_probes"
+
+#: The account id the pre-adoption credential is kept under (ADR-0061, #411).
+RECOVERY_ACCOUNT_ID = "recovery"
+
+
+def _keep_recovery_account(registry: Any, device_id: str, stored: Dict[str, Any]) -> None:
+    """Preserve the credential ADMZ held before switching to its own account.
+
+    ``store_provisioned_creds`` REPLACES the ``default`` account, so without
+    this the old password is gone from ADMZ the moment ``admz`` is created. For
+    a device whose stored password was ADMZ-generated that would be the only
+    copy -- exactly the loss a registry wipe would cause, arriving through the
+    front door. Best effort: failing to keep it must not stop the adoption,
+    but it is logged loudly because it is the recovery path.
+    """
+    try:
+        data = {
+            "username": stored.get("username"),
+            "password": stored.get("password"),
+            "account_type": "recovery",
+            "purpose": ("Credential ADMZ held before creating its own account "
+                        "(ADR-0061 recovery path)"),
+        }
+        if registry.account_exists(device_id, RECOVERY_ACCOUNT_ID):
+            registry.update_account(device_id, RECOVERY_ACCOUNT_ID, data)
+        else:
+            registry.add_account(device_id, RECOVERY_ACCOUNT_ID, data)
+    except Exception:  # noqa: BLE001
+        logger.error("device %s: could not keep the pre-adoption credential as "
+                     "the recovery account -- adoption continues, but the old "
+                     "password may now exist only on the device", device_id,
+                     exc_info=True)
+
 
 # Statuses (stable API for callers/tests):
 ALREADY_CREDENTIALED = "already_credentialed"
@@ -77,6 +111,7 @@ async def onboard_device_credentials(
     catalog: Any,
     executors: Any,
     timeout_seconds: float = 10.0,
+    adopt: bool = False,
 ) -> Dict[str, Any]:
     """Resolve initial credentials for ``device_id``. Never raises for
     device-side problems; returns a ``status`` dict (see module docstring).
@@ -140,7 +175,75 @@ async def onboard_device_credentials(
         if ok is True:
             if learned:
                 _persist_probe_marker(registry, device_id, device_info, learned)
-            return {"status": ALREADY_CREDENTIALED, "device_id": device_id}
+            if not adopt or stored.get("username") == OWN_ACCOUNT_USERNAME:
+                return {"status": ALREADY_CREDENTIALED, "device_id": device_id}
+
+            # ---- 1b. Adopt in place (ADR-0061, #411) -----------------------
+            #
+            # The stored credential works and is not ADMZ's own account, and the
+            # caller asked for adoption. Use it exactly as step 3 uses an entry
+            # credential: create `admz`, gated at the same decision point with
+            # the same approval. This is how a device registered before
+            # ADR-0061 gets its own account WITHOUT being removed and re-added
+            # -- which matters because some stored passwords are ADMZ-generated
+            # and exist nowhere else; a wipe would lose them.
+            #
+            # Explicit opt-in, never a side effect: every other caller of this
+            # function (register paths, health-triggered re-onboarding) still
+            # gets ALREADY_CREDENTIALED here. Creating accounts on live devices
+            # because something re-ran onboarding is a decision, not a
+            # consequence.
+            from admz.approval_context import is_approved_for
+
+            if not is_approved_for(*_APPROVAL_ACTIONS):
+                from admz.audit import record_event
+                from admz.discovery.gated import gate_scan_write
+
+                env = gate_scan_write(
+                    "provision_device_credentials", device_id,
+                    {"device_id": device_id, "host": host},
+                    reason=(
+                        f"Device '{device_id}' at {host} is managed with a stored "
+                        f"'{stored.get('username')}' credential. Approving creates "
+                        "ADMZ's own 'admz' admin account on it and switches to that; "
+                        "the current credential is kept as a recovery account."
+                    ),
+                )
+                record_event(
+                    None, "provision.gated", resource=f"device:{device_id}",
+                    details={"host": host, "reason": "adopt-existing",
+                             "stored_username": stored.get("username")},
+                )
+                return {**env, "status": APPROVAL_REQUIRED, "device_id": device_id}
+
+            from admz.provisioning import adopt_with_admz_account
+
+            reach = dict(device_info)
+            if learned:
+                reach.update(learned)
+            # Keep what got us in BEFORE the default account is replaced. For a
+            # device adopted via the entry list the recovery path is the list
+            # itself; here it is this credential, and it may exist nowhere
+            # else. ADR-0061's "never delete the credential you came in on",
+            # one level down.
+            _keep_recovery_account(registry, device_id, stored)
+            result = await adopt_with_admz_account(
+                catalog, executors, registry,
+                device_id=device_id, host=host,
+                entry={"username": stored["username"], "password": stored["password"]},
+                device_info=reach,
+            )
+            if result.get("success"):
+                return {"status": OWN_ACCOUNT_CREATED, "device_id": device_id,
+                        "username": result["username"],
+                        "entry_username": stored.get("username"),
+                        "adopted_in_place": True}
+            # The stored credential still works and is untouched; say why the
+            # switch did not happen rather than pretending it did.
+            logger.warning("device %s: adopt-in-place could not create the admz "
+                           "account: %s", device_id, result.get("error"))
+            return {"status": ALREADY_CREDENTIALED, "device_id": device_id,
+                    "admz_account_error": result.get("error")}
         # Rejected or indeterminate: fall through — a stale stored password
         # is exactly what the fleet-pair try below may repair.
 

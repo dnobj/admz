@@ -691,13 +691,18 @@ class ADMZMCPServer:
                         "(or whose stored credentials stopped working) — all "
                         "server-side, no password enters this conversation. "
                         "Order: verify stored credentials; if the device is "
-                        "factory-defaulted, auto-provision an admin account from "
-                        "fleet settings; else try the fleet default credential "
-                        "pair and save it if it authenticates. Only when none of "
-                        "those work does it open a credential-capture session "
-                        "(shown to the user as a secure form card in the ADMZ "
-                        "console). register_device already runs this "
-                        "automatically for new devices."
+                        "factory-defaulted, create an admin account for ADMZ; "
+                        "else try each ENTRY credential and, on the first that "
+                        "logs in, create ADMZ's own 'admz' admin account and use "
+                        "that (ADR-0061). Only when none of those work does it "
+                        "open a credential-capture session (shown to the user as "
+                        "a secure form card in the ADMZ console). Account "
+                        "creation is gated — expect an approval card. "
+                        "register_device already runs this for new devices. "
+                        "USE adopt=true when the user asks to move an existing, "
+                        "already-working device onto ADMZ's own account: it keeps "
+                        "the current credential as a recovery account and does "
+                        "not require removing and re-adding the device."
                     ),
                     inputSchema={
                         "type": "object",
@@ -705,6 +710,21 @@ class ADMZMCPServer:
                             "device_id": {
                                 "type": "string",
                                 "description": "Device ID to onboard",
+                            },
+                            "adopt": {
+                                "type": "boolean",
+                                "description": (
+                                    "For a device whose stored credential ALREADY "
+                                    "works: use it to create ADMZ's own 'admz' admin "
+                                    "account on the device and switch to that, keeping "
+                                    "the current credential as a recovery account "
+                                    "(ADR-0061). Gated — returns an approval card. "
+                                    "Without this, an already-credentialed device is "
+                                    "left as it is. Use it to bring devices registered "
+                                    "before ADR-0061 onto their own account without "
+                                    "removing and re-adding them."
+                                ),
+                                "default": False,
                             },
                         },
                         "required": ["device_id"],
@@ -2152,7 +2172,7 @@ class ADMZMCPServer:
             "onboarding": onboarding,
         }
 
-    async def _onboard_device(self, device_id: str) -> Dict[str, Any]:
+    async def _onboard_device(self, device_id: str, adopt: bool = False) -> Dict[str, Any]:
         """Resolve a device's credentials without any password entering
         context: verify stored creds / auto-provision a factory-default
         device from fleet settings / try-and-save the fleet credential
@@ -2164,6 +2184,7 @@ class ADMZMCPServer:
             APPROVAL_REQUIRED,
             CREDENTIALS_NEEDED,
             FLEET_CREDENTIALS_SAVED,
+            OWN_ACCOUNT_CREATED,
             PROVISIONED,
             onboard_device_credentials,
         )
@@ -2173,6 +2194,7 @@ class ADMZMCPServer:
             registry=self.registry,
             catalog=self.catalog,
             executors=self.executors,
+            adopt=adopt,
         )
         status = result.get("status")
         # ADR-0059: returned unchanged. It is already the standard blocked
@@ -2182,6 +2204,20 @@ class ADMZMCPServer:
             return result
         if status == ALREADY_CREDENTIALED:
             result["message"] = "Stored credentials verified — device is ready."
+            if result.get("admz_account_error"):
+                result["message"] += (
+                    " Adoption was requested but ADMZ could not create its own "
+                    f"account: {result['admz_account_error']}. The stored "
+                    "credential is unchanged."
+                )
+        elif status == OWN_ACCOUNT_CREATED:
+            result["message"] = (
+                "ADMZ created its own 'admz' admin account on the device and now "
+                "uses it. The previous credential is kept as a recovery account."
+                if result.get("adopted_in_place") else
+                "ADMZ created its own 'admz' admin account on the device using an "
+                "entry credential, and now uses it."
+            )
         elif status == PROVISIONED:
             result["message"] = (
                 "Device was factory-defaulted; an admin account was "
