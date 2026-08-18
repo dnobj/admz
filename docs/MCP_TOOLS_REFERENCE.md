@@ -59,14 +59,24 @@ Add a new device, then resolve its credentials automatically (see
 
 ### `onboard_device`
 Resolve credentials for a registered device server-side — no password
-enters the conversation. Order: verify stored credentials
-(`already_credentialed`) → factory-defaulted device auto-provisioned from
-fleet settings (`provisioned`) → fleet `default_username`/`default_password`
-pair tried and saved if it authenticates (`fleet_credentials_saved`) →
-otherwise a capture session is opened (`credentials_needed` +
-`capture_url`; the chat console renders it as a secure form card).
-`register_device` runs this automatically for new devices.
-- **Args:** `device_id`
+enters the conversation. Order (ADR-0061): verify stored credentials
+(`already_credentialed`) → factory-defaulted device gets an admin account
+created for ADMZ (`provisioned`, gated) → each **entry credential** is tried
+and, on the first that logs in, ADMZ creates its own `admz` admin account and
+uses that (`admz_account_created`, gated; if the account write fails the entry
+credential is stored instead, `fleet_credentials_saved`) → otherwise a capture
+session is opened (`credentials_needed` + `capture_url`; the chat console
+renders it as a secure form card). Gated steps return `approval_required` with
+the standard blocked envelope. `register_device` runs this for new devices.
+
+With **`adopt: true`**, a device whose stored credential already works is moved
+onto ADMZ's own `admz` account: the stored credential is used to create it
+(gated, same approval), then kept as a `recovery` account rather than
+discarded — some stored passwords are ADMZ-generated and exist nowhere else.
+`admz_account_created` with `adopted_in_place: true` on success;
+`already_credentialed` with `admz_account_error` if the account write fails
+(the device is no worse off). A device already on `admz` is a no-op.
+- **Args:** `device_id`, `adopt` (bool, default false)
 - **Returns:** `{status, device_id, message, …}` (never a password)
 
 ### `update_device`

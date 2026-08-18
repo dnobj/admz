@@ -40,6 +40,9 @@ class _Registry:
     def add_account(self, did, aid, data):
         self.accounts[aid] = data
 
+    def update_account(self, did, aid, data):
+        self.accounts[aid] = data
+
     def update_device_info(self, did, changed):
         self.info_updates.update(changed)
 
@@ -236,6 +239,76 @@ class TestResolutionOrder:
         assert out["admz_account_error"] == "device said no"
         assert reg.accounts["default"]["password"] == FLEET_PW
         assert "not created" in reg.accounts["default"]["purpose"]
+
+    # ---- adopt in place (#411): existing devices onto their own account ----
+
+    def test_stored_creds_verify_and_adopt_NOT_requested_leaves_it_alone(self, patch_probes):
+        """The default. Every existing caller -- register paths, health-triggered
+        re-onboarding -- must keep getting this. Creating accounts on live
+        devices because something re-ran onboarding is a decision, not a
+        consequence."""
+        patch_probes["confirm"] = [(True, {})]
+        reg = _Registry(stored={"username": "root", "password": "existing"})
+        out = _run(registry=reg)
+        assert out["status"] == "already_credentialed"
+        assert "adopt_called" not in patch_probes
+
+    def test_adopt_in_place_GATES_when_not_approved(self, patch_probes):
+        """Same decision point, same approval as every other account write.
+        The card must say the current credential is KEPT -- that is what makes
+        this safe for a device whose stored password exists nowhere else."""
+        patch_probes["confirm"] = [(True, {})]
+        reg = _Registry(stored={"username": "root", "password": "existing"})
+        out = _run(registry=reg, adopt=True)
+        assert out["status"] == "approval_required"
+        assert "adopt_called" not in patch_probes
+        assert "recovery" in out.get("reason", "").lower()
+
+    def test_adopt_in_place_creates_admz_and_KEEPS_the_old_credential(self, patch_probes):
+        """The whole point. Some stored passwords are ADMZ-generated and exist
+        nowhere else; a wipe would lose them, and so would an adoption that
+        overwrote the default account without keeping a copy."""
+        from admz.approval_context import approved
+
+        patch_probes["confirm"] = [(True, {})]
+        reg = _Registry(stored={"username": "root", "password": "generated-once"})
+        with approved("register_discovered_device", "tok-test"):
+            out = _run(registry=reg, adopt=True)
+        assert out["status"] == "admz_account_created"
+        assert out["adopted_in_place"] is True
+        assert out["entry_username"] == "root"
+        # the stored credential is what authenticated the account write...
+        assert patch_probes["adopt_called"] == {"username": "root", "password": "generated-once"}
+        # ...and it was kept as the recovery account BEFORE anything replaced it
+        rec = reg.accounts.get("recovery")
+        assert rec and rec["password"] == "generated-once"
+        assert "recovery" in rec["purpose"].lower()
+
+    def test_adopt_in_place_is_a_no_op_when_already_on_admz(self, patch_probes):
+        """Control: adopting twice must not create a second account or a
+        recovery copy of ADMZ's own generated password."""
+        from admz.approval_context import approved
+
+        patch_probes["confirm"] = [(True, {})]
+        reg = _Registry(stored={"username": "admz", "password": "ours"})
+        with approved("register_discovered_device", "tok-test"):
+            out = _run(registry=reg, adopt=True)
+        assert out["status"] == "already_credentialed"
+        assert "adopt_called" not in patch_probes
+        assert "recovery" not in reg.accounts
+
+    def test_adopt_in_place_failure_leaves_the_stored_credential_working(self, patch_probes):
+        """If the account write fails the device must not be worse off: still
+        credentialed, and the outcome says why the switch did not happen."""
+        from admz.approval_context import approved
+
+        patch_probes["confirm"] = [(True, {})]
+        patch_probes["adopt"] = {"success": False, "error": "device said no"}
+        reg = _Registry(stored={"username": "root", "password": "existing"})
+        with approved("register_discovered_device", "tok-test"):
+            out = _run(registry=reg, adopt=True)
+        assert out["status"] == "already_credentialed"
+        assert out["admz_account_error"] == "device said no"
 
     def test_fleet_pair_rejected_needs_capture(self, patch_probes, monkeypatch):
         monkeypatch.setattr(

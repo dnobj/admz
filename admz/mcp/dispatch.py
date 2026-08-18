@@ -71,7 +71,7 @@ async def _list_accounts(ctx, a):
 
 
 async def _onboard_device(ctx, a):
-    return await ctx.server._onboard_device(a["device_id"])
+    return await ctx.server._onboard_device(a["device_id"], adopt=bool(a.get("adopt", False)))
 
 
 async def _register_device(ctx, a):

@@ -152,7 +152,7 @@ async def list_device_accounts(
 # GET /api/fleet/settings/{key}/reveal.
 
 
-async def _run_onboarding(device_id: str, registry: DeviceRegistry) -> dict:
+async def _run_onboarding(device_id: str, registry: DeviceRegistry, *, adopt: bool = False) -> dict:
     """Shared credential-onboarding call for the create/onboard routes.
 
     On ``credentials_needed`` a capture session is opened and its
@@ -173,6 +173,7 @@ async def _run_onboarding(device_id: str, registry: DeviceRegistry) -> dict:
             registry=registry,
             catalog=ctx.catalog,
             executors=ctx.executors,
+            adopt=adopt,
         )
         # ADR-0059: a factory-defaulted device now needs approval before ADMZ
         # creates a root account on it. The blocked envelope is already in
@@ -199,6 +200,7 @@ async def _run_onboarding(device_id: str, registry: DeviceRegistry) -> dict:
 async def onboard_device(
     request: Request,
     device_id: str,
+    adopt: bool = False,
     registry: DeviceRegistry = Depends(get_registry),
 ):
     """Run credential onboarding for an existing device (e.g. one added
@@ -210,9 +212,9 @@ async def onboard_device(
     principal = await get_current_principal(request)
     if not registry.device_exists(device_id):
         raise HTTPException(status_code=404, detail=f"Device '{device_id}' not found")
-    result = await _run_onboarding(device_id, registry)
+    result = await _run_onboarding(device_id, registry, adopt=adopt)
     record_event(principal, "device.onboard", resource=f"device:{device_id}",
-                 details={"status": result.get("status")})
+                 details={"status": result.get("status"), "adopt": adopt})
     return result
 
 
