@@ -3,7 +3,21 @@
 **Status:** ✅ Implemented and merged. Survey mode ships in `admz/survey/`
 (collector, validator, secret-scan gate, bundler, fork-and-PR) with a
 `/survey` UI route and a `survey` scheduler job type (ADR-0026).
-**Date:** 2026-06-06. **Updated:** 2026-06-10.
+**Date:** 2026-06-06. **Updated:** 2026-06-10. **Amended:** 2026-08-18 by ADR-0063 — see the
+amendment block below.
+
+> **Amendment (ADR-0063, 2026-08-18) — probing is for everyone; contributing is exclusive.**
+> This ADR reads as though `survey.contributor` gates the surveying. It gates the *scheduled loop*
+> only: `SurveyCollector` has no capability check, `preview()` has none, and "Run now" passes
+> `respect_enabled=False`. That was an accident of implementation; ADR-0063 makes it the design.
+> **Surveying a device's capabilities — `apidiscovery.cgi:getApiList` through the executor — is
+> something every install does**, because ADMZ needs to know its own fleet, and the result is kept
+> **locally** in `device_capabilities`. **Contributing** the result to the atlas (bundle + PR) is the
+> exclusive, opt-in part and stays behind `survey.contributor` — including the "Run now" path, which
+> today opens a PR with a stored PAT while the capability is off. That is closed by ADR-0063's S2.
+> The collector's `build_snapshot` path stays for the contribution bundle; the local enumeration
+> uses the catalog op so it reaches a `limited_api` device (`build_snapshot` `raise_for_status`es on
+> `basicdeviceinfo`, which a PoE switch refuses).
 **Relates to:** ADR-0029 (axis-api-atlas as a maintained reusable asset), ADR-0010 (Fernet encryption), ADR-0009 (OOB credential capture), ADR-0026 (job_type scheduler dispatch), ADR-0007 (per-protocol auth), [axis-api-atlas `docs/design/survey-contributor-mode.md`](https://github.com/mrdnlabs/axis-api-atlas/blob/main/docs/design/survey-contributor-mode.md)
 
 ---
