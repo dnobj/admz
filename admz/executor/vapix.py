@@ -480,6 +480,24 @@ class VapixExecutor(BaseExecutor):
                 error=f"Request timed out after {effective_timeout}s",
                 duration_ms=elapsed,
             )
+        except httpx.HTTPError as e:
+            # Transport-level failure past the specific clauses above: the
+            # peer dropped the connection (RemoteProtocolError/ReadError), a
+            # TLS handshake died, a pool closed. A device REFUSING an endpoint
+            # it does not implement presents exactly this way (the T8516
+            # drops unknown POSTs to /vapix/call — ADR-0063), so this is an
+            # expected outcome of probing, not a bug worth a traceback.
+            elapsed = (time.monotonic() - start) * 1000
+            logger.warning(
+                "Transport error executing %s on %s: %s", op_id, device_id, e
+            )
+            return StepResult(
+                operation_id=op_id,
+                device_id=device_id,
+                success=False,
+                error=f"Transport error: {e}",
+                duration_ms=elapsed,
+            )
         except Exception as e:
             elapsed = (time.monotonic() - start) * 1000
             logger.exception("Unexpected error executing %s on %s", op_id, device_id)

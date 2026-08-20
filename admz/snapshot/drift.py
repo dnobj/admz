@@ -5,7 +5,14 @@ from typing import Any, Dict, List, Optional
 from admz.snapshot.facets import get_facets_for_device
 from admz.snapshot.flatten import flatten as _flatten
 from admz.snapshot.git_repo import GitRepo
-from admz.snapshot.models import DriftField, DriftReport
+from admz.snapshot.models import (
+    FACET_FAILED,
+    FACET_OK,
+    FACET_SKIPPED,
+    DriftField,
+    DriftReport,
+    FacetResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,30 +91,44 @@ class DriftDetector:
             # Nothing blessed to compare against — say so explicitly rather
             # than silently reporting "no drift" (which would imply in-sync).
             # The observation above was still recorded, so this state is
-            # promotable to a baseline later.
+            # promotable to a baseline later. The facet statuses ride along
+            # (ADR-0063): "skipped as unsupported" is knowledge about the
+            # device whether or not a baseline exists yet.
             return DriftReport(
                 device_id=device_id,
                 has_drift=False,
                 no_baseline=True,
                 observed_sha=observed_sha,
+                facet_status=(
+                    {f.name: f.status for f in snapshot.facets}
+                    if snapshot is not None else {}
+                ),
             )
 
         # The live state per facet: from the captured observation when we
-        # have one (no second probe), else a direct read.
+        # have one (no second probe), else a direct read. Only a facet whose
+        # every read succeeded (``status == ok``) takes part in the compare —
+        # a ``failed`` facet's live state is unknown, not empty, and a
+        # ``skipped`` one the device is known to lack (ADR-0063).
         if snapshot is not None:
-            live_by_facet = {
-                f.name: (f.normalized or {})
-                for f in snapshot.facets
-                if f.success
-            }
+            facet_results = snapshot.facets
+            # The engine's copy of device_info carries the firmware it just
+            # lifted from the dump; select facets against that.
+            device_info = snapshot.device_info or device_info
         else:
-            live_by_facet = await self._probe_facets(
+            facet_results = await self._probe_facets(
                 device_id, device_info, family
             )
+        live_by_facet = {
+            f.name: (f.normalized or {})
+            for f in facet_results
+            if f.status == FACET_OK
+        }
+        facet_status = {f.name: f.status for f in facet_results}
 
         report = DriftReport(
             device_id=device_id, has_drift=False, observed_sha=observed_sha,
-            baseline_sha=baseline_sha,
+            baseline_sha=baseline_sha, facet_status=facet_status,
         )
 
         # Operator ignore list, scoped to this device. Applied to BOTH sides of
@@ -242,6 +263,36 @@ class DriftDetector:
                 report.facets_drifted += 1
                 report.has_drift = True
 
+        # ADR-0063 (FR-DRF-013): visit the BASELINE's facets too. A facet
+        # the live read did not produce used to vanish from the compare; it
+        # is one of two very different things:
+        #   skipped  — the device is known to lack the API. That IS drift: a
+        #              baselined facet the device no longer answers for. It is
+        #              reported honestly and counted — but carries no
+        #              DriftField, because the revert builder must never write
+        #              to an API the device does not have.
+        #   failed   — the read was attempted and did not succeed. The live
+        #              state is UNKNOWN, which is not drift. (Before this, a
+        #              transient API failure read every stored key as
+        #              "<missing>" and reported the whole facet drifted.)
+        # A baseline facet that simply no longer applies to the device (not
+        # in the live read at all) stays as it was: not visited.
+        try:
+            baseline_facets = self.git.list_facets_at(device_id, baseline_sha)
+        except Exception:  # noqa: BLE001 — a stub repo without the method
+            baseline_facets = []
+        for facet_name in baseline_facets:
+            if facet_name in live_by_facet:
+                continue
+            status = facet_status.get(facet_name)
+            if status == FACET_SKIPPED:
+                report.facets_absent.append(facet_name)
+                report.facets_checked += 1
+                report.facets_drifted += 1
+                report.has_drift = True
+            elif status == FACET_FAILED:
+                report.facets_unverified.append(facet_name)
+
         # Phase 8: hand the report to the alert store so transitions
         # (sync→drifted, drift-set-changed, drifted→sync) get
         # recorded for ``list_drift_alerts``. Best-effort — a store
@@ -265,8 +316,13 @@ class DriftDetector:
 
     async def _probe_facets(
         self, device_id: str, device_info: Dict[str, Any], family: str
-    ) -> Dict[str, Dict[str, Any]]:
-        """Direct live read (fallback when observation capture failed)."""
+    ) -> List[FacetResult]:
+        """Direct live read — the fallback when the observation capture itself
+        raised (a git write failure; a stubbed test engine). Composed from the
+        two read primitives every stub provides, so a mocked engine keeps
+        working; a facet whose serialization fails reports ``failed`` (its
+        live state is unknown) instead of silently vanishing from the compare.
+        """
         facets = get_facets_for_device(device_info)
         raw_params = await self.engine._read_all_params(
             device_id, device_info, family
@@ -277,17 +333,23 @@ class DriftDetector:
         raw_responses = {"params": raw_params}
         raw_responses.update(extra_results)
 
-        live_by_facet: Dict[str, Dict[str, Any]] = {}
+        results: List[FacetResult] = []
         for facet in facets:
             try:
-                live_by_facet[facet.name] = facet.serialize(raw_responses)
+                results.append(FacetResult(
+                    name=facet.name, success=True,
+                    normalized=facet.serialize(raw_responses),
+                ))
             except Exception as e:
                 logger.warning(
                     "Failed to serialize facet %s for drift check: %s",
                     facet.name,
                     e,
                 )
-        return live_by_facet
+                results.append(FacetResult(
+                    name=facet.name, success=False, error=str(e),
+                ))
+        return results
 
     def _record_observation_pointers(self, device_id: str, sha: str) -> None:
         """Advance the observed pointer — NEVER the baseline. Best-effort:

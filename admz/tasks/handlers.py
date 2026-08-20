@@ -205,9 +205,27 @@ async def _run_drift_audit(task: Task, ctx: TaskContext) -> Dict[str, Any]:
         f"({transitions['appeared']}↑ {transitions['changed']}↔ "
         f"{transitions['cleared']}↓)"
     )
+    # ADR-0063: say what the sweep did NOT read, and why. Facet reads skipped
+    # because the device is known to lack the API are working as intended;
+    # unverified facets are reads that failed. Appended only when non-zero so
+    # the common all-clear summary reads as it always has.
+    skipped = sum(
+        1 for r in reports
+        for status in getattr(r, "facet_status", {}).values()
+        if status == "skipped"
+    )
+    unverified = sum(
+        len(getattr(r, "facets_unverified", []) or []) for r in reports
+    )
+    if skipped or unverified:
+        summary += (
+            f", {skipped} facet read(s) skipped as unsupported"
+            f", {unverified} unverified"
+        )
     return {"success": True, "checked": len(reports), "drifted": drifted,
             "clean": clean, "new_alerts": len(new_alerts),
-            "transitions": transitions, "summary": summary}
+            "transitions": transitions, "facet_reads_skipped": skipped,
+            "facets_unverified": unverified, "summary": summary}
 
 
 @register_task_handler("survey")

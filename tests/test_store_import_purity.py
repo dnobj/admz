@@ -150,6 +150,12 @@ CONVERTED: dict[str, StoreSpec] = {
     "admz.firmware.pinning": StoreSpec(
         cls="ArtifactStore",
         exercise="s.get('probe-artifact.bin')"),
+    # Store #20, added by #451 (ADR-0063). What each device's APIs answered —
+    # the drift audit consults it before probing and teaches it afterwards.
+    # Built to the call-time contract from the start; on the #428 cascade.
+    "admz.device_capabilities": StoreSpec(
+        cls="DeviceCapabilityStore",
+        exercise="s.record('probe-device', 'sip', 'absent', firmware='1.0')"),
 }
 
 #: Modules whose *import* provably creates nothing.
@@ -245,8 +251,8 @@ class TestInventory:
         # 17 at the end of #258; 18 since #314 made temp credentials
         # persistent. Updated deliberately, which is what this assertion is
         # for — it fired on the new store before any human looked at the diff.
-        assert len(discovered) == 19, (
-            f"expected 19 stores, found {len(discovered)} — if a store was "
+        assert len(discovered) == 20, (
+            f"expected 20 stores, found {len(discovered)} — if a store was "
             "added or removed, update this number deliberately"
         )
 

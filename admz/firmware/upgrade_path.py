@@ -26,13 +26,18 @@ LTS_MILESTONES: List[Tuple[int, int]] = [
 def parse_version(version_str: str) -> Optional[Tuple[int, int, int]]:
     """Parse a version string like '12.6.51' into (major, minor, patch).
 
+    Minor and patch are optional — a bare major ("12", the form facet
+    ``min_firmware`` criteria use) parses as (12, 0, 0), so version
+    comparisons are tuple comparisons everywhere instead of a second parser
+    growing beside this one (ADR-0063 slice 1).
+
     Returns None if the string cannot be parsed.
     """
-    m = re.match(r"(\d+)\.(\d+)(?:\.(\d+))?", version_str.strip())
+    m = re.match(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?", version_str.strip())
     if not m:
         return None
     major = int(m.group(1))
-    minor = int(m.group(2))
+    minor = int(m.group(2)) if m.group(2) else 0
     patch = int(m.group(3)) if m.group(3) else 0
     return (major, minor, patch)
 

@@ -64,17 +64,12 @@ class FacetAdapter(ABC):
     def _matches_criteria(
         self, criteria: DeviceCriteria, device_info: Dict[str, Any]
     ) -> bool:
+        from admz.device_capabilities import device_firmware
+        from admz.firmware.upgrade_path import parse_version
+
         model = device_info.get("model", "")
         device_type = device_info.get("device_type", "")
         family = device_info.get("api_family") or "vapix"
-        # The registry stores the observed firmware as ``firmware_version``
-        # (refresh-info); ``firmware`` is a legacy/alternate field. Missing →
-        # "" so a min_firmware criterion correctly fails closed.
-        firmware = (
-            device_info.get("firmware")
-            or device_info.get("firmware_version")
-            or ""
-        )
 
         if criteria.device_types and device_type not in criteria.device_types:
             return False
@@ -83,8 +78,15 @@ class FacetAdapter(ABC):
         if criteria.model_patterns:
             if not any(fnmatch.fnmatch(model, p) for p in criteria.model_patterns):
                 return False
-        if criteria.min_firmware and firmware < criteria.min_firmware:
-            return False
+        if criteria.min_firmware:
+            # Tuple comparison via the one version parser (ADR-0063). The
+            # string compare this replaces read "9.80" >= "12" (lexicographic)
+            # and quietly matched pre-12 devices to 12-only facets. Unknown
+            # firmware still fails closed.
+            fw = parse_version(device_firmware(device_info))
+            floor = parse_version(criteria.min_firmware)
+            if floor is not None and (fw is None or fw < floor):
+                return False
         return True
 
     @abstractmethod

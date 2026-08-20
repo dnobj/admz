@@ -686,6 +686,9 @@ class SQLiteDeviceRegistry(DeviceRegistry):
     _DEVICE_STATE_TABLES = (
         "device_health", "drift_signatures", "drift_alerts",
         "pending_device_actions",
+        # ADR-0063: what the audit learned about the unit's APIs. Describes
+        # the device that was here; must not outlive it.
+        "device_capabilities",
     )
 
     def _purge_device_state(self, conn, device_id: str) -> Dict[str, int]:

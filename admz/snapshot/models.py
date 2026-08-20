@@ -11,6 +11,16 @@ class SnapshotStatus(Enum):
     PARTIAL = "partial"
 
 
+#: A facet read's honest outcome (ADR-0063, FR-DRF-012). ``ok``: every read
+#: the facet needed succeeded. ``skipped``: the local capability record says
+#: the device lacks the API, so nothing was asked — a *settled* state, never
+#: PARTIAL. ``failed``: a read was attempted and did not succeed — the facet's
+#: live state is unknown, which is NOT the same as empty.
+FACET_OK = "ok"
+FACET_SKIPPED = "skipped"
+FACET_FAILED = "failed"
+
+
 @dataclass
 class FacetResult:
     name: str
@@ -18,6 +28,17 @@ class FacetResult:
     normalized: Optional[Dict[str, Any]] = None
     raw: Optional[Any] = None
     error: Optional[str] = None
+    # ``success`` ≡ ``status == "ok"``; the two are kept consistent below so
+    # every existing constructor (``success=False``) and every existing
+    # reader (``.success``) keeps meaning what it meant.
+    status: str = FACET_OK
+    skipped_reason: Optional[str] = None
+
+    def __post_init__(self):
+        if self.status == FACET_OK and not self.success:
+            self.status = FACET_FAILED
+        elif self.status != FACET_OK:
+            self.success = False
 
 
 @dataclass
@@ -33,11 +54,17 @@ class DeviceSnapshot:
 
     @property
     def succeeded_facets(self) -> List[FacetResult]:
-        return [f for f in self.facets if f.success]
+        return [f for f in self.facets if f.status == FACET_OK]
 
     @property
     def failed_facets(self) -> List[FacetResult]:
-        return [f for f in self.facets if not f.success]
+        """Attempted and did not succeed. A ``skipped`` facet is NOT here —
+        it is settled, and must never make a snapshot PARTIAL."""
+        return [f for f in self.facets if f.status == FACET_FAILED]
+
+    @property
+    def skipped_facets(self) -> List[FacetResult]:
+        return [f for f in self.facets if f.status == FACET_SKIPPED]
 
     def to_summary(self) -> Dict[str, Any]:
         return {
@@ -47,9 +74,14 @@ class DeviceSnapshot:
             "git_sha": self.git_sha,
             "facets_succeeded": len(self.succeeded_facets),
             "facets_failed": len(self.failed_facets),
+            "facets_skipped": len(self.skipped_facets),
             "succeeded": [f.name for f in self.succeeded_facets],
             "failed": [
                 {"name": f.name, "error": f.error} for f in self.failed_facets
+            ],
+            "skipped": [
+                {"name": f.name, "reason": f.skipped_reason}
+                for f in self.skipped_facets
             ],
         }
 
@@ -110,6 +142,19 @@ class DriftReport:
     # The drift-alert transition this check produced ("appeared"/"changed"/
     # "cleared"), or None when the drift state didn't change.
     alert_transition: Optional[str] = None
+    # ADR-0063 (FR-DRF-013): the compare visits every facet in the BASELINE,
+    # not only those present in the live read.
+    #   facets_absent     baseline facets the device is now known to lack
+    #                     (live read ``skipped``). This IS drift, reported
+    #                     honestly — but it carries no DriftField, because the
+    #                     revert builder must never write to an API the device
+    #                     does not have.
+    #   facets_unverified baseline facets whose live read FAILED. NOT drift:
+    #                     the live state is unknown, not different.
+    #   facet_status      every live facet's read status (ok/skipped/failed).
+    facets_absent: List[str] = field(default_factory=list)
+    facets_unverified: List[str] = field(default_factory=list)
+    facet_status: Dict[str, str] = field(default_factory=dict)
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -133,6 +178,9 @@ class DriftReport:
             "baseline_sha": self.baseline_sha,
             "facets_checked": self.facets_checked,
             "facets_drifted": self.facets_drifted,
+            "facets_absent": list(self.facets_absent),
+            "facets_unverified": list(self.facets_unverified),
+            "facet_status": dict(self.facet_status),
             "timestamp": self.timestamp,
             "drifted_fields": [
                 {

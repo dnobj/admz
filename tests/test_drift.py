@@ -161,6 +161,28 @@ class TestDriftDetector:
 
     @pytest.mark.asyncio
     async def test_drift_when_param_missing_from_live(self, tmp_repo):
+        """A key REMOVED from a device that read fine: the dump succeeded
+        (other params present) but the baselined key is gone -> drift."""
+        tmp_repo.write_facet("cam-01", "image", {"I0.Resolution": "1920x1080"})
+        tmp_repo.commit_snapshot("cam-01")
+
+        registry = FakeRegistry({
+            "cam-01": {"host": "1.2.3.4", "api_family": "vapix", "baseline_sha": "HEAD"}
+        })
+        engine = FakeSnapshotEngine(
+            registry, live_params={"root.Brand.Brand": "AXIS"},
+        )
+        detector = DriftDetector(engine, tmp_repo)
+        report = await detector.check_drift("cam-01")
+
+        assert report.has_drift is True
+        assert report.fields[0].actual == "<missing>"
+
+    @pytest.mark.asyncio
+    async def test_failed_dump_is_unverified_not_mass_removal(self, tmp_repo):
+        """ADR-0063: an EMPTY dump means the read failed, and a failed read
+        must not report every baselined key as removed (the false-drift
+        latent bug). The facet lands in facets_unverified instead."""
         tmp_repo.write_facet("cam-01", "image", {"I0.Resolution": "1920x1080"})
         tmp_repo.commit_snapshot("cam-01")
 
@@ -171,8 +193,10 @@ class TestDriftDetector:
         detector = DriftDetector(engine, tmp_repo)
         report = await detector.check_drift("cam-01")
 
-        assert report.has_drift is True
-        assert report.fields[0].actual == "<missing>"
+        assert report.has_drift is False
+        assert report.fields == []
+        assert "image" in report.facets_unverified
+        assert report.facet_status["image"] == "failed"
 
     @pytest.mark.asyncio
     async def test_facets_with_no_git_state_are_skipped(self, tmp_repo):
