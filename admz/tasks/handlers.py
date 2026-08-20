@@ -228,6 +228,65 @@ async def _run_drift_audit(task: Task, ctx: TaskContext) -> Dict[str, Any]:
             "facets_unverified": unverified, "summary": summary}
 
 
+@register_task_handler("capability_survey")
+async def _run_capability_survey(task: Task, ctx: TaskContext) -> Dict[str, Any]:
+    """ADR-0063 / FR-KNW-012: enumerate device APIs via each device's own
+    ``getApiList`` and record POSITIVES into the local capability store.
+    Runs for every install — this is the survey-for-everyone half; pushing
+    anything to the atlas stays behind ``survey.contributor`` and is a
+    different task type (``survey``). Two shapes: a one-shot detection task
+    (firmware changed / onboarding) carries its device; the recurring
+    schedule sweeps the fleet."""
+    from admz.device_capabilities import run_capability_survey
+
+    registry = ctx.registry or getattr(ctx.snapshot_engine, "registry", None)
+    catalog = ctx.catalog or getattr(ctx.snapshot_engine, "catalog", None)
+    executors = ctx.executors or getattr(ctx.snapshot_engine, "executors", None)
+    if registry is None or catalog is None or executors is None:
+        return {"success": False, "error": "no registry/catalog/executors",
+                "summary": "error: capability survey context incomplete"}
+
+    if task.device_ids:
+        device_ids = list(task.device_ids)
+    elif task.device_id:
+        device_ids = [task.device_id]
+    else:
+        device_ids = [
+            d.get("device_id", d.get("id", "")) for d in registry.list_devices()
+        ]
+
+    surveyed = failed = apis = 0
+    last_error = ""
+    for did in device_ids:
+        if not did:
+            continue
+        result = await run_capability_survey(
+            device_id=did, registry=registry, catalog=catalog,
+            executors=executors,
+        )
+        if result.get("success"):
+            surveyed += 1
+            apis += int(result.get("recorded") or 0)
+        else:
+            failed += 1
+            last_error = str(result.get("error") or "")
+    summary = f"surveyed {surveyed} device(s): {apis} API positive(s) recorded"
+    if failed:
+        summary += f", {failed} device(s) failed"
+    # A one-shot detection task exists to survey ITS device: if that failed,
+    # the task failed — returning success would consume the trigger silently
+    # (#455 review, MAJOR-1; the device is commonly mid-reboot right after
+    # the firmware change that queued us). The recurring fleet sweep stays
+    # success-with-counts: a schedule is not failed by one device's bad hour.
+    single_device_failed = (
+        task.trigger_kind == "detection" and surveyed == 0 and failed > 0
+    )
+    return {"success": not single_device_failed,
+            "surveyed": surveyed, "failed": failed,
+            "apis_recorded": apis, "summary": summary,
+            "error": last_error if single_device_failed else None}
+
+
 @register_task_handler("survey")
 async def _run_survey(task: Task, ctx: TaskContext) -> Dict[str, Any]:
     """Scheduled survey/contributor run (read-only). Gated by survey_mode_enabled;

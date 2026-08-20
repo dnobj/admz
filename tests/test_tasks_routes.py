@@ -29,6 +29,14 @@ def client(isolate, tmp_path):
         yield c
 
 
+
+def _user_tasks(client):
+    """Tasks the TEST created — every fresh app now carries the seeded
+    ``capability-survey`` cadence singleton (ADR-0063 S2, #452), so raw
+    counts moved by one and "empty" means "only the seed"."""
+    body = client.get("/api/tasks").json()
+    return [t for t in body["tasks"] if t["id"] != "capability-survey"]
+
 def _register_device(client, device_id="cam-01"):
     client.post("/api/devices", json={"device_id": device_id, "host": "10.0.0.9",
                                       "nickname": device_id})
@@ -52,10 +60,14 @@ class TestTasksRest:
         assert {"snapshot", "drift_audit", "reprovision"} <= set(body["action_types"])
         assert "on_needs_setup" in body["events"]
 
-    def test_list_empty(self, client):
+    def test_fresh_install_has_only_the_seeded_cadence(self, client):
         r = client.get("/api/tasks")
         assert r.status_code == 200
-        assert r.json()["count"] == 0
+        # Not empty: ADR-0063 S2 seeds the 30-day capability survey.
+        assert r.json()["count"] == 1
+        assert r.json()["tasks"][0]["id"] == "capability-survey"
+        assert r.json()["tasks"][0]["action_type"] == "capability_survey"
+        assert _user_tasks(client) == []
 
     def test_create_and_list_schedule(self, client):
         r = client.post("/api/tasks", json={
@@ -67,10 +79,10 @@ class TestTasksRest:
         assert r.json()["trigger_kind"] == "schedule"
         assert r.json()["interval_seconds"] == 86400
 
-        lst = client.get("/api/tasks").json()
-        assert lst["count"] == 1
-        assert lst["tasks"][0]["id"] == tid
-        assert lst["tasks"][0]["action_type"] == "snapshot"
+        mine = _user_tasks(client)
+        assert len(mine) == 1
+        assert mine[0]["id"] == tid
+        assert mine[0]["action_type"] == "snapshot"
 
         one = client.get(f"/api/tasks/{tid}")
         assert one.status_code == 200 and one.json()["tag_filter"] == "lab"
@@ -117,7 +129,8 @@ class TestTasksRest:
         client.post("/api/tasks", json={"trigger_kind": "schedule",
                                         "action_type": "snapshot", "interval": "1h"})
         assert client.get("/api/tasks?kind=detection").json()["count"] == 0
-        assert client.get("/api/tasks?kind=schedule").json()["count"] == 1
+        # The created one + the seeded capability-survey cadence.
+        assert client.get("/api/tasks?kind=schedule").json()["count"] == 2
 
 
 class TestTaskWriteGate:
@@ -135,8 +148,8 @@ class TestTaskWriteGate:
         assert env["blocked"] is True
         assert env["confirm_url"].startswith("/confirm/")
         assert "RECURRING" in env["reason"]
-        # nothing written yet
-        assert client.get("/api/tasks").json()["count"] == 0
+        # nothing written yet (only the seeded cadence exists)
+        assert _user_tasks(client) == []
 
         # approve via the same endpoint the chat widget uses
         token = env["confirm_url"].rsplit("/", 1)[1]
@@ -145,9 +158,9 @@ class TestTaskWriteGate:
         assert a.json()["status"] == "completed"
         assert a.json()["outcome"]["success"] is True, a.text
 
-        lst = client.get("/api/tasks").json()
-        assert lst["count"] == 1
-        assert lst["tasks"][0]["action_type"] == "drift_audit"
+        mine = _user_tasks(client)
+        assert len(mine) == 1
+        assert mine[0]["action_type"] == "drift_audit"
 
     def test_update_blocks_then_approval_applies(self, client, monkeypatch):
         # seed a schedule as the console operator…
@@ -179,7 +192,7 @@ class TestTaskWriteGate:
         token = env["confirm_url"].rsplit("/", 1)[1]
         d = client.post(f"/api/chat/confirm/{token}/deny")
         assert d.status_code == 200
-        assert client.get("/api/tasks").json()["count"] == 0
+        assert _user_tasks(client) == []
 
     def test_bad_spec_fails_fast_without_session(self, client):
         r = client.post("/api/tasks", json={

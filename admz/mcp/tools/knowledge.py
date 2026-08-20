@@ -63,4 +63,30 @@ TOOLS: List[Tool] = [
             "required": ["device_id"],
         },
     ),
+    Tool(
+        name="list_device_capabilities",
+        description=(
+            "What ADMZ has learned about ONE device's actual APIs — the local "
+            "capability record (ADR-0063), written by the drift audit's own "
+            "reads and by getApiList surveys. Each row: probe_key (catalog "
+            "api id), classification (present / absent / absent_unconfirmed), "
+            "the firmware it was observed under, source (audit|discovery), "
+            "when, and whether the row is stale (firmware changed or lease "
+            "expired). This is DEVICE truth: prefer it over check_api_support "
+            "(model-level atlas data) when they disagree. 'absent' means the "
+            "device answered 'no such API'; 'absent_unconfirmed' means reads "
+            "failed without proof — say 'could not verify', never 'the device "
+            "lacks it'."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "device_id": {
+                    "type": "string",
+                    "description": "Device ID (MAC), from list_devices.",
+                },
+            },
+            "required": ["device_id"],
+        },
+    ),
 ]

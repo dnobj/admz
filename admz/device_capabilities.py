@@ -458,5 +458,251 @@ def learn(
     return recorded
 
 
+# ---------------------------------------------------------------------------
+# S2 (#452): the full enumeration, the firmware event, and the cadence
+# ---------------------------------------------------------------------------
+
+#: The one op the survey runs. Through the EXECUTOR — not atlas
+#: ``build_snapshot``, which raise_for_status()es on basicdeviceinfo and
+#: forces https, so it cannot reach a ``limited_api`` device (the T8516).
+SURVEY_OPERATION_ID = "apidiscovery.cgi:getApiList"
+
+#: Fleet setting: seconds between scheduled capability surveys. The default
+#: is 30 days — the survey is a safety net; the audit's own reads (S1) and
+#: the firmware-change trigger do the day-to-day learning.
+SURVEY_INTERVAL_KEY = "capability_survey_interval_seconds"
+SURVEY_INTERVAL_DEFAULT = 30 * 86400
+
+#: The singleton schedule task id (mirrors the survey/drift_audit shape).
+SURVEY_SCHEDULE_ID = "capability-survey"
+
+#: Detection-task action type (registered in admz/tasks/handlers.py).
+SURVEY_ACTION_TYPE = "capability_survey"
+
+
+def _id_mapper() -> Any:
+    """The atlas CapabilitiesLoader, built once per process (its YAML map is
+    static data; #455 review measured ~1 ms per fresh construction, which a
+    95-API survey would pay 95 times). ``None`` when unavailable."""
+    global _ID_MAPPER
+    if _ID_MAPPER is _UNSET:
+        try:
+            import axis_api_atlas
+            from axis_api_atlas.capabilities.loader import CapabilitiesLoader
+
+            loader = CapabilitiesLoader(axis_api_atlas.default_data_path())
+            loader.get_api_id_map()  # parse now — fail here, loudly, not per id
+            _ID_MAPPER = loader
+        except Exception:  # noqa: BLE001
+            # Identity mapping still yields truthful rows under the device's
+            # own names, but every MAPPED id (fwmgr→firmware-manager) stops
+            # lining up with audit-written rows — "a positive clears an
+            # absent row" quietly breaks for those. Say so once, loudly.
+            logger.error(
+                "atlas api-id map unavailable — device-reported ids will be "
+                "recorded unmapped; mapped ids (e.g. fwmgr) will not clear "
+                "their absent rows", exc_info=True,
+            )
+            _ID_MAPPER = None
+    return _ID_MAPPER
+
+
+_UNSET = object()
+_ID_MAPPER: Any = _UNSET
+
+
+def _device_id_to_catalog(device_reported_id: str) -> str:
+    """Map a device-reported API id to the catalog's api_id (the probe key).
+    Identity when the atlas (or its map) is unavailable."""
+    mapper = _id_mapper()
+    if mapper is None:
+        return str(device_reported_id)
+    try:
+        return mapper.device_id_to_catalog_api_id(str(device_reported_id))
+    except Exception:  # noqa: BLE001
+        return str(device_reported_id)
+
+
+async def run_capability_survey(
+    *,
+    device_id: str,
+    registry: Any,
+    catalog: Any,
+    executors: Any,
+    store: Optional[DeviceCapabilityStore] = None,
+    source: str = SOURCE_DISCOVERY,
+) -> Dict[str, Any]:
+    """Enumerate one device's APIs via its own ``getApiList`` and record the
+    result as PRESENT rows — **positives only, never negatives** (FR-KNW-012):
+    getApiList is legacy-only, so an API missing from its answer proves
+    nothing — recording absence from it would recreate the partial-snapshot
+    problem locally. A positive overwrites (clears) an ``absent`` row.
+    """
+    from admz import operations
+
+    store = store if store is not None else capability_store
+    try:
+        result = await operations.run_execution_tail(
+            device_id=device_id,
+            operation_id=SURVEY_OPERATION_ID,
+            family="vapix",
+            params={},
+            catalog=catalog,
+            registry=registry,
+            executors=executors,
+        )
+    except Exception as exc:  # noqa: BLE001 — op missing / no executor / no device
+        return {"device_id": device_id, "success": False, "error": str(exc)}
+    if not getattr(result, "success", False):
+        return {
+            "device_id": device_id, "success": False,
+            "error": str(getattr(result, "error", "") or "getApiList failed"),
+        }
+
+    entries = result.parsed_data
+    if isinstance(entries, dict):  # tolerate an unstripped envelope
+        if isinstance(entries.get("data"), dict) and "apiList" in entries["data"]:
+            entries = entries["data"]["apiList"]
+        else:
+            entries = entries.get("apiList")
+    if not isinstance(entries, list):
+        return {
+            "device_id": device_id, "success": False,
+            "error": f"unexpected getApiList payload: {type(entries).__name__}",
+        }
+
+    firmware = device_firmware(registry.get_device_info(device_id))
+    recorded: List[str] = []
+    for entry in entries:
+        reported = (entry or {}).get("id") if isinstance(entry, dict) else None
+        if not reported:
+            continue
+        key = _device_id_to_catalog(reported)
+        try:
+            store.record(
+                device_id, key, PRESENT,
+                firmware=firmware, source=source,
+                reason=f"getApiList reported {reported!r}",
+            )
+            recorded.append(key)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "capability positive not recorded for %s/%s", device_id, key,
+                exc_info=True,
+            )
+    return {
+        "device_id": device_id, "success": True,
+        "apis": sorted(recorded), "recorded": len(recorded),
+    }
+
+
+def enqueue_capability_survey(
+    device_id: str, *, reason: str, approved_by: str = "system"
+) -> Optional[str]:
+    """Queue a one-shot capability survey for ``device_id`` as an
+    ``on_online`` detection task — it fires from the health sweep the next
+    time the device is confirmed reachable+authenticated, which is exactly
+    when a survey can succeed. Deduped: a device with a pending survey task
+    is not queued twice. Never raises."""
+    try:
+        from admz.tasks.store import EVENT_ONLINE, tasks_store
+
+        pending = [
+            t for t in tasks_store.list_active_for(device_id)
+            if t.action_type == SURVEY_ACTION_TYPE
+        ]
+        if pending:
+            return pending[0].id
+        return tasks_store.create_detection(
+            device_id=device_id,
+            event=EVENT_ONLINE,
+            action_type=SURVEY_ACTION_TYPE,
+            approved_by=approved_by,
+            description=f"Capability survey — {reason}",
+        )
+    except Exception:  # noqa: BLE001 — queueing is bookkeeping, never fatal
+        logger.warning(
+            "capability survey not enqueued for %s", device_id, exc_info=True
+        )
+        return None
+
+
+def note_firmware(device_id: str, prev: str, new: str) -> Optional[str]:
+    """The firmware delta both observers (health sweep, engine dump-lift)
+    already compute and used to discard (FR-KNW-013). ``prev`` non-empty and
+    different → ``device.firmware_changed`` audit row + a capability survey
+    enqueued (the API surface may have changed with it). First sight
+    (``prev`` empty) → ``device.firmware_observed`` only: a new device's
+    None→X is not a change, and onboarding owns its first survey. Returns
+    the audit action recorded, or None. Never raises."""
+    prev = (prev or "").strip()
+    new = (new or "").strip()
+    if not new or prev == new:
+        return None
+    action = "device.firmware_changed" if prev else "device.firmware_observed"
+    try:
+        from types import SimpleNamespace
+
+        from admz.audit import record_event
+
+        record_event(
+            SimpleNamespace(name="system", source="firmware-observer"),
+            action,
+            resource=f"device:{device_id}",
+            details={"previous": prev, "current": new},
+        )
+    except Exception:  # noqa: BLE001 — the audit row must not break a sweep
+        logger.warning("firmware event not audited for %s", device_id, exc_info=True)
+    if action == "device.firmware_changed":
+        enqueue_capability_survey(
+            device_id,
+            reason=f"firmware changed {prev} → {new}",
+            approved_by="system:firmware-change",
+        )
+    return action
+
+
+def ensure_capability_survey_schedule(tasks_store: Any, fleet_settings: Any) -> None:
+    """Seed/sync the recurring fleet-wide survey from the
+    ``capability_survey_interval_seconds`` fleet setting (default 30 days).
+
+    Runs at every app build, so the setting is live-on-restart (#455 review,
+    MINOR-1 — "consulted exactly once, ever" was a trap: a registered setting
+    that silently does nothing). Semantics:
+
+    * task absent  → created at the setting's interval (``0`` = opted out,
+      nothing created). Note a DELETED task therefore comes back on restart —
+      the setting, not deletion, is the opt-out authority; pause sticks.
+    * task present → the interval follows the setting when they differ;
+      ``0`` force-disables. The ``enabled`` flag is otherwise untouched —
+      an operator's pause is theirs and survives restarts and setting edits.
+    """
+    try:
+        raw = fleet_settings.get(SURVEY_INTERVAL_KEY)
+        try:
+            interval = int(raw) if raw not in (None, "") else SURVEY_INTERVAL_DEFAULT
+        except (TypeError, ValueError):
+            interval = SURVEY_INTERVAL_DEFAULT
+        task = tasks_store.get(SURVEY_SCHEDULE_ID)
+        if task is None:
+            if interval <= 0:
+                return  # opted out of the cadence
+            tasks_store.create_schedule(
+                task_id=SURVEY_SCHEDULE_ID,
+                description="Capability survey (fleet-wide API enumeration)",
+                interval_seconds=interval,
+                action_type=SURVEY_ACTION_TYPE,
+            )
+            return
+        if interval <= 0:
+            if task.enabled:
+                tasks_store.update(SURVEY_SCHEDULE_ID, enabled=False)
+            return
+        if task.interval_seconds != interval:
+            tasks_store.update(SURVEY_SCHEDULE_ID, interval_seconds=interval)
+    except Exception:  # noqa: BLE001 — startup seeding must never block boot
+        logger.warning("capability survey schedule not synced", exc_info=True)
+
+
 # Module-level singleton — same shape as drift_alerts.drift_alerts.
 capability_store = DeviceCapabilityStore()

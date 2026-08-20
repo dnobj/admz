@@ -453,3 +453,52 @@ class TestSecrecy:
             patch_probes["confirm"] = list(confirm)
             out = _run(registry=_Registry())
             assert FLEET_PW not in json.dumps(out)
+
+
+class TestSurveyEnqueueWiring:
+    """ADR-0063 S2 (#452) — the capability-survey enqueue is wired to the
+    REAL success exits, not just unit-tested on `_with_survey` (#455 review,
+    MINOR-4: unwrapping a call site survived the suite before this class)."""
+
+    def _survey_tasks(self, device_id):
+        from admz.device_capabilities import SURVEY_ACTION_TYPE
+        from admz.tasks.store import tasks_store
+        return [t for t in tasks_store.list_active_for(device_id)
+                if t.action_type == SURVEY_ACTION_TYPE]
+
+    @pytest.fixture
+    def isolated_tasks(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
+
+    def test_provisioned_exit_enqueues_a_survey(
+        self, patch_probes, isolated_tasks
+    ):
+        from admz.approval_context import approved
+
+        patch_probes["systemready"] = {"needsetup": True, "systemready": True,
+                                       "bootid": None, "uptime": 1}
+        with approved("register_discovered_device", "tok-test"):
+            out = _run()
+        assert out["status"] == "provisioned"
+        assert len(self._survey_tasks("dev-1")) == 1
+
+    def test_already_credentialed_first_sight_enqueues(
+        self, patch_probes, isolated_tasks
+    ):
+        patch_probes["confirm"] = [(True, {})]
+        reg = _Registry(stored={"username": "root", "password": "existing"})
+        out = _run(registry=reg)
+        assert out["status"] == "already_credentialed"
+        assert len(self._survey_tasks("dev-1")) == 1
+        # Second onboard of the same healthy device: rows unrelated, but the
+        # pending-task dedupe keeps it at one.
+        patch_probes["confirm"] = [(True, {})]
+        _run(registry=reg)
+        assert len(self._survey_tasks("dev-1")) == 1
+
+    def test_gated_exit_enqueues_nothing(self, patch_probes, isolated_tasks):
+        patch_probes["systemready"] = {"needsetup": True, "systemready": True,
+                                       "bootid": None, "uptime": 1}
+        out = _run()  # no approval in context → the gate fires
+        assert out["status"] == "approval_required"
+        assert self._survey_tasks("dev-1") == []

@@ -141,7 +141,9 @@ class TestListTasks:
         ts.create_detection(device_id="cam-1", event=EVENT_NEEDS_SETUP,
                             action_type="reprovision")
         res = server._list_tasks({})
-        assert res["success"] and res["count"] == 2
+        # The two created here + the seeded capability-survey cadence
+        # (ADR-0063 S2 — the app fixture seeds it into this same DB).
+        assert res["success"] and res["count"] == 3
         kinds = {t["trigger_kind"] for t in res["tasks"]}
         assert kinds == {"schedule", "detection"}
         whens = {t["when"] for t in res["tasks"]}
@@ -155,4 +157,5 @@ class TestListTasks:
         ts.create_detection(device_id="cam-1", event=EVENT_NEEDS_SETUP,
                             action_type="reprovision")
         assert server._list_tasks({"kind": "detection"})["count"] == 1
-        assert server._list_tasks({"kind": "schedule"})["count"] == 1
+        # The one created here + the seeded capability-survey cadence.
+        assert server._list_tasks({"kind": "schedule"})["count"] == 2

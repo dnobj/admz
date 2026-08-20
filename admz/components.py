@@ -373,6 +373,12 @@ def build_components(
     from admz.tasks.store import TaskStore, _default_db_path
     task_store = TaskStore(str(_default_db_path()))
 
+    # ADR-0063 / FR-KNW-012: seed the fleet-wide capability-survey cadence
+    # (default 30 days) if absent. Seed-only — an operator's edits are theirs.
+    from admz.device_capabilities import ensure_capability_survey_schedule
+    from admz.fleet_settings import fleet_settings as _fleet_settings
+    ensure_capability_survey_schedule(task_store, _fleet_settings)
+
     scheduler = SnapshotScheduler(
         snapshot_engine=snapshot_engine,
         schedule_path=schedule_path,

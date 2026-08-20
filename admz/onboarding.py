@@ -104,6 +104,36 @@ _APPROVAL_ACTIONS = ("start_demo_survey", "register_discovered_device",
                      "provision_device_credentials")
 
 
+def _with_survey(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Queue a capability survey on a SUCCESS exit (FR-KNW-012: survey on
+    add). Applied only to exits where ADMZ has working credentials — never to
+    gated/failed exits, and never as a side effect of a gate firing. For
+    ``already_credentialed`` (which fires on every re-onboard of a healthy
+    device) the queue is first-sight only: a device with capability rows has
+    been surveyed or audited already."""
+    status = result.get("status")
+    device_id = result.get("device_id") or ""
+    if not device_id:
+        return result
+    from admz.device_capabilities import capability_store, enqueue_capability_survey
+
+    if status in (PROVISIONED, OWN_ACCOUNT_CREATED, ENTRY_CREDENTIALS_SAVED):
+        enqueue_capability_survey(
+            device_id, reason=f"onboarded ({status})", approved_by="system:onboarding",
+        )
+    elif status == ALREADY_CREDENTIALED:
+        try:
+            first_sight = not capability_store.list(device_id)
+        except Exception:  # noqa: BLE001
+            first_sight = False
+        if first_sight:
+            enqueue_capability_survey(
+                device_id, reason="first sight with working credentials",
+                approved_by="system:onboarding",
+            )
+    return result
+
+
 async def onboard_device_credentials(
     *,
     device_id: str,
@@ -176,7 +206,8 @@ async def onboard_device_credentials(
             if learned:
                 _persist_probe_marker(registry, device_id, device_info, learned)
             if not adopt or stored.get("username") == OWN_ACCOUNT_USERNAME:
-                return {"status": ALREADY_CREDENTIALED, "device_id": device_id}
+                return _with_survey(
+                    {"status": ALREADY_CREDENTIALED, "device_id": device_id})
 
             # ---- 1b. Adopt in place (ADR-0061, #411) -----------------------
             #
@@ -234,16 +265,18 @@ async def onboard_device_credentials(
                 device_info=reach,
             )
             if result.get("success"):
-                return {"status": OWN_ACCOUNT_CREATED, "device_id": device_id,
-                        "username": result["username"],
-                        "entry_username": stored.get("username"),
-                        "adopted_in_place": True}
+                return _with_survey(
+                    {"status": OWN_ACCOUNT_CREATED, "device_id": device_id,
+                     "username": result["username"],
+                     "entry_username": stored.get("username"),
+                     "adopted_in_place": True})
             # The stored credential still works and is untouched; say why the
             # switch did not happen rather than pretending it did.
             logger.warning("device %s: adopt-in-place could not create the admz "
                            "account: %s", device_id, result.get("error"))
-            return {"status": ALREADY_CREDENTIALED, "device_id": device_id,
-                    "admz_account_error": result.get("error")}
+            return _with_survey(
+                {"status": ALREADY_CREDENTIALED, "device_id": device_id,
+                 "admz_account_error": result.get("error")})
         # Rejected or indeterminate: fall through — a stale stored password
         # is exactly what the fleet-pair try below may repair.
 
@@ -312,11 +345,11 @@ async def onboard_device_credentials(
                     "confirm_token": approved_token(),
                 },
             )
-            return {
+            return _with_survey({
                 "status": PROVISIONED, "device_id": device_id,
                 "username": result.get("username"),
                 "password_source": result.get("password_source"),
-            }
+            })
         return {"status": PROVISION_FAILED, "device_id": device_id,
                 "error": result.get("error")}
 
@@ -419,9 +452,10 @@ async def onboard_device_credentials(
             device_id=device_id, host=host, entry=pair, device_info=reach,
         )
         if result.get("success"):
-            return {"status": OWN_ACCOUNT_CREATED, "device_id": device_id,
-                    "username": result["username"],
-                    "entry_username": cred.username}
+            return _with_survey(
+                {"status": OWN_ACCOUNT_CREATED, "device_id": device_id,
+                 "username": result["username"],
+                 "entry_username": cred.username})
 
         # Creating the account failed but the entry credential works. Store it
         # rather than lose the device: a managed device on a shared credential
@@ -435,8 +469,9 @@ async def onboard_device_credentials(
             "device %s adopted on its entry credential — creating the admz "
             "account failed: %s", device_id, result.get("error"),
         )
-        return {"status": ENTRY_CREDENTIALS_SAVED, "device_id": device_id,
-                "username": cred.username,
-                "admz_account_error": result.get("error")}
+        return _with_survey(
+            {"status": ENTRY_CREDENTIALS_SAVED, "device_id": device_id,
+             "username": cred.username,
+             "admz_account_error": result.get("error")})
 
     return {"status": CREDENTIALS_NEEDED, "device_id": device_id, "reason": reason}

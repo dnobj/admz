@@ -69,6 +69,11 @@ def test_run_disabled_is_noop(monkeypatch):
 def test_run_submits_when_pat_present(tmp_path, monkeypatch):
     monkeypatch.setenv("ADMZ_SURVEY_WORK", str(tmp_path / "work"))
     monkeypatch.setattr("admz.survey.runner.secrets.has_pat", lambda: True)
+    # ADR-0063 (#452): the PUSH also requires the contributor capability —
+    # a PAT alone no longer submits. This test's subject is the submit path,
+    # so the toggle is on; the toggle-off control lives in
+    # tests/test_capability_survey.py::TestContributionGate.
+    monkeypatch.setattr("admz.survey.runner.secrets.is_enabled", lambda: True)
     monkeypatch.setattr("admz.survey.runner.secrets.get_contributor", lambda: "ec")
 
     class _FakeSubmitter:

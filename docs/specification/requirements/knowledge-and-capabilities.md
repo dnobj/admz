@@ -97,14 +97,14 @@ unnecessary probe costs one request. So the atlas resolver answers **after** the
 `check_api_support`), with the device's firmware passed correctly and the match labelled `exact` or
 `none` — never the latest-snapshot fallback — and it is never consulted for selection.
 
-### FR-KNW-012 — Surveying is for everyone; contributing is exclusive 📋
+### FR-KNW-012 — Surveying is for everyone; contributing is exclusive ✅
 The full enumeration — `apidiscovery.cgi:getApiList` **through the executor**, so it reaches a
 `limited_api` device — runs for every install: after credentials resolve on add, on firmware change,
 on a 30-day cadence (a fleet setting), and on demand (REST + MCP). It writes **positives only**
 (getApiList is legacy-only); a positive clears an `absent` row. Pushing a bundle to the atlas
 requires `survey.contributor`, including the "Run now" path. ADR-0030 is amended accordingly.
 
-### FR-KNW-013 — Firmware change is an event 📋
+### FR-KNW-013 — Firmware change is an event ✅
 At the health sweep's existing delta and at the engine's own fact refresh (which lifts
 `root.Properties.Firmware.Version` from the raw param dump before the volatile filter drops it):
 `device.firmware_changed` when the prior value was non-empty and differs — audit row, enqueue a

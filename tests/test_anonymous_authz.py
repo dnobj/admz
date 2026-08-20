@@ -250,8 +250,10 @@ class TestAnonymousLowRiskAllowedAndAudited:
         body = r.json()
         assert body["blocked"] is True
         assert body["confirm_url"].startswith("/confirm/")
-        # nothing written until the card is approved
-        assert client.get("/api/schedules").json()["count"] == 0
+        # nothing written until the card is approved — only the seeded
+        # capability-survey cadence exists (ADR-0063 S2).
+        ids = [s["id"] for s in client.get("/api/schedules").json()["schedules"]]
+        assert ids == ["capability-survey"]
 
 
 # ---------------------------------------------------------------------------

@@ -189,24 +189,36 @@ async def survey_settings_action(
             success = "GitHub PAT cleared."
 
         elif action == "preview":
+            import asyncio
+
             from admz.survey.runner import preview as _preview
-            preview = _preview()
+            # The collector talks to every device synchronously — run it in a
+            # worker thread so it stops blocking the event loop (#452).
+            preview = await asyncio.to_thread(_preview)
             success = "Preview built (nothing was sent)."
 
         elif action == "run_now":
+            import asyncio
+
             from admz.survey.runner import run_survey
-            # respect_enabled False so a manual run works even before the toggle;
-            # submit only if a PAT is present, else offline.
-            submitting = secrets.has_pat()
-            # Audited BEFORE the run: this can push fleet data to GitHub, and
-            # `respect_enabled=False` means the contributor toggle is not a
-            # second brake. A run that dies mid-flight must still leave a
-            # record that someone started it.
+            # respect_enabled False so a manual run works even before the
+            # toggle — the RUN is always allowed; the PUSH is not. Submitting
+            # requires the contributor capability AND a PAT (ADR-0030 as
+            # amended by ADR-0063): "Run now" + a stored PAT + the toggle OFF
+            # used to open a PR anyway, which was the one path around the
+            # capability. Toggle off now yields an offline bundle.
+            submitting = secrets.has_pat() and secrets.is_enabled()
+            # Audited BEFORE the run: this can push fleet data to GitHub. A
+            # run that dies mid-flight must still leave a record that someone
+            # started it.
             record_event(principal, "survey.run_now",
                          resource="survey_settings:run_now",
                          details={"submit": submitting,
+                                  "enabled": secrets.is_enabled(),
                                   "repo": fleet_settings.get(secrets.KEY_REPO)})
-            report = run_survey(submit=submitting, respect_enabled=False)
+            report = await asyncio.to_thread(
+                run_survey, submit=submitting, respect_enabled=False
+            )
             run_report = report.to_dict()
             success = f"Survey run: {report.status}. {report.message}"
 

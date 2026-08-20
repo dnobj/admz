@@ -3135,6 +3135,35 @@ class ADMZMCPServer:
             "notes": result.notes,
         }
 
+    async def _list_device_capabilities(self, device_id: str) -> Dict[str, Any]:
+        """The local capability record for one device (ADR-0063) — what the
+        audits and surveys have actually observed, row by row, with staleness
+        computed against the device's current firmware."""
+        import time as _time
+
+        from admz.device_capabilities import capability_store, device_firmware
+
+        if not self.registry.device_exists(device_id):
+            return {
+                "success": False,
+                "error": f"Device '{device_id}' not found in registry",
+            }
+        info = self.registry.get_device_info(device_id)
+        firmware = device_firmware(info)
+        now = _time.time()
+        rows = []
+        for row in capability_store.list(device_id):
+            d = row.to_dict()
+            d["stale"] = row.is_stale(firmware, now)
+            rows.append(d)
+        return {
+            "success": True,
+            "device_id": device_id,
+            "firmware": firmware,
+            "capabilities": rows,
+            "count": len(rows),
+        }
+
     async def _execute_operation(
         self,
         device_id: str,
