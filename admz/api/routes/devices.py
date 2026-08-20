@@ -2,6 +2,7 @@
 REST API routes for device management.
 """
 
+import logging
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, Depends, Request
 from fastapi.responses import JSONResponse
@@ -32,6 +33,8 @@ from admz.exceptions import (
 )
 from admz.device_registry import DeviceRegistry
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -443,6 +446,15 @@ async def replace_device_hardware(
     if not new_host:
         raise HTTPException(status_code=400, detail="A replacement host is required.")
     registry.update_device_info(device_id, {"host": new_host, "ip_address": new_host})
+
+    # ADR-0063: capability rows describe the UNIT, the key is the SLOT. What
+    # the audit learned about the old unit's APIs says nothing about the new
+    # one — forget it, so the next read probes.
+    try:
+        from admz.device_capabilities import capability_store
+        capability_store.forget(device_id)
+    except Exception:  # noqa: BLE001 — a rebind must not fail on bookkeeping
+        logger.warning("capability rows not cleared for %s", device_id, exc_info=True)
 
     facts: Dict[str, str] = {}
     status = "ok"

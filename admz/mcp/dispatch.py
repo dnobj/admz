@@ -160,7 +160,10 @@ async def _get_plan_status(ctx, a):
 
 # --- Snapshot / restore / drift ----------------------------------------------
 async def _snapshot_device(ctx, a):
-    return await ctx.server._snapshot_device(a["device_id"], a.get("message"))
+    return await ctx.server._snapshot_device(
+        a["device_id"], a.get("message"),
+        force_probe=bool(a.get("force_probe", False)),
+    )
 
 
 async def _snapshot_fleet(ctx, a):

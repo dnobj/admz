@@ -156,6 +156,13 @@ def _signature_for(report: DriftReport) -> str:
         for f in report.fields
     )
     blob = json.dumps(rows, separators=(",", ":"))
+    # ADR-0063: a baseline facet the device is now known to lack is drift
+    # with no fields. Fold it in ONLY when non-empty — unconditionally
+    # appending would change every stored signature on deploy and fire a
+    # fleet-wide "changed" storm for nothing.
+    absent = sorted(getattr(report, "facets_absent", None) or [])
+    if absent:
+        blob += "|absent:" + json.dumps(absent, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
@@ -180,15 +187,26 @@ def _attributed_counts(report: DriftReport) -> Dict[str, Any]:
             counts["unclaimed"] += 1
         if f.owner:
             counts["demo_names"][f.owner] = f.owner_name or f.owner
+    # ADR-0063: baseline facets the device is known to lack — drift with no
+    # fields. Kept beside the bucket counts so the previous check's state is
+    # recoverable for the transition decision.
+    absent = sorted(getattr(report, "facets_absent", None) or [])
+    if absent:
+        counts["facets_absent"] = absent
     return counts
 
 
-def _build_summary(transition: str, prev: int, curr: int) -> str:
+def _build_summary(
+    transition: str, prev: int, curr: int, absent: Optional[List[str]] = None
+) -> str:
+    tail = ""
+    if absent:
+        tail = f" {len(absent)} baselined facet(s) absent: {', '.join(absent)}."
     if transition == "appeared":
-        return f"Drift detected: {curr} field(s) now out of sync."
+        return f"Drift detected: {curr} field(s) now out of sync.{tail}"
     if transition == "cleared":
         return f"Drift cleared: device is back in sync (was {prev} field(s))."
-    return f"Drift changed: {prev} → {curr} field(s)."
+    return f"Drift changed: {prev} → {curr} field(s).{tail}"
 
 
 class DriftAlertStore:
@@ -394,15 +412,23 @@ class DriftAlertStore:
             self._record_signature(device_id, signature, current_count, attributed)
             return None
 
-        # Transition: decide which kind.
-        if prev_count == 0 and current_count > 0:
+        # Transition: decide which kind. "Drifted" means fields out of sync
+        # OR a baselined facet the device is known to lack (ADR-0063) — the
+        # latter has no fields, and without this a device whose only drift
+        # is an absent facet would report "changed: 0 → 0 field(s)".
+        absent_now = attributed.get("facets_absent") or []
+        prev_attr = (previous.get("attributed") or {}) if previous else {}
+        absent_before = bool(prev_attr.get("facets_absent"))
+        drifted_now = current_count > 0 or bool(absent_now)
+        drifted_before = prev_count > 0 or absent_before
+        if not drifted_before and drifted_now:
             transition = "appeared"
-        elif prev_count > 0 and current_count == 0:
+        elif drifted_before and not drifted_now:
             transition = "cleared"
         else:
             transition = "changed"
 
-        summary = _build_summary(transition, prev_count, current_count)
+        summary = _build_summary(transition, prev_count, current_count, absent_now)
         alert = self._record_alert(
             device_id=device_id,
             transition=transition,

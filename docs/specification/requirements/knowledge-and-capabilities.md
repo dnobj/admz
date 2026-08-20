@@ -68,7 +68,7 @@ Knowledge and catalog are separate loaders. The catalog answers
 operator know about this model?" The two are joined only at
 query time by the LLM (or by the resolver caller).
 
-### FR-KNW-009 — ADMZ keeps a local record of each device's API capabilities 📋
+### FR-KNW-009 — ADMZ keeps a local record of each device's API capabilities ✅
 `device_capabilities(device_id, probe_key, supported, firmware, source, reason, fail_streak,
 observed_at, expires_at)`, keyed `(device_id, probe_key)`, in the same SQLite file as every other
 per-device store and on the #428 cascade list. `probe_key` is derived from the operation a facet
@@ -78,7 +78,7 @@ firmware differs from the device's current firmware or it has expired; a firmwar
 invalidates every row with no code. Rows are forgotten on a hardware rebind (ADR-0036). See
 [ADR-0063](../decisions/0063-capability-knowledge-is-local-first.md).
 
-### FR-KNW-010 — The drift audit consults the local record before probing, and learns from the outcome 📋
+### FR-KNW-010 — The drift audit consults the local record before probing, and learns from the outcome ✅
 Applied **in the engine only** — `get_facets_for_device` remains the static adapter index its nine
 other callers need. A facet's extra read is skipped iff a non-stale row says `supported = 0`;
 anything else probes. Every outcome is recorded, classified with the **same-cycle readability

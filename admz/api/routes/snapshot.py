@@ -22,6 +22,11 @@ router = APIRouter()
 class SnapshotDeviceRequest(BaseModel):
     device_id: str
     message: Optional[str] = None
+    # ADR-0063: ignore the local capability record and probe every facet —
+    # the operator's override when a device's API was recorded absent and
+    # they believe otherwise (e.g. just enabled it) and don't want to wait
+    # out the record's lease.
+    force_probe: bool = False
 
     @field_validator("device_id")
     @classmethod
@@ -81,10 +86,11 @@ async def snapshot_device(
                      success=False, error_message="not-found")
         raise HTTPException(status_code=404, detail=f"Device not found: {req.device_id}")
     snapshot = await ctx.snapshot_engine.snapshot_device(
-        req.device_id, message=req.message
+        req.device_id, message=req.message, force_probe=req.force_probe
     )
     record_event(principal, "snapshot.device", resource=resource,
-                 details={"has_message": bool(req.message)})
+                 details={"has_message": bool(req.message),
+                          "force_probe": req.force_probe})
     return snapshot.to_summary()
 
 

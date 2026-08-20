@@ -194,14 +194,14 @@ Implemented in `admz/api/routes/drift.py` and
 `admz.mcp.server._get_drift_alerts`. This is the read side of
 US-SCHED-005 (observable outcomes).
 
-### FR-DRF-012 — A facet reports `ok`, `skipped` or `failed` — never success-with-nothing 📋
+### FR-DRF-012 — A facet reports `ok`, `skipped` or `failed` — never success-with-nothing ✅
 Today a facet whose API read fails serialises `{}` and is recorded `success=True`. Under
 [ADR-0063](../decisions/0063-capability-knowledge-is-local-first.md) `FacetResult.status ∈
 {ok, skipped, failed}` (`success` ≡ `ok`): `skipped` when the local capability record says the
 device lacks the API, `failed` when the read was attempted and did not succeed. `skipped` is a
 settled state and never makes a snapshot `PARTIAL`.
 
-### FR-DRF-013 — Drift enumerates baseline facets, and distinguishes absent from unverified 📋
+### FR-DRF-013 — Drift enumerates baseline facets, and distinguishes absent from unverified ✅
 The compare visits every facet in the **baseline**, not only those present in the live read. A
 baseline facet that is now `skipped` is `facets_absent` — it **is** drift, reported honestly, and it
 produces **no `DriftField`**, because the revert builder must never write to an API the device does
