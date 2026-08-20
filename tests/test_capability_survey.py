@@ -324,7 +324,10 @@ class TestHandlerAndCadence:
         keys = {r.probe_key for r in capability_store.list("cam-01")}
         assert {"sip", "ntp", "firmware-manager"} <= keys
 
-    def test_schedule_seeded_once_with_default_interval(self, isolated_db, tmp_path):
+    def test_schedule_synced_from_the_setting(self, isolated_db, tmp_path):
+        """#455 review, MINOR-1: the fleet setting is LIVE (synced at every
+        app build), not consulted-once — and it is the authority for the
+        interval. The operator's PAUSE is theirs and survives syncs."""
         from admz.device_capabilities import (
             SURVEY_INTERVAL_DEFAULT,
             SURVEY_SCHEDULE_ID,
@@ -333,21 +336,32 @@ class TestHandlerAndCadence:
         from admz.tasks.store import TaskStore
 
         store = TaskStore(str(tmp_path / "tasks.db"))
-        settings = SimpleNamespace(get=lambda key: None)
+        setting = {"value": None}
+        settings = SimpleNamespace(get=lambda key: setting["value"])
+
         ensure_capability_survey_schedule(store, settings)
         task = store.get(SURVEY_SCHEDULE_ID)
         assert task is not None
         assert task.interval_seconds == SURVEY_INTERVAL_DEFAULT
         assert task.action_type == "capability_survey"
 
-        # Seed-only: an operator's edit survives a restart's re-seed.
-        store.update(SURVEY_SCHEDULE_ID, interval_seconds=86400, enabled=False)
+        # The setting changes → the next build applies it.
+        setting["value"] = "86400"
+        ensure_capability_survey_schedule(store, settings)
+        assert store.get(SURVEY_SCHEDULE_ID).interval_seconds == 86400
+
+        # An operator's pause sticks across syncs and setting edits.
+        store.update(SURVEY_SCHEDULE_ID, enabled=False)
+        setting["value"] = "43200"
         ensure_capability_survey_schedule(store, settings)
         again = store.get(SURVEY_SCHEDULE_ID)
-        assert again.interval_seconds == 86400
         assert again.enabled is False
+        assert again.interval_seconds == 43200
 
     def test_zero_interval_means_opted_out(self, isolated_db, tmp_path):
+        """`0` never creates the schedule, and force-disables an existing
+        one — the setting, not deletion, is the opt-out authority (a deleted
+        singleton is re-seeded on the next restart by design)."""
         from admz.device_capabilities import (
             SURVEY_SCHEDULE_ID,
             ensure_capability_survey_schedule,
@@ -355,9 +369,160 @@ class TestHandlerAndCadence:
         from admz.tasks.store import TaskStore
 
         store = TaskStore(str(tmp_path / "tasks.db"))
-        settings = SimpleNamespace(get=lambda key: "0")
+        setting = {"value": "0"}
+        settings = SimpleNamespace(get=lambda key: setting["value"])
         ensure_capability_survey_schedule(store, settings)
         assert store.get(SURVEY_SCHEDULE_ID) is None
+
+        setting["value"] = None
+        ensure_capability_survey_schedule(store, settings)
+        assert store.get(SURVEY_SCHEDULE_ID).enabled is True
+        setting["value"] = "0"
+        ensure_capability_survey_schedule(store, settings)
+        assert store.get(SURVEY_SCHEDULE_ID).enabled is False
+
+
+# ---------------------------------------------------------------------------
+# Production dispatch shapes + the failed-task lifecycle (#455 review)
+# ---------------------------------------------------------------------------
+
+class TestDispatchShapes:
+    """The handler is reached two ways in production, and neither matched the
+    explicit-full-ctx shape the end-to-end test uses. Pin both (#455 review,
+    MINOR-5): renaming an engine attribute or reordering the app lifespan
+    must fail a test, not fail production with a green suite."""
+
+    @pytest.mark.asyncio
+    async def test_scheduler_shape_resolves_deps_from_the_engine(
+        self, catalog, isolated_db
+    ):
+        from admz.device_capabilities import enqueue_capability_survey
+        from admz.tasks.handlers import TaskContext, execute_task_action
+        from admz.tasks.store import tasks_store
+
+        registry = FakeRegistry({"cam-01": {"host": "192.0.2.5"}})
+        engine = SimpleNamespace(
+            registry=registry, catalog=catalog,
+            executors={"vapix": _executor(_api_list_handler)},
+        )
+        tid = enqueue_capability_survey("cam-01", reason="test")
+        result = await execute_task_action(
+            tasks_store.get(tid), TaskContext(snapshot_engine=engine)
+        )
+        assert result["success"] is True and result["surveyed"] == 1
+
+    @pytest.mark.asyncio
+    async def test_default_installed_context_carries_the_deps(
+        self, catalog, isolated_db
+    ):
+        """The health sweep fires detections with NO explicit ctx — the
+        lifespan-installed default must carry registry/catalog/executors."""
+        from admz.device_capabilities import enqueue_capability_survey
+        from admz.recovery_actions import register_recovery_handlers
+        from admz.tasks.handlers import execute_task_action, set_task_context
+        from admz.tasks.store import tasks_store
+
+        registry = FakeRegistry({"cam-01": {"host": "192.0.2.5"}})
+        register_recovery_handlers(SimpleNamespace(
+            snapshot_engine=None, drift_detector=None,
+            registry=registry, catalog=catalog,
+            executors={"vapix": _executor(_api_list_handler)},
+        ))
+        try:
+            tid = enqueue_capability_survey("cam-01", reason="test")
+            result = await execute_task_action(tasks_store.get(tid))
+            assert result["success"] is True and result["surveyed"] == 1
+        finally:
+            from admz.tasks.handlers import TaskContext
+            set_task_context(TaskContext())
+
+    @pytest.mark.asyncio
+    async def test_contextless_shape_fails_gracefully(self, isolated_db):
+        from admz.device_capabilities import enqueue_capability_survey
+        from admz.tasks.handlers import TaskContext, execute_task_action
+        from admz.tasks.store import tasks_store
+
+        tid = enqueue_capability_survey("cam-01", reason="test")
+        result = await execute_task_action(tasks_store.get(tid), TaskContext())
+        assert result["success"] is False
+        assert "context incomplete" in result["summary"]
+
+
+class TestFailedSurveyLifecycle:
+    """#455 review, MAJOR-1: a one-shot survey whose device failed used to be
+    marked 'done' and audited as fired — the firmware-change trigger consumed
+    silently, precisely when the device is mid-reboot after the upgrade that
+    queued it. The failure must land on the task row and in the audit."""
+
+    @pytest.mark.asyncio
+    async def test_failed_single_device_marks_the_task_failed(
+        self, catalog, isolated_db
+    ):
+        from admz.audit import AuditLog
+        from admz.device_capabilities import enqueue_capability_survey
+        from admz.fleet.health import HealthMonitor
+        from admz.recovery_actions import register_recovery_handlers
+        from admz.tasks.handlers import TaskContext, set_task_context
+        from admz.tasks.store import tasks_store
+
+        def rebooting(request):  # every endpoint drops mid-upgrade
+            raise httpx.RemoteProtocolError("rebooting", request=request)
+
+        registry = FakeRegistry({"cam-01": {"host": "192.0.2.5"}})
+        register_recovery_handlers(SimpleNamespace(
+            snapshot_engine=None, drift_detector=None,
+            registry=registry, catalog=catalog,
+            executors={"vapix": _executor(rebooting)},
+        ))
+        try:
+            tid = enqueue_capability_survey("cam-01", reason="fw change")
+            monitor = HealthMonitor(
+                registry=registry, catalog=catalog,
+                executors={"vapix": _executor(rebooting)},
+            )
+            await monitor._run_pending(tasks_store.get(tid))
+        finally:
+            set_task_context(TaskContext())
+
+        task = tasks_store.get(tid)
+        assert task.status == "failed"
+        assert task.last_error, "the reason must land on the row"
+        actions = [e.action for e in AuditLog().list_recent(limit=10)]
+        assert "deferred_action_failed" in actions
+        assert "deferred_action_fired" not in actions
+
+    @pytest.mark.asyncio
+    async def test_fleet_sweep_is_not_failed_by_one_device(
+        self, catalog, isolated_db
+    ):
+        """The recurring schedule stays success-with-counts — a cadence run
+        is not failed by one device's bad hour."""
+        from admz.tasks.handlers import TaskContext, execute_task_action
+        from admz.tasks.store import Task
+
+        calls = {"n": 0}
+
+        def half_broken(request):
+            calls["n"] += 1
+            if "apidiscovery" not in request.url.path:
+                return httpx.Response(404)
+            # cam-01 answers; cam-02 drops.
+            if calls["n"] <= 1:
+                return httpx.Response(200, json={"data": {"apiList": API_LIST}})
+            raise httpx.RemoteProtocolError("down", request=request)
+
+        registry = FakeRegistry({
+            "cam-01": {"host": "192.0.2.5"},
+            "cam-02": {"host": "192.0.2.6"},
+        })
+        task = Task(id="cap-sweep", trigger_kind="schedule",
+                    action_type="capability_survey", interval_seconds=86400)
+        result = await execute_task_action(task, TaskContext(
+            registry=registry, catalog=catalog,
+            executors={"vapix": _executor(half_broken)},
+        ))
+        assert result["success"] is True
+        assert result["surveyed"] == 1 and result["failed"] == 1
 
 
 # ---------------------------------------------------------------------------

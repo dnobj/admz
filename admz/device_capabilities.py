@@ -480,17 +480,45 @@ SURVEY_SCHEDULE_ID = "capability-survey"
 SURVEY_ACTION_TYPE = "capability_survey"
 
 
+def _id_mapper() -> Any:
+    """The atlas CapabilitiesLoader, built once per process (its YAML map is
+    static data; #455 review measured ~1 ms per fresh construction, which a
+    95-API survey would pay 95 times). ``None`` when unavailable."""
+    global _ID_MAPPER
+    if _ID_MAPPER is _UNSET:
+        try:
+            import axis_api_atlas
+            from axis_api_atlas.capabilities.loader import CapabilitiesLoader
+
+            loader = CapabilitiesLoader(axis_api_atlas.default_data_path())
+            loader.get_api_id_map()  # parse now — fail here, loudly, not per id
+            _ID_MAPPER = loader
+        except Exception:  # noqa: BLE001
+            # Identity mapping still yields truthful rows under the device's
+            # own names, but every MAPPED id (fwmgr→firmware-manager) stops
+            # lining up with audit-written rows — "a positive clears an
+            # absent row" quietly breaks for those. Say so once, loudly.
+            logger.error(
+                "atlas api-id map unavailable — device-reported ids will be "
+                "recorded unmapped; mapped ids (e.g. fwmgr) will not clear "
+                "their absent rows", exc_info=True,
+            )
+            _ID_MAPPER = None
+    return _ID_MAPPER
+
+
+_UNSET = object()
+_ID_MAPPER: Any = _UNSET
+
+
 def _device_id_to_catalog(device_reported_id: str) -> str:
     """Map a device-reported API id to the catalog's api_id (the probe key).
-    Identity when the atlas (or its map) is unavailable — the ids match for
-    all but a handful of APIs, and an unmapped positive is still a truthful
-    row under the device's own name."""
+    Identity when the atlas (or its map) is unavailable."""
+    mapper = _id_mapper()
+    if mapper is None:
+        return str(device_reported_id)
     try:
-        import axis_api_atlas
-        from axis_api_atlas.capabilities.loader import CapabilitiesLoader
-
-        loader = CapabilitiesLoader(axis_api_atlas.default_data_path())
-        return loader.device_id_to_catalog_api_id(str(device_reported_id))
+        return mapper.device_id_to_catalog_api_id(str(device_reported_id))
     except Exception:  # noqa: BLE001
         return str(device_reported_id)
 
@@ -533,7 +561,10 @@ async def run_capability_survey(
 
     entries = result.parsed_data
     if isinstance(entries, dict):  # tolerate an unstripped envelope
-        entries = (entries.get("data") or {}).get("apiList") or entries.get("apiList")
+        if isinstance(entries.get("data"), dict) and "apiList" in entries["data"]:
+            entries = entries["data"]["apiList"]
+        else:
+            entries = entries.get("apiList")
     if not isinstance(entries, list):
         return {
             "device_id": device_id, "success": False,
@@ -632,28 +663,45 @@ def note_firmware(device_id: str, prev: str, new: str) -> Optional[str]:
 
 
 def ensure_capability_survey_schedule(tasks_store: Any, fleet_settings: Any) -> None:
-    """Seed the recurring fleet-wide survey (default 30 days) if absent.
-    Seed-only: an operator's later edits (interval, pause) are theirs — this
-    never overwrites an existing task. Interval comes from the
-    ``capability_survey_interval_seconds`` fleet setting."""
+    """Seed/sync the recurring fleet-wide survey from the
+    ``capability_survey_interval_seconds`` fleet setting (default 30 days).
+
+    Runs at every app build, so the setting is live-on-restart (#455 review,
+    MINOR-1 — "consulted exactly once, ever" was a trap: a registered setting
+    that silently does nothing). Semantics:
+
+    * task absent  → created at the setting's interval (``0`` = opted out,
+      nothing created). Note a DELETED task therefore comes back on restart —
+      the setting, not deletion, is the opt-out authority; pause sticks.
+    * task present → the interval follows the setting when they differ;
+      ``0`` force-disables. The ``enabled`` flag is otherwise untouched —
+      an operator's pause is theirs and survives restarts and setting edits.
+    """
     try:
-        if tasks_store.get(SURVEY_SCHEDULE_ID) is not None:
-            return
         raw = fleet_settings.get(SURVEY_INTERVAL_KEY)
         try:
-            interval = int(raw) if raw else SURVEY_INTERVAL_DEFAULT
+            interval = int(raw) if raw not in (None, "") else SURVEY_INTERVAL_DEFAULT
         except (TypeError, ValueError):
             interval = SURVEY_INTERVAL_DEFAULT
+        task = tasks_store.get(SURVEY_SCHEDULE_ID)
+        if task is None:
+            if interval <= 0:
+                return  # opted out of the cadence
+            tasks_store.create_schedule(
+                task_id=SURVEY_SCHEDULE_ID,
+                description="Capability survey (fleet-wide API enumeration)",
+                interval_seconds=interval,
+                action_type=SURVEY_ACTION_TYPE,
+            )
+            return
         if interval <= 0:
-            return  # 0 / negative = operator opted out of the cadence
-        tasks_store.create_schedule(
-            task_id=SURVEY_SCHEDULE_ID,
-            description="Capability survey (fleet-wide API enumeration)",
-            interval_seconds=interval,
-            action_type=SURVEY_ACTION_TYPE,
-        )
+            if task.enabled:
+                tasks_store.update(SURVEY_SCHEDULE_ID, enabled=False)
+            return
+        if task.interval_seconds != interval:
+            tasks_store.update(SURVEY_SCHEDULE_ID, interval_seconds=interval)
     except Exception:  # noqa: BLE001 — startup seeding must never block boot
-        logger.warning("capability survey schedule not seeded", exc_info=True)
+        logger.warning("capability survey schedule not synced", exc_info=True)
 
 
 # Module-level singleton — same shape as drift_alerts.drift_alerts.

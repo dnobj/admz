@@ -1513,6 +1513,26 @@ class HealthMonitor:
         )
         try:
             outcome = await execute_task_action(task)
+            # #455 review (MAJOR-1): a handler that RETURNS success=False —
+            # rather than raising — used to be marked "done" and audited as
+            # fired, so a one-shot trigger (a capability survey queued on a
+            # firmware change, against a device mid-reboot) was consumed
+            # silently. Honor the result: a failed outcome is a failed task,
+            # with the error on the row where an operator can see it.
+            failed_outcome = isinstance(outcome, dict) and not outcome.get(
+                "success", True
+            )
+            if failed_outcome:
+                err = str(outcome.get("error") or outcome.get("summary")
+                          or "handler reported failure")[:300]
+                tasks_store.mark(pid, "failed", err)
+                record_event(
+                    principal, "deferred_action_failed",
+                    resource=f"device:{did}", success=False, error_message=err,
+                    details={"id": pid, "action": task.action_type,
+                             "trigger": task.event},
+                )
+                return
             tasks_store.mark(pid, "done")
             # GH #326: handlers return a result dict and this discarded it, so
             # the row could never carry anything action-specific. Only a small

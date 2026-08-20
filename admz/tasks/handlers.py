@@ -256,6 +256,7 @@ async def _run_capability_survey(task: Task, ctx: TaskContext) -> Dict[str, Any]
         ]
 
     surveyed = failed = apis = 0
+    last_error = ""
     for did in device_ids:
         if not did:
             continue
@@ -268,11 +269,22 @@ async def _run_capability_survey(task: Task, ctx: TaskContext) -> Dict[str, Any]
             apis += int(result.get("recorded") or 0)
         else:
             failed += 1
+            last_error = str(result.get("error") or "")
     summary = f"surveyed {surveyed} device(s): {apis} API positive(s) recorded"
     if failed:
         summary += f", {failed} device(s) failed"
-    return {"success": True, "surveyed": surveyed, "failed": failed,
-            "apis_recorded": apis, "summary": summary}
+    # A one-shot detection task exists to survey ITS device: if that failed,
+    # the task failed — returning success would consume the trigger silently
+    # (#455 review, MAJOR-1; the device is commonly mid-reboot right after
+    # the firmware change that queued us). The recurring fleet sweep stays
+    # success-with-counts: a schedule is not failed by one device's bad hour.
+    single_device_failed = (
+        task.trigger_kind == "detection" and surveyed == 0 and failed > 0
+    )
+    return {"success": not single_device_failed,
+            "surveyed": surveyed, "failed": failed,
+            "apis_recorded": apis, "summary": summary,
+            "error": last_error if single_device_failed else None}
 
 
 @register_task_handler("survey")
