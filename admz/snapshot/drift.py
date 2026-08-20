@@ -266,17 +266,27 @@ class DriftDetector:
         # ADR-0063 (FR-DRF-013): visit the BASELINE's facets too. A facet
         # the live read did not produce used to vanish from the compare; it
         # is one of two very different things:
-        #   skipped  — the device is known to lack the API. That IS drift: a
-        #              baselined facet the device no longer answers for. It is
-        #              reported honestly and counted — but carries no
-        #              DriftField, because the revert builder must never write
-        #              to an API the device does not have.
-        #   failed   — the read was attempted and did not succeed. The live
-        #              state is UNKNOWN, which is not drift. (Before this, a
-        #              transient API failure read every stored key as
-        #              "<missing>" and reported the whole facet drifted.)
+        #   absent      — every API the facet reads answered with hard proof
+        #                 of absence (a 404-class response), recorded in the
+        #                 capability record. That IS drift: a baselined facet
+        #                 the device no longer answers for. Reported honestly
+        #                 and counted — but with no DriftField, because the
+        #                 revert builder must never write to an API the
+        #                 device does not have.
+        #   unverified  — the read failed, or was skipped on an UNCONFIRMED
+        #                 row. The live state is UNKNOWN, which is not drift.
+        #                 (Before this PR a transient API failure read every
+        #                 stored key as "<missing>" and reported the whole
+        #                 facet drifted; the review of #454 showed the first
+        #                 draft repeating the same mistake one level up —
+        #                 reporting a skip-on-a-blip as "known to lack".)
+        # The split keys off FacetResult.capability — the record's post-learn
+        # classification — never off skip-vs-probe, so a lease expiry that
+        # re-probes a genuinely absent API reports the same facets_absent as
+        # the skip cycles around it (no cleared/appeared flapping).
         # A baseline facet that simply no longer applies to the device (not
         # in the live read at all) stays as it was: not visited.
+        capability_by_facet = {f.name: f.capability for f in facet_results}
         try:
             baseline_facets = self.git.list_facets_at(device_id, baseline_sha)
         except Exception:  # noqa: BLE001 — a stub repo without the method
@@ -285,12 +295,14 @@ class DriftDetector:
             if facet_name in live_by_facet:
                 continue
             status = facet_status.get(facet_name)
-            if status == FACET_SKIPPED:
+            if status not in (FACET_SKIPPED, FACET_FAILED):
+                continue
+            if capability_by_facet.get(facet_name) == "absent":
                 report.facets_absent.append(facet_name)
                 report.facets_checked += 1
                 report.facets_drifted += 1
                 report.has_drift = True
-            elif status == FACET_FAILED:
+            else:
                 report.facets_unverified.append(facet_name)
 
         # Phase 8: hand the report to the alert store so transitions
@@ -322,6 +334,14 @@ class DriftDetector:
         two read primitives every stub provides, so a mocked engine keeps
         working; a facet whose serialization fails reports ``failed`` (its
         live state is unknown) instead of silently vanishing from the compare.
+
+        Known limitation, accepted: this path cannot see per-op read
+        outcomes (stubs return plain dicts), so ADR-0063's honesty guarantee
+        does not hold here — a failed extra read serializes empty-as-success
+        exactly as the pre-0063 engine did, and the capability record is
+        neither consulted nor taught. It is reachable in production only
+        when the git working-tree write itself raised, at which point one
+        legacy-shaped compare is the least of the audit's problems.
         """
         facets = get_facets_for_device(device_info)
         raw_params = await self.engine._read_all_params(

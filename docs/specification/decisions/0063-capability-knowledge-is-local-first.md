@@ -99,8 +99,8 @@ specific operation failing is evidence about that operation**, not about the net
 | outcome | meaning | TTL |
 |---|---|---|
 | 2xx | `present` | until firmware change |
-| 404 / 405 / 501 / 400 / 410, or a JSON-RPC error | `absent` | 7 days |
-| 401 / 403 / 5xx / parse / transport / timeout **on a readable device** | `absent_unconfirmed` | 24h · 2^(streak−1), capped at 7 days |
+| 404 / 405 / 501 / 400 / 410, or a 2xx error that literally says "no such method" | `absent` | 7 days |
+| 401 / 403 / 5xx / parse / transport / timeout / any other 2xx application error, **on a readable device** | `absent_unconfirmed` | 24h · 2^(streak−1), capped at 7 days |
 | anything, device **not** readable this cycle | indeterminate | no row |
 
 The third row is the one that matters. The T8516's failure is an `httpx.ReadError` — a transport
@@ -109,15 +109,44 @@ learned the one device this ADR is written for, while every test stayed green. `
 so that an API enabled later — an ACAP install is the clear case — is noticed within a week; the
 drift audit is already periodic, so that IS the cadence.
 
+*Amended 2026-08-19 (review of the S1 PR, #454):* the second row originally read "or a JSON-RPC
+error". That was too broad — a device that HAS an API can answer a transient `1100: Internal
+error` at 2xx, and a 7-day absent lease for a device having a bad moment is wrong. Only error
+shapes that literally claim the method does not exist are proof of absence; every other 2xx
+application error takes the short unconfirmed lease.
+
 ### Honesty in the result
 
 `FacetResult.status ∈ {ok, skipped, failed}`; `success` remains `status == ok`. Drift enumerates
-**baseline** facets as well as live ones: a baseline facet that is now `skipped` is reported as
-`facets_absent` — it *is* drift, rendered honestly, and it produces **no `DriftField`**, because the
-revert builder must never write to an API the device does not have. A baseline facet that `failed`
-is `facets_unverified` — not drift; that is the latent bug, closed. `skipped` is a settled state: it
-never makes a snapshot `PARTIAL`, for the same reason `reachable_no_api` does not increment
-`consecutive_failures`.
+**baseline** facets as well as live ones: a baseline facet the device is **known to lack** is
+reported as `facets_absent` — it *is* drift, rendered honestly, and it produces **no `DriftField`**,
+because the revert builder must never write to an API the device does not have. A baseline facet
+whose live state is merely *unknown* is `facets_unverified` — not drift; that is the latent bug,
+closed. `skipped` is a settled state: it never makes a snapshot `PARTIAL`, for the same reason
+`reachable_no_api` does not increment `consecutive_failures`.
+
+*Amended 2026-08-19 (review of the S1 PR, #454, MAJOR-1/2/3):* three rules the first
+implementation got wrong, now part of the decision.
+
+1. **`facets_absent` keys off the record's classification, never off "the read was skipped".**
+   A skip on an `absent_unconfirmed` row — a lease taken out on a transport blip — is
+   `facets_unverified`, because "unconfirmed" is by definition *not* "known to lack". Driving
+   drift from the skip itself gave the classifier's weakest verdict the system's loudest
+   consequence: one dropped connection on a healthy camera produced up to seven days of false
+   "the device lacks SIP" drift and an `appeared` alert.
+2. **The verdict is the same on skip cycles and probe cycles.** A lease expiry re-probes; if the
+   API is genuinely gone the probe re-learns `absent` in the same cycle, and the facet reports
+   `facets_absent` exactly as the skip cycles around it did. Keying off skip-vs-probe made the
+   drift state flap `cleared`/`appeared` at every lease boundary, forever.
+3. **Hard absence is recorded by removing the facet's file from the observation working tree** —
+   only on `absent`-classified facets, never on `failed`/`unconfirmed` ones (their last-known
+   state is still the best available). This gives the operator the standard exits: *accept latest
+   observation* or an explicit re-snapshot blesses a baseline without the facet, and the
+   `facets_absent` drift retires through the normal flow. Without it the drift was permanently
+   unresolvable — accept re-blessed the stale file, and each attempt fired a bogus
+   `cleared`/`appeared` alert pair. The `force_probe` escape (REST `POST /api/snapshot/device`
+   and the MCP `snapshot_device` tool) is the immediate override when a recorded absence is
+   believed wrong.
 
 ### Survey is for everyone; contribution is exclusive
 

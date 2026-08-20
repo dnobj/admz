@@ -219,7 +219,7 @@ async def _run_drift_audit(task: Task, ctx: TaskContext) -> Dict[str, Any]:
     )
     if skipped or unverified:
         summary += (
-            f", {skipped} facet read(s) skipped as unsupported"
+            f", {skipped} facet(s) skipped as unsupported"
             f", {unverified} unverified"
         )
     return {"success": True, "checked": len(reports), "drifted": drifted,

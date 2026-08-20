@@ -9,12 +9,20 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from axis_api_atlas.catalog.loader import CatalogLoader
 from admz.device_capabilities import (
+    ABSENT as _CAP_ABSENT,
     DeviceCapabilityStore,
     capability_store as _default_capability_store,
     device_firmware,
     learn as _learn_capabilities,
     probe_key_for,
 )
+
+#: FacetResult.capability values (ADR-0063). "absent" is reserved for hard
+#: proof (a 404-class answer recorded for every API the facet reads); any
+#: weaker failure state is "unconfirmed" and must never be reported as the
+#: device lacking the API.
+CAPABILITY_ABSENT = "absent"
+CAPABILITY_UNCONFIRMED = "unconfirmed"
 from admz.device_registry import DeviceRegistry
 from admz.executor.base import BaseExecutor
 from admz.snapshot.facets import get_facets_for_device
@@ -221,6 +229,13 @@ class _Capture:
     op_status: Dict[tuple, str] = field(default_factory=dict)
     op_error: Dict[tuple, str] = field(default_factory=dict)
     skipped_reason: Dict[tuple, str] = field(default_factory=dict)
+    # spec.cache_key() -> the capability record's CLASSIFICATION for that
+    # op's API after this cycle (from the row at skip time; from what the
+    # learner just recorded at probe time). Drift keys facets_absent off
+    # this, never off "was skipped": a skip on an unconfirmed row, or a
+    # probe that failed without proof of absence, must not read as "the
+    # device is known to lack this API" (review of #454, MAJOR-1/3).
+    op_capability: Dict[tuple, str] = field(default_factory=dict)
 
 
 class SnapshotEngine:
@@ -483,8 +498,10 @@ class SnapshotEngine:
                     when = datetime.fromtimestamp(
                         row.observed_at, tz=timezone.utc
                     ).strftime("%Y-%m-%d %H:%MZ")
-                    capture.op_status[spec.cache_key()] = FACET_SKIPPED
-                    capture.skipped_reason[spec.cache_key()] = (
+                    ck = spec.cache_key()
+                    capture.op_status[ck] = FACET_SKIPPED
+                    capture.op_capability[ck] = row.classification
+                    capture.skipped_reason[ck] = (
                         f"{row.probe_key} recorded {row.classification} "
                         f"({row.source}, {when}; {row.reason or 'no detail'})"
                     )
@@ -499,9 +516,20 @@ class SnapshotEngine:
                 capture.op_status[ck] = FACET_OK if outcome.ok else FACET_FAILED
                 if not outcome.ok:
                     capture.op_error[ck] = outcome.error
-            self._learn(
+            learned = self._learn(
                 device_id, firmware, family, outcomes, device_readable=dump_ok
             )
+            # A probed-and-failed op carries the classification the learner
+            # just recorded, so drift can tell a clean 404 (absent) from a
+            # blip (unconfirmed) in the SAME cycle the probe ran — otherwise
+            # every lease expiry flaps the drift state (skip cycle says
+            # absent, probe cycle says merely failed).
+            for ck, outcome in outcomes.items():
+                if not outcome.ok:
+                    key = self._probe_key(family, outcome.spec.operation_id)
+                    cls = learned.get(key)
+                    if cls is not None:
+                        capture.op_capability[ck] = cls
         return capture
 
     def _probe_key(self, family: str, operation_id: str) -> str:
@@ -531,20 +559,22 @@ class SnapshotEngine:
         outcomes: Dict[tuple, ProbeOutcome],
         *,
         device_readable: bool,
-    ) -> None:
+    ) -> Dict[str, str]:
         """Teach the capability record what this cycle's reads showed. Only
         outcomes that carry an executor result are device evidence; a read
         that never left ADMZ (no executor, op not in catalog) teaches
-        nothing."""
+        nothing. Returns ``{probe_key: classification}`` for what was
+        recorded (empty on store failure — callers then treat the failures
+        as unclassified, which degrades to "unverified", never "absent")."""
         pairs = [
             (self._probe_key(family, o.spec.operation_id), o.result)
             for o in outcomes.values()
             if o.result is not None
         ]
         if not pairs:
-            return
+            return {}
         try:
-            _learn_capabilities(
+            return _learn_capabilities(
                 self.capability_store,
                 device_id=device_id, firmware=firmware, outcomes=pairs,
                 device_readable=device_readable,
@@ -553,6 +583,7 @@ class SnapshotEngine:
             logger.warning(
                 "capability learning failed for %s", device_id, exc_info=True
             )
+            return {}
 
     # ------------------------------------------------------------------
     # Reads
@@ -732,6 +763,24 @@ class SnapshotEngine:
     # Facets
     # ------------------------------------------------------------------
 
+    def _facet_capability(
+        self, facet: FacetAdapter, read: _Capture
+    ) -> Optional[str]:
+        """The capability record's verdict on this facet's APIs after this
+        cycle: ``"absent"`` only when EVERY API the facet reads has a
+        hard-absent classification; ``"unconfirmed"`` when every read is in
+        some recorded failure state but at least one is short of proof; None
+        when there is no claim (ok reads, dump failure, stub engines)."""
+        specs = facet.extra_read_ops
+        if not specs:
+            return None
+        classifications = [read.op_capability.get(s.cache_key()) for s in specs]
+        if all(c == _CAP_ABSENT for c in classifications):
+            return CAPABILITY_ABSENT
+        if any(c is not None for c in classifications):
+            return CAPABILITY_UNCONFIRMED
+        return None
+
     def _facet_read_status(
         self, facet: FacetAdapter, read: _Capture
     ) -> Tuple[str, Optional[str]]:
@@ -775,6 +824,7 @@ class SnapshotEngine:
                 return FacetResult(
                     name=facet.name, success=False, status=FACET_SKIPPED,
                     skipped_reason=detail,
+                    capability=self._facet_capability(facet, read),
                 )
             if status == FACET_FAILED:
                 # The live state is UNKNOWN — not empty. Serialising what we
@@ -782,6 +832,7 @@ class SnapshotEngine:
                 return FacetResult(
                     name=facet.name, success=False, status=FACET_FAILED,
                     error=detail,
+                    capability=self._facet_capability(facet, read),
                 )
         try:
             raw_responses = {"params": raw_params}
@@ -840,3 +891,25 @@ class SnapshotEngine:
                     facet_result.normalized,
                     raw=facet_result.raw,
                 )
+
+        # A facet whose APIs are HARD-absent (a 404-class answer for every
+        # read, never a mere blip) is removed from the working tree, so the
+        # observation records the absence and the operator has an exit
+        # (review of #454, MAJOR-2): accepting the latest observation — or an
+        # explicit re-snapshot — blesses a baseline without the facet, and
+        # the facets_absent drift retires through the standard flow instead
+        # of persisting forever. ``failed``/``unconfirmed`` facets keep their
+        # last-known files: their live state is unknown, not gone.
+        for facet_result in snapshot.facets:
+            if facet_result.capability != CAPABILITY_ABSENT:
+                continue
+            for rel in (
+                f"fleet/{device_id}/config/{facet_result.name}.yaml",
+                f"fleet/{device_id}/raw/{facet_result.name}.yaml",
+            ):
+                try:
+                    self.git.remove_path(rel)
+                except Exception:  # noqa: BLE001 — bookkeeping, never fatal
+                    logger.debug(
+                        "could not remove %s", rel, exc_info=True
+                    )

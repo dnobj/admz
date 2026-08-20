@@ -27,8 +27,10 @@ this cycle the device is readable now, and a specific operation failing is
 evidence about that operation, not about the network.
 
     2xx                                          → present      (until fw change)
-    404 / 405 / 501 / 400 / 410, JSON-RPC error  → absent       (7 days)
+    404 / 405 / 501 / 400 / 410, or a 2xx error
+        that literally says "no such method"     → absent       (7 days)
     401 / 403 / 5xx / parse / transport / timeout
+        / any other 2xx application error,
         on a READABLE device                     → absent_unconfirmed
                                                    (24h · 2^(streak-1), cap 7d)
     anything, device NOT readable this cycle     → indeterminate (no row)
@@ -76,9 +78,19 @@ SOURCE_DISCOVERY = "discovery"
 # unconfirmed: the device answered, but we cannot say the API is absent.
 _ABSENT_STATUS_CODES = frozenset({400, 404, 405, 410, 501})
 
-# VAPIX JSON error codes for authorization / authentication failures. A
-# JSON-level auth refusal is the 401/403 class, not absence.
-_AUTH_JSON_CODES = ("2105", "2106")
+# 2xx application-level error shapes that actually SAY the method/API is not
+# there. Everything else a live endpoint returns as an error object — Axis
+# "1100: Internal error" is the canonical transient — is a device having a
+# bad moment, not proof of absence, and must take the short unconfirmed
+# lease rather than a 7-day absent one (review of #454, MINOR-5).
+_METHOD_ABSENT_MARKS = (
+    "method not found",       # JSON-RPC -32601 text
+    "-32601",
+    "unknown method",
+    "no such method",
+    "not supported",          # "API version not supported" — can't serve it
+    "unsupported method",
+)
 
 # Evidence strength when two operations on the same API disagree in one
 # cycle: a 2xx proves the API exists; a 404 outranks a dropped connection.
@@ -124,13 +136,6 @@ def probe_key_for(catalog: Any, family: str, operation_id: str) -> str:
     return str(api_id) if api_id else api_name
 
 
-def _is_auth_error(error: str) -> bool:
-    low = error.lower()
-    if any(low.startswith(code) for code in _AUTH_JSON_CODES):
-        return True
-    return "authoriz" in low or "authentic" in low
-
-
 def classify(result: Any, *, device_readable: bool) -> Optional[str]:
     """Classify one extra-read outcome per the ADR-0063 table.
 
@@ -157,11 +162,13 @@ def classify(result: Any, *, device_readable: bool) -> Optional[str]:
         return ABSENT_UNCONFIRMED
     # 2xx with success=False: the endpoint answered and refused the call at
     # the application level — a JSON-RPC error object or a text error prefix.
-    if error.startswith("Failed to parse"):
-        return ABSENT_UNCONFIRMED
-    if _is_auth_error(error):
-        return ABSENT_UNCONFIRMED
-    return ABSENT
+    # Only shapes that literally say "no such method" are proof of absence;
+    # a transient device-side error (Axis 1100 "Internal error") from an
+    # endpoint the device HAS must not earn a 7-day absent lease.
+    low = error.lower()
+    if any(mark in low for mark in _METHOD_ABSENT_MARKS):
+        return ABSENT
+    return ABSENT_UNCONFIRMED
 
 
 def expiry_for(classification: str, *, streak: int, now: float) -> Optional[float]:

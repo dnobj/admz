@@ -33,6 +33,14 @@ class FacetResult:
     # reader (``.success``) keeps meaning what it meant.
     status: str = FACET_OK
     skipped_reason: Optional[str] = None
+    # What the capability record says about this facet's APIs after this
+    # cycle's learning (ADR-0063): "absent" — every API the facet reads has a
+    # hard-absent row (a clean 404-class answer), the ONLY state strong
+    # enough to report a baselined facet as facets_absent; "unconfirmed" —
+    # failures observed but not proof of absence (a blip must never read as
+    # "known to lack"); None — no capability claim (ok facets, dump failure,
+    # stub engines).
+    capability: Optional[str] = None
 
     def __post_init__(self):
         if self.status == FACET_OK and not self.success:

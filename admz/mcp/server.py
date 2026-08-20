@@ -1239,6 +1239,18 @@ class ADMZMCPServer:
                                     "'Snapshot <device_id>'."
                                 ),
                             },
+                            "force_probe": {
+                                "type": "boolean",
+                                "description": (
+                                    "Ignore the local capability record and "
+                                    "probe every facet's API, including ones "
+                                    "recorded absent. Use when the user just "
+                                    "enabled an API (installed an ACAP, "
+                                    "turned on SIP) and wants it re-checked "
+                                    "now instead of waiting out the record. "
+                                    "Default false."
+                                ),
+                            },
                         },
                         "required": ["device_id"],
                     },
@@ -3287,12 +3299,13 @@ class ADMZMCPServer:
     # ------------------------------------------------------------------
 
     async def _snapshot_device(
-        self, device_id: str, message: Optional[str] = None
+        self, device_id: str, message: Optional[str] = None,
+        force_probe: bool = False,
     ) -> Dict[str, Any]:
         if not self.registry.device_exists(device_id):
             raise DeviceNotFoundError(f"Device not found: {device_id}")
         snapshot = await self.snapshot_engine.snapshot_device(
-            device_id, message=message
+            device_id, message=message, force_probe=force_probe
         )
         return {
             "success": True,

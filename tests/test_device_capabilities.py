@@ -52,16 +52,19 @@ SWITCH_DUMP = (
 
 
 class Wire:
-    """Records every request; answers like a T8516.
+    """Records every request; answers like a device that lacks the probed APIs.
 
-    ``param.cgi`` → 200 with the dump. Anything else → the connection drops
-    mid-handshake, which httpx surfaces as ``RemoteProtocolError``. The list
-    of (method, path) pairs is the evidence the tests reason over.
+    ``param.cgi`` → 200 with the dump. Anything else fails per ``mode``:
+    ``"drop"`` — the connection drops mid-handshake (RemoteProtocolError, the
+    T8516's actual behaviour; classifies *unconfirmed*); ``"404"`` — a clean
+    HTTP 404 (hard proof of absence; classifies *absent*). The distinction is
+    load-bearing: only the 404 wire may produce ``facets_absent`` drift.
     """
 
-    def __init__(self, dump=SWITCH_DUMP, param_ok=True):
+    def __init__(self, dump=SWITCH_DUMP, param_ok=True, mode="drop"):
         self.dump = dump
         self.param_ok = param_ok
+        self.mode = mode
         self.calls = []
 
     def __call__(self, request):
@@ -73,6 +76,8 @@ class Wire:
                 "Server disconnected without sending a response.",
                 request=request,
             )
+        if self.mode == "404":
+            return httpx.Response(404, text="Not Found")
         raise httpx.RemoteProtocolError(
             "Server disconnected without sending a response.", request=request
         )
@@ -307,6 +312,29 @@ class TestTheSwitchIsLearnedAfterOneAudit:
         await detector.check_drift(SWITCH_ID)
         assert wire.non_param_calls() == []
 
+    @pytest.mark.asyncio
+    async def test_force_probe_is_reachable_from_operator_surfaces(self):
+        """#454 review, MINOR-4: the escape hatch existed but no surface
+        could reach it. REST request model carries it; the MCP dispatch
+        passes it through."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from admz.api.routes.snapshot import SnapshotDeviceRequest
+        from admz.mcp.dispatch import _snapshot_device as mcp_snapshot_device
+
+        req = SnapshotDeviceRequest(device_id="CAM01", force_probe=True)
+        assert req.force_probe is True
+        assert SnapshotDeviceRequest(device_id="CAM01").force_probe is False
+
+        ctx = MagicMock()
+        ctx.server._snapshot_device = AsyncMock(return_value={"success": True})
+        await mcp_snapshot_device(
+            ctx, {"device_id": "CAM01", "force_probe": True}
+        )
+        ctx.server._snapshot_device.assert_awaited_once_with(
+            "CAM01", None, force_probe=True
+        )
+
 
 class TestFirmwareLiftedFromDump:
     """The dump's firmware line is VOLATILE (dropped from parsed params), so
@@ -361,9 +389,14 @@ class TestClassify:
         (_R(status_code=501, error="HTTP 501"), "absent"),
         (_R(status_code=400, error="HTTP 400"), "absent"),
         (_R(status_code=410, error="HTTP 410"), "absent"),
-        # A JSON-RPC error object (200 + error) → the API endpoint answered
-        # and refused the method: absent.
+        # A 2xx error that literally says the method does not exist: absent.
         (_R(status_code=200, error="-32601: Method not found"), "absent"),
+        (_R(status_code=200, error="2100: API version not supported"), "absent"),
+        # A 2xx error from an endpoint the device HAS, having a bad moment
+        # (#454 review, MINOR-5): NOT proof of absence — short lease only.
+        (_R(status_code=200, error="1100: Internal error"), "absent_unconfirmed"),
+        (_R(status_code=200, error="2103: Transformation failed"),
+         "absent_unconfirmed"),
         # Ambiguous on a readable device → absent_unconfirmed.
         (_R(status_code=401, error="Authentication failed (401)."),
          "absent_unconfirmed"),
@@ -594,46 +627,124 @@ class TestDriftHonesty:
         return tmp_repo.commit_snapshot(SWITCH_ID)
 
     @pytest.mark.asyncio
-    async def test_baseline_facet_now_skipped_is_facets_absent(
+    async def test_hard_absence_is_facets_absent_on_probe_and_skip_cycles(
         self, catalog, tmp_repo, isolated_db
     ):
-        """A baselined facet the device is known to lack IS drift — reported
+        """A baselined facet whose API answers a clean 404 IS drift — reported
         as facets_absent, with NO DriftField (a revert must never write to an
-        API the device does not have)."""
+        API the device does not have) — and the verdict is the SAME on the
+        cycle that probed (and learned the 404) as on the cycle that skipped.
+        Keying off skip-vs-probe instead made the drift state flap
+        cleared/appeared at every lease boundary (#454 review, MAJOR-3)."""
         baseline = self._seed_baseline_with_sip(tmp_repo)
-        wire = Wire()
+        wire = Wire(mode="404")
         registry = _switch_registry(baseline_sha=baseline)
         engine = _engine(catalog, registry, wire, tmp_repo)
         detector = DriftDetector(engine, tmp_repo)
 
-        await detector.check_drift(SWITCH_ID)   # cycle 1: learn
-        report = await detector.check_drift(SWITCH_ID)  # cycle 2: skip
+        probe_cycle = await detector.check_drift(SWITCH_ID)   # probes, learns 404
+        skip_cycle = await detector.check_drift(SWITCH_ID)    # skips on the row
 
-        assert "sip" in report.facets_absent
-        assert report.has_drift is True
-        assert all(f.facet != "sip" for f in report.fields), (
-            "an absent facet must not produce revertable DriftFields"
-        )
-        summary = report.to_summary()
-        assert summary["facets_absent"] == report.facets_absent
+        for report in (probe_cycle, skip_cycle):
+            assert "sip" in report.facets_absent
+            assert report.has_drift is True
+            assert all(f.facet != "sip" for f in report.fields), (
+                "an absent facet must not produce revertable DriftFields"
+            )
+        assert skip_cycle.to_summary()["facets_absent"] == skip_cycle.facets_absent
+        # No transition between the two — same drift, no cleared/appeared pair.
+        assert skip_cycle.alert_transition is None
 
     @pytest.mark.asyncio
-    async def test_failed_read_is_unverified_not_drift(
-        self, catalog, tmp_repo, isolated_db
+    async def test_lease_expiry_reprobe_does_not_flap_the_drift_state(
+        self, catalog, tmp_repo, isolated_db, monkeypatch
     ):
-        """The latent bug this closes: a transient API failure used to read
-        every stored key as <missing> and report the whole facet drifted.
-        Cycle 1 (nothing learned yet, reads fail) must say 'unverified'."""
+        """The 7-day absent lease expires; the audit re-probes; the API is
+        still a 404. That cycle must keep reporting facets_absent — not dip
+        to 'unverified/cleared' for an hour and then fire 'appeared' again
+        (#454 review, MAJOR-3: a permanent bogus alert pair per lease)."""
+        import admz.device_capabilities as dc
+
         baseline = self._seed_baseline_with_sip(tmp_repo)
-        wire = Wire()
+        wire = Wire(mode="404")
         registry = _switch_registry(baseline_sha=baseline)
         engine = _engine(catalog, registry, wire, tmp_repo)
-        report = await DriftDetector(engine, tmp_repo).check_drift(SWITCH_ID)
+        detector = DriftDetector(engine, tmp_repo)
 
-        assert "sip" in report.facets_unverified
-        assert all(f.facet != "sip" for f in report.fields)
+        await detector.check_drift(SWITCH_ID)
+        await detector.check_drift(SWITCH_ID)
+
+        real_time = time.time
+        monkeypatch.setattr(dc.time, "time", lambda: real_time() + 8 * 86400)
+        wire.reset()
+        expiry_cycle = await detector.check_drift(SWITCH_ID)
+        assert wire.non_param_calls(), "control: the lease expired, it re-probed"
+        assert "sip" in expiry_cycle.facets_absent
+        assert expiry_cycle.facets_unverified == []
+        assert expiry_cycle.has_drift is True
+        assert expiry_cycle.alert_transition is None, (
+            "re-learning the same absence must not fire an alert"
+        )
+
+    @pytest.mark.asyncio
+    async def test_blip_is_unverified_never_absent(
+        self, catalog, tmp_repo, isolated_db
+    ):
+        """#454 review, MAJOR-1 — the finding that reshaped this slice. A
+        transport blip on a readable device takes an UNCONFIRMED lease; the
+        skip it causes must read as 'unverified' (not drift, no alert),
+        because unconfirmed is by definition NOT 'known to lack'. The first
+        implementation reported it as facets_absent: one dropped connection
+        on a healthy camera faked 'device lacks SIP' drift for 24h+."""
+        baseline = self._seed_baseline_with_sip(tmp_repo)
+        wire = Wire(mode="drop")
+        registry = _switch_registry(baseline_sha=baseline)
+        engine = _engine(catalog, registry, wire, tmp_repo)
+        detector = DriftDetector(engine, tmp_repo)
+
+        blip_cycle = await detector.check_drift(SWITCH_ID)    # probe fails soft
+        skip_cycle = await detector.check_drift(SWITCH_ID)    # skips on the lease
+
+        for report in (blip_cycle, skip_cycle):
+            assert "sip" in report.facets_unverified
+            assert report.facets_absent == []
+            assert report.has_drift is False
+            assert all(f.facet != "sip" for f in report.fields)
+            assert report.alert_transition is None, (
+                "a blip must never fire a drift alert"
+            )
         # network still compares fine and matches its baseline.
-        assert report.facet_status["network"] == "ok"
+        assert blip_cycle.facet_status["network"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_accepting_the_observation_retires_the_absent_facet(
+        self, catalog, tmp_repo, isolated_db
+    ):
+        """#454 review, MAJOR-2: facets_absent drift must have an exit. Hard
+        absence removes the facet's file from the observation, so accepting
+        the latest observation blesses a baseline WITHOUT the facet and the
+        drift retires through the standard flow. (Unconfirmed/failed facets
+        keep their last-known files — tested via the blip test's stable
+        baseline above.)"""
+        baseline = self._seed_baseline_with_sip(tmp_repo)
+        wire = Wire(mode="404")
+        registry = _switch_registry(baseline_sha=baseline)
+        engine = _engine(catalog, registry, wire, tmp_repo)
+        detector = DriftDetector(engine, tmp_repo)
+
+        report = await detector.check_drift(SWITCH_ID)
+        assert "sip" in report.facets_absent, "control: the drift exists"
+        assert report.observed_sha, "control: the observation was recorded"
+        # The observation no longer carries the absent facet...
+        assert "sip" not in tmp_repo.list_facets_at(SWITCH_ID, report.observed_sha)
+        # ...while the blessed baseline still does (nothing moved it).
+        assert "sip" in tmp_repo.list_facets_at(SWITCH_ID, baseline)
+
+        # Operator accepts the latest observation as the new baseline.
+        registry.devices[SWITCH_ID]["baseline_sha"] = report.observed_sha
+        after = await detector.check_drift(SWITCH_ID)
+        assert after.facets_absent == []
+        assert after.has_drift is False
 
     @pytest.mark.asyncio
     async def test_facet_absent_only_when_baselined(
