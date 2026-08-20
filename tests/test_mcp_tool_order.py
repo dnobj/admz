@@ -56,6 +56,7 @@ EXPECTED_TOOL_ORDER = [
     "cleanup_temp_credentials",
     "query_knowledge",
     "check_api_support",
+    "list_device_capabilities",
     "create_snapshot_schedule",
     "list_snapshot_schedules",
     "update_snapshot_schedule",

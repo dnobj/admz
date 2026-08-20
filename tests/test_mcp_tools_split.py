@@ -22,10 +22,11 @@ from tests import mcp_harness
 
 
 class TestPerDomainModules:
-    def test_knowledge_module_has_two_tools(self):
+    def test_knowledge_module_has_three_tools(self):
         from admz.mcp.tools import knowledge
         names = {t.name for t in knowledge.TOOLS}
-        assert names == {"query_knowledge", "check_api_support"}
+        assert names == {"query_knowledge", "check_api_support",
+                         "list_device_capabilities"}
 
     def test_schedules_module_has_five_tools(self):
         from admz.mcp.tools import schedules
@@ -100,8 +101,9 @@ class TestMigratedToolsAggregate:
         # survey_demo_evidence + #124 slice 3 infer_demos /
         # list_demo_proposals / confirm_demo_proposal / dismiss_demo_proposal)
         # + 1 (capabilities: get_advanced_capabilities, GH #132 slice 3)
-        # = 40
-        assert len(MIGRATED_TOOLS) == 40
+        # + 1 (knowledge: list_device_capabilities, ADR-0063 S2 #452)
+        # = 41
+        assert len(MIGRATED_TOOLS) == 41
 
     def test_migrated_tools_all_named(self):
         from admz.mcp.tools import MIGRATED_TOOLS
@@ -149,6 +151,7 @@ async def test_mcp_server_list_tools_includes_migrated_names(tmp_path, monkeypat
     must_be_present = {
         "query_knowledge",
         "check_api_support",
+        "list_device_capabilities",
         "create_snapshot_schedule",
         "list_snapshot_schedules",
         "update_snapshot_schedule",

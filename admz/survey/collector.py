@@ -101,6 +101,12 @@ class SurveyCollector:
         if not model:
             raise ValueError("could not determine model")
 
+        # ADR-0063 / FR-KNW-012: the contributor path already holds this
+        # device's own API list — keep the knowledge locally too (positives
+        # only), whether or not anything is contributed. Best-effort: the
+        # local write must never fail a survey.
+        self._record_local_positives(device_id, snapshot)
+
         delta = diff_snapshot(snapshot, model=model, index=self.index)
 
         # validation (read-only Tier 0; Tier 1 only on lab-tagged devices) over the
@@ -139,6 +145,31 @@ class SurveyCollector:
             openapi_specs=specs,
             validation=validation,
         )
+
+    def _record_local_positives(self, device_id: str, snapshot: dict) -> None:
+        try:
+            from admz.device_capabilities import (
+                PRESENT,
+                SOURCE_DISCOVERY,
+                _device_id_to_catalog,
+                capability_store,
+                device_firmware,
+            )
+
+            firmware = str(snapshot.get("firmware") or "") or device_firmware(
+                self.registry.get_device_info(device_id)
+            )
+            for reported in (snapshot.get("apis") or {}):
+                capability_store.record(
+                    device_id, _device_id_to_catalog(str(reported)), PRESENT,
+                    firmware=firmware, source=SOURCE_DISCOVERY,
+                    reason=f"survey snapshot reported {reported!r}",
+                )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "local capability positives not recorded for %s", device_id,
+                exc_info=True,
+            )
 
     def _validate(self, device_id, host, user, password, verify, snapshot) -> list:
         if not self.validate:

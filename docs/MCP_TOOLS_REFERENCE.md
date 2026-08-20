@@ -1,6 +1,6 @@
 # ADMZ MCP Tools Reference
 
-Reference for the **75 tools** the ADMZ MCP server exposes (plus whatever an
+Reference for the **76 tools** the ADMZ MCP server exposes (plus whatever an
 enabled platform module appends — ACS Pro contributes its own once connected).
 The frozen wire order lives in `tests/test_mcp_tool_order.py`.
 
@@ -376,6 +376,19 @@ discovering at execute time that the device doesn't speak the API. Omit
 - **Args:** `device_id`, `api_id?`
 - **Returns:** `{success, device_id, model, firmware, api_id, supported,
   api_version, snapshot: {firmware, discovered, api_count, apis?}, notes}`
+
+### `list_device_capabilities`
+The local capability record for one device (ADR-0063) — what its APIs
+*actually answered* when the drift audit's own reads and `getApiList`
+surveys asked. Device truth: prefer it over `check_api_support` (model-level
+atlas data) when they disagree. `absent` = the device said "no such API";
+`absent_unconfirmed` = reads failed without proof — report "could not
+verify", never "the device lacks it". A `stale` row (firmware changed or
+lease expired) is not trusted for selection; the next audit re-probes it.
+- **Args:** `device_id`
+- **Returns:** `{success, device_id, firmware, count, capabilities: [{
+  probe_key, classification, supported, firmware, source, reason,
+  fail_streak, observed_at, expires_at, stale}]}`
 
 ---
 

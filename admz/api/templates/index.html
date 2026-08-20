@@ -487,9 +487,28 @@ function renderDiff(did, data) {
     if (window.lucide) lucide.createIcons();
     return;
   }
+  // ADR-0063: facet-level honesty. Absent = the device answered "no such
+  // API" for a baselined facet (real drift, nothing to revert); unverified =
+  // its reads failed, live state unknown (NOT drift).
+  let facetBanner = '';
+  const absent = data.facets_absent || [];
+  const unverified = data.facets_unverified || [];
+  if (absent.length) {
+    facetBanner += '<div style="padding:6px 0;color:var(--fg-amber,#fbbf24);font-size:13px">'
+      + '<i data-lucide="circle-slash" style="width:14px;height:14px;vertical-align:-2px"></i> '
+      + 'Baselined but the device no longer has the API: <b>' + absent.map(esc).join(', ') + '</b>'
+      + ' &mdash; accept the latest observation to retire, or force a re-probe from a snapshot.</div>';
+  }
+  if (unverified.length) {
+    facetBanner += '<div style="padding:6px 0;color:var(--text-faint);font-size:13px">'
+      + '<i data-lucide="help-circle" style="width:14px;height:14px;vertical-align:-2px"></i> '
+      + 'Could not verify this check (reads failed): ' + unverified.map(esc).join(', ')
+      + ' &mdash; not drift.</div>';
+  }
   if (diffWrap) {
     if (fields.length === 0) {
-      diffWrap.innerHTML = '<span style="color:var(--text-faint);font-size:13px">No drifted fields returned.</span>';
+      diffWrap.innerHTML = facetBanner ||
+        '<span style="color:var(--text-faint);font-size:13px">No drifted fields returned.</span>';
     } else {
       // Read-only "observed" fields (ACAP run-state, etc.) aren't revertable
       // and just add noise to the actionable diff — render them collapsed
@@ -671,7 +690,7 @@ function renderDiff(did, data) {
         ? '<input type="checkbox" class="drift-field-all" data-did="' + esc(did)
           + '" checked title="Select all revertable fields">'
         : '';
-      diffWrap.innerHTML = '<table class="drift-diff-table">'
+      diffWrap.innerHTML = facetBanner + '<table class="drift-diff-table">'
         + '<thead><tr><th class="col-sel">' + headSel + '</th><th>Parameter</th>'
         + '<th style="color:var(--fg-green,#4ade80)">Baseline</th>'
         + '<th style="color:var(--fg-amber,#fbbf24)">Live (drifted)</th>'

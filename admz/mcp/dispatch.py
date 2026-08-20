@@ -128,6 +128,10 @@ async def _check_api_support(ctx, a):
     return await ctx.server._check_api_support(a["device_id"], a.get("api_id"))
 
 
+async def _list_device_capabilities(ctx, a):
+    return await ctx.server._list_device_capabilities(a["device_id"])
+
+
 async def _execute_operation(ctx, a):
     return await ctx.server._execute_operation(
         a["device_id"],
@@ -419,6 +423,7 @@ TOOL_HANDLERS: Dict[str, ToolHandler] = {
     "query_catalog": _query_catalog,
     "query_knowledge": _query_knowledge,
     "check_api_support": _check_api_support,
+    "list_device_capabilities": _list_device_capabilities,
     "execute_operation": _execute_operation,
     "confirm_dangerous_operation": _confirm_dangerous_operation,
     "create_plan": _create_plan,

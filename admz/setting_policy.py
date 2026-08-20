@@ -135,6 +135,8 @@ KNOWN_SETTING_KEYS: FrozenSet[str] = frozenset({
     "survey_validation_tier",
     "survey_schedule_seconds",
     "survey_contributor",
+    # --- local capability survey (ADR-0063 — for everyone, no contribution)
+    "capability_survey_interval_seconds",
     # --- advanced capability switches (ADR-0052) --------------------------
     "event_ingest_enabled",
     "acs_event_ingest_enabled",

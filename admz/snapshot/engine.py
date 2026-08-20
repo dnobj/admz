@@ -640,9 +640,13 @@ class SnapshotEngine:
         on this cycle's ``device_info`` (facet selection and the capability
         key both read it) and persist the delta, best-effort, so the registry
         catches up even for devices the health monitor cannot authenticate
-        to. Only written on an actual change — no churn."""
+        to. Only written on an actual change — no churn. A real A→B change
+        also fires the firmware event (FR-KNW-013) — this seam is the one
+        that reaches ``limited_api`` devices, whose health probe never
+        authenticates far enough to read basicdeviceinfo."""
         firmware = (firmware or "").strip()
-        if not firmware or firmware == str(device_info.get("firmware_version") or ""):
+        prev = str(device_info.get("firmware_version") or "")
+        if not firmware or firmware == prev:
             return
         device_info["firmware_version"] = firmware
         update = getattr(self.registry, "update_device_info", None)
@@ -656,6 +660,9 @@ class SnapshotEngine:
             logger.debug(
                 "firmware not persisted for %s", device_id, exc_info=True
             )
+        else:
+            from admz.device_capabilities import note_firmware
+            note_firmware(device_id, prev=prev, new=firmware)
 
     async def probe_readable(
         self, device_id: str, device_info: Dict, family: str = "vapix"

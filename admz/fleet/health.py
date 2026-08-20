@@ -1449,6 +1449,18 @@ class HealthMonitor:
                                 "health: fact refresh skipped for %s",
                                 device_id, exc_info=True,
                             )
+                        else:
+                            # FR-KNW-013: the firmware delta this sweep has
+                            # always computed (and discarded) becomes an
+                            # event — audit row + a capability survey when
+                            # it's a real A→B change.
+                            if "firmware_version" in changed:
+                                from admz.device_capabilities import note_firmware
+                                note_firmware(
+                                    device_id,
+                                    prev=str(device.get("firmware_version") or ""),
+                                    new=str(changed["firmware_version"]),
+                                )
 
                 # Same seam, one level up (GH #149): persist what the credential
                 # check learned about *how* to auth-check this device, so a

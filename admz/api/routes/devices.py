@@ -923,6 +923,36 @@ async def list_pending(
     }
 
 
+@router.get("/devices/{device_id}/capabilities")
+async def list_device_capabilities(
+    device_id: str, registry: DeviceRegistry = Depends(get_registry),
+):
+    """The local capability record for a device (ADR-0063): what its APIs
+    actually answered when the drift audit and getApiList surveys asked.
+    ``stale`` is computed against the device's current firmware — a stale row
+    is not trusted for selection and the next audit re-probes it."""
+    import time as _time
+
+    from admz.device_capabilities import capability_store, device_firmware
+
+    if not registry.device_exists(device_id):
+        raise HTTPException(status_code=404, detail=f"Device not found: {device_id}")
+    info = registry.get_device_info(device_id)
+    firmware = device_firmware(info)
+    now = _time.time()
+    rows = []
+    for row in capability_store.list(device_id):
+        d = row.to_dict()
+        d["stale"] = row.is_stale(firmware, now)
+        rows.append(d)
+    return {
+        "device_id": device_id,
+        "firmware": firmware,
+        "capabilities": rows,
+        "count": len(rows),
+    }
+
+
 @router.post("/devices/{device_id}/pending/{pid}/cancel")
 async def cancel_pending(
     request: Request,

@@ -134,10 +134,12 @@ def as_console_operator(monkeypatch):
 @pytest.mark.usefixtures("as_console_operator")
 class TestSchedules:
 
-    def test_list_schedules_empty(self, client):
+    def test_list_schedules_fresh_install_has_only_the_seed(self, client):
         r = client.get("/api/schedules")
         assert r.status_code == 200
-        assert r.json()["count"] == 0
+        # Not empty: ADR-0063 S2 seeds the 30-day capability-survey cadence.
+        assert r.json()["count"] == 1
+        assert r.json()["schedules"][0]["id"] == "capability-survey"
 
     def test_create_schedule(self, client):
         r = client.post(
@@ -195,7 +197,9 @@ class TestSchedules:
         r = client.delete("/api/schedules/s1")
         assert r.status_code == 200
         r = client.get("/api/schedules")
-        assert r.json()["count"] == 0
+        # Only the seeded capability-survey cadence remains (ADR-0063 S2).
+        remaining = [s["id"] for s in r.json()["schedules"]]
+        assert remaining == ["capability-survey"]
 
 
 class TestCatalog:

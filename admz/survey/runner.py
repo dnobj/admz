@@ -106,8 +106,11 @@ def run_survey(*, submit: bool = True, device_ids: Optional[List[str]] = None,
     )
     models = [s.model for s in result.surveys]
 
-    # submit via PR if possible, else offline
-    if submit and secrets.has_pat():
+    # Submit via PR if possible, else offline. The push needs the contributor
+    # capability regardless of how this run was started (ADR-0030 as amended
+    # by ADR-0063): callers already gate, but this is the last line before
+    # fleet data leaves the machine, and the one place every path crosses.
+    if submit and secrets.is_enabled() and secrets.has_pat():
         from admz.survey.github import GitHubSubmitter
         if submitter is None:
             submitter = GitHubSubmitter(secrets.get_pat(), secrets.get_repo())
