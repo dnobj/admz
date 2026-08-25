@@ -1,6 +1,6 @@
 # ADR-0063 — Capability knowledge is local-first: probe once, record, revalidate on change; the atlas advises and never suppresses a probe
 
-**Status:** Proposed (2026-08-18). Plan-first; implementation issues follow the merge.
+**Status:** Accepted (2026-08-20) — implemented across #454 (S1), #455 (S2) and the S3 resolver change; verified live on production (the T8516 learned in one audit cycle and went quiet the next).
 **Relates to:** ADR-0015 (pluggable facets — the selection contract this extends), ADR-0029 (the
 atlas capability matrix — what this stops treating as authoritative for *this* device), ADR-0030
 (survey / contributor mode — amended alongside: probing is for everyone, contribution is exclusive),

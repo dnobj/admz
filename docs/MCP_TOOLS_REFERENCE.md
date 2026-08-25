@@ -368,14 +368,21 @@ about API support, limitations, and device-specific workflows.
   source_file`.
 
 ### `check_api_support`
-Check whether a device's (model, firmware) supports a specific catalog
-API based on the pre-populated `catalog/capabilities/models/<model>.yaml`
-snapshot. Lets the LLM filter plan steps before execution rather than
-discovering at execute time that the device doesn't speak the API. Omit
-`api_id` to retrieve the full snapshot.
+Check whether a device supports a specific catalog API. **Tri-state and
+local-first (ADR-0063):** a non-stale local capability row — what this
+device's APIs actually answered — wins (`match: "local"`, `source:
+"probe"`); otherwise the model-level atlas snapshot at the device's
+**exact** firmware (`match: "exact"`). The latest-snapshot fallback is
+never taken (it prefers partial captures); with firmware unknown the
+answer says so instead of guessing. `supported: null` means **not
+known** — never "the device lacks it". Omit `api_id` for the full atlas
+snapshot plus the device's own non-stale rows (`local_capabilities`).
 - **Args:** `device_id`, `api_id?`
 - **Returns:** `{success, device_id, model, firmware, api_id, supported,
-  api_version, snapshot: {firmware, discovered, api_count, apis?}, notes}`
+  api_version, source: "probe"|"atlas"|"none", match:
+  "local"|"exact"|"none", classification?, reason?, observed_at?,
+  snapshot: {firmware, discovered, api_count, apis?}|null,
+  local_capabilities?, notes}`
 
 ### `list_device_capabilities`
 The local capability record for one device (ADR-0063) — what its APIs
