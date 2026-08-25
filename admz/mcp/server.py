@@ -3117,13 +3117,43 @@ class ADMZMCPServer:
         now = _time.time()
         notes: list = []
 
+        def _local_rows():
+            """The device's non-stale rows, serialized. Best-effort, logged —
+            a store failure must be distinguishable from no-rows in the log
+            even though the response degrades the same way."""
+            try:
+                return [
+                    {**r.to_dict(), "stale": False}
+                    for r in capability_store.list(device_id)
+                    if not r.is_stale(firmware, now)
+                ]
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "capability rows unreadable for %s", device_id,
+                    exc_info=True,
+                )
+                return []
+
         # ---- 1. The device's own answer, when we have a live one ----------
         if api_id:
+            # Local rows are keyed by CATALOG api id; a caller may echo a
+            # device-reported id it read out of a snapshot ("fwmgr").
+            # Normalize, or local-first is silently skipped for exactly the
+            # vocabulary this tool's own output teaches (#457 review).
+            try:
+                canonical = self.capabilities_loader.device_id_to_catalog_api_id(
+                    str(api_id)
+                )
+            except Exception:  # noqa: BLE001
+                canonical = str(api_id)
             row = None
             try:
-                row = capability_store.get(device_id, api_id)
-            except Exception:  # noqa: BLE001 — store trouble ≠ lookup failure
-                pass
+                row = capability_store.get(device_id, canonical)
+            except Exception:  # noqa: BLE001 — degrade to the atlas, loudly
+                logger.warning(
+                    "capability row unreadable for %s/%s", device_id, canonical,
+                    exc_info=True,
+                )
             if row is not None and not row.is_stale(firmware, now):
                 if row.classification == ABSENT_UNCONFIRMED:
                     supported = None
@@ -3143,6 +3173,7 @@ class ADMZMCPServer:
                     "supported": supported,
                     "api_version": None,
                     "source": "probe",
+                    "record_source": row.source,
                     "classification": row.classification,
                     "reason": row.reason,
                     "observed_at": row.observed_at,
@@ -3153,7 +3184,8 @@ class ADMZMCPServer:
             if row is not None:
                 notes.append(
                     f"A stale local row exists (recorded under firmware "
-                    f"{row.firmware or 'unknown'!r}); the next audit re-probes."
+                    f"{row.firmware or 'unknown'!r}); the next audit or "
+                    "capability survey re-learns it."
                 )
 
         # ---- 2. The atlas — advisory, exact firmware only -----------------
@@ -3165,7 +3197,7 @@ class ADMZMCPServer:
                 "(ADR-0063). Run a snapshot or health check to learn the "
                 "firmware, then ask again."
             )
-            return {
+            out = {
                 "success": True,
                 "device_id": device_id,
                 "model": device_info.get("model"),
@@ -3178,6 +3210,15 @@ class ADMZMCPServer:
                 "snapshot": None,
                 "notes": notes,
             }
+            if not api_id:
+                # The promise "full snapshot PLUS the device's own recorded
+                # capabilities" must hold here most of all: rows recorded
+                # under unknown firmware are exactly the data this device
+                # has (#457 review, MAJOR-1 — the first cut withheld the
+                # device-truth it held while advising the caller to go
+                # learn it).
+                out["local_capabilities"] = _local_rows()
+            return out
 
         # The resolver reads ``firmware``; the registry stores the observed
         # value as ``firmware_version``. Passing it under the right key is
@@ -3186,7 +3227,7 @@ class ADMZMCPServer:
         if api_id:
             result = self.capabilities_resolver.check_api_support(
                 device_id=device_id,
-                catalog_api_id=api_id,
+                catalog_api_id=canonical,
                 device_info=atlas_info,
             )
         else:
@@ -3221,14 +3262,7 @@ class ADMZMCPServer:
         if not api_id:
             # The full-snapshot answer also carries the device's own non-stale
             # rows, so a reader sees where atlas and device disagree.
-            try:
-                out["local_capabilities"] = [
-                    {**r.to_dict(), "stale": False}
-                    for r in capability_store.list(device_id)
-                    if not r.is_stale(firmware, now)
-                ]
-            except Exception:  # noqa: BLE001
-                pass
+            out["local_capabilities"] = _local_rows()
         return out
 
     async def _list_device_capabilities(self, device_id: str) -> Dict[str, Any]:

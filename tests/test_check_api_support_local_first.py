@@ -188,6 +188,81 @@ class TestFirmwarePassedCorrectly:
         assert out["match"] == "exact"
         assert out["source"] == "atlas"
 
+    def test_unknown_firmware_full_snapshot_still_carries_local_rows(
+        self, isolated_db
+    ):
+        """#457 review, MAJOR-1: the unknown-firmware early return withheld
+        the device's own rows — exactly when they are the only data anyone
+        has. Rows recorded under firmware "" are non-stale for a firmware-less
+        device and must ride the full-snapshot answer."""
+        from admz.device_capabilities import PRESENT, capability_store
+
+        registry = FakeRegistry({"cam-01": {"model": "AXIS Q1656"}})  # no fw
+        capability_store.record(
+            "cam-01", "sip", PRESENT, firmware="", now=time.time(),
+        )
+        resolver = RecordingResolver()
+        out = asyncio.run(_server(registry, resolver)._check_api_support("cam-01", None))
+        assert resolver.calls == []
+        keys = {r["probe_key"] for r in out.get("local_capabilities", [])}
+        assert "sip" in keys
+
+    def test_device_reported_id_is_normalized_for_the_local_lookup(
+        self, isolated_db, monkeypatch
+    ):
+        """#457 review, MINOR-2: local rows are keyed by CATALOG api id, but
+        a caller may echo a device-reported id it read out of a snapshot
+        ('fwmgr'). Without normalization local-first is silently skipped for
+        exactly the vocabulary the tool's own output teaches."""
+        from admz.device_capabilities import PRESENT, capability_store
+
+        registry = FakeRegistry({"cam-01": {
+            "model": "AXIS Q1656", "firmware_version": "12.10.68",
+        }})
+        capability_store.record(
+            "cam-01", "firmware-manager", PRESENT, firmware="12.10.68",
+            now=time.time(),
+        )
+        resolver = RecordingResolver()
+        server = _server(registry, resolver)
+        server.capabilities_loader = SimpleNamespace(
+            device_id_to_catalog_api_id=lambda i: {
+                "fwmgr": "firmware-manager"
+            }.get(i, i),
+        )
+        out = asyncio.run(server._check_api_support("cam-01", "fwmgr"))
+        assert out["supported"] is True
+        assert out["match"] == "local"
+        assert resolver.calls == [], (
+            "the device-reported alias must hit the local row, not the atlas"
+        )
+
+    def test_serialized_rows_carry_the_tristate(self, isolated_db):
+        """#457 review, MINOR-4: an absent_unconfirmed row STORES supported=0
+        (never trusted as present) but serializes supported=null — rendering
+        it false says 'the device lacks it', the conflation both reviews
+        flagged."""
+        from admz.device_capabilities import (
+            ABSENT,
+            ABSENT_UNCONFIRMED,
+            PRESENT,
+            capability_store,
+        )
+
+        now = time.time()
+        capability_store.record("d1", "a", PRESENT, firmware="1.0", now=now)
+        capability_store.record("d1", "b", ABSENT, firmware="1.0", now=now)
+        capability_store.record(
+            "d1", "c", ABSENT_UNCONFIRMED, firmware="1.0", now=now
+        )
+        by_key = {r.probe_key: r.to_dict() for r in capability_store.list("d1")}
+        assert by_key["a"]["supported"] is True
+        assert by_key["b"]["supported"] is False
+        assert by_key["c"]["supported"] is None
+        # Selection semantics unchanged: the dataclass attr stays False.
+        assert all(not r.supported for r in capability_store.list("d1")
+                   if r.probe_key == "c")
+
     def test_full_snapshot_carries_local_capabilities(self, isolated_db):
         from admz.device_capabilities import PRESENT, capability_store
 

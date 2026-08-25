@@ -375,7 +375,9 @@ device's APIs actually answered — wins (`match: "local"`, `source:
 **exact** firmware (`match: "exact"`). The latest-snapshot fallback is
 never taken (it prefers partial captures); with firmware unknown the
 answer says so instead of guessing. `supported: null` means **not
-known** — never "the device lacks it". Omit `api_id` for the full atlas
+known** — never "the device lacks it". An atlas `false` means "not in
+that getApiList snapshot" — legacy CGIs and SOAP APIs never appear in
+one; only a local row is device proof. Omit `api_id` for the full atlas
 snapshot plus the device's own non-stale rows (`local_capabilities`).
 - **Args:** `device_id`, `api_id?`
 - **Returns:** `{success, device_id, model, firmware, api_id, supported,

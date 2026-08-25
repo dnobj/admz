@@ -41,13 +41,15 @@ TOOLS: List[Tool] = [
             "record of what this device's APIs actually answered wins "
             "(match='local', source='probe'); otherwise the model-level atlas "
             "snapshot at the device's EXACT firmware (match='exact'). "
-            "supported=true/false only when there is real evidence; "
             "supported=null means NOT KNOWN — no capabilities file for the "
             "model, no snapshot at this firmware, unknown firmware, or local "
             "reads that failed without proof (see notes). Never report null "
-            "as 'the device lacks it' — say it could not be verified. Useful "
-            "for filtering plan steps before execution. Omit api_id for the "
-            "full snapshot plus the device's own recorded capabilities."
+            "as 'the device lacks it' — say it could not be verified. An "
+            "ATLAS false means 'not in that getApiList snapshot' — legacy "
+            "CGIs and SOAP APIs never appear in one, so only a LOCAL row is "
+            "device proof either way. Useful for filtering plan steps before "
+            "execution. Omit api_id for the full snapshot plus the device's "
+            "own recorded capabilities."
         ),
         inputSchema={
             "type": "object",
