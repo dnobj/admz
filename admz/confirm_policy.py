@@ -50,10 +50,45 @@ _DEFAULT_CONFIRMATION_LEVELS: Dict[str, str] = {
     "read": "none",
 }
 
+# What a risk class ABSENT from the table above resolves to (GH #397).
+#
+# This used to be ``none`` — run inline, no card, no human — so the gate failed
+# OPEN on a vocabulary it did not recognise. An operation carrying a typo'd or
+# newly-invented ``risk_level`` passed every existence check downstream and
+# executed unconfirmed, and the more severe the author intended the unfamiliar
+# word to sound, the more likely it was one nobody had added here.
+#
+# The risk vocabulary and this table are maintained in DIFFERENT REPOSITORIES —
+# the catalog is ``mrdnlabs/axis-api-atlas``, pinned by SHA — so the two can
+# diverge with each side locally consistent. That is the same seam #165 lived
+# in, and it is why the default has to be safe rather than convenient.
+#
+# Two neighbouring decisions already went this way and are the precedent:
+# ``plans/engine.py`` ranks an unknown declared risk ``-1`` so it can never
+# soften the catalog's, and ``mcp/server.py`` resolves an unreadable catalog to
+# ``service-affecting`` because "an unreadable catalog must not open the gate".
+#
+# Choosing ``url_only`` rather than ``url_and_password``: unknown means unknown,
+# not maximally dangerous, and ``url_only`` is a click rather than a password —
+# enough to put a human in the loop without implying a severity nobody
+# established. ``tests/test_risk_vocabulary.py`` asserts this is unreachable for
+# the pinned catalog, so in practice it fires only on a catalog change, which is
+# exactly when someone should look.
+UNKNOWN_RISK_CONFIRMATION = "url_only"
+
 # Closed vocabulary of confirmation levels an operator may select. An override
 # outside this set is ignored by ``get_confirmation_level``, which falls back
 # to the table above — this rejects typos, not downgrades.
 VALID_CONFIRMATION_LEVELS = {"url_and_password", "url_only", "llm_confirm", "none"}
+
+
+def unknown_risk_levels(risk_levels) -> set:
+    """Which of ``risk_levels`` this table cannot interpret.
+
+    Exposed so a test can hold the pinned catalog's vocabulary against the
+    table without importing the private mapping.
+    """
+    return {r for r in risk_levels if r not in _DEFAULT_CONFIRMATION_LEVELS}
 
 # Fleet-setting key namespace for per-risk confirmation overrides.
 CONFIRM_LEVEL_KEY_PREFIX = "confirm_level_"
