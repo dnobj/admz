@@ -431,3 +431,22 @@ class TestMCPCheckApiSupport:
         result = await mcp_server._check_api_support("ghost-device", "api-discovery")
         assert result["success"] is False
         assert "not found" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_non_latest_firmware_hits_its_own_snapshot(self, mcp_server):
+        """The end-to-end D2 killer (#457 review, MINOR-5a): the fixture's
+        LATEST snapshot (12.8.54) has api-discovery 1.1; the OLDER one
+        (11.10.72) has 1.0. A device at the older firmware must get 1.0 —
+        a re-broken firmware key silently falls back to the latest snapshot
+        and answers 1.1, which the fixture's other tests cannot see because
+        they register the device AT the latest firmware."""
+        mcp_server.registry.add_device(
+            "old-cam",
+            {"host": "10.0.0.2", "model": "Q3538-SLVE", "firmware": "11.10.72"},
+        )
+        result = await mcp_server._check_api_support("old-cam", "api-discovery")
+        assert result["success"] is True
+        assert result["supported"] is True
+        assert result["api_version"] == "1.0"
+        assert result["match"] == "exact"
+        assert result["snapshot"]["firmware"] == "11.10.72"

@@ -89,7 +89,7 @@ no row. `absent` rows expiring IS the cadence: an API enabled later (an ACAP ins
 within a week by the audit that already runs. An explicit operator snapshot may pass `force_probe`
 to ignore absent rows.
 
-### FR-KNW-011 — The atlas advises; it never suppresses a probe 📋
+### FR-KNW-011 — The atlas advises; it never suppresses a probe ✅
 Atlas negatives are demonstrably partial — legacy-only snapshots lack every DCA-only api id, the
 latest-snapshot tie-break prefers partial captures, and ADMZ passes the wrong firmware key (ADR-0063
 records the evidence). A wrong skip costs a facet its drift coverage silently and permanently; an

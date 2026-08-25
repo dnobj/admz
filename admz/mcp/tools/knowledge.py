@@ -36,14 +36,20 @@ TOOLS: List[Tool] = [
     Tool(
         name="check_api_support",
         description=(
-            "Check whether a device supports a specific catalog API based on its "
-            "model + firmware. Looks up the pre-populated capabilities snapshot for "
-            "the device's model and reports whether the requested API is available "
-            "(and at what version). Returns supported=false with notes when the "
-            "model has no capabilities file, no snapshot for the firmware, or the "
-            "API isn't in the snapshot. Useful for filtering plan steps before "
-            "execution rather than discovering at execute time that a device doesn't "
-            "speak the API. Omit api_id to retrieve the full snapshot."
+            "Check whether a device supports a specific catalog API. Answers "
+            "are TRI-STATE and ordered by trust (ADR-0063): a non-stale LOCAL "
+            "record of what this device's APIs actually answered wins "
+            "(match='local', source='probe'); otherwise the model-level atlas "
+            "snapshot at the device's EXACT firmware (match='exact'). "
+            "supported=null means NOT KNOWN — no capabilities file for the "
+            "model, no snapshot at this firmware, unknown firmware, or local "
+            "reads that failed without proof (see notes). Never report null "
+            "as 'the device lacks it' — say it could not be verified. An "
+            "ATLAS false means 'not in that getApiList snapshot' — legacy "
+            "CGIs and SOAP APIs never appear in one, so only a LOCAL row is "
+            "device proof either way. Useful for filtering plan steps before "
+            "execution. Omit api_id for the full snapshot plus the device's "
+            "own recorded capabilities."
         ),
         inputSchema={
             "type": "object",

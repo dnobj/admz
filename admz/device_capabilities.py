@@ -237,6 +237,14 @@ class CapabilityRow:
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["classification"] = self.classification
+        # Serialized surfaces carry the TRI-STATE, not the raw storage bool:
+        # an ``absent_unconfirmed`` row stores ``supported=0`` (it must not be
+        # trusted as present) but MEANS "could not verify" — rendering it as
+        # ``false`` says "the device lacks it", which is the conflation the
+        # #454/#457 reviews both flagged. Selection code keeps reading the
+        # dataclass attribute; only serialization softens.
+        if self.classification == ABSENT_UNCONFIRMED:
+            d["supported"] = None
         return d
 
 

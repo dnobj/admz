@@ -3089,28 +3089,151 @@ class ADMZMCPServer:
         device_id: str,
         api_id: Optional[str],
     ) -> Dict[str, Any]:
-        """Check whether a device supports a specific catalog API based on its
-        model + firmware. When api_id is omitted, returns the full snapshot of
-        supported APIs for the device."""
-        device_info = None
-        if self.registry.device_exists(device_id):
-            device_info = self.registry.get_device_info(device_id)
-        else:
+        """Check whether a device supports a specific catalog API.
+
+        ADR-0063 (FR-KNW-011) order of truth: the LOCAL capability row — what
+        this device's APIs actually answered — first; the atlas (model-level,
+        shared) only after, and only with the device's firmware passed
+        correctly so a match is ``exact`` or ``none``. The latest-snapshot
+        fallback is never taken: it prefers partial captures, and a confident
+        `false` from a partial snapshot is the wrong the ADR exists to stop.
+        With firmware unknown, this says so instead of guessing.
+        """
+        import time as _time
+
+        from admz.device_capabilities import (
+            ABSENT_UNCONFIRMED,
+            capability_store,
+            device_firmware,
+        )
+
+        if not self.registry.device_exists(device_id):
             return {
                 "success": False,
                 "error": f"Device '{device_id}' not found in registry",
             }
+        device_info = self.registry.get_device_info(device_id)
+        firmware = device_firmware(device_info)
+        now = _time.time()
+        notes: list = []
 
+        def _local_rows():
+            """The device's non-stale rows, serialized. Best-effort, logged —
+            a store failure must be distinguishable from no-rows in the log
+            even though the response degrades the same way."""
+            try:
+                return [
+                    {**r.to_dict(), "stale": False}
+                    for r in capability_store.list(device_id)
+                    if not r.is_stale(firmware, now)
+                ]
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "capability rows unreadable for %s", device_id,
+                    exc_info=True,
+                )
+                return []
+
+        # ---- 1. The device's own answer, when we have a live one ----------
+        if api_id:
+            # Local rows are keyed by CATALOG api id; a caller may echo a
+            # device-reported id it read out of a snapshot ("fwmgr").
+            # Normalize, or local-first is silently skipped for exactly the
+            # vocabulary this tool's own output teaches (#457 review).
+            try:
+                canonical = self.capabilities_loader.device_id_to_catalog_api_id(
+                    str(api_id)
+                )
+            except Exception:  # noqa: BLE001
+                canonical = str(api_id)
+            row = None
+            try:
+                row = capability_store.get(device_id, canonical)
+            except Exception:  # noqa: BLE001 — degrade to the atlas, loudly
+                logger.warning(
+                    "capability row unreadable for %s/%s", device_id, canonical,
+                    exc_info=True,
+                )
+            if row is not None and not row.is_stale(firmware, now):
+                if row.classification == ABSENT_UNCONFIRMED:
+                    supported = None
+                    notes.append(
+                        "Local record: reads of this API failed without proof "
+                        "of absence (could not verify — do NOT report the "
+                        "device as lacking it)."
+                    )
+                else:
+                    supported = row.supported
+                return {
+                    "success": True,
+                    "device_id": device_id,
+                    "model": device_info.get("model"),
+                    "firmware": firmware,
+                    "api_id": api_id,
+                    "supported": supported,
+                    "api_version": None,
+                    "source": "probe",
+                    "record_source": row.source,
+                    "classification": row.classification,
+                    "reason": row.reason,
+                    "observed_at": row.observed_at,
+                    "match": "local",
+                    "snapshot": None,
+                    "notes": notes,
+                }
+            if row is not None:
+                notes.append(
+                    f"A stale local row exists (recorded under firmware "
+                    f"{row.firmware or 'unknown'!r}); the next audit or "
+                    "capability survey re-learns it."
+                )
+
+        # ---- 2. The atlas — advisory, exact firmware only -----------------
+        if not firmware:
+            notes.append(
+                "Device firmware is unknown, so the atlas snapshot was not "
+                "consulted: without a firmware to match, the resolver falls "
+                "back to the latest snapshot, which can be a partial capture "
+                "(ADR-0063). Run a snapshot or health check to learn the "
+                "firmware, then ask again."
+            )
+            out = {
+                "success": True,
+                "device_id": device_id,
+                "model": device_info.get("model"),
+                "firmware": "",
+                "api_id": api_id,
+                "supported": None,
+                "api_version": None,
+                "source": "none",
+                "match": "none",
+                "snapshot": None,
+                "notes": notes,
+            }
+            if not api_id:
+                # The promise "full snapshot PLUS the device's own recorded
+                # capabilities" must hold here most of all: rows recorded
+                # under unknown firmware are exactly the data this device
+                # has (#457 review, MAJOR-1 — the first cut withheld the
+                # device-truth it held while advising the caller to go
+                # learn it).
+                out["local_capabilities"] = _local_rows()
+            return out
+
+        # The resolver reads ``firmware``; the registry stores the observed
+        # value as ``firmware_version``. Passing it under the right key is
+        # the D2 fix — without it every lookup silently took the fallback.
+        atlas_info = {**device_info, "firmware": firmware}
         if api_id:
             result = self.capabilities_resolver.check_api_support(
                 device_id=device_id,
-                catalog_api_id=api_id,
-                device_info=device_info,
+                catalog_api_id=canonical,
+                device_info=atlas_info,
             )
         else:
             result = self.capabilities_resolver.get_all_apis(
                 device_id=device_id,
-                device_info=device_info,
+                device_info=atlas_info,
             )
 
         snapshot_summary: Optional[Dict[str, Any]] = None
@@ -3123,7 +3246,7 @@ class ADMZMCPServer:
             if not api_id:
                 snapshot_summary["apis"] = result.snapshot.apis
 
-        return {
+        out = {
             "success": True,
             "device_id": result.device_id,
             "model": result.model,
@@ -3131,9 +3254,16 @@ class ADMZMCPServer:
             "api_id": api_id,
             "supported": result.supported,
             "api_version": result.api_version,
+            "source": "atlas" if result.snapshot is not None else "none",
+            "match": "exact" if result.snapshot is not None else "none",
             "snapshot": snapshot_summary,
-            "notes": result.notes,
+            "notes": notes + list(result.notes),
         }
+        if not api_id:
+            # The full-snapshot answer also carries the device's own non-stale
+            # rows, so a reader sees where atlas and device disagree.
+            out["local_capabilities"] = _local_rows()
+        return out
 
     async def _list_device_capabilities(self, device_id: str) -> Dict[str, Any]:
         """The local capability record for one device (ADR-0063) — what the
