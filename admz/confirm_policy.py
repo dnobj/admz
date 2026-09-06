@@ -64,9 +64,11 @@ _DEFAULT_CONFIRMATION_LEVELS: Dict[str, str] = {
 # in, and it is why the default has to be safe rather than convenient.
 #
 # Two neighbouring decisions already went this way and are the precedent:
-# ``plans/engine.py`` ranks an unknown declared risk ``-1`` so it can never
-# soften the catalog's, and ``mcp/server.py`` resolves an unreadable catalog to
-# ``service-affecting`` because "an unreadable catalog must not open the gate".
+# ``plans/engine.py``'s raise-only step floor ignores a declared risk it does
+# not know and compares EFFECTIVE confirmation levels, so a declared word can
+# never soften a catalog word (#456); and ``mcp/server.py`` resolves an
+# unreadable catalog to ``service-affecting`` because "an unreadable catalog
+# must not open the gate".
 #
 # Choosing ``url_only`` rather than ``url_and_password``: unknown means unknown,
 # not maximally dangerous, and ``url_only`` is a click rather than a password —
@@ -80,6 +82,38 @@ UNKNOWN_RISK_CONFIRMATION = "url_only"
 # outside this set is ignored by ``get_confirmation_level``, which falls back
 # to the table above — this rejects typos, not downgrades.
 VALID_CONFIRMATION_LEVELS = {"url_and_password", "url_only", "llm_confirm", "none"}
+
+# Strictness order of the confirmation levels — the ONE severity scale
+# (GH #456). ``operations._plan_level_and_risk`` ranks plan steps with it, and
+# the plan engine's raise-only risk floor ranks risk WORDS through it via
+# :func:`risk_rank`, so there is no second vocabulary table anywhere that can
+# quietly disagree with this one. The engine used to keep its own four-word
+# ``_RISK_ORDER`` in which every unknown catalog word — ``action``, ``read``,
+# or anything new — ranked 0, so a declared ``normal`` overrode it and the
+# fail-closed default below never got the chance: the #397 pathology
+# reproduced one table over.
+LEVEL_STRICTNESS: Dict[str, int] = {
+    "none": 0,
+    "llm_confirm": 1,
+    "url_only": 2,
+    "url_and_password": 3,
+}
+
+
+def is_known_risk(risk_level: str) -> bool:
+    """Whether ``risk_level`` is a word the policy table interprets."""
+    return risk_level in _DEFAULT_CONFIRMATION_LEVELS
+
+
+def risk_rank(risk_level: str) -> int:
+    """Severity rank of a risk word = the strictness of the confirmation it
+    earns by default. An UNKNOWN word ranks as :data:`UNKNOWN_RISK_CONFIRMATION`
+    — fail closed — so nothing a caller declares short of ``dangerous`` can
+    soften a catalog word this table has never seen. (Whether a *declared*
+    unknown word may be honoured at all is the caller's decision; see
+    :func:`is_known_risk`.)"""
+    level = _DEFAULT_CONFIRMATION_LEVELS.get(risk_level, UNKNOWN_RISK_CONFIRMATION)
+    return LEVEL_STRICTNESS[level]
 
 
 def unknown_risk_levels(risk_levels) -> set:
@@ -109,8 +143,9 @@ def is_confirm_level_key(key: str) -> bool:
     invariant that has to hold is "no low-privilege caller writes *anything*
     under ``confirm_level_*``" — not "…writes one of today's six".
 
-    A risk class absent from the table already resolves to ``none``, so it
-    cannot be relaxed further; the namespace rule earns its keep by protecting
+    A risk class absent from the table resolves to ``url_only`` (#397), and a
+    ``confirm_level_<word>`` override written for it *would* relax that — which
+    is exactly why the namespace rule earns its keep: it protects
     a *future* table entry from the moment it is added rather than from the
     moment someone remembers to update a second list. This is also what the
     glossary, the llm-agent persona and the security-operator persona have

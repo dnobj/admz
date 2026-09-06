@@ -692,6 +692,155 @@ class TestStepRiskFloor:
         )
         assert plan.steps[0].risk_level == "normal"
 
+    # -- GH #456: the floor ranks through the ONE policy vocabulary ---------
+    #
+    # The engine used to keep its own four-word severity table. Every catalog
+    # word outside it (acs-pro's ``action``/``read``, or anything new) ranked
+    # 0, so a declared ``normal`` overrode it at plan construction and the
+    # gate's fail-closed default (#397) never saw the original word — the
+    # same pathology reproduced one table over, reachable via MCP create_plan.
+
+    def _engine_with(self, op_id, catalog_risk):
+        op = make_op(op_id)
+        op.risk_level = catalog_risk
+        catalog = FakeCatalog(ops={op_id: op})
+        registry = FakeRegistry(devices={"cam-01": {"host": "192.168.1.10"}})
+        return PlanEngine(
+            catalog=catalog, registry=registry,
+            executors={"vapix": RecordingExecutor()},
+        )
+
+    def test_declared_normal_cannot_soften_an_acs_action(self):
+        """The live repro from the #400 review: ``action`` is a real word in
+        the policy table (url_only) but was absent from the engine's own
+        table, so a declared ``normal`` used to replace it."""
+        engine = self._engine_with("RecordingControlFacade:StartRecording", "action")
+        plan = engine.create_plan(
+            description="acs action with a declared normal",
+            steps=[{
+                "operation_id": "RecordingControlFacade:StartRecording",
+                "device_id": "cam-01", "params": {},
+                "risk_level": "normal",
+            }],
+        )
+        assert plan.steps[0].risk_level == "action"
+
+    def test_declared_normal_cannot_soften_an_unknown_catalog_word(self):
+        """A word NO table knows ranks as the fail-closed confirmation, so a
+        declared ``normal`` cannot bury it before the gate resolves it."""
+        engine = self._engine_with("future.cgi:doThing", "critical")
+        plan = engine.create_plan(
+            description="unknown catalog word with a declared normal",
+            steps=[{
+                "operation_id": "future.cgi:doThing",
+                "device_id": "cam-01", "params": {},
+                "risk_level": "normal",
+            }],
+        )
+        assert plan.steps[0].risk_level == "critical"
+
+    def test_declared_dangerous_still_raises_an_unknown_catalog_word(self):
+        """Raise-only still raises: the one word stricter than the unknown
+        rank may escalate it (a caller asking for MORE caution gets it)."""
+        engine = self._engine_with("future.cgi:doThing", "critical")
+        plan = engine.create_plan(
+            description="unknown catalog word with a declared dangerous",
+            steps=[{
+                "operation_id": "future.cgi:doThing",
+                "device_id": "cam-01", "params": {},
+                "risk_level": "dangerous",
+            }],
+        )
+        assert plan.steps[0].risk_level == "dangerous"
+
+    def test_equal_rank_declared_word_does_not_replace_an_unknown_catalog_word(self):
+        """The mutation-killer. ``normal`` ranks 0 in the shared scale, so a
+        declared ``normal`` cannot out-rank anything and the two tests above
+        would pass even with the ranking broken. A declared word of EQUAL
+        rank (``service-affecting`` = url_only = the unknown-word rank) must
+        leave the catalog's word in place: replacing it is what a ranking
+        that scores unknown words 0 does, and the catalog's own word is what
+        the gate, the audit row and the UI should carry."""
+        engine = self._engine_with("future.cgi:doThing", "critical")
+        plan = engine.create_plan(
+            description="unknown catalog word with an equal-rank declared word",
+            steps=[{
+                "operation_id": "future.cgi:doThing",
+                "device_id": "cam-01", "params": {},
+                "risk_level": "service-affecting",
+            }],
+        )
+        assert plan.steps[0].risk_level == "critical"
+
+    def test_equal_rank_declared_word_does_not_replace_an_acs_action(self):
+        engine = self._engine_with("RecordingControlFacade:StartRecording", "action")
+        plan = engine.create_plan(
+            description="acs action with an equal-rank declared word",
+            steps=[{
+                "operation_id": "RecordingControlFacade:StartRecording",
+                "device_id": "cam-01", "params": {},
+                "risk_level": "service-affecting",
+            }],
+        )
+        assert plan.steps[0].risk_level == "action"
+
+    def test_declared_word_never_softens_an_operators_stricter_override(
+        self, monkeypatch, tmp_path
+    ):
+        """#459 review, MAJOR-1: the floor used to rank by DEFAULT levels
+        while the gate resolves EFFECTIVE ones. An operator who raised
+        ``normal`` to url_and_password had every restore plan (which
+        declares ``service-affecting`` on catalog-normal steps) quietly
+        replace it — and gate at url_only. The comparison is now between
+        effective levels, so the catalog word stays and the operator's
+        override wins."""
+        import admz.fleet_settings
+        from admz.fleet_settings import FleetSettings
+        from admz.operations import _plan_level_and_risk
+
+        fs = FleetSettings(db_path=str(tmp_path / "fleet.db"))
+        fs.set("confirm_level_normal", "url_and_password")
+        monkeypatch.setattr(admz.fleet_settings, "fleet_settings", fs)
+
+        engine = self._engine_with("param.cgi:update", "normal")
+        plan = engine.create_plan(
+            description="restore-style step under a stricter override",
+            steps=[{
+                "operation_id": "param.cgi:update",
+                "device_id": "cam-01", "params": {},
+                "risk_level": "service-affecting",   # the restore builder's floor
+            }],
+        )
+        assert plan.steps[0].risk_level == "normal"
+        assert _plan_level_and_risk(plan.steps)[0] == "url_and_password"
+
+    def test_the_floor_still_raises_when_it_should(self, monkeypatch, tmp_path):
+        """Control for the test above: with no override the same step is
+        raised to service-affecting (url_only) — restore's floor works."""
+        import admz.fleet_settings
+        from admz.fleet_settings import FleetSettings
+        from admz.operations import _plan_level_and_risk
+
+        fs = FleetSettings(db_path=str(tmp_path / "fleet.db"))
+        monkeypatch.setattr(admz.fleet_settings, "fleet_settings", fs)
+
+        engine = self._engine_with("param.cgi:update", "normal")
+        plan = engine.create_plan(
+            description="restore-style step, no override",
+            steps=[{
+                "operation_id": "param.cgi:update",
+                "device_id": "cam-01", "params": {},
+                "risk_level": "service-affecting",
+            }],
+        )
+        assert plan.steps[0].risk_level == "service-affecting"
+        assert _plan_level_and_risk(plan.steps)[0] == "url_only"
+
+    def test_the_second_vocabulary_table_is_gone(self):
+        """No parallel severity table may exist beside the policy's."""
+        import admz.plans.engine as engine_module
+        assert not hasattr(engine_module, "_RISK_ORDER")
+
     @pytest.mark.asyncio
     async def test_raised_risk_blocks_at_plan_gate(self, setup, monkeypatch):
         """The end-to-end property the floor exists for: a restore-style

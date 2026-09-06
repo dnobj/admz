@@ -1132,8 +1132,21 @@ class ADMZMCPServer:
                                             "items": {"type": "integer"},
                                             "description": "Step numbers this depends on",
                                         },
+                                        "family": {
+                                            "type": "string",
+                                            "description": (
+                                                "Catalog family of the operation "
+                                                "(default 'vapix'; 'acs-pro' for "
+                                                "ACS Pro server operations)."
+                                            ),
+                                        },
                                     },
                                     "required": ["operation_id", "device_id", "params"],
+                                    # GH #456: closed. The engine reads a few more
+                                    # step keys than it advertises (a declared
+                                    # risk_level floor, for internal builders); a
+                                    # caller must not be able to reach them.
+                                    "additionalProperties": False,
                                 },
                             },
                             "on_failure": {

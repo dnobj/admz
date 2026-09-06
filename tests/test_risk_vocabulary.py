@@ -56,9 +56,14 @@ def _catalog_risk_levels() -> dict[str, list[str]]:
             continue
         if not isinstance(data, dict):
             continue
-        risk = data.get("risk_level")
-        if isinstance(risk, str):
-            found.setdefault(risk, []).append(str(path.relative_to(root)))
+        if "risk_level" not in data:
+            continue
+        risk = data["risk_level"]
+        # A non-string or empty value is recorded under a sentinel so the
+        # vocabulary test can refuse it: an atlas `risk_level:` left blank
+        # loads as None, which the isinstance filter used to hide (#459).
+        key = risk if isinstance(risk, str) and risk else f"<non-string:{risk!r}>"
+        found.setdefault(key, []).append(str(path.relative_to(root)))
     return found
 
 
@@ -68,6 +73,8 @@ def test_the_catalog_uses_no_risk_level_admz_cannot_interpret():
         "no risk_level found anywhere in the catalog — the catalog path is "
         "probably wrong, and an empty corpus passes every assertion below"
     )
+    blank = {k: v for k, v in found.items() if k.startswith("<non-string:")}
+    assert not blank, f"catalog ops with a non-string/empty risk_level: {blank}"
 
     unknown = unknown_risk_levels(found)
     detail = {r: found[r][:3] for r in sorted(unknown)}
@@ -122,3 +129,82 @@ def test_an_unrecognised_risk_does_not_resolve_to_none(risk, monkeypatch, tmp_pa
         f"confirmation (#397)"
     )
     assert level == UNKNOWN_RISK_CONFIRMATION
+
+
+# ---------------------------------------------------------------------------
+# GH #456 — one severity scale, reachable from the PLAN path too
+# ---------------------------------------------------------------------------
+
+
+class TestOneRiskVocabulary:
+    """#400 closed the single-op path; its review found the plan engine kept
+    a second severity table that softened unknown catalog words before the
+    gate ever saw them. These pin the plan path end-to-end and the
+    single-sourcing that makes a third table impossible to add quietly."""
+
+    def test_plan_level_gates_an_acs_action_and_an_unknown_word(self):
+        from types import SimpleNamespace
+
+        from admz.operations import _plan_level_and_risk
+
+        step = lambda risk: SimpleNamespace(risk_level=risk)
+        assert _plan_level_and_risk([step("action")])[0] == "url_only"
+        assert _plan_level_and_risk([step("critical")])[0] == "url_only"
+        # #459 review, MAJOR-2: a FALSY word (an atlas op whose risk_level
+        # loaded as None or "") used to read as read-only → none. The
+        # single-op resolver already failed closed on it; so does this now.
+        assert _plan_level_and_risk([step(None)])[0] == "url_only"
+        assert _plan_level_and_risk([step("")])[0] == "url_only"
+        # control: a genuinely low-risk plan stays inline
+        assert _plan_level_and_risk([step("read-only"), step("normal")])[0] == "none"
+        # an empty plan is not a gated plan
+        assert _plan_level_and_risk([])[0] == "none"
+
+    def test_operations_level_order_is_the_policy_scale(self):
+        from admz import confirm_policy, operations
+
+        assert operations._LEVEL_ORDER is confirm_policy.LEVEL_STRICTNESS
+
+    def test_every_policy_word_ranks_and_unknown_ranks_closed(self):
+        from admz import confirm_policy as cp
+
+        for word in ("read-only", "normal", "service-affecting", "dangerous",
+                     "action", "read"):
+            assert cp.is_known_risk(word)
+        assert not cp.is_known_risk("critical")
+        assert cp.risk_rank("critical") == cp.LEVEL_STRICTNESS[cp.UNKNOWN_RISK_CONFIRMATION]
+        assert cp.risk_rank("dangerous") > cp.risk_rank("critical") > cp.risk_rank("normal")
+        # The exact ranks that make the floor safe: an unknown word and an
+        # acs ``action`` both rank AS url_only — equal to service-affecting,
+        # above normal/read-only/read, below dangerous only.
+        assert cp.risk_rank("critical") == cp.LEVEL_STRICTNESS["url_only"]
+        assert cp.risk_rank("action") == cp.LEVEL_STRICTNESS["url_only"]
+        assert cp.risk_rank("service-affecting") == cp.risk_rank("action")
+        assert cp.risk_rank("read") == cp.risk_rank("read-only") == 0
+
+    def test_mcp_create_plan_rejects_injected_step_fields(self):
+        """The MCP vector: the step schema had no additionalProperties
+        guard, so an injected ``risk_level`` reached the engine. Now closed
+        — while ``family`` (a key the engine legitimately reads) is allowed."""
+        import asyncio
+
+        import jsonschema
+        import pytest as _pytest
+
+        from admz.mcp.server import ADMZMCPServer
+        from tests import mcp_harness
+
+        schema = asyncio.run(
+            mcp_harness.find_tool(ADMZMCPServer(), "create_plan")
+        ).input_schema
+        ok = {"description": "d", "steps": [{
+            "operation_id": "param.cgi:list", "device_id": "cam-01",
+            "params": {}, "family": "vapix",
+        }]}
+        jsonschema.validate(instance=ok, schema=schema)
+        bad = {"description": "d", "steps": [{
+            "operation_id": "param.cgi:list", "device_id": "cam-01",
+            "params": {}, "risk_level": "normal",
+        }]}
+        with _pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(instance=bad, schema=schema)
