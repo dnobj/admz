@@ -435,10 +435,17 @@ class TestReachableNoApi:
 
     @pytest.mark.asyncio
     async def test_connect_failure_still_unreachable_without_probing(self, monkeypatch):
-        """A connect-class error is already conclusive — don't spend a probe."""
+        """A connect-class error is already conclusive — don't spend a probe.
+
+        The fixture carries the executor's REAL message shape
+        (``"Connection failed: …"``, executor/vapix.py). #461 anchored the
+        fast path on that prefix: the substring rule it replaced matched
+        "connect" inside "disconnected" and filed readable devices
+        UNREACHABLE; an invented message that only shares a substring is
+        exactly what the rule must no longer honour."""
         catalog, executor = _vapix_catalog_and_executor(
             MagicMock(success=False, status_code=None,
-                      error="Connection refused by 192.0.2.9")
+                      error="Connection failed: All connection attempts failed")
         )
         tcp = AsyncMock(return_value=5)
         monkeypatch.setattr("admz.fleet.health._tcp_probe", tcp)

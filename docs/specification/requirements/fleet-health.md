@@ -58,6 +58,19 @@ connect OK → the API question below, connect fail → `unreachable`. So
 record can never carry a measured `latency_ms` while claiming the device is
 unreachable.
 
+**"Connect-class" means the executor's own two host verdicts, matched by
+message prefix** — `Connection failed:` (`httpx.ConnectError`, which covers
+refused, DNS, no-route and TLS-handshake failures) and `Request timed out`
+(`httpx.TimeoutException`) — and nothing else (GH #461). The rule used to
+match keywords anywhere in the text, and `"Server disconnected without sending
+a response"` contains `connect`: a device that drops an unknown JSON-RPC post
+was filed `unreachable` before the TCP probe and the legacy read ran, so it
+could never become `limited_api` and its capability record could never be
+taught. A keyword is not a verdict; every other error text is a statement about
+ADMZ's ability to speak the device's API and is settled on evidence below. A
+dead host produces only a connect error or a connect timeout — both fast-path
+verdicts — so no dead fleet member pays an extra probe for this.
+
 **"Can ADMZ speak its API?" is itself two questions (GH #357).** Once TCP
 confirms the host is up, the probe asks the legacy-CGI surface
 (`param.cgi:list`, the same op the 401 corroboration already uses) before
@@ -67,10 +80,13 @@ concluding anything:
 |---|---|---|
 | answers | `limited_api` | **online** — ADMZ reads and tracks this device |
 | also fails | `reachable_no_api` | needs attention — genuinely unmanageable |
+| refuses the credentials (401/403) | `auth_failed` — once a second auth-required op, or this sweep's own JSON probe, has settled the credential question; table below (GH #462) | needs attention — a credential problem, routed like any other |
 
-Both advance `last_seen_online` and neither accumulates `consecutive_failures`
-— they are settled states, not failing probes. The extra call costs nothing on
-a healthy sweep: it runs only on a path that has already failed.
+The first two advance `last_seen_online` and neither accumulates
+`consecutive_failures` — they are settled states, not failing probes.
+`auth_failed` advances `last_seen_online` too (the host answered) but counts as
+a failed probe. The extra call costs nothing on a healthy sweep: it runs only on
+a path that has already failed.
 
 Real-world case, and the one that forced the split: the **AXIS T8516** PoE
 switch. It answers HTTP in ~80 ms, serves HTML where the JSON-RPC probe expects
@@ -83,6 +99,60 @@ attention* permanently with `consecutive_failures = 0` — a device parked there
 can no longer signal a real fault, which is alert fatigue built into the data
 model rather than the UI. (The earlier 10,795-consecutive-failures counter on
 this same switch was the #138 half of the story; #357 is the other half.)
+
+**A refused legacy read is a credential question, not an API one (GH #462).**
+Until #463 this branch asked the legacy read one question — *did it return
+parameter data?* — and never inspected it for a 401, so a `limited_api` device
+whose stored password had been rotated read as `reachable_no_api` ("lost its
+API surface") on every sweep, never `auth_failed`, and nothing routed the
+operator to capture. A refusal is now corroborated against
+`basicdeviceinfo.cgi:getAllProperties` — the same one-op-is-not-proof
+discipline as FR-HLT-008 and FR-HLT-010 — **with one deliberate difference**:
+this branch is only ever entered because the JSON surface did not answer (or
+the ADR-0063 record says it is absent, #460), and the corroborator is a
+JSON-RPC op. A legacy-only device — the T8516 itself — can never answer it. A
+JSON surface that is *demonstrably not there to ask* is therefore the same
+case as a corroborator missing from the catalog, and gets the verdict
+`_corroborate_rejection` already gives that case: the legacy read's refusal is
+the only evidence this device can give, and a false alarm is safer than a
+missed one. Which failures mean "not there to ask" is drawn on **ADR-0063's own
+line**, with one distinction the ADR does not need — *device-wide* against
+*op-specific*. The two shapes a legacy-only device produces — a transport
+refusal after TCP accepted, and a 2xx body that is not JSON — are device-wide
+(every JSON POST fails that way), and are the only shapes on which this sweep's
+own `systemready` failure may settle the question by itself. The ADR's absent
+status codes (400/404/405/410/501, reused by name) are about one endpoint: from
+the corroborator they mean the device does not have it — the catalog-missing
+case in another form; from `systemready` they say nothing about
+`basicdeviceinfo` (firmware 6.50–9.49 has the latter and not the former), so
+the corroborator is still asked. A JSON-RPC error object at 2xx — `1100:
+Internal error` or `2004: Method not supported` alike — is a JSON surface
+answering in JSON over an HTTP layer that accepted the credentials, and never
+condemns. ADR-0063 files the two device-wide shapes as *unconfirmed* absence
+with a short lease rather than a 7-day row; the health status is re-evaluated
+every sweep, so it acts on the same evidence one sweep at a time, and — like
+the ADR — never reads a live surface's bad moment as a missing one.
+
+| Evidence | Verdict |
+|---|---|
+| this sweep's own JSON probe already failed in a **device-wide** missing-surface shape (transport drop after TCP accepted; a 2xx body that is not JSON) | the JSON surface was asked this sweep and was not there — **no second JSON op is sent**; `auth_failed`, error naming this sweep's evidence. A 404-class or JSON-error answer from `systemready` is op-specific and does not qualify: the corroborator is asked |
+| the corroborator refuses too (401/403) | `auth_failed`, error naming both ops |
+| the corroborator authenticates (2xx) | `reachable_no_api`, "credentials look valid"; its identity facts ride along for the sweep to flush |
+| the corroborator cannot be served by this device — the surface is gone (the same two shapes) or the endpoint is not there (an ADR-0063 absent status code) | `auth_failed`, single-op judgement, error saying the device has no JSON surface to corroborate with |
+| the corroborator is absent from the catalog | `auth_failed`, single-op judgement, error saying so — never "both refused" for an op that was not sent |
+| the corroborator has a bad moment — a 5xx, a 4xx ADR-0063 does not call absent (408, 429), any JSON-RPC error object at 2xx (`1100: Internal error`, `2004: Method not supported`), or the executor errors | `reachable_no_api`, "NOT condemned" — transient; the next sweep asks again |
+
+On a sweep where the JSON probe was skipped on the capability record there is
+no fresh evidence, so the corroborator is asked; the legacy read is the *only*
+read there, so this is where a rotated password on a switch is caught at all.
+A legacy-only device whose password stays rotated logs one executor transport
+WARNING per sweep — from whichever JSON op the sweep sends — until the password
+is fixed; that is a true symptom of a state that needs the operator. Known
+blind spot: a reverse proxy in front of a legacy-only device would answer the
+JSON op with a 502, which is a bad moment, not a missing surface — no such
+deployment exists here. The implementation is the source of truth
+(`admz/fleet/health.py`, `_corroborate_legacy_refusal`, `_json_surface_gone`,
+`_json_answer_kind`).
 
 ### FR-HLT-008 — Auth-aware: a `systemready` 200 is not proof of valid creds ✅
 On some Axis firmware `systemready.cgi:systemReady` answers `200` **without
@@ -102,7 +172,7 @@ corroborated against a second, independent auth-required op
 
 | Both ops refuse | → `auth_failed`, error naming *both* ops |
 | The corroborator authenticates (2xx) | → stays **`online`**; a `health_probe` marker records which op works here, so it is preferred next probe |
-| The corroborator errors or answers oddly | → **status is not moved at all** |
+| The corroborator errors or answers oddly | → **status is not moved at all** (the ONLINE path; the failure branch's rule is FR-HLT-009's table) |
 
 > **Corrected 2026-08-04 (#214).** This requirement was marked ✅ while
 > describing the **pre-#154 rule** — *"a `401`/`403` flips the status to
@@ -132,7 +202,8 @@ It now reuses the same `_corroborate_rejection` helper, so:
 
 | Both ops refuse | → `auth_failed`, error naming *both* ops |
 | The corroborator authenticates (2xx) | → `reachable_no_api` — the host answered and the password is demonstrably fine; ADMZ simply cannot read this device's readiness |
-| The corroborator errors, answers oddly, or is absent from the catalog | → not condemned; classified on TCP evidence. A **missing** corroborating op still yields `auth_failed`, deliberately (see FR-HLT-008's reasoning: a genuinely stale password must not read as healthy because the second op is unavailable) |
+| The corroborator errors or answers oddly | → not condemned; classified on TCP evidence |
+| The corroborator is absent from the catalog | → `auth_failed`, deliberately (see FR-HLT-008's reasoning: a genuinely stale password must not read as healthy because the second op is unavailable). Its error text still names both ops — #464 |
 
 The corroborating call only ever runs on a path that has already failed, so a
 healthy device pays nothing for it.

@@ -77,6 +77,9 @@ SOURCE_DISCOVERY = "discovery"
 # "something went wrong reaching it". Every other 4xx and all 5xx are
 # unconfirmed: the device answered, but we cannot say the API is absent.
 _ABSENT_STATUS_CODES = frozenset({400, 404, 405, 410, 501})
+#: Public name for the line above. The health probe reuses it (GH #462) so
+#: "this endpoint is not here" is drawn once, here, rather than twice.
+ABSENT_STATUS_CODES = _ABSENT_STATUS_CODES
 
 # 2xx application-level error shapes that actually SAY the method/API is not
 # there. Everything else a live endpoint returns as an error object — Axis
