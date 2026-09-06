@@ -366,6 +366,11 @@ async def onboard_device_credentials(
     from admz import entry_credentials as _entry
     from admz.provisioning import adopt_with_admz_account
 
+    # Bounded: attempt_order() returns at most MAX_ATTEMPTS_PER_PASS (ADR-0064
+    # slice C), so this loop costs at most that many entries x two ops (6);
+    # with step 1's check of a stale stored credential above it, one pass is
+    # at most 8 operations / 16 sends (FR-CRED-013). Nothing dedupes the two
+    # yet (#475).
     candidates = _entry.attempt_order()
     if not candidates:
         reason = ("no entry credentials configured"
