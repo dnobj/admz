@@ -445,7 +445,7 @@ class TestReachableNoApi:
         exactly what the rule must no longer honour."""
         catalog, executor = _vapix_catalog_and_executor(
             MagicMock(success=False, status_code=None,
-                      error="Connection failed: Connection refused by 192.0.2.9")
+                      error="Connection failed: All connection attempts failed")
         )
         tcp = AsyncMock(return_value=5)
         monkeypatch.setattr("admz.fleet.health._tcp_probe", tcp)

@@ -849,6 +849,115 @@ async def _probe_sd_card(
 _REPORTED_401 = re.compile(r"^(?:HTTP 401\b|Authentication failed \(401\))")
 
 
+# Verdicts of :func:`_corroborate_legacy_refusal`.
+_REFUSAL_BOTH = "both_refused"           # the corroborator refused them too
+_REFUSAL_UNCORROBORABLE = "uncorroborable"  # this device has no JSON surface to ask
+_REFUSAL_UNCATALOGUED = "uncatalogued"   # the corroborator is not in the catalog
+_REFUSAL_CLEARED = "cleared"             # the corroborator authenticated
+_REFUSAL_TRANSIENT = "transient"         # 5xx / executor error: proves nothing
+#: The verdicts that condemn the stored credentials. The middle two are
+#: single-op judgements, deliberately — see the helper's docstring.
+_LEGACY_REFUSAL_CONDEMNS = frozenset(
+    {_REFUSAL_BOTH, _REFUSAL_UNCORROBORABLE, _REFUSAL_UNCATALOGUED}
+)
+
+
+async def _corroborate_legacy_refusal(
+    *,
+    catalog: Any,
+    executor: Any,
+    device_info: Dict[str, Any],
+    device_id: str,
+    credentials: Dict[str, Any],
+    timeout_seconds: float,
+) -> "tuple[str, Dict[str, str], str]":
+    """The legacy read (:data:`CORROBORATION_OP`) refused the credentials on a
+    sweep whose JSON probe already failed. Ask :data:`AUTH_CHECK_OP` and say
+    what its answer means (GH #462).
+
+    Not :func:`_corroborate_rejection`. That helper folds "the corroborator
+    could not answer" into the same *don't condemn* verdict as "it answered
+    oddly", which is right on the ONLINE path: there the JSON surface has
+    just proven itself, so a corroborator that fails is a transient. Here the
+    sweep is in the failure branch *because* the JSON surface did not answer
+    (or the capability record says it is absent), and the corroborator is a
+    JSON-RPC op too. On a legacy-only device — the T8516, the device #462 is
+    about — it can never answer, and reading that as "not proven" would leave
+    a rotated password filed ``reachable_no_api`` forever, which is the
+    defect. So a corroborator that cannot speak on this device is the same
+    case as one that is not in the catalog, and gets the verdict the existing
+    helper already gives that case: the legacy read's refusal is the only
+    evidence this device can give, and a false alarm is safer than a missed
+    one. Only a genuinely transient answer — a 5xx, an executor error —
+    proves nothing and does not move the status.
+
+    Returns ``(verdict, facts, message)``: one of the ``_REFUSAL_*`` words,
+    identity facts when the corroborator authenticated, and the
+    ``last_error`` text that names exactly what was asked and what it said.
+    """
+    other = await _run_auth_op(
+        catalog=catalog, executor=executor, device_info=device_info,
+        device_id=device_id, credentials=credentials,
+        timeout_seconds=timeout_seconds, op_id=AUTH_CHECK_OP,
+    )
+    if other is _OP_MISSING:
+        logger.warning(
+            "health: %s refused credentials for %s and the corroborating op %s "
+            "is not in the catalog — falling back to single-op judgement",
+            CORROBORATION_OP, device_id, AUTH_CHECK_OP,
+        )
+        return (
+            _REFUSAL_UNCATALOGUED, {},
+            f"credentials rejected — {CORROBORATION_OP} refused them; the "
+            f"corroborating op {AUTH_CHECK_OP} is not in the catalog, so this "
+            "is single-op judgement",
+        )
+    if other is _OP_ERRORED:
+        return (
+            _REFUSAL_TRANSIENT, {},
+            f"{CORROBORATION_OP} refused the credentials and {AUTH_CHECK_OP} "
+            "errored — credentials NOT condemned on one op's evidence",
+        )
+    sc = getattr(other, "status_code", None)
+    if sc in (401, 403):
+        return (
+            _REFUSAL_BOTH, {},
+            f"credentials rejected — {CORROBORATION_OP} and {AUTH_CHECK_OP} "
+            "both refused them",
+        )
+    if _is_authenticated_2xx(other):
+        return (
+            _REFUSAL_CLEARED, _facts_from(other),
+            f"{CORROBORATION_OP} refused the credentials but {AUTH_CHECK_OP} "
+            "authenticated — credentials look valid; ADMZ cannot read this "
+            "device's config",
+        )
+    try:
+        server_error = sc is not None and 500 <= int(sc) < 600 and int(sc) != 501
+    except (TypeError, ValueError):
+        server_error = False
+    if server_error:
+        # A server-side failure on an op the device does serve (501 excluded:
+        # "not implemented" is an absent surface). Proves nothing; next sweep.
+        return (
+            _REFUSAL_TRANSIENT, {},
+            f"{CORROBORATION_OP} refused the credentials and {AUTH_CHECK_OP} "
+            f"answered HTTP {sc} — credentials NOT condemned on one op's "
+            "evidence",
+        )
+    # Transport refusal, 404-class, an HTML body where JSON was expected: the
+    # JSON surface is not there to ask — the T8516 shape (ADR-0063).
+    reason = str(getattr(other, "error", "") or "") or (
+        f"HTTP {sc}" if sc is not None else "no answer"
+    )
+    return (
+        _REFUSAL_UNCORROBORABLE, {},
+        f"credentials rejected — {CORROBORATION_OP} refused them and this "
+        "device does not serve the JSON surface that could corroborate "
+        f"({AUTH_CHECK_OP}: {reason[:60]})",
+    )
+
+
 def _reports_401(error: Any) -> bool:
     """Does this StepResult error actually say the device answered 401?
 
@@ -1122,20 +1231,24 @@ async def probe_device(
 
             if result is None or not getattr(result, "success", False):
                 if skip_json_probe:
-                    # Skipped on the record: say so in words that cannot trip
-                    # the reachability keyword check below.
+                    # Skipped on the record: say so. The text starts with the
+                    # op id, so it can never match the executor's reachability
+                    # prefixes below — no guard is needed for this path.
                     err = (
                         f"{SYSTEMREADY_OP} not sent — capability record says "
                         f"{_cap_row.classification} ({_cap_row.source})"
                     )
                 else:
-                    err = getattr(result, "error", "") or "unknown error"
+                    # ``str()`` on purpose: a non-string ``error`` (a result
+                    # object of another shape, a mock without one) must not
+                    # take the fast path by answering ``startswith`` truthily.
+                    err = str(getattr(result, "error", "") or "unknown error")
                 # A connect failure or timeout is a reachability verdict the
                 # executor already made — take it at face value. Only those
                 # two shapes, by prefix (GH #461); every other error text is
                 # a statement about ADMZ's ability to speak this device's API,
                 # not about the host, and is settled on evidence below.
-                if result is not None and err.startswith(_UNREACHABLE_PREFIXES):
+                if err.startswith(_UNREACHABLE_PREFIXES):
                     return DeviceHealthRecord(
                         device_id=device_id,
                         status=DeviceHealthStatus.UNREACHABLE,
@@ -1188,9 +1301,12 @@ async def probe_device(
                 # limited_api device with a rotated password used to read as
                 # "lost its API surface" (reachable_no_api) on every sweep,
                 # never "lost its password", and nothing routed the operator
-                # to capture. One op's 401 is not proof (GH #149): corroborate
-                # with the second independent auth-required op, exactly as the
-                # systemready-401 branch does.
+                # to capture. One op's 401 is not proof (GH #149), so the
+                # second auth-required op is asked — by a helper that knows
+                # this branch is only ever entered because the JSON surface
+                # did not answer, so a JSON corroborator that cannot answer
+                # either is the shape of a legacy-only device, not a reason
+                # to withhold the verdict. See _corroborate_legacy_refusal.
                 legacy_refused = (
                     legacy is not _OP_MISSING
                     and legacy is not _OP_ERRORED
@@ -1200,42 +1316,33 @@ async def probe_device(
                     )
                 )
                 if legacy_refused:
-                    creds_ok, _facts, _learned = await _corroborate_rejection(
+                    verdict, facts, why = await _corroborate_legacy_refusal(
                         catalog=catalog, executor=executor, device_info=device_info,
                         device_id=device_id, credentials=credentials,
                         timeout_seconds=timeout_seconds,
-                        refused_op=CORROBORATION_OP,
                     )
-                    if creds_ok is False:
+                    latency = elapsed_ms if not skip_json_probe else (tcp_ms or 0)
+                    if verdict in _LEGACY_REFUSAL_CONDEMNS:
                         return DeviceHealthRecord(
                             device_id=device_id,
                             status=DeviceHealthStatus.AUTH_FAILED,
                             last_check=now,
                             last_seen_online=now,  # it IS reachable, just not authable
-                            latency_ms=elapsed_ms if not skip_json_probe else (tcp_ms or 0),
+                            latency_ms=latency,
                             consecutive_failures=1,
-                            last_error=(
-                                f"credentials rejected — {CORROBORATION_OP} and "
-                                f"{AUTH_CHECK_OP} both refused them "
-                                f"({SYSTEMREADY_OP} unusable: {err[:80]})"
-                            ),
+                            last_error=why[:200],
                         )
                     return DeviceHealthRecord(
                         device_id=device_id,
                         status=DeviceHealthStatus.REACHABLE_NO_API,
                         last_check=now,
                         last_seen_online=now,
-                        latency_ms=elapsed_ms if not skip_json_probe else (tcp_ms or 0),
+                        latency_ms=latency,
                         consecutive_failures=0,
-                        last_error=(
-                            f"{CORROBORATION_OP} refused the credentials but "
-                            f"{AUTH_CHECK_OP} authenticated — credentials look "
-                            "valid; ADMZ cannot read this device's config"
-                            if creds_ok
-                            else f"{CORROBORATION_OP} refused the credentials and "
-                                 f"{AUTH_CHECK_OP} could not corroborate it — "
-                                 "credentials NOT condemned on one op's evidence"
-                        )[:200],
+                        last_error=why[:200],
+                        # Identity facts from the corroborator when it
+                        # authenticated — free, and the sweep flushes them.
+                        observed_facts=facts or None,
                     )
                 # Authenticated AND carrying real parameter data. The second
                 # half is not belt-and-braces: a text-format 2xx counts as
