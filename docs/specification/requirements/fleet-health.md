@@ -44,8 +44,8 @@ the host replied; it asserts nothing about what ADMZ verified.
    reachability confirmation of FR-HLT-009.
 2. **TCP tier** — otherwise a bare TCP connect to the device's effective
    port (`_probe_port`: an explicit `port`, else 443 when the learned scheme
-   is https, else 80). Connect OK → `online` (no uptime info); fail →
-   `unreachable`.
+   is https, else 80). Connect fail → `unreachable`. Connect OK with a
+   usable credential → `online` (no uptime info); with none → FR-HLT-011.
 The TCP fallback means a device with no stored creds still yields a
 reachability signal, filed `no_credentials` (FR-HLT-011) — the host answered,
 and ADMZ has no way in — or `needs_setup` when the unauthenticated read says so.
@@ -293,8 +293,8 @@ resetting each sweep. `online`, `limited_api` and `reachable_no_api` reset the
 counter — all three are settled answers, not failures (`no_credentials` joins
 them under FR-HLT-011: settled, *and* in the attention bucket). Note that
 "settled" and "needs attention" are **different questions asked of the same
-enum**: of the three today, only `reachable_no_api` belongs in the attention
-bucket. Both
+enum**: all four are settled, and two of them — `reachable_no_api` and
+`no_credentials` — belong in the attention bucket. Both
 predicates were individually correct while the T8516 stayed parked (#357), so
 give a new status the right answer to each rather than making one match the
 other.

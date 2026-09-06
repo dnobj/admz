@@ -1679,10 +1679,33 @@ async def probe_device(
         if catalog is not None and executor is not None:
             from admz.fleet.systemready import read_systemready
 
-            ready = await read_systemready(
-                catalog, executor, {**device_info, "device_id": device_id},
-                {"username": "", "password": ""},
-            )
+            # The same three courtesies Tier 1 pays this request: consult the
+            # ADR-0063 record so a device known to refuse systemready is not
+            # asked every sweep (#458); bound it by the sweep's budget, not
+            # the executor's 15 s; and send it with NO auth at all — the op
+            # is auth-free, and a `basic` profile would otherwise put an
+            # empty Basic header on the wire every 60 s, which is a
+            # credentialed request from a sweep, the thing rule 2 forbids.
+            _row, _stale, skip_read = _systemready_record(device_id, device_info)
+            ready = None
+            if not skip_read:
+                unauth_info = {
+                    **device_info,
+                    "device_id": device_id,
+                    "auth": {**(device_info.get("auth") or {}),
+                             "http": "none", "https": "none"},
+                    "auth_method": "none",
+                }
+                try:
+                    ready = await asyncio.wait_for(
+                        read_systemready(
+                            catalog, executor, unauth_info,
+                            {"username": "", "password": ""},
+                        ),
+                        timeout=timeout_seconds + 2,
+                    )
+                except asyncio.TimeoutError:
+                    ready = None
             if ready and ready.get("needsetup"):
                 return DeviceHealthRecord(
                     device_id=device_id,
@@ -1854,28 +1877,47 @@ class HealthMonitor:
                 lookup_error: Optional[BaseException] = None
                 try:
                     creds = self.registry.get_credentials(device_id)
-                except (AccountNotFoundError, DeviceNotFoundError):
+                except DeviceNotFoundError:
+                    # Removed between list_devices() and now. #428 purges its
+                    # health row in the same transaction — do not re-create it.
+                    return
+                except AccountNotFoundError:
                     creds = None
                 except Exception as exc:  # noqa: BLE001
                     lookup_error = exc
                 if lookup_error is not None:
-                    note = f"credential lookup failed: {lookup_error}"[:200]
+                    # Fernet's InvalidToken stringifies to nothing — name the type.
+                    note = (
+                        "credential lookup failed: "
+                        f"{type(lookup_error).__name__}: {lookup_error}"
+                    )[:200]
                     logger.warning(
                         "health: %s for %s — keeping the previous record",
                         note, device_id,
                     )
-                    prev = self.store.get(device_id)
-                    kept = (
-                        _dc_replace(prev, last_check=time.time(), last_error=note)
-                        if prev is not None
-                        else DeviceHealthRecord(
-                            device_id=device_id,
-                            status=DeviceHealthStatus.UNKNOWN,
-                            last_check=time.time(),
-                            last_error=note,
+                    # The registry and the health store share one SQLite file:
+                    # the failure that brought us here (a locked database) is
+                    # the one these two calls are likeliest to raise too, and
+                    # an exception escaping _check ends the monitor loop.
+                    try:
+                        prev = self.store.get(device_id)
+                        kept = (
+                            _dc_replace(prev, last_check=time.time(), last_error=note)
+                            if prev is not None
+                            else DeviceHealthRecord(
+                                device_id=device_id,
+                                status=DeviceHealthStatus.UNKNOWN,
+                                last_check=time.time(),
+                                last_error=note,
+                            )
                         )
-                    )
-                    self.store.upsert(kept)
+                        self.store.upsert(kept)
+                    except Exception:  # noqa: BLE001 — the store is failing too
+                        logger.warning(
+                            "health: could not record the lookup failure for %s "
+                            "(health store unavailable); the row is untouched",
+                            device_id, exc_info=True,
+                        )
                     return
 
                 executor = self.executors.get("vapix") if self.executors else None

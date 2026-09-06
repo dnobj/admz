@@ -143,6 +143,9 @@ class TestProbeTcpFallback:
             catalog=None,
         )
         assert rec.status == DeviceHealthStatus.ONLINE
+        assert rec.latency_ms is not None
+        assert rec.consecutive_failures == 0
+        assert rec.last_seen_online is not None
 
     @pytest.mark.asyncio
     async def test_tcp_connect_timeout_marks_unreachable(self, monkeypatch):

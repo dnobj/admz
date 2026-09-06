@@ -12,6 +12,7 @@ what the registry *says*, never what a lookup *fails* to say; only the
 credential-less tier asks `systemready` unauthenticated first.
 """
 
+import inspect
 import re
 import sqlite3
 import time
@@ -55,9 +56,16 @@ def _catalog_and_executor(systemready_result):
 
     catalog.get_operation.side_effect = _get_operation
     calls = []
+    seen_auth = []
+    _catalog_and_executor.last_auth = seen_auth
 
     async def _execute(op_dict, device_info, credentials, params):
         calls.append((op_dict["id"], dict(credentials or {})))
+        seen_auth.append(dict(device_info.get("auth") or {}))
+        if isinstance(systemready_result, BaseException):
+            raise systemready_result
+        if inspect.iscoroutinefunction(systemready_result):
+            return await systemready_result()
         return systemready_result
 
     executor = MagicMock()
@@ -110,6 +118,9 @@ class TestTheVerdict:
         answered."""
         rec = await _probe({"username": "root", "password": "pw"}, catalog=None)
         assert rec.status == DeviceHealthStatus.ONLINE
+        assert rec.consecutive_failures == 0
+        assert rec.last_seen_online is not None
+        assert rec.latency_ms == 3
 
     @pytest.mark.asyncio
     async def test_host_down_is_unreachable_regardless(self, isolated, monkeypatch):
@@ -127,7 +138,59 @@ class TestTheVerdict:
         rec = await _probe(None, catalog=catalog, executor=executor)
         assert rec.status == DeviceHealthStatus.NEEDS_SETUP
         assert rec.uptime_seconds == 120 and rec.bootid == "b7"
+        assert rec.consecutive_failures == 0
+        assert rec.last_seen_online is not None, "the host answered"
+        assert "needsetup=yes" in rec.last_error
         assert calls == [(SYSTEMREADY_OP, {"username": "", "password": ""})]
+
+    @pytest.mark.asyncio
+    async def test_the_read_carries_no_auth_whatever_the_profile_says(self, isolated):
+        """A `basic` profile would otherwise put an empty Basic header on the
+        wire every sweep — a credentialed request from a sweep. The op is
+        auth-free; the read says so explicitly."""
+        catalog, executor, calls = _catalog_and_executor(_systemready(needsetup=False))
+        rec = await probe_device(
+            device_id="a1210",
+            device_info={"host": "192.0.2.10", "auth": {"scheme": "http", "http": "basic", "https": "basic"}},
+            credentials=None, catalog=catalog, executor=executor,
+        )
+        assert rec.status == DeviceHealthStatus.NO_CREDENTIALS
+        assert _catalog_and_executor.last_auth == [{"scheme": "http", "http": "none", "https": "none"}]
+
+    @pytest.mark.asyncio
+    async def test_the_read_is_bounded_by_the_sweeps_budget(self, isolated):
+        """A credential-less host that accepts TCP and then stalls costs the
+        sweep its own timeout (+2), not the executor's 15 s."""
+        import asyncio as _asyncio
+        import time as _time
+
+        async def _hang():
+            await _asyncio.sleep(8)
+            return _systemready(needsetup=True)
+
+        catalog, executor, calls = _catalog_and_executor(_hang)
+        t0 = _time.monotonic()
+        rec = await probe_device(
+            device_id="a1210", device_info={"host": "192.0.2.10"},
+            credentials=None, catalog=catalog, executor=executor,
+            timeout_seconds=0.2,
+        )
+        assert _time.monotonic() - t0 < 5
+        assert rec.status == DeviceHealthStatus.NO_CREDENTIALS
+
+    @pytest.mark.asyncio
+    async def test_a_device_the_record_says_refuses_systemready_is_not_asked(self, isolated):
+        """ADR-0063 / #458, one tier down: a credential-less T85 with a
+        record saying systemready is absent pays no dead request per sweep."""
+        from admz.device_capabilities import ABSENT_UNCONFIRMED, capability_store
+
+        capability_store.record(
+            "a1210", "systemready", ABSENT_UNCONFIRMED, firmware="", now=time.time(),
+        )
+        catalog, executor, calls = _catalog_and_executor(_systemready(needsetup=False))
+        rec = await _probe(None, catalog=catalog, executor=executor)
+        assert rec.status == DeviceHealthStatus.NO_CREDENTIALS
+        assert calls == [], "the record says do not ask"
 
     @pytest.mark.asyncio
     async def test_a_provisioned_unit_answering_systemready_is_no_credentials(self, isolated):
@@ -231,10 +294,7 @@ class TestSettledAndAttention:
 # ---------------------------------------------------------------------------
 
 class TestTheSweepsLookup:
-    @pytest.mark.parametrize("exc", [
-        AccountNotFoundError("no account row"),
-        DeviceNotFoundError("gone"),
-    ])
+    @pytest.mark.parametrize("exc", [AccountNotFoundError("no account row")])
     @pytest.mark.asyncio
     async def test_absence_the_registry_says_is_no_credentials(self, isolated, exc):
         registry = MagicMock()
@@ -273,6 +333,68 @@ class TestTheSweepsLookup:
         assert rec.last_seen_online == pytest.approx(earlier)
         assert rec.last_check > earlier
         assert rec.last_error.startswith("credential lookup failed:")
+
+    @pytest.mark.asyncio
+    async def test_a_device_removed_mid_sweep_leaves_no_row(self, isolated):
+        """#428 purges the health row with the device; DeviceNotFoundError from
+        the lookup means the device is gone — do not probe it back into
+        existence as no_credentials."""
+        registry = MagicMock()
+        registry.list_devices.return_value = [{"device_id": "gone", "host": "192.0.2.10"}]
+        registry.get_credentials.side_effect = DeviceNotFoundError("gone")
+        store = DeviceHealthStore(str(isolated / "health.db"))
+        monitor = HealthMonitor(registry=registry, catalog=None, executors={}, store=store)
+        with patch("admz.fleet.health.probe_device") as probe:
+            await monitor.sweep_once()
+        probe.assert_not_called()
+        assert store.get("gone") is None
+
+    @pytest.mark.asyncio
+    async def test_a_failing_store_does_not_end_the_sweep(self, isolated):
+        """The registry and the health store share one SQLite file, so the
+        failure the branch handles is the one the store is likeliest to
+        raise too. It must not escape _check — that ends the monitor loop."""
+        registry = MagicMock()
+        registry.list_devices.return_value = [{"device_id": "a1210", "host": "192.0.2.10"},
+                                              {"device_id": "cam-2", "host": "192.0.2.11"}]
+        registry.get_credentials.side_effect = sqlite3.OperationalError("database is locked")
+        store = MagicMock()
+        store.get.side_effect = sqlite3.OperationalError("database is locked")
+        monitor = HealthMonitor(registry=registry, catalog=None, executors={}, store=store)
+        n = await monitor.sweep_once()
+        assert n == 2
+        store.upsert.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_reason_that_stringifies_to_nothing_still_names_its_type(self, isolated):
+        """Fernet's InvalidToken has an empty str()."""
+        class InvalidToken(Exception):
+            pass
+
+        registry = MagicMock()
+        registry.list_devices.return_value = [{"device_id": "a1210", "host": "192.0.2.10"}]
+        registry.get_credentials.side_effect = InvalidToken()
+        store = DeviceHealthStore(str(isolated / "health.db"))
+        monitor = HealthMonitor(registry=registry, catalog=None, executors={}, store=store)
+        await monitor.sweep_once()
+        assert "InvalidToken" in store.get("a1210").last_error
+
+    @pytest.mark.asyncio
+    async def test_a_credential_less_factory_default_unit_fires_on_needs_setup(self, isolated):
+        """The point of `needs_setup` winning: the deferred-recovery trigger
+        can now fire for a device without an account row."""
+        registry = MagicMock()
+        registry.list_devices.return_value = [{"device_id": "a1210", "host": "192.0.2.10"}]
+        registry.get_credentials.side_effect = AccountNotFoundError("no account")
+        catalog, executor, calls = _catalog_and_executor(_systemready(needsetup=True))
+        store = DeviceHealthStore(str(isolated / "health.db"))
+        monitor = HealthMonitor(
+            registry=registry, catalog=catalog, executors={"vapix": executor}, store=store,
+        )
+        with patch("admz.tasks.store.tasks_store.claim_for_event", return_value=[]) as claim:
+            await monitor.sweep_once()
+        assert store.get("a1210").status == DeviceHealthStatus.NEEDS_SETUP
+        claim.assert_called_once_with("a1210", "on_needs_setup")
 
     @pytest.mark.asyncio
     async def test_a_lookup_that_fails_with_no_history_is_unknown(self, isolated):
@@ -381,6 +503,15 @@ class TestEveryConsumerKnowsEveryMember:
 
         text = " ".join(Path(system_prompt.__file__).read_text(encoding="utf-8").split())
         assert "`no_credentials` means ADMZ never had a way in" in text
+        assert "Offer `onboard_device`" in text, "the routing half of the rule"
         assert 'never say "unreachable"' in text
         assert 'never "wrong password"' in text
-        assert "`capture_credentials`" in text
+
+    def test_the_tool_description_the_model_reads_knows_it(self):
+        """`docs/MCP_TOOLS_REFERENCE.md` is for humans; the schema string in
+        `server.py` is what the model reads at call time (review F5)."""
+        from admz.mcp import server
+
+        text = " ".join(Path(server.__file__).read_text(encoding="utf-8").split())
+        assert "'no_credentials' (up and" in text
+        assert "onboard_device or capture_credentials, never call it" in text
