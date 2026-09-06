@@ -257,12 +257,20 @@ class TestJsonAnswerClassifiers:
         ("404", "HTTP 404: Not Found", False),
         ("x", PARSE_FAIL, False),
         # the parse-failure text means "not JSON" only on a 2xx; with an
-        # error status it is a bad moment with an unparsable body
+        # error status it is a bad moment with an unparsable body — and a
+        # 3xx (the executor never follows redirects, and parses the body)
+        # is outside the band too
         (500, PARSE_FAIL, False),
         (404, PARSE_FAIL, False),
+        (302, PARSE_FAIL, False),
     ])
     def test_surface_gone(self, status_code, error, gone):
         assert _json_surface_gone(_r(status_code=status_code, error=error)) is gone
+
+    def test_surface_gone_with_a_non_string_error(self):
+        """A result whose ``error`` is not a string (a mock without one) is
+        coerced, never answered by a child mock's truthiness."""
+        assert _json_surface_gone(MagicMock(success=False, status_code=None)) is False
 
     @pytest.mark.parametrize("status_code, error, kind", [
         # the surface is gone
@@ -288,7 +296,7 @@ class TestJsonAnswerClassifiers:
         (504, "HTTP 504: Gateway Timeout", _JSON_TRANSIENT),
         (408, "HTTP 408: Request Timeout", _JSON_TRANSIENT),
         (429, "HTTP 429: Too Many Requests", _JSON_TRANSIENT),
-        (302, "HTTP 302: Found", _JSON_TRANSIENT),
+        (302, PARSE_FAIL, _JSON_TRANSIENT),   # a 3xx body goes through the parse
         # the host, not the surface
         (None, "Connection failed: All connection attempts failed", _JSON_TRANSIENT),
         (None, "Request timed out after 10s", _JSON_TRANSIENT),

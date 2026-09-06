@@ -51,7 +51,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import NamedTuple, Any, Dict, List, Optional
 
 import admz.fleet_settings as _fs_module
 
@@ -546,6 +546,46 @@ async def _tcp_probe(host: str, port: int, timeout: float) -> Optional[int]:
 _OP_MISSING = object()
 _OP_ERRORED = object()
 
+# Verdict words shared by the three corroboration helpers. A condemnation
+# must be able to say what it asked (GH #464): "both refused" is only true
+# when the second op was sent and refused.
+_REFUSAL_BOTH = "both_refused"           # the corroborator refused them too
+_REFUSAL_UNCORROBORABLE = "uncorroborable"  # this device has no JSON surface to ask
+_REFUSAL_UNCATALOGUED = "uncatalogued"   # the corroborator is not in the catalog
+_REFUSAL_CLEARED = "cleared"             # the corroborator authenticated
+_REFUSAL_TRANSIENT = "transient"         # the corroborator errored; proves nothing
+_REFUSAL_INCONCLUSIVE = "inconclusive"   # the corroborator answered oddly; proves nothing
+_VERDICT_ACCEPTED = "accepted"           # the primary op authenticated (or, lenient, answered)
+_VERDICT_UNKNOWN = "unknown"             # the primary op was missing/errored/unproven
+#: The verdicts that condemn the stored credentials on the failure branch.
+#: The middle two are single-op judgements, deliberately — see
+#: :func:`_corroborate_legacy_refusal`.
+_LEGACY_REFUSAL_CONDEMNS = frozenset(
+    {_REFUSAL_BOTH, _REFUSAL_UNCORROBORABLE, _REFUSAL_UNCATALOGUED}
+)
+
+
+class _Corroboration(NamedTuple):
+    """What a credential check concluded, and on what.
+
+    ``creds_ok`` is the tri-state every caller has always read (``False`` =
+    condemned, ``True`` = proven, ``None`` = don't move the status);
+    ``verdict`` is one of the words above; ``rejection`` is the
+    ``last_error`` text to file when ``creds_ok`` is ``False`` — it names
+    exactly what was asked, so a corroborator that was never sent is never
+    said to have refused (GH #464). :meth:`triple` is the shape external
+    callers (onboarding, reconcile) unpack.
+    """
+
+    creds_ok: Optional[bool]
+    facts: Dict[str, str]
+    learned: Optional[Dict[str, str]]
+    verdict: str
+    rejection: str = ""
+
+    def triple(self) -> "tuple[Optional[bool], Dict[str, str], Optional[Dict[str, str]]]":
+        return self.creds_ok, self.facts, self.learned
+
 
 def _preferred_auth_op(device_info: Dict[str, Any]) -> str:
     """Which auth-required op to try FIRST on this device.
@@ -655,12 +695,13 @@ async def _corroborate_rejection(
     credentials: Dict[str, Any],
     timeout_seconds: float,
     refused_op: str,
-) -> "tuple[Optional[bool], Dict[str, str], Optional[Dict[str, str]]]":
+) -> _Corroboration:
     """One auth-required op refused the credentials — ask a second, independent
     one before declaring the password bad (GH #149).
 
-    Returns the same ``(creds_ok, facts, learned)`` triple as
-    :func:`_confirm_credentials`.
+    Returns a :class:`_Corroboration`; ``creds_ok`` is the tri-state
+    :func:`_confirm_credentials` documents, and ``rejection`` is the text to
+    file when it is ``False`` — worded by what actually happened (GH #464).
     """
     other_op = CORROBORATION_OP if refused_op != CORROBORATION_OP else AUTH_CHECK_OP
     result = await _run_auth_op(
@@ -672,20 +713,29 @@ async def _corroborate_rejection(
     if result is _OP_MISSING:
         # Can't corroborate at all. Keep the pre-#149 verdict: a false alarm is
         # safer than a missed one — a genuinely stale password must not read as
-        # "online" merely because the corroborator isn't in the catalog.
+        # "online" merely because the corroborator isn't in the catalog. But
+        # say so: this is single-op judgement, not two refusals.
         logger.warning(
             "health: %s refused credentials for %s and the corroborating op %s "
             "is not in the catalog — falling back to single-op judgement",
             refused_op, device_id, other_op,
         )
-        return False, {}, None
+        return _Corroboration(
+            False, {}, None, _REFUSAL_UNCATALOGUED,
+            f"credentials rejected — {refused_op} refused them; the "
+            f"corroborating op {other_op} is not in the catalog, so this is "
+            "single-op judgement",
+        )
 
     if result is _OP_ERRORED:
-        return None, {}, None  # transient — proves nothing, don't flap
+        return _Corroboration(None, {}, None, _REFUSAL_TRANSIENT)  # transient — proves nothing, don't flap
 
     sc = getattr(result, "status_code", None)
     if sc in (401, 403):
-        return False, {}, None  # both refused — genuinely bad credentials
+        return _Corroboration(
+            False, {}, None, _REFUSAL_BOTH,
+            f"credentials rejected — both {refused_op} and {other_op} refused them",
+        )
 
     if _is_authenticated_2xx(result):
         # A real authenticated 2xx from an auth-required op. This deliberately
@@ -693,14 +743,13 @@ async def _corroborate_rejection(
         # exists because the LENIENT path accepted *non-auth* answers as proof,
         # and this is not that — it is genuine proof, just from the other op.
         facts = _facts_from(result) if other_op == AUTH_CHECK_OP else {}
-        return True, facts, {_MARKER_OP_FIELD: other_op}
+        return _Corroboration(True, facts, {_MARKER_OP_FIELD: other_op}, _REFUSAL_CLEARED)
 
     # Answered some other way (unparsable body, odd status): proves nothing
     # either direction, so don't move the status.
-    return None, {}, None
+    return _Corroboration(None, {}, None, _REFUSAL_INCONCLUSIVE)
 
-
-async def _confirm_credentials(
+async def _confirm_credentials_verdict(
     *,
     catalog: Any,
     executor: Any,
@@ -709,11 +758,14 @@ async def _confirm_credentials(
     credentials: Dict[str, Any],
     timeout_seconds: float,
     strict: bool = False,
-) -> "tuple[Optional[bool], Dict[str, str], Optional[Dict[str, str]]]":
+) -> _Corroboration:
     """Confirm the stored credentials actually authenticate.
 
     Calls an auth-required op (``basicdeviceinfo`` by default). Returns a
-    ``(creds_ok, facts, learned)`` triple where ``creds_ok`` is:
+    :class:`_Corroboration` (``creds_ok``, ``facts``, ``learned``, plus the
+    verdict word and, on a condemnation, the ``rejection`` text — GH #464);
+    :func:`_confirm_credentials` is the same call returning only the triple,
+    for callers that unpack it. ``creds_ok`` is:
       - ``False`` when the device explicitly rejects the credentials — which
         since GH #149 means **two independent auth-required ops** refused
         them, not one,
@@ -749,7 +801,7 @@ async def _confirm_credentials(
         timeout_seconds=timeout_seconds, op_id=primary_op,
     )
     if result is _OP_MISSING or result is _OP_ERRORED:
-        return None, {}, None
+        return _Corroboration(None, {}, None, _VERDICT_UNKNOWN)
 
     sc = getattr(result, "status_code", None)
     if sc in (401, 403):
@@ -761,11 +813,31 @@ async def _confirm_credentials(
         )
 
     if strict and not _is_authenticated_2xx(result):
-        return None, {}, None  # didn't prove anything — not good enough to save
+        return _Corroboration(None, {}, None, _VERDICT_UNKNOWN)  # didn't prove anything — not good enough to save
 
     # Accepted (or non-auth answer): mine the body for identity facts.
     facts = _facts_from(result) if primary_op == AUTH_CHECK_OP else {}
-    return True, facts, None
+    return _Corroboration(True, facts, None, _VERDICT_ACCEPTED)
+
+
+async def _confirm_credentials(
+    *,
+    catalog: Any,
+    executor: Any,
+    device_info: Dict[str, Any],
+    device_id: str,
+    credentials: Dict[str, Any],
+    timeout_seconds: float,
+    strict: bool = False,
+) -> "tuple[Optional[bool], Dict[str, str], Optional[Dict[str, str]]]":
+    """:func:`_confirm_credentials_verdict` for callers that unpack the
+    ``(creds_ok, facts, learned)`` triple — onboarding, reconcile."""
+    corroboration = await _confirm_credentials_verdict(
+        catalog=catalog, executor=executor, device_info=device_info,
+        device_id=device_id, credentials=credentials,
+        timeout_seconds=timeout_seconds, strict=strict,
+    )
+    return corroboration.triple()
 
 
 def _persist_probe_marker(
@@ -849,18 +921,6 @@ async def _probe_sd_card(
 _REPORTED_401 = re.compile(r"^(?:HTTP 401\b|Authentication failed \(401\))")
 
 
-# Verdicts of :func:`_corroborate_legacy_refusal`.
-_REFUSAL_BOTH = "both_refused"           # the corroborator refused them too
-_REFUSAL_UNCORROBORABLE = "uncorroborable"  # this device has no JSON surface to ask
-_REFUSAL_UNCATALOGUED = "uncatalogued"   # the corroborator is not in the catalog
-_REFUSAL_CLEARED = "cleared"             # the corroborator authenticated
-_REFUSAL_TRANSIENT = "transient"         # proves nothing; next sweep
-#: The verdicts that condemn the stored credentials. The middle two are
-#: single-op judgements, deliberately — see the helper's docstring.
-_LEGACY_REFUSAL_CONDEMNS = frozenset(
-    {_REFUSAL_BOTH, _REFUSAL_UNCORROBORABLE, _REFUSAL_UNCATALOGUED}
-)
-
 # How a JSON-RPC op's failed answer reads for this sweep's status.
 _JSON_ABSENT = "absent"        # the device cannot serve this op
 _JSON_TRANSIENT = "transient"  # the surface exists; this answer proves nothing
@@ -932,6 +992,7 @@ def _reason_of(result: Any, limit: int = 50) -> str:
         sc = getattr(result, "status_code", None)
         error = f"HTTP {sc}" if sc is not None else "no answer"
     return error[:limit]
+
 
 async def _corroborate_legacy_refusal(
     *,
@@ -1244,22 +1305,22 @@ async def probe_device(
                 # happens; it stops assuming it cannot, which is a different and
                 # much cheaper claim: the corroborating call only ever runs on a
                 # path that already failed.
-                creds_ok, _facts, _learned = await _corroborate_rejection(
+                corroboration = await _corroborate_rejection(
                     catalog=catalog, executor=executor, device_info=device_info,
                     device_id=device_id, credentials=credentials,
                     timeout_seconds=timeout_seconds, refused_op=SYSTEMREADY_OP,
                 )
+                creds_ok = corroboration.creds_ok
                 if creds_ok is False:
                     return DeviceHealthRecord(
                         device_id=device_id,
                         status=DeviceHealthStatus.AUTH_FAILED,
                         last_check=now,
                         latency_ms=elapsed_ms,
-                        last_error=(
-                            "credentials rejected — both "
-                            f"{SYSTEMREADY_OP} and {CORROBORATION_OP} refused "
-                            "them"
-                        ),
+                        # Worded by the verdict (GH #464): "both refused" only
+                        # when the corroborator was sent and refused; a
+                        # corroborator missing from the catalog says so.
+                        last_error=corroboration.rejection,
                         consecutive_failures=1,
                     )
 
@@ -1518,11 +1579,12 @@ async def probe_device(
             observed: Dict[str, str] = {}
             learned_probe: Optional[Dict[str, str]] = None
             if _verify_credentials_enabled():
-                creds_ok, observed, learned_probe = await _confirm_credentials(
+                corroboration = await _confirm_credentials_verdict(
                     catalog=catalog, executor=executor, device_info=device_info,
                     device_id=device_id, credentials=credentials,
                     timeout_seconds=timeout_seconds,
                 )
+                creds_ok, observed, learned_probe = corroboration.triple()
                 if creds_ok is False:
                     return DeviceHealthRecord(
                         device_id=device_id,
@@ -1531,13 +1593,11 @@ async def probe_device(
                         last_seen_online=now,  # it IS reachable, just not authable
                         latency_ms=elapsed_ms,
                         consecutive_failures=1,
-                        # Two independent auth-required ops refused these
-                        # credentials (GH #149) — say so, because "401 on
-                        # basicdeviceinfo" alone was never the proof it claimed.
-                        last_error=(
-                            "credentials rejected — both "
-                            f"{AUTH_CHECK_OP} and {CORROBORATION_OP} refused them"
-                        ),
+                        # Since GH #149 a condemnation means two independent
+                        # auth-required ops refused — and since GH #464 the
+                        # text says exactly that, or says the corroborator was
+                        # not in the catalog and this is single-op judgement.
+                        last_error=corroboration.rejection,
                         uptime_seconds=uptime_int,
                         bootid=bootid_str,
                     )

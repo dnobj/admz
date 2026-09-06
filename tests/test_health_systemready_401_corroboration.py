@@ -242,6 +242,24 @@ async def test_missing_corroborating_op_keeps_the_pre_149_verdict():
 
     assert rec.status == DeviceHealthStatus.AUTH_FAILED
     assert CORROBORATION_OP not in seen
+    # GH #464: single-op judgement says so. The corroborator was never sent,
+    # so the message must not claim it refused.
+    assert "not in the catalog" in rec.last_error
+    assert "single-op" in rec.last_error
+    assert "both" not in rec.last_error
+
+
+@pytest.mark.asyncio
+async def test_a_double_refusal_says_both_and_names_both_ops():
+    """The other half of GH #464: when the corroborator WAS sent and refused,
+    the message says both did, naming each."""
+    rec, seen = await _probe({SYSTEMREADY_OP: _r(**REFUSED),
+                              CORROBORATION_OP: _r(**REFUSED)})
+
+    assert rec.status == DeviceHealthStatus.AUTH_FAILED
+    assert seen == [SYSTEMREADY_OP, CORROBORATION_OP]
+    assert "both" in rec.last_error
+    assert SYSTEMREADY_OP in rec.last_error and CORROBORATION_OP in rec.last_error
 
 
 # --- the ordering decision -------------------------------------------------
