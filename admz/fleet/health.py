@@ -48,12 +48,13 @@ import re
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 from enum import Enum
 from pathlib import Path
 from typing import NamedTuple, Any, Dict, List, Optional
 
 import admz.fleet_settings as _fs_module
+from admz.exceptions import AccountNotFoundError, DeviceNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +200,11 @@ class DeviceHealthStatus(str, Enum):
     UNREACHABLE = "unreachable"     # no TCP connect
     AUTH_FAILED = "auth_failed"     # TCP up, VAPIX rejected creds
     NEEDS_SETUP = "needs_setup"     # reachable but factory-defaulted (needsetup=yes)
+    # TCP up, the device is provisioned (not needsetup), and ADMZ holds no
+    # usable stored credential for it. Nothing was refused — ADMZ never had a
+    # way in. Settled, and an attention state (ADR-0064 / FR-HLT-011): until
+    # it existed this device read `online` on every surface, for hours.
+    NO_CREDENTIALS = "no_credentials"
     # TCP up, the JSON-RPC probe didn't answer usefully, but an authenticated
     # legacy-CGI read DID. Manageable, just not over the surface we probed.
     LIMITED_API = "limited_api"
@@ -224,6 +230,9 @@ _STABLE_STATUSES = frozenset(
         DeviceHealthStatus.ONLINE,
         DeviceHealthStatus.LIMITED_API,
         DeviceHealthStatus.REACHABLE_NO_API,
+        # Settled AND needs attention (ADR-0064) — the two questions answered
+        # separately, as the note above asks.
+        DeviceHealthStatus.NO_CREDENTIALS,
     }
 )
 
@@ -1192,10 +1201,16 @@ async def probe_device(
          device's API, not its reachability — so it falls through to
          a TCP connect and becomes REACHABLE_NO_API if the host
          answers, UNREACHABLE only if it doesn't.
-      2. Otherwise (or as a fallback if the catalog isn't loaded),
-         just do a TCP connect probe against the device's host on its
-         effective port (see :func:`_probe_port`). Connect OK →
-         ONLINE (without uptime info). Connect fail → UNREACHABLE.
+      2. Otherwise, a TCP connect probe against the device's host on its
+         effective port (see :func:`_probe_port`). Connect fail →
+         UNREACHABLE. Connect OK with a usable credential (the catalog or
+         executor was simply unavailable) → ONLINE without uptime info.
+         Connect OK with **no** usable credential (ADR-0064 / FR-HLT-011):
+         ask ``systemready`` *unauthenticated* — it is auth-free by design,
+         and onboarding reads it the same way — so a factory-default unit
+         is NEEDS_SETUP; anything else is NO_CREDENTIALS: the host
+         answered, it is provisioned, and ADMZ has no way in. It used to
+         be ONLINE, which an A1210 read for seven hours (#443).
 
     **Ordering: why a systemready 401 still cannot reach ``needs_setup``,
     and why moving the branch would not change that (GH #150).**
@@ -1239,13 +1254,13 @@ async def probe_device(
             consecutive_failures=1,
         )
 
+    # A "usable" credential is one with a non-empty password — the only kind
+    # this registry stores (the executor's bearer method falls back to the
+    # password field; nothing writes a token). ADR-0064.
+    has_usable_credential = bool(credentials and credentials.get("password"))
+
     # ---- Tier 1: authenticated VAPIX systemReady ----
-    if (
-        credentials
-        and credentials.get("password")
-        and catalog is not None
-        and executor is not None
-    ):
+    if has_usable_credential and catalog is not None and executor is not None:
         try:
             op = catalog.get_operation("vapix", "systemready.cgi:systemReady")
         except Exception:
@@ -1643,14 +1658,77 @@ async def probe_device(
     port = _probe_port(device_info)
     elapsed_ms = await _tcp_probe(host, port, timeout_seconds)
     if elapsed_ms is not None:
+        if has_usable_credential:
+            # Credentials exist; only the catalog/executor/op was missing.
+            return DeviceHealthRecord(
+                device_id=device_id,
+                status=DeviceHealthStatus.ONLINE,
+                last_check=now,
+                last_seen_online=now,
+                latency_ms=elapsed_ms,
+                consecutive_failures=0,
+                last_error="",
+            )
+        # No usable stored credential (ADR-0064 / FR-HLT-011). The host
+        # answered, so the reachability clock advances — but "online" is the
+        # one thing this device is not. A factory-default unit is the case
+        # where "no credentials" would be the wrong word: systemready needs no
+        # credential by design and onboarding reads it that way, so ask it
+        # the same way and let needsetup=yes win — its CTA and deferred
+        # recovery trigger already exist.
+        if catalog is not None and executor is not None:
+            from admz.fleet.systemready import read_systemready
+
+            # The same three courtesies Tier 1 pays this request: consult the
+            # ADR-0063 record so a device known to refuse systemready is not
+            # asked every sweep (#458); bound it by the sweep's budget, not
+            # the executor's 15 s; and send it with NO auth at all — the op
+            # is auth-free, and a `basic` profile would otherwise put an
+            # empty Basic header on the wire every 60 s, which is a
+            # credentialed request from a sweep, the thing rule 2 forbids.
+            _row, _stale, skip_read = _systemready_record(device_id, device_info)
+            ready = None
+            if not skip_read:
+                unauth_info = {
+                    **device_info,
+                    "device_id": device_id,
+                    "auth": {**(device_info.get("auth") or {}),
+                             "http": "none", "https": "none"},
+                    "auth_method": "none",
+                }
+                try:
+                    ready = await asyncio.wait_for(
+                        read_systemready(
+                            catalog, executor, unauth_info,
+                            {"username": "", "password": ""},
+                        ),
+                        timeout=timeout_seconds + 2,
+                    )
+                except asyncio.TimeoutError:
+                    ready = None
+            if ready and ready.get("needsetup"):
+                return DeviceHealthRecord(
+                    device_id=device_id,
+                    status=DeviceHealthStatus.NEEDS_SETUP,
+                    last_check=now,
+                    last_seen_online=now,
+                    latency_ms=elapsed_ms,
+                    consecutive_failures=0,
+                    last_error="factory-defaulted (needsetup=yes) — not provisioned",
+                    uptime_seconds=ready.get("uptime"),
+                    bootid=ready.get("bootid"),
+                )
         return DeviceHealthRecord(
             device_id=device_id,
-            status=DeviceHealthStatus.ONLINE,
+            status=DeviceHealthStatus.NO_CREDENTIALS,
             last_check=now,
             last_seen_online=now,
             latency_ms=elapsed_ms,
             consecutive_failures=0,
-            last_error="",
+            last_error=(
+                "no usable stored credential — ADMZ has no way into this "
+                "device; enter credentials or run onboarding"
+            ),
         )
 
     return DeviceHealthRecord(
@@ -1789,13 +1867,58 @@ class HealthMonitor:
             if not device_id:
                 return
             async with sem:
-                # Try to fetch credentials; missing creds is fine —
-                # we fall back to TCP probe.
+                # Fetch credentials. Absence is something the registry SAYS
+                # (no account row): the probe files it as no_credentials or
+                # needs_setup. A lookup that FAILED to say — a locked database,
+                # a decrypt error, Vault down — is not "no credentials"; the
+                # previous record is kept with the failure named, rather than
+                # raising a false amber across the fleet (ADR-0064).
                 creds: Optional[Dict[str, Any]] = None
+                lookup_error: Optional[BaseException] = None
                 try:
                     creds = self.registry.get_credentials(device_id)
-                except Exception:
+                except DeviceNotFoundError:
+                    # Removed between list_devices() and now. #428 purges its
+                    # health row in the same transaction — do not re-create it.
+                    return
+                except AccountNotFoundError:
                     creds = None
+                except Exception as exc:  # noqa: BLE001
+                    lookup_error = exc
+                if lookup_error is not None:
+                    # Fernet's InvalidToken stringifies to nothing — name the type.
+                    note = (
+                        "credential lookup failed: "
+                        f"{type(lookup_error).__name__}: {lookup_error}"
+                    )[:200]
+                    logger.warning(
+                        "health: %s for %s — keeping the previous record",
+                        note, device_id,
+                    )
+                    # The registry and the health store share one SQLite file:
+                    # the failure that brought us here (a locked database) is
+                    # the one these two calls are likeliest to raise too, and
+                    # an exception escaping _check ends the monitor loop.
+                    try:
+                        prev = self.store.get(device_id)
+                        kept = (
+                            _dc_replace(prev, last_check=time.time(), last_error=note)
+                            if prev is not None
+                            else DeviceHealthRecord(
+                                device_id=device_id,
+                                status=DeviceHealthStatus.UNKNOWN,
+                                last_check=time.time(),
+                                last_error=note,
+                            )
+                        )
+                        self.store.upsert(kept)
+                    except Exception:  # noqa: BLE001 — the store is failing too
+                        logger.warning(
+                            "health: could not record the lookup failure for %s "
+                            "(health store unavailable); the row is untouched",
+                            device_id, exc_info=True,
+                        )
+                    return
 
                 executor = self.executors.get("vapix") if self.executors else None
                 try:

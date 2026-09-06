@@ -155,6 +155,8 @@ def test_event_for_status():
     assert event_for_status("needs_setup") == EVENT_NEEDS_SETUP
     assert event_for_status("online") == "on_online"
     assert event_for_status("auth_failed") is None
+    # ADR-0064: the host answered but ADMZ has no way in — proves nothing.
+    assert event_for_status("no_credentials") is None
 
 
 def test_task_to_dict_shape():

@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from admz.exceptions import AccountNotFoundError
 from admz.fleet.health import (
     CORROBORATION_OP,
     DeviceHealthRecord,
@@ -99,10 +100,9 @@ class TestStore:
 
 class TestProbeTcpFallback:
     @pytest.mark.asyncio
-    async def test_tcp_connect_success_marks_online(self, monkeypatch):
-        """No creds → TCP probe. Mock open_connection to succeed instantly."""
-        from admz.fleet import health as h
-
+    async def test_tcp_up_without_credentials_is_no_credentials(self, monkeypatch):
+        """No creds → TCP probe → the host answered, and ADMZ has no way in.
+        This used to file ONLINE (ADR-0064 / #443)."""
         async def fake_open(host, port):
             class _W:
                 def close(self): pass
@@ -116,6 +116,31 @@ class TestProbeTcpFallback:
             device_id="cam-01",
             device_info={"host": "192.0.2.1"},
             credentials=None,
+        )
+        assert rec.status == DeviceHealthStatus.NO_CREDENTIALS
+        assert rec.latency_ms is not None
+        assert rec.consecutive_failures == 0
+        assert rec.last_seen_online is not None, "the host answered"
+        assert "no usable stored credential" in rec.last_error
+
+    @pytest.mark.asyncio
+    async def test_tcp_up_with_credentials_but_no_catalog_is_online(self, monkeypatch):
+        """Control: the value keys on credential absence, not on which tier
+        answered — credentials present, catalog unavailable → still ONLINE."""
+        async def fake_open(host, port):
+            class _W:
+                def close(self): pass
+                async def wait_closed(self): pass
+            class _R: pass
+            return _R(), _W()
+
+        monkeypatch.setattr(asyncio, "open_connection", fake_open)
+
+        rec = await probe_device(
+            device_id="cam-01",
+            device_info={"host": "192.0.2.1"},
+            credentials={"username": "root", "password": "pw"},
+            catalog=None,
         )
         assert rec.status == DeviceHealthStatus.ONLINE
         assert rec.latency_ms is not None
@@ -560,7 +585,7 @@ class TestReachableNoApi:
         that establishes nothing still inherits the previous value."""
         registry = MagicMock()
         registry.list_devices.return_value = [{"device_id": "a", "host": "192.0.2.1"}]
-        registry.get_credentials.side_effect = Exception("no creds")
+        registry.get_credentials.side_effect = AccountNotFoundError("no creds")
         store = DeviceHealthStore(str(tmp_path / "admz.db"))
         earlier = time.time() - 300
         store.upsert(DeviceHealthRecord(
@@ -918,7 +943,7 @@ class TestMonitorSweep:
             {"device_id": "b", "host": "192.0.2.2"},
             {"device_id": "c", "host": "192.0.2.3"},
         ]
-        registry.get_credentials.side_effect = Exception("no creds")
+        registry.get_credentials.side_effect = AccountNotFoundError("no creds")
 
         store = DeviceHealthStore(str(tmp_path / "admz.db"))
         monitor = HealthMonitor(
@@ -1015,7 +1040,7 @@ class TestMonitorSweep:
         registry.list_devices.return_value = [
             {"device_id": "a", "host": "192.0.2.1"},
         ]
-        registry.get_credentials.side_effect = Exception("no creds")
+        registry.get_credentials.side_effect = AccountNotFoundError("no creds")
 
         store = DeviceHealthStore(str(tmp_path / "admz.db"))
         # Seed with a successful prior check

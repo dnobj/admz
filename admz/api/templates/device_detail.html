@@ -328,6 +328,8 @@ const HEALTH = {
   // Up, but nothing ADMZ can read answers (GH #138) — amber, not outage red.
   reachable_no_api:{sem:'amber',label:'Reachable, no API'},
   auth_failed:{sem:'amber',label:'Auth failed'}, needs_setup:{sem:'amber',label:'Needs setup'},
+  // ADR-0064: up, provisioned, no usable stored credential - amber, attention.
+  no_credentials:{sem:'amber',label:'No credentials'},
   unknown:{sem:'grey',label:'Unknown'},
 };
 

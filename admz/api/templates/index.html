@@ -304,6 +304,9 @@ const HEALTH = {
   reachable_no_api: { sem: 'amber', label: 'Reachable, no API', bucket: 'attention' },
   auth_failed: { sem: 'amber', label: 'Auth failed', bucket: 'attention' },
   needs_setup: { sem: 'amber', label: 'Needs setup', bucket: 'attention' },
+  // ADR-0064: up and provisioned, but ADMZ holds no usable credential - nothing
+  // was refused; ADMZ never had a way in. Attention: the operator can fix it now.
+  no_credentials: { sem: 'amber', label: 'No credentials', bucket: 'attention' },
   unknown:     { sem: 'grey',  label: 'Unknown', bucket: 'unknown' },
 };
 (async () => {

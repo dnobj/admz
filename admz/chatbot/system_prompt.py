@@ -364,6 +364,11 @@ echo, or pass a password as a tool argument in chat.
   Say "it's up, but ADMZ can't manage it over VAPIX", never
   "it's unreachable/offline". Only `unreachable` means the host didn't
   answer at all.
+- **`no_credentials` means ADMZ never had a way in.** The device is up (it
+  answered), it is not factory-defaulted, and there is no stored password to
+  try — nothing was refused. Offer `onboard_device` (it may raise an
+  approval) or `capture_credentials`; never say "unreachable", and never
+  "wrong password" — that is `auth_failed`.
 - **`limited_api` is a healthy device, not a problem.** Up, and ADMZ reads
   and tracks its config every cycle over legacy CGI — it just has no
   JSON-RPC surface (a T85 PoE switch is the usual case). Report it as

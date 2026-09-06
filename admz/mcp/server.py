@@ -519,7 +519,11 @@ class ADMZMCPServer:
                         "still never call it offline), "
                         "'auth_failed' (device responded but rejected "
                         "credentials), 'needs_setup' (reachable but "
-                        "factory-defaulted), 'unknown' "
+                        "factory-defaulted), 'no_credentials' (up and "
+                        "provisioned, but ADMZ holds no usable stored "
+                        "credential for it — nothing was refused; offer "
+                        "onboard_device or capture_credentials, never call it "
+                        "unreachable), 'unknown' "
                         "(never checked — monitor likely disabled or just started). "
                         "Use this BEFORE attempting heavy operations (snapshot, "
                         "drift check, multi-step plan) so you don't hang on an "
@@ -2062,10 +2066,9 @@ class ADMZMCPServer:
         all_devices = self.registry.list_devices()
         seen = {r.device_id: r for r in records}
         entries = []
-        counts: Dict[str, int] = {
-            "online": 0, "unreachable": 0, "limited_api": 0, "reachable_no_api": 0,
-            "auth_failed": 0, "needs_setup": 0, "unknown": 0,
-        }
+        # Every member of the enum, by construction — the REST twin does the
+        # same (ADR-0064).
+        counts: Dict[str, int] = {s.value: 0 for s in DeviceHealthStatus}
         for d in all_devices:
             did = d.get("device_id")
             if not did:
