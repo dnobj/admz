@@ -143,6 +143,42 @@ class TestTheMcpEntryGateWasRetired:
         assert out["success"] is True
         assert added == ["AABBCCDDEE01"]
         assert not out.get("blocked")
+        # ADR-0064 slice B: a credentials_needed outcome opens a capture
+        # session — exactly as `register_device` does — and says so.
+        from admz.api.capture import capture_store
+
+        token = out["onboarding"]["capture_token"]
+        assert out["onboarding"]["capture_url"].endswith(f"/capture/{token}")
+        session = capture_store.get_session(token)
+        assert session is not None and session.device_id == "AABBCCDDEE01"
+        assert "capture session was opened" in out["message"]
+
+    def test_a_resolved_device_opens_no_capture_session(self, monkeypatch):
+        """Control for the slice-B change: only credentials_needed opens one."""
+        import asyncio
+
+        from admz.mcp.server import ADMZMCPServer
+
+        srv = ADMZMCPServer.__new__(ADMZMCPServer)
+        srv.registry = NS(add_device=lambda did, info: None)
+        srv.catalog = None
+        srv.executors = {}
+
+        async def _onboard(**kwargs):
+            return {"status": "already_credentialed", "device_id": kwargs["device_id"]}
+
+        monkeypatch.setattr("admz.onboarding.onboard_device_credentials", _onboard)
+
+        def _never(*a, **k):
+            raise AssertionError("a capture session must not be opened for a resolved device")
+
+        monkeypatch.setattr("admz.api.capture.capture_store.create_session", _never)
+        out = asyncio.run(
+            srv._register_discovered_device(
+                {"device_id": "AABBCCDDEE02", "ip_address": "10.20.0.10"}))
+        assert out["success"] is True
+        assert "capture_url" not in out["onboarding"]
+        assert out["onboarding"]["status"] == "already_credentialed"
 
     def test_but_provisioning_still_gates_downstream(self, monkeypatch):
         """The protection that actually matters is unchanged — it just moved.

@@ -1,6 +1,6 @@
 # ADR-0064 — A device ADMZ cannot authenticate to is never `online`: credential state is resolved once at registration, projected by health, and re-opened by the operator
 
-**Status:** Accepted — 2026-09-06 · **Shipped:** slice A (2026-09-06)
+**Status:** Accepted — 2026-09-06 · **Shipped:** slices A, B (2026-09-06) — #443 closed
 **Closes when shipped:** #443 (slices A–B) · the remainder of #411 (slices C–F; F waits for the lockout measurement)
 **Amends:** [ADR-0061](0061-entry-credentials-and-the-admz-account.md) (records what shipped; re-plans what did not) · supersedes the reclassification refusal in KL-HLT-004
 **Relates to:** ADR-0034 (no flat refusals; one gate), ADR-0059 (gate at the decision point), FR-HLT-002/003/007, FR-CRED-007/011/012/013, #149/#150 (corroborated rejection), #357 (settled ≠ needs attention)

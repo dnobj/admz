@@ -435,6 +435,52 @@ async def rotate_account_password(
     return RedirectResponse(url=f"/capture/{session.token}", status_code=303)
 
 
+@router.post(
+    "/device/{device_id}/credentials",
+    response_class=RedirectResponse,
+)
+async def enter_device_credentials(
+    request: Request,
+    device_id: str,
+    registry: DeviceRegistry = Depends(get_registry),
+):
+    """Open a capture session for a device ADMZ cannot authenticate to
+    (ADR-0064 slice B, #443): the durable **Enter credentials** action.
+
+    The rotate route above requires the account to exist; a `no_credentials`
+    device has none, so this route binds the session to the `default`
+    account as an **admin** (the session default is `service`, which the
+    rotate route only avoids by copying an existing account's type). Same
+    ADR-0009 shape otherwise: a single-use token, the standard capture form,
+    the password never in chat, logs or this route. Browser-only, so the
+    same-origin check `capture_submit` performs applies here too.
+    """
+    from admz.api.capture import capture_store
+    from admz.csrf import check_same_origin
+
+    check_same_origin(request)
+    if not registry.device_exists(device_id):
+        return templates.TemplateResponse(
+            request,
+            "error.html",
+            {
+                "request": request,
+                "error": "Device Not Found",
+                "message": f"Device '{device_id}' is not registered.",
+                "title": "Error",
+            },
+            status_code=404,
+        )
+    session = capture_store.create_session(
+        device_id=device_id,
+        account_id="default",
+        account_type="admin",
+        purpose="Entered from the device page — ADMZ had no usable stored credential",
+        ttl=300,
+    )
+    return RedirectResponse(url=f"/capture/{session.token}", status_code=303)
+
+
 @router.get("/add-device", response_class=HTMLResponse)
 async def add_device_form(
     request: Request,
