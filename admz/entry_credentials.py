@@ -24,9 +24,11 @@ a fleet after a database loss, so they are recovery material, not merely
 sensitive.
 
 The legacy ``default_username``/``default_password`` pair is **read as entry #1**
-rather than migrated away. It is still what ``provision_factory_default`` writes
-to a factory-defaulted device, so removing it is a separate decision with its own
-blast radius; this module only stops it being the *whole* answer.
+rather than migrated away. Since ADR-0064 slice E it is no longer written to a
+factory-defaulted device (FR-CRED-007: the generated password wins), so it is
+purely an entry credential; retiring it into the list is still a separate
+decision with its own blast radius — every install's effective list is its
+legacy pair — and this module only stops it being the *whole* answer.
 """
 
 from __future__ import annotations
@@ -84,10 +86,10 @@ MAX_ATTEMPTS_PER_PASS = MAX_STORED
 #: changes it. This is a decision: adds are refused while it holds, and any
 #: value already stored is ignored rather than used.
 #:
-#: Viable because nothing requires a stored fleet password.
-#: ``provision_factory_default`` prefers it but falls back to
-#: ``generate_device_password()``, and #185 already made the deferred/scheduled
-#: reprovision path generate unconditionally. The only thing this posture costs
+#: Viable because nothing requires a stored fleet password: since ADR-0064
+#: slice E ``provision_factory_default`` never writes it (the generated password
+#: wins, FR-CRED-007), as the deferred reprovision path has since #185. The
+#: only thing this posture costs
 #: is that adopting an already-set-up device always asks a human — which is
 #: precisely what it is choosing.
 PROMPT_ALWAYS_KEY = "entry_credentials_prompt_always"

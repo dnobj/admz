@@ -268,7 +268,7 @@ const JOB_LABELS = {
   snapshot:    { label: 'Snapshot config (commit to git)', hint: 'Reads each device’s config and commits a versioned snapshot. Sets/advances baselines.', icon: 'camera' },
   drift_audit: { label: 'Check drift', hint: 'Re-reads live config and records drift vs. the blessed baseline. Read-only.', icon: 'radar' },
   survey:      { label: 'Survey (contribute to the API atlas)', hint: 'Bundles anonymized capability data for the axis-api-atlas project.', icon: 'upload-cloud' },
-  reprovision: { label: 'Re-provision', hint: 'Creates the admin from the fleet default password when the device returns factory-defaulted.', icon: 'wrench' },
+  reprovision: { label: 'Re-provision', hint: 'Creates the admin with a generated password when the device returns factory-defaulted.', icon: 'wrench' },
 };
 const EVENT_LABELS = { on_needs_setup: 'when factory-defaulted', on_online: 'when back online' };
 

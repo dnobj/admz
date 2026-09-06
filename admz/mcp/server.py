@@ -4604,13 +4604,14 @@ class ADMZMCPServer:
         if user_password:
             new_password = user_password
         else:
-            fleet_default = fleet_settings.get("default_password")
-            if fleet_default:
-                new_password = fleet_default
-                password_source = "fleet_default"
-            else:
-                new_password = self._generate_device_password()
-                password_source = "generated"
+            # FR-CRED-007 (ADR-0064 slice E): the generated password wins.
+            # The fleet `default_password` is an entry credential — an input
+            # for authentication, never a value written to a device
+            # (ADR-0061) — so this path no longer reads it. Same rule as
+            # `provisioning.provision_factory_default`, which this tool
+            # does not call.
+            new_password = self._generate_device_password()
+            password_source = "generated"
 
         if probe.status == ProbeStatus.FACTORY_DEFAULT:
             ok, error = await self._execute_on_host(

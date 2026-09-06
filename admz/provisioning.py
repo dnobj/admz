@@ -177,42 +177,53 @@ async def provision_factory_default(
     host: str,
     username: str = "root",
     password: Optional[str] = None,
-    allow_fleet_default: bool = True,
+    allow_fleet_default: bool = False,
 ) -> Dict[str, Any]:
     """Provision a FACTORY-DEFAULT device: create the admin user (no auth
     needed), store the credential, mark the device digest-authed. The password
-    comes from ``password`` > fleet ``default_password`` (if
-    ``allow_fleet_default``) > a generated one (the value is never returned).
-    Returns a result dict.
+    is ``password`` if given, else a generated one (the value is never
+    returned). Returns a result dict.
 
-    Used by the MCP tool's factory-default path and the deferred ``reprovision``
+    Used by onboarding's factory-default step and the deferred ``reprovision``
     recovery handler — the device must actually be factory-default (needsetup).
+    (The MCP ``provision_device`` tool carries its own copy of this write and
+    follows the same rule.)
 
-    ``allow_fleet_default=False`` (GH #185): the deferred/scheduled reprovision
-    path calls with this set. ``needsetup=yes`` — the only signal this whole
-    call exists to respond to — is read from an unauthenticated device response
-    (``fleet/health.py``'s own comment calls it "a definitive, auth-free
-    signal"), and the task that authorizes this call can fire up to 24h after
-    an operator approved it, unattended, against whatever host answers at the
-    device's registered address at that later moment. ADMZ cannot authenticate
-    a peer that (by definition of ``needsetup=yes``) has no account yet, and no
-    other identity check exists on this path (see GH #185's investigation).
-    Sending the *shared fleet-wide* password there means a spoofed peer — a
-    reassigned DHCP lease, ARP spoofing, the port a decommissioned camera
-    vacated — walks away with a credential valid on every other device ADMZ
-    manages. Sending a freshly generated one instead does not verify the peer
-    (nothing here does), but it makes **who the peer turns out to be matter
-    much less**: the disclosed value is reused nowhere else in the fleet, and
-    is not even valid against the real device at this `device_id` — that
-    device was never actually contacted, since the spoofed peer answered in
-    its place, and is still sitting factory-default. This does not close the
-    disclosure or the fact that ADMZ's registry now (wrongly) believes it
-    holds a working credential for hardware it never touched — see GH #185's
-    handoff for that residual gap. The interactive `provision_device` MCP tool
-    path is unaffected (still defaults `allow_fleet_default=True`): a human is
-    driving that write at the moment it happens, a materially different threat
-    shape, and changing its default is the operator's own open call on #296
-    part 2, not something to fold in here.
+    **The generated password wins** — FR-CRED-007, ADR-0064 slice E. Until
+    2026-09-06 the fleet ``default_password`` was preferred over a generated
+    one whenever a caller did not opt out. ADR-0061 split the fleet
+    credential's two jobs: it is an *entry* credential — an input for
+    authentication on a device set up elsewhere — never a value written to a
+    device. Writing it onto a brand-new account was the least appropriate
+    place to prefer it:
+
+    - ``needsetup=yes`` — the only signal this call exists to respond to — is
+      read from an unauthenticated device response, and the deferred
+      ``reprovision`` task can fire up to 24h after an operator approved it,
+      unattended, against whatever host answers at the device's registered
+      address at that later moment. ADMZ cannot authenticate a peer that (by
+      definition of ``needsetup=yes``) has no account yet, and no other
+      identity check exists on this path (GH #185). Sending the *shared
+      fleet-wide* password there means a spoofed peer — a reassigned DHCP
+      lease, ARP spoofing, the port a decommissioned camera vacated — walks
+      away with a credential valid on every other device ADMZ manages. A
+      freshly generated one does not verify the peer either (nothing here
+      does), but it makes who the peer turns out to be matter much less: the
+      disclosed value is reused nowhere else, and is not even valid against
+      the real device at this ``device_id``, which was never contacted. The
+      disclosure itself, and the registry then believing it holds a working
+      credential for hardware it never touched, are #185's residual gap.
+    - A leak from one device stops at that device (#296's own reasoning).
+
+    ``allow_fleet_default=True`` is the explicit opt-in a caller must ask for
+    by name to have the fleet ``default_password`` written; no caller in the
+    tree does, and #296 part 2 (shared versus per-device as a first-class
+    setting) is where a deliberate shared mode would live. The trade ADR-0061
+    accepted, stated plainly: a device provisioned here holds only its
+    generated password, so if ADMZ's database is lost the entry credentials do
+    not get back in — the device is factory-reset and provisioned again. The
+    username stays ``root`` until a measurement says an Axis unit accepts a
+    non-``root`` first account (ADR-0064 decision 9).
     """
     if password:
         new_password, source = password, "provided"

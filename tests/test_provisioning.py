@@ -88,15 +88,49 @@ class TestProvisionFactoryDefault:
         assert ("cam-1", {"auth_method": "digest"}) in reg.info_updates
 
     @pytest.mark.asyncio
-    async def test_uses_fleet_default_password(self, monkeypatch):
+    async def test_a_configured_fleet_default_is_not_written(self, monkeypatch):
+        """FR-CRED-007 (ADR-0064 slice E): the generated password wins. A fleet
+        default IS configured and the caller did not opt out — and it still
+        never leaves the process bound for the device."""
         monkeypatch.setattr("admz.fleet_settings.fleet_settings.get", lambda k: "FleetPass123")
         execr = _Executor()
         reg = _Registry()
         res = await provisioning.provision_factory_default(
             _Catalog(), {"vapix": execr}, reg, device_id="cam-1", host="1.2.3.4",
         )
+        assert res["password_source"] == "generated"
+        assert execr.last[3]["password"] != "FleetPass123"
+        assert reg.accounts[("cam-1", "default")]["password"] != "FleetPass123"
+        assert reg.accounts[("cam-1", "default")]["password"] == execr.last[3]["password"]
+        assert "FleetPass123" not in repr(res)
+
+    @pytest.mark.asyncio
+    async def test_the_fleet_default_is_written_only_by_explicit_opt_in(self, monkeypatch):
+        """`allow_fleet_default=True` is the one way the shared secret reaches a
+        device — a caller must ask for it by name."""
+        monkeypatch.setattr("admz.fleet_settings.fleet_settings.get", lambda k: "FleetPass123")
+        execr = _Executor()
+        reg = _Registry()
+        res = await provisioning.provision_factory_default(
+            _Catalog(), {"vapix": execr}, reg, device_id="cam-1", host="1.2.3.4",
+            allow_fleet_default=True,
+        )
         assert res["password_source"] == "fleet_default"
         assert reg.accounts[("cam-1", "default")]["password"] == "FleetPass123"
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_password_is_still_honoured(self, monkeypatch):
+        monkeypatch.setattr("admz.fleet_settings.fleet_settings.get", lambda k: "FleetPass123")
+        execr = _Executor()
+        reg = _Registry()
+        res = await provisioning.provision_factory_default(
+            _Catalog(), {"vapix": execr}, reg, device_id="cam-1", host="1.2.3.4",
+            password="Chosen-1",
+        )
+        assert res["password_source"] == "provided"
+        assert execr.last[3]["password"] == "Chosen-1"
+        assert reg.accounts[("cam-1", "default")]["password"] == "Chosen-1"
+        assert "Chosen-1" not in repr(res)
 
     @pytest.mark.asyncio
     async def test_allow_fleet_default_false_never_uses_fleet_default(self, monkeypatch):
@@ -304,3 +338,26 @@ class TestAdoptWithAdmzAccount:
         op, device, creds, params = execr.last
         assert device.get("auth_method") == "basic"
         assert (device.get("auth") or {}).get("scheme") == "https"
+
+
+def test_no_caller_opts_into_the_fleet_default():
+    """FR-CRED-007: `allow_fleet_default=True` exists as an explicit opt-in and
+    nothing in the tree passes it — the shared secret is written to a device
+    only by a caller that asks for it by name, and today there is none."""
+    import ast
+    import pathlib
+
+    import admz
+
+    root = pathlib.Path(admz.__file__).parent
+    offenders = []
+    for f in sorted(root.rglob("*.py")):
+        tree = ast.parse(f.read_text(encoding="utf-8"), filename=str(f))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for kw in node.keywords:
+                if (kw.arg == "allow_fleet_default"
+                        and isinstance(kw.value, ast.Constant) and kw.value.value is True):
+                    offenders.append(f"{f.relative_to(root)}:{node.lineno}")
+    assert offenders == []
