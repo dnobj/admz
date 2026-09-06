@@ -45,7 +45,8 @@ from admz.executor.models import StepResult
 CONFIRM_TOKEN_TTL_SECONDS = 300  # 5 minutes
 
 # Strictness ordering, used to pick a plan's required level across its steps.
-_LEVEL_ORDER = {"none": 0, "llm_confirm": 1, "url_only": 2, "url_and_password": 3}
+# The one severity scale (GH #456) — defined beside the risk table it ranks.
+from admz.confirm_policy import LEVEL_STRICTNESS as _LEVEL_ORDER  # noqa: E402
 
 
 # --------------------------------------------------------------------------

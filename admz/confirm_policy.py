@@ -81,6 +81,38 @@ UNKNOWN_RISK_CONFIRMATION = "url_only"
 # to the table above — this rejects typos, not downgrades.
 VALID_CONFIRMATION_LEVELS = {"url_and_password", "url_only", "llm_confirm", "none"}
 
+# Strictness order of the confirmation levels — the ONE severity scale
+# (GH #456). ``operations._plan_level_and_risk`` ranks plan steps with it, and
+# the plan engine's raise-only risk floor ranks risk WORDS through it via
+# :func:`risk_rank`, so there is no second vocabulary table anywhere that can
+# quietly disagree with this one. The engine used to keep its own four-word
+# ``_RISK_ORDER`` in which every unknown catalog word — ``action``, ``read``,
+# or anything new — ranked 0, so a declared ``normal`` overrode it and the
+# fail-closed default below never got the chance: the #397 pathology
+# reproduced one table over.
+LEVEL_STRICTNESS: Dict[str, int] = {
+    "none": 0,
+    "llm_confirm": 1,
+    "url_only": 2,
+    "url_and_password": 3,
+}
+
+
+def is_known_risk(risk_level: str) -> bool:
+    """Whether ``risk_level`` is a word the policy table interprets."""
+    return risk_level in _DEFAULT_CONFIRMATION_LEVELS
+
+
+def risk_rank(risk_level: str) -> int:
+    """Severity rank of a risk word = the strictness of the confirmation it
+    earns by default. An UNKNOWN word ranks as :data:`UNKNOWN_RISK_CONFIRMATION`
+    — fail closed — so nothing a caller declares short of ``dangerous`` can
+    soften a catalog word this table has never seen. (Whether a *declared*
+    unknown word may be honoured at all is the caller's decision; see
+    :func:`is_known_risk`.)"""
+    level = _DEFAULT_CONFIRMATION_LEVELS.get(risk_level, UNKNOWN_RISK_CONFIRMATION)
+    return LEVEL_STRICTNESS[level]
+
 
 def unknown_risk_levels(risk_levels) -> set:
     """Which of ``risk_levels`` this table cannot interpret.
