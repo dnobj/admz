@@ -41,10 +41,13 @@ def client(tmp_path, monkeypatch):
 
     # A device with NO account row — the #443 shape.
     fresh.add_device("cam-none", {"host": "10.0.0.1", "nickname": "NoCreds", "tags": []})
-    # A device WITH an account — the auth_failed shape.
+    # A device WITH an account — the auth_failed shape. Labelled `service`
+    # with a purpose, as every chat-card capture leaves it, so a route that
+    # relabels the row is visible.
     fresh.add_device("cam-stale", {"host": "10.0.0.2", "nickname": "Stale", "tags": []},
                      {"default": {"username": "root", "password": "old",
-                                  "account_type": "admin"}})
+                                  "account_type": "service",
+                                  "purpose": "Device onboarding — automatic resolution failed"}})
 
     with TestClient(app) as c:
         c.registry = fresh
@@ -69,12 +72,27 @@ class TestEnterCredentials:
             "a device with no account gets an admin, not the session default 'service'"
         )
 
-    def test_a_device_with_a_stale_account_gets_a_session_too(self, client):
-        """`auth_failed` uses the same action: the form's submit updates the
-        existing `default` row."""
+    def test_a_device_with_a_stale_account_keeps_its_rows_shape(self, client):
+        """`auth_failed` uses the same action, and the existing `default` row
+        keeps its type and purpose — the capture submit merges the session's
+        into the row, so the session must carry the row's own (as the rotate
+        route does), not relabel a `service` account as `admin`."""
+        from admz.api.capture import capture_store
+
         r = client.post("/device/cam-stale/credentials", headers=SAME_ORIGIN,
                         follow_redirects=False)
         assert r.status_code == 303 and r.headers["location"].startswith("/capture/")
+        session = capture_store.get_session(r.headers["location"].rsplit("/", 1)[1])
+        assert session.account_type == "service"
+        assert session.purpose == "Device onboarding — automatic resolution failed"
+        # and through the form, the row is shape-identical afterwards
+        done = client.post(r.headers["location"], data={"username": "root", "password": "new"},
+                           headers=SAME_ORIGIN)
+        assert done.status_code == 200
+        row = next(a for a in client.registry.list_accounts("cam-stale") if a["account_id"] == "default")
+        assert row["account_type"] == "service"
+        assert row["purpose"] == "Device onboarding — automatic resolution failed"
+        assert client.registry.get_credentials("cam-stale")["password"] == "new"
 
     def test_an_unknown_device_is_404(self, client):
         r = client.post("/device/nope/credentials", headers=SAME_ORIGIN,
@@ -107,7 +125,11 @@ class TestTheDevicePageOffersTheActions:
         text = (TEMPLATES / "device_detail.html").read_text(encoding="utf-8", errors="replace")
         assert "me.status === 'no_credentials' || me.status === 'auth_failed'" in text
         assert "/credentials" in text and "Enter credentials" in text
-        assert "Run onboarding" in text and "/onboard'" in text
+        # the button itself, not the phrase (which a comment also carries)
+        assert 'id="run-onboarding-btn"' in text and "/onboard'" in text
+        assert "window.location = j.capture_url" in text
+        assert "window.location = j.confirm_url" in text, "the approval envelope has a page of its own"
+        assert "j.detail" in text
         # the form posts to the route this slice adds, for THIS device
         assert re.search(r"action=\"/device/' \+ encodeURIComponent\(DEVICE_ID\) \+ '/credentials\"", text)
 

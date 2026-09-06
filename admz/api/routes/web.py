@@ -471,11 +471,20 @@ async def enter_device_credentials(
             },
             status_code=404,
         )
+    # `auth_failed` reaches this route too, and then the `default` row exists:
+    # keep its shape exactly as the rotate route does (the capture submit
+    # merges the session's type and purpose into the row). Only a device with
+    # no row at all gets the admin default.
+    existing = next(
+        (a for a in registry.list_accounts(device_id) if a.get("account_id") == "default"),
+        None,
+    )
     session = capture_store.create_session(
         device_id=device_id,
         account_id="default",
-        account_type="admin",
-        purpose="Entered from the device page — ADMZ had no usable stored credential",
+        account_type=(existing or {}).get("account_type") or "admin",
+        purpose=(existing or {}).get("purpose")
+        or "Entered from the device page — ADMZ had no usable stored credential",
         ttl=300,
     )
     return RedirectResponse(url=f"/capture/{session.token}", status_code=303)

@@ -346,7 +346,7 @@ const HEALTH = {
     // ADR-0064 slice B: the three outcomes this map did not know.
     credentials_needed: ['error', 'Automatic credential resolution failed — use Enter credentials in the banner below, or run onboarding again.'],
     admz_account_created: ['success', 'ADMZ created its own admin account on the device and now uses it.'],
-    approval_required: ['error', 'Onboarding needs your approval before ADMZ writes an account on the device — approve it in the console.'],
+    approval_required: ['error', 'Onboarding needs your approval before ADMZ writes an account on the device — Run onboarding below takes you to the approval page.'],
   };
   const note = NOTES[status];
   if (!note) return;
@@ -834,7 +834,11 @@ function recMsg(text, ok) {
           const resp = await fetch('/api/devices/' + encodeURIComponent(DEVICE_ID) + '/onboard', { method: 'POST' });
           const j = await resp.json();
           if (j.capture_url) { window.location = j.capture_url; return; }
-          out.textContent = j.message || j.reason || ('onboarding: ' + (j.status || 'done'));
+          // A factory-default unit answers with the ADR-0059 approval
+          // envelope: its page is standalone, so go there rather than
+          // rendering prose written for the model.
+          if (j.confirm_url) { window.location = j.confirm_url; return; }
+          out.textContent = j.message || j.reason || j.detail || ('onboarding: ' + (j.status || 'done'));
         } catch (e) { out.textContent = 'onboarding request failed'; }
         finally { btn.disabled = false; }
       });
