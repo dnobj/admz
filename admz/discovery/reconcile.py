@@ -94,7 +94,7 @@ async def _identity_proven(
     if not creds or not creds.get("password"):
         # Nothing to prove with. Refusing is still right: an uncredentialed
         # device repointed at an attacker becomes the target of the NEXT
-        # onboarding, which sends the fleet default password (#185).
+        # onboarding, which writes a password to the device (#185).
         return False, "device has no stored credentials, so identity cannot be proven"
 
     # ── DEPENDS ON GH #171 / PR #292 ────────────────────────────────────────

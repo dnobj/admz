@@ -164,7 +164,7 @@ class TestAnUnprovenClaimantIsRefused:
     def test_a_device_with_no_stored_credentials_is_refused(self):
         """Nothing to prove with. Refusing is still right — an uncredentialed
         device repointed at an attacker becomes the target of the NEXT
-        onboarding, which sends the fleet default password (#185)."""
+        onboarding, which writes a password to the device (#185)."""
         reg = _Registry(REGISTERED(), creds=None)
         changes = _run(reg, MOVED, verdict=True)
         assert reg.updates == []

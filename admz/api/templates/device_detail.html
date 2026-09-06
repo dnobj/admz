@@ -275,7 +275,7 @@
         <div id="pending-list"><p class="page-sub" style="margin:0;padding:10px 16px">No pending actions.</p></div>
         <div class="setting-row" style="border-top:1px solid var(--border)">
           <div style="display:flex;gap:8px;width:100%;align-items:center;flex-wrap:wrap">
-            <span class="page-sub" style="margin:0;flex:1;min-width:160px">Re-provision this device (create an admin from the fleet default password) when it next reports factory-defaulted.</span>
+            <span class="page-sub" style="margin:0;flex:1;min-width:160px">Re-provision this device (create an admin with a generated password) when it next reports factory-defaulted.</span>
             <button class="btn ghost sm" id="rec-queue-btn" onclick="recQueue()"><i data-lucide="wrench"></i> Queue re-provision</button>
           </div>
         </div>
@@ -338,7 +338,7 @@ const HEALTH = {
   const status = new URLSearchParams(window.location.search).get('onboarding');
   if (!status) return;
   const NOTES = {
-    provisioned: ['success', 'Device was factory-defaulted — an admin account was provisioned automatically from fleet settings.'],
+    provisioned: ['success', 'Device was factory-defaulted — an admin account was provisioned automatically with a generated password.'],
     fleet_credentials_saved: ['success', 'Fleet default credentials authenticated and were saved for this device.'],
     already_credentialed: ['success', 'Stored credentials verified — device is ready.'],
     provision_failed: ['error', 'Automatic provisioning failed — see the health status below.'],

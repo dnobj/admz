@@ -1,7 +1,8 @@
 """Credential onboarding (admz/onboarding.py) — resolution order + secrecy.
 
-Order: stored creds verify → keep; needsetup → provision from fleet
-settings; fleet pair authenticates → save silently; else credentials_needed.
+Order: stored creds verify → keep; needsetup → provision with a generated
+password (FR-CRED-007); an entry credential authenticates → adopt; else
+credentials_needed.
 No outcome dict may ever carry a password.
 """
 
@@ -72,7 +73,7 @@ def patch_probes(monkeypatch):
         "confirm": [],          # queue of (ok, facts) per call
         "systemready": None,    # dict or None
         "provision": {"success": True, "username": "root",
-                      "password_source": "fleet_default"},
+                      "password_source": "generated"},
     }
 
     async def _confirm(**kwargs):
@@ -115,11 +116,13 @@ class TestResolutionOrder:
         assert out["status"] == "already_credentialed"
         assert "provision_called" not in patch_probes
 
-    def test_needsetup_provisions_from_fleet_when_approved(self, patch_probes):
+    def test_needsetup_provisions_with_a_generated_password_when_approved(self, patch_probes):
         """ADR-0059: provisioning a factory-defaulted device now requires an
-        approval. This test kept its subject — "the fleet default is used and
-        the write happens" — and gained the approval the operator would give;
-        the *unapproved* half is pinned in test_provisioning_gate.py."""
+        approval. This test's subject is "the write happens and its outcome is
+        passed through" — the write itself is stubbed here; the password that
+        actually reaches the device is pinned by
+        TestTheFactoryDefaultWriteItself below. The *unapproved* half is
+        pinned in test_provisioning_gate.py."""
         from admz.approval_context import approved
 
         patch_probes["systemready"] = {"needsetup": True, "systemready": True,
@@ -127,7 +130,7 @@ class TestResolutionOrder:
         with approved("register_discovered_device", "tok-test"):
             out = _run()
         assert out["status"] == "provisioned"
-        assert out["password_source"] == "fleet_default"
+        assert out["password_source"] == "generated"
         assert patch_probes.get("provision_called")
 
     def test_needsetup_gates_when_not_approved(self, patch_probes):
@@ -564,3 +567,74 @@ class TestSurveyEnqueueWiring:
         out = _run()  # no approval in context → the gate fires
         assert out["status"] == "approval_required"
         assert self._survey_tasks("dev-1") == []
+
+
+class TestTheFactoryDefaultWriteItself:
+    """FR-CRED-007 (ADR-0064 slice E) through the REAL provision_factory_default.
+
+    Every other test here stubs the write, so none can see what password
+    reaches the device. This one uses the fake executor test_provisioning uses
+    and asserts on the parameters actually sent — the shape of its unattended
+    reprovision test, applied to onboarding's factory-default step.
+    """
+
+    class _Op:
+        id = "pwdgrp.cgi:add-user"
+        cgi = ""
+        method = "GET"
+        risk_level = "dangerous"
+        request: dict = {}
+        response: dict = {}
+        requires: dict = {}
+        endpoint = ""
+        generation = "legacy-cgi"
+        auth: dict = {}
+        service_impact = ""
+        base_path = ""
+        path = ""
+
+    class _Result:
+        success = True
+        status_code = 200
+        error = None
+
+    class _Catalog:
+        def get_operation(self, family, op_id):
+            return TestTheFactoryDefaultWriteItself._Op()
+
+    class _Executor:
+        def __init__(self):
+            self.sent = []
+
+        async def execute(self, op, device, creds, params):
+            self.sent.append(dict(params))
+            return TestTheFactoryDefaultWriteItself._Result()
+
+    def test_onboarding_provisions_a_factory_default_device_with_a_generated_password(self, monkeypatch):
+        from admz.approval_context import approved
+
+        monkeypatch.delenv("ADMZ_DISABLE_ONBOARDING_PROBES", raising=False)
+
+        async def _tcp_up(host, port, timeout):
+            return 5
+
+        async def _ready(*a, **k):
+            return {"needsetup": True, "systemready": True, "bootid": None, "uptime": 1}
+
+        monkeypatch.setattr("admz.fleet.health._tcp_probe", _tcp_up)
+        monkeypatch.setattr("admz.fleet.systemready.read_systemready", _ready)
+        # the fleet default IS configured — and must not be what is written
+        monkeypatch.setattr("admz.fleet_settings.fleet_settings.get",
+                            lambda k: FLEET_PW if k == "default_password" else None)
+        execr = self._Executor()
+        reg = _Registry()
+        with approved("register_discovered_device", "tok-test"):
+            out = asyncio.run(onboard_device_credentials(
+                device_id="dev-1", registry=reg, catalog=self._Catalog(),
+                executors={"vapix": execr}))
+        assert out["status"] == "provisioned"
+        assert out["password_source"] == "generated"
+        assert len(execr.sent) == 1 and execr.sent[0]["username"] == "root"
+        assert execr.sent[0]["password"] != FLEET_PW
+        assert reg.accounts["default"]["password"] == execr.sent[0]["password"]
+        assert FLEET_PW not in repr(out)

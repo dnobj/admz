@@ -278,7 +278,7 @@ pointer to a getter). So:
   or `delete_device` to decommission it.
 - Use `list_device_recovery` to report what's queued and
   `cancel_device_recovery(pending_id)` to undo a queued recovery.
-- Re-provision passwords come from the fleet default and are NEVER shown.
+- Re-provision passwords are generated per device and are NEVER shown.
 
 # Tool argument hygiene
 
@@ -340,8 +340,8 @@ echo, or pass a password as a tool argument in chat.
   `register_device` resolves credentials automatically after adding a
   device, and `onboard_device` does the same for an already-registered
   one: verify stored credentials → auto-provision a factory-defaulted
-  device from fleet settings → try the fleet default credential pair and
-  save it if it works — all server-side, no password enters this chat.
+  device with a generated password → try the entry credentials and save
+  the one that works — all server-side, no password enters this chat.
   Only when none of that works does a capture card appear. For "set up
   the new camera" intents, call `onboard_device` FIRST rather than
   jumping to `capture_credentials`, then report the outcome.

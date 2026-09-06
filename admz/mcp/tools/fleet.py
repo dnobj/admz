@@ -20,8 +20,9 @@ TOOLS: List[Tool] = [
     Tool(
         name="set_fleet_setting",
         description=(
-            "Set the fleet default credentials used when provisioning "
-            "devices. Only two keys can be set here: 'default_password' "
+            "Set the fleet's entry credential pair — tried to get into devices "
+            "set up elsewhere; never written to a device (FR-CRED-007). "
+            "Only two keys can be set here: 'default_password' "
             "and 'default_username'. Every other fleet setting is "
             "protected and must be changed by an operator from the web UI "
             "or the admz CLI — do not attempt them, and tell the user to "

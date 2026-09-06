@@ -7,9 +7,10 @@ Resolution order (first hit wins):
 1. **Stored credentials verify** — the device already has a working
    ``default`` account: nothing to do.
 2. **Factory-defaulted** (unauthenticated ``systemready`` says
-   ``needsetup=yes``): provision the admin account from fleet settings
-   (``default_username``/``default_password``, else a generated password)
-   via :func:`admz.provisioning.provision_factory_default`.
+   ``needsetup=yes``): provision the ``root`` admin account with a generated
+   password via :func:`admz.provisioning.provision_factory_default` — the
+   fleet pair is an entry credential, never a value written to a device
+   (FR-CRED-007, ADR-0064 slice E).
 3. **Fleet credential pair authenticates**: the device was set up elsewhere
    with the fleet-standard credentials — save them as the device's account,
    entirely server-side.
@@ -280,7 +281,7 @@ async def onboard_device_credentials(
         # Rejected or indeterminate: fall through — a stale stored password
         # is exactly what the fleet-pair try below may repair.
 
-    # ---- 2. Factory-defaulted → provision from fleet settings ------------
+    # ---- 2. Factory-defaulted → provision with a generated password -------
     ready = await read_systemready(
         catalog, executor, probe_info,
         stored or {"username": "", "password": ""},

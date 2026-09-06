@@ -57,7 +57,7 @@ FastAPI, which has its own handling).
 ### FR-CORE-004 — Fleet settings store ✅
 `admz/fleet_settings.py::FleetSettings` — SQLite-backed K/V store for
 settings that apply across all devices:
-- `default_password` / `default_username` for `provision_device`
+- `default_password` / `default_username` — the legacy entry-credential pair (FR-CRED-011); never written to a device (FR-CRED-007)
 - `confirm_level_<risk>` per-risk confirmation policy
 - `confirm_password_hash` PBKDF2 hash
 

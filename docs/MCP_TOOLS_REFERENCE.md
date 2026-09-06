@@ -171,8 +171,8 @@ time-based snapshot schedules). When the device next reports
 factory-defaulted (`needsetup`), the health-monitor sweep automatically
 re-provisions it — so a factory reset from chat doesn't block on the
 ~1–2 min reboot. The actual provision runs only because it was authorized
-here, up front; the password comes from the fleet default and is never
-shown.
+here, up front; the password is generated per device (never the fleet
+default — FR-CRED-007) and is never shown.
 - **Args:** `device_id` (required); `intent` (only `reprovision` for now);
   `username` (default `root`)
 - **Returns:** `{success, queued, pending_id, device_id, trigger, message}`
@@ -318,12 +318,13 @@ are stored under account `default` and **never returned** in the response
 — the executor uses them internally, and for human login you mint a
 short-lived account with `create_temp_credentials`.
 - **Args:** `device_id?` or `host?` (one required), `username` (default
-  `"root"`), `password?` (else fleet default or 24-char generated),
+  `"root"`), `password?` (else 24-char generated per device),
   `force_change` (bool, default `false`)
 - **Returns:** `{success, device_id, host, status, action_taken,
   username, password_source, auto_registered, detail}`
-- **Password source precedence:** explicit > fleet `default_password` >
-  generated.
+- **Password source:** explicit > generated per device. The fleet
+  `default_password` is an entry credential and is never written to a
+  device (FR-CRED-007, ADR-0064 slice E).
 
 ### `test_device_credentials`
 Probe a host with no-auth, legacy `root/pass`, and up to 5 user-supplied

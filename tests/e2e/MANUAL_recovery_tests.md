@@ -31,7 +31,7 @@ defaulted device in inventory (the lab Q3538-SLVE `B8A44F661A2F` @ 192.168.1.238
 | **D. Real re-provision (DESTRUCTIVE — needs go-ahead + the live device)** | | |
 | D1 | With the Q3538 in `needs_setup`, click **Queue re-provision** (or chat-queue it) | Pending action armed |
 | D2 | Wait for the next health sweep (~60s) with the monitor enabled | Sweep fires the pending action **once**; audit log shows it attributed to the approver + "deferred-trigger" |
-| D3 | Re-check the device health | Flips `needs_setup` → `online`; an admin account now exists (created from the fleet default password — never displayed) |
+| D3 | Re-check the device health | Flips `needs_setup` → `online`; an admin account now exists (created with a generated per-device password — never displayed) |
 | D4 | Re-run the queue (fire-once check) | The fired action is gone; it does **not** fire again |
 | D5 | Audit/event log | No device password anywhere in the payloads |
 

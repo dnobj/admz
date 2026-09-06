@@ -17,7 +17,8 @@ TOOLS: List[Tool] = [
             "Do NOT use this to set/change/rotate the password on a healthy, "
             "already-managed device — that is the out-of-band capture flow "
             "(capture_credentials). "
-            "Password priority: explicit param > fleet default_password setting > auto-generated. "
+            "Password: the explicit param if given, else generated per device — the fleet "
+            "default_password is an entry credential and is never written to a device (FR-CRED-007). "
             "Generated passwords are stored in the registry and NEVER returned in the response "
             "or exposed to the LLM, and are never displayed in the web UI; ADMZ uses them only "
             "at execution time to reach the device. "
@@ -46,8 +47,9 @@ TOOLS: List[Tool] = [
                 "password": {
                     "type": "string",
                     "description": (
-                        "Specific password to set. If omitted, uses fleet "
-                        "default_password setting, or generates a secure one."
+                        "Specific password to set. If omitted, a secure per-device "
+                        "password is generated; the fleet default_password is never "
+                        "written to a device."
                     ),
                 },
                 "force_change": {

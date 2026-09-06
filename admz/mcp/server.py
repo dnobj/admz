@@ -2215,8 +2215,8 @@ class ADMZMCPServer:
     async def _onboard_device(self, device_id: str, adopt: bool = False) -> Dict[str, Any]:
         """Resolve a device's credentials without any password entering
         context: verify stored creds / auto-provision a factory-default
-        device from fleet settings / try-and-save the fleet credential
-        pair — and only if none of those work, open a capture session
+        device with a generated password / try the entry credentials and
+        adopt — and only if none of those work, open a capture session
         (the chat console renders it as a secure credential-form card).
         """
         from admz.onboarding import (
@@ -2261,7 +2261,7 @@ class ADMZMCPServer:
         elif status == PROVISIONED:
             result["message"] = (
                 "Device was factory-defaulted; an admin account was "
-                "provisioned automatically from fleet settings "
+                "provisioned automatically with a generated password "
                 f"(password source: {result.get('password_source')}). "
                 "The password was stored server-side and is not available here."
             )
@@ -4170,7 +4170,7 @@ class ADMZMCPServer:
             base_url = os.getenv("ADMZ_BASE_URL", "http://localhost:4242")
             session = capture_store.create_fleet_session(
                 setting_key=key,
-                label="Fleet default password for device provisioning",
+                label="Fleet entry credential — tried on devices set up elsewhere; never written to a device",
             )
             url = f"{base_url}/capture/fleet/{session.token}"
             return {
@@ -4604,13 +4604,14 @@ class ADMZMCPServer:
         if user_password:
             new_password = user_password
         else:
-            fleet_default = fleet_settings.get("default_password")
-            if fleet_default:
-                new_password = fleet_default
-                password_source = "fleet_default"
-            else:
-                new_password = self._generate_device_password()
-                password_source = "generated"
+            # FR-CRED-007 (ADR-0064 slice E): the generated password wins.
+            # The fleet `default_password` is an entry credential — an input
+            # for authentication, never a value written to a device
+            # (ADR-0061) — so this path no longer reads it. Same rule as
+            # `provisioning.provision_factory_default`, which this tool
+            # does not call.
+            new_password = self._generate_device_password()
+            password_source = "generated"
 
         if probe.status == ProbeStatus.FACTORY_DEFAULT:
             ok, error = await self._execute_on_host(

@@ -1,7 +1,8 @@
 """Fernet encryption for secret values in the fleet-settings table (GH #296 part 1).
 
 ADMZ encrypts every credential it stores *about* a device, but ``default_password``
-— the credential it **writes to** devices — sat in ``fleet_settings`` as a plain
+— then the credential it **wrote to** devices, today an entry credential only
+(FR-CRED-007) — sat in ``fleet_settings`` as a plain
 value, protected only by the directory ACL from #252. So did ``gemini_api_key``
 and ``acs_webhook_token``.
 
@@ -90,9 +91,10 @@ def read_stored(key: str, stored: Optional[str]) -> Tuple[Optional[str], bool]:
 
     The third returns None rather than raising, matching
     ``survey.secrets.get_pat``'s existing "None if unset/undecryptable"
-    contract. For ``default_password`` that degrades provisioning to generating
-    a per-device password, which is the safe direction — and it never
-    overwrites the unreadable value, so restoring the correct key recovers it.
+    contract. For ``default_password`` that degrades entry #1 to a capture
+    prompt (provisioning already generates per device — FR-CRED-007), which is
+    the safe direction — and it never overwrites the unreadable value, so
+    restoring the correct key recovers it.
     """
     if stored is None or stored == "":
         return None, False

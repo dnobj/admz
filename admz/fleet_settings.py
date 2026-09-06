@@ -9,12 +9,14 @@ The full key inventory lives in :mod:`admz.setting_policy`, together with the
 allow-set that decides which of them the chat model may write (ADR-0053).
 The two it may write are the fleet credential pair:
 
-  - ``default_password``: When set, ``provision_device`` uses this
-    password instead of generating a random one per device. Its *value* never
-    comes from chat — the model requests an out-of-band capture URL and a
-    human types it into a browser (ADR-0009, FR-MCP-008).
-  - ``default_username``: Admin username for provisioning (default: "admin").
-    Used together with ``default_password`` as the fleet credential pair.
+  - ``default_password``: the fleet's first *entry* credential (FR-CRED-011):
+    onboarding tries it to get into a device set up elsewhere. It is never
+    written to a device — factory-default provisioning generates a per-device
+    password (FR-CRED-007, ADR-0064 slice E). Its *value* never comes from
+    chat — the model requests an out-of-band capture URL and a human types it
+    into a browser (ADR-0009, FR-MCP-008).
+  - ``default_username``: the username of that entry credential (unset reads
+    as ``root``). Used together with ``default_password`` as the pair.
 
 Every other key is refused from MCP; an operator sets it from the web UI or
 with ``python -m admz settings set``.

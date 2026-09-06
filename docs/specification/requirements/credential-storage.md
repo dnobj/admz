@@ -60,20 +60,34 @@ uses the right scheme per request. See
 - Returns structured outcome; generated passwords are never echoed
   in the response.
 
-Password source: explicit arg > fleet `default_password` > 24-char
-generated.
+Password source: explicit arg > 24-char generated, per device. The fleet
+`default_password` is **never written to a device**: it is an entry credential
+(FR-CRED-011) — an input for authentication on a device set up elsewhere.
 
-> **This ordering is changed by [ADR-0061](../decisions/0061-entry-credentials-and-the-admz-account.md).**
-> Preferring the shared fleet password is least appropriate exactly here —
-> writing a brand-new account on a factory-default device — and #327 already
-> moved unattended reprovision to always generate. Under FR-CRED-011 the
-> generated password wins and the fleet credential is an *input for
-> authentication*, never a value written to a device.
+> **This ordering was changed by [ADR-0061](../decisions/0061-entry-credentials-and-the-admz-account.md)**
+> and shipped by **ADR-0064 slice E ✅ (2026-09-06)**. Until then it was
+> *explicit arg > fleet `default_password` > generated*: preferring the shared
+> fleet password was least appropriate exactly here — writing a brand-new
+> account on a factory-default device — and #327 had already moved unattended
+> reprovision to always generate. Now `provision_factory_default`'s
+> `allow_fleet_default` defaults to `False` (an explicit `password=` is still
+> honoured; `True` is an opt-in no caller passes, pinned by a test), and the
+> MCP `provision_device` tool — which carries its own copy of the write and
+> does not call that function — generates too, on its factory-default path and
+> its `force_change` rotation. The username stays `root` until a measurement
+> says an Axis unit accepts a non-`root` first account (ADR-0061's table says
+> `admz`; unverified).
 >
-> **Slice E of ADR-0064 ships it** 📋: `allow_fleet_default` defaults to
-> `False`; an explicit `password=` is still honoured. The username stays `root`
-> until a measurement says an Axis unit accepts a non-`root` first account
-> (ADR-0061's table says `admz`; unverified).
+> The trade, stated plainly: a device provisioned from factory default holds
+> only its generated password, so after a loss of ADMZ's database the entry
+> credentials do not get back into it — it is factory-reset and provisioned
+> again. The recovery control is therefore the one the README already
+> demands: back up `admz.db` **and** `admz.key` together (README §Backup).
+> Under the old ordering the fleet password on the device was a recovery route
+> only when `default_username` was the account written (`root`); an install
+> whose pair is `operator/…` never had one. #296 part 2 (shared versus
+> per-device as a first-class setting) is where a deliberate shared mode
+> would live.
 
 ### FR-CRED-008 — Temporary device-side users ✅
 `create_temp_credentials(device_id, permissions, ttl_seconds)`
@@ -135,7 +149,7 @@ onto the `admz` account in place, keeping the credential it came in on.
 [ADR-0064](../decisions/0064-a-device-admz-cannot-authenticate-to-is-never-online.md)
 as slices C–F together with #443: the per-pass attempt bound (FR-CRED-013,
 slice C — shipped 2026-09-06), the promote checkbox (FR-CRED-012, slice D — shipped 2026-09-06),
-FR-CRED-007's generated-wins ordering (slice E), and most-recently-successful
+FR-CRED-007's generated-wins ordering (slice E — shipped 2026-09-06), and most-recently-successful
 ordering (FR-CRED-013, slice F — waits for the lockout measurement). Two facts to hold while reading the
 rest: the list has two writers — `python -m admz settings set entry_credentials`
 and, since slice D, the capture form's promote checkbox — and no settings-page
@@ -192,10 +206,10 @@ than used — so turning it on stops ADMZ using a credential immediately, with
 nothing to delete first. Nothing is deleted on the operator's behalf, so turning
 it off restores what was there.
 
-It costs less than it appears. Nothing requires a stored fleet password:
-`provision_factory_default` prefers one but falls back to
-`generate_device_password()`, and #185 already made the deferred/scheduled
-reprovision path generate unconditionally. The only thing the posture gives up
+It costs less than it appears. Nothing requires a stored fleet password: since
+ADR-0064 slice E `provision_factory_default` never writes one (the generated
+password wins, FR-CRED-007), as the deferred reprovision path has since #185.
+The only thing the posture gives up
 is that adopting an **already-set-up** device always asks a human — which is
 precisely what it is choosing.
 

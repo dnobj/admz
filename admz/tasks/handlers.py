@@ -362,9 +362,10 @@ async def _run_reprovision(task: Task, ctx: TaskContext) -> Dict[str, Any]:
     Sending a fresh generated one instead doesn't verify the peer either —
     nothing here can — but it makes who the peer turns out to be matter much
     less: see :func:`admz.provisioning.provision_factory_default`'s
-    ``allow_fleet_default`` docstring for the full reasoning. The interactive
-    ``provision_device`` MCP path is untouched — a human drives that write at
-    the moment it happens, a different threat shape.
+    ``allow_fleet_default`` docstring for the full reasoning. Since ADR-0064
+    slice E (FR-CRED-007) generating is also the function's default and the
+    interactive ``provision_device`` path generates too; the explicit ``False``
+    here stays as the statement of intent on the unattended path.
 
     **What this does NOT fix, on purpose — do not read a green test suite as
     "GH #185 closed":** ADMZ's registry still ends up believing it holds a
