@@ -60,11 +60,21 @@ answered), it is amber and in the **attention** bucket, and `event_for_status`
 maps it to `None` — no `on_online` task may fire for a device ADMZ cannot
 authenticate to. A device *with* credentials that reaches the TCP tier only
 because the catalog or executor is unavailable stays `online`: the value keys
-on credential absence, not on which tier answered.
+on credential absence, not on which tier answered. Absence is something the
+registry *says* (`AccountNotFoundError`/`DeviceNotFoundError`), never something
+a lookup *fails* to say: on any other error the sweep keeps the previous record
+with `last_error="credential lookup failed: …"`. Only the `default` account
+counts (`recovery` and `at_*` rows are invisible, as they are to the Tier-1
+guard today). A factory-default unit is **`needs_setup`**, not
+`no_credentials`: with no usable credential the TCP tier asks `systemready`
+unauthenticated — the op needs no credential by design — and `needsetup=yes`
+wins, so the existing CTA and `on_needs_setup` trigger apply.
 
 The sweep **classifies and never resolves**: it does not re-run onboarding,
 try entry credentials, or open capture sessions (NFR-HLT-002; ADR-0034's one
-gate). Leaving the state is the operator's — capture from the device page or
+gate) — the one exception being a *pre-authorised* detection task (ADR-0037's
+`reprovision` on `on_needs_setup`), which is an approval deferred to a trigger,
+not a sweep decision. Leaving the state is the operator's — capture from the device page or
 the chat card — or a deliberate `onboard_device` re-run. The seven-hour trace
 that forced this: an A1210 registered without credentials read `online` on
 every surface until a baseline capture happened to need a password.
@@ -282,8 +292,8 @@ resetting each sweep. `online`, `limited_api` and `reachable_no_api` reset the
 counter — all three are settled answers, not failures (`no_credentials` joins
 them under FR-HLT-011 📋: settled, *and* in the attention bucket). Note that
 "settled" and "needs attention" are **different questions asked of the same
-enum**: all three are settled, but only `reachable_no_api` belongs in the
-attention bucket. Both
+enum**: of the three today, only `reachable_no_api` belongs in the attention
+bucket. Both
 predicates were individually correct while the T8516 stayed parked (#357), so
 give a new status the right answer to each rather than making one match the
 other.

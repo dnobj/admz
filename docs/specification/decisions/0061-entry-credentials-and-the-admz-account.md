@@ -1,6 +1,6 @@
 # ADR-0061 — Fleet credentials get you in; ADMZ's own per-device account keeps you in
 
-**Status:** Proposed (2026-08-16).
+**Status:** **Accepted** — adopted by the owner 2026-08-16; slices 1–3 implemented 2026-08-17/18 (#446/#447/#449); the remainder is re-planned in ADR-0064 (amendment below).
 **Relates to:** ADR-0059 (gate provisioning at the decision point — account
 creation is that decision), ADR-0009 (out-of-band credential capture — the
 fallback path), ADR-0034 (confirmation gates), ADR-0010 / #405 (encryption at
