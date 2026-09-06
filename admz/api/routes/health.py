@@ -73,10 +73,9 @@ async def get_fleet_health(
     seen = {r.device_id: r for r in records}
     all_devices = registry.list_devices()
 
-    counts: Dict[str, int] = {
-        "online": 0, "unreachable": 0, "limited_api": 0, "reachable_no_api": 0,
-        "auth_failed": 0, "needs_setup": 0, "unknown": 0,
-    }
+    # Every member of the enum, by construction — a status cannot be omitted
+    # here and not in the MCP twin (ADR-0064).
+    counts: Dict[str, int] = {s.value: 0 for s in DeviceHealthStatus}
     entries: List[Dict[str, Any]] = []
     for d in all_devices:
         did = d.get("device_id")

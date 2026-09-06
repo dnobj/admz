@@ -36,6 +36,8 @@ HEALTH_SEM = {
     "auth-failed": "amber",
     "authfail": "amber",
     "needs_setup": "amber",
+    # ADR-0064: up, provisioned, and ADMZ has no way in — an attention state.
+    "no_credentials": "amber",
     "unknown": "grey",
     None: "grey",
 }
@@ -48,6 +50,7 @@ HEALTH_LABEL = {
     "auth-failed": "Auth failed",
     "authfail": "Auth failed",
     "needs_setup": "Needs setup",
+    "no_credentials": "No credentials",
     "unknown": "Unknown",
 }
 

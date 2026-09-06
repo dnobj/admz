@@ -131,7 +131,9 @@ monitor — no network call fires).
   — it just has no JSON-RPC surface; a T85 PoE switch is the usual case. Treat
   as healthy; don't promise arbitrary config pushes), `reachable_no_api` (up,
   but nothing ADMZ can read answered — genuinely unmanageable, though still
-  *not* offline), `auth_failed`, `needs_setup`, `unknown`
+  *not* offline), `auth_failed`, `needs_setup`, `no_credentials` (up and
+  provisioned, but ADMZ holds no usable stored credential for it — nothing was
+  refused; offer onboarding or capture, never "unreachable"), `unknown`
 
 ### `get_fleet_health`
 Cached reachability status for every registered device.

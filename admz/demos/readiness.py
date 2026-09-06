@@ -56,6 +56,9 @@ DEMO_EMPTY = "empty"            # no devices resolved
 # and turn a ready demo into `not_ready`, which is the same "it's fine but we
 # report it as broken" error #357 fixed one layer down.
 _HEALTHY = frozenset({"online", "limited_api"})
+# `no_credentials` (ADR-0064) is deliberately absent: a device ADMZ cannot
+# authenticate to is not demo-ready, and until that status existed it counted
+# as ready because it read `online`.
 
 
 def scenario_of(config_source: Optional[str]) -> Optional[str]:

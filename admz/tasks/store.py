@@ -45,6 +45,14 @@ def event_for_status(status: str) -> Optional[str]:
     pending store's ``trigger_for_status``."""
     if status == "needs_setup":
         return EVENT_NEEDS_SETUP
+    # `no_credentials` (ADR-0064): the host answered but ADMZ has no way in —
+    # it has proven nothing an `on_online` task could act on (a pre-authorized
+    # reprovision or a deferred snapshot would run against a device ADMZ
+    # cannot authenticate to). Explicit, so a future "settled statuses satisfy
+    # on_online" refactor cannot sweep it in. The pending work is not
+    # stranded: capture makes the next sweep `online`, which fires it.
+    if status == "no_credentials":
+        return None
     # `limited_api` satisfies "online" (GH #357): it is only ever reached by an
     # authenticated read that returned real data, so the device is up and its
     # credentials are good — exactly what `on_online` waits for. Omitting it

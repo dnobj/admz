@@ -2062,10 +2062,9 @@ class ADMZMCPServer:
         all_devices = self.registry.list_devices()
         seen = {r.device_id: r for r in records}
         entries = []
-        counts: Dict[str, int] = {
-            "online": 0, "unreachable": 0, "limited_api": 0, "reachable_no_api": 0,
-            "auth_failed": 0, "needs_setup": 0, "unknown": 0,
-        }
+        # Every member of the enum, by construction — the REST twin does the
+        # same (ADR-0064).
+        counts: Dict[str, int] = {s.value: 0 for s in DeviceHealthStatus}
         for d in all_devices:
             did = d.get("device_id")
             if not did:
