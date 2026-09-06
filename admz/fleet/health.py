@@ -90,6 +90,17 @@ AUTH_CHECK_OP = "basicdeviceinfo.cgi:getAllProperties"
 # depends on (``admz/snapshot/engine.py``) — which is why drift already
 # considered this device readable while health called it ``auth_failed``.
 CORROBORATION_OP = "param.cgi:list"
+
+#: The executor's own reachability verdicts (``executor/vapix.py``): a
+#: connect failure or a timeout is already a statement about the host, so the
+#: health probe may take it at face value. Anchored on PREFIXES (GH #461): the
+#: substring rule this replaces matched ``"connect"`` inside ``"disconnected"``
+#: — so a ``RemoteProtocolError`` from a device that drops unknown JSON-RPC
+#: posts was filed UNREACHABLE before the legacy read could prove it readable,
+#: and the #458 capability record could never be taught. Anything that is not
+#: one of these takes the evidence path (TCP probe → legacy read), which
+#: reaches the same UNREACHABLE verdict for a genuinely dead host anyway.
+_UNREACHABLE_PREFIXES = ("Connection failed:", "Request timed out")
 CORROBORATION_PARAMS = {"group": "root.Brand"}
 
 # Device-info key holding what we LEARNED about probing this device, in the
@@ -1119,16 +1130,12 @@ async def probe_device(
                     )
                 else:
                     err = getattr(result, "error", "") or "unknown error"
-                # Distinguish connect failure (UNREACHABLE) from other
-                # failure modes. httpx connect errors typically have
-                # "connect" or "timeout" in the message.
-                lower = err.lower()
-                if result is not None and (
-                    "timeout" in lower
-                    or "connect" in lower
-                    or "refused" in lower
-                    or "unreachable" in lower
-                ):
+                # A connect failure or timeout is a reachability verdict the
+                # executor already made — take it at face value. Only those
+                # two shapes, by prefix (GH #461); every other error text is
+                # a statement about ADMZ's ability to speak this device's API,
+                # not about the host, and is settled on evidence below.
+                if result is not None and err.startswith(_UNREACHABLE_PREFIXES):
                     return DeviceHealthRecord(
                         device_id=device_id,
                         status=DeviceHealthStatus.UNREACHABLE,
@@ -1176,6 +1183,60 @@ async def probe_device(
                     device_id=device_id, credentials=credentials,
                     timeout_seconds=timeout_seconds, op_id=CORROBORATION_OP,
                 )
+                # GH #462: the managed read REFUSED the stored credentials.
+                # That is a credential question, not an API one — a
+                # limited_api device with a rotated password used to read as
+                # "lost its API surface" (reachable_no_api) on every sweep,
+                # never "lost its password", and nothing routed the operator
+                # to capture. One op's 401 is not proof (GH #149): corroborate
+                # with the second independent auth-required op, exactly as the
+                # systemready-401 branch does.
+                legacy_refused = (
+                    legacy is not _OP_MISSING
+                    and legacy is not _OP_ERRORED
+                    and (
+                        getattr(legacy, "status_code", None) in (401, 403)
+                        or _reports_401(getattr(legacy, "error", None))
+                    )
+                )
+                if legacy_refused:
+                    creds_ok, _facts, _learned = await _corroborate_rejection(
+                        catalog=catalog, executor=executor, device_info=device_info,
+                        device_id=device_id, credentials=credentials,
+                        timeout_seconds=timeout_seconds,
+                        refused_op=CORROBORATION_OP,
+                    )
+                    if creds_ok is False:
+                        return DeviceHealthRecord(
+                            device_id=device_id,
+                            status=DeviceHealthStatus.AUTH_FAILED,
+                            last_check=now,
+                            last_seen_online=now,  # it IS reachable, just not authable
+                            latency_ms=elapsed_ms if not skip_json_probe else (tcp_ms or 0),
+                            consecutive_failures=1,
+                            last_error=(
+                                f"credentials rejected — {CORROBORATION_OP} and "
+                                f"{AUTH_CHECK_OP} both refused them "
+                                f"({SYSTEMREADY_OP} unusable: {err[:80]})"
+                            ),
+                        )
+                    return DeviceHealthRecord(
+                        device_id=device_id,
+                        status=DeviceHealthStatus.REACHABLE_NO_API,
+                        last_check=now,
+                        last_seen_online=now,
+                        latency_ms=elapsed_ms if not skip_json_probe else (tcp_ms or 0),
+                        consecutive_failures=0,
+                        last_error=(
+                            f"{CORROBORATION_OP} refused the credentials but "
+                            f"{AUTH_CHECK_OP} authenticated — credentials look "
+                            "valid; ADMZ cannot read this device's config"
+                            if creds_ok
+                            else f"{CORROBORATION_OP} refused the credentials and "
+                                 f"{AUTH_CHECK_OP} could not corroborate it — "
+                                 "credentials NOT condemned on one op's evidence"
+                        )[:200],
+                    )
                 # Authenticated AND carrying real parameter data. The second
                 # half is not belt-and-braces: a text-format 2xx counts as
                 # "successful" even when the body is an HTML login page, so
