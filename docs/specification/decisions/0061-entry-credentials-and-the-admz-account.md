@@ -1,6 +1,6 @@
 # ADR-0061 — Fleet credentials get you in; ADMZ's own per-device account keeps you in
 
-**Status:** Proposed (2026-08-16).
+**Status:** **Accepted** — adopted by the owner 2026-08-16; slices 1–3 implemented 2026-08-17/18 (#446/#447/#449); the remainder is re-planned in ADR-0064 (amendment below).
 **Relates to:** ADR-0059 (gate provisioning at the decision point — account
 creation is that decision), ADR-0009 (out-of-band credential capture — the
 fallback path), ADR-0034 (confirmation gates), ADR-0010 / #405 (encryption at
@@ -187,3 +187,23 @@ adopted through capture rather than through a list — then the list is ceremony
 and one credential plus the capture form would have been enough. The signal is
 the promote checkbox: **if operators never tick it, the list is not earning its
 complexity.** Worth checking after twenty adoptions rather than assuming.
+
+## Amendment 2026-09-06 — what shipped, and where the rest went
+
+Slices 1 and 2 shipped on 2026-08-17 (#446: the entry list, store-encrypted,
+the legacy pair read as entry #1 with no migration step; #447: the list is
+tried at onboarding and ADMZ's own `admz` account is created, gated at the
+same decision point as factory-default provisioning), followed by an
+unplanned slice 3 (#449: adopt an already-credentialed device onto the `admz`
+account in place, keeping the credential it came in on). This ADR is therefore
+**Accepted** in substance, and the INDEX entry now says so.
+
+What did not ship — the promote checkbox, most-recently-successful ordering
+with an attempt bound, and FR-CRED-007's generated-wins ordering — is
+re-planned in [ADR-0064](0064-a-device-admz-cannot-authenticate-to-is-never-online.md)
+together with #443, because the state a device is in while the list has not
+resolved it turned out to be invisible (`online`) and that is one design, not
+two. Two facts recorded there that this ADR assumed otherwise: the list has no
+operator-facing writer yet, so an install's effective list is its legacy pair;
+and the lockout measurement §"Lockout is the real operational risk" asked for
+has not been run — the ordering slice now waits for it.
