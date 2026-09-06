@@ -17,7 +17,9 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+from admz import entry_credentials
 from admz.api.capture import capture_store, CaptureStatus
+from admz.audit import record_event
 from admz.device_registry import DeviceRegistry
 from admz.exceptions import DeviceNotFoundError, BackendError
 from admz.fleet_settings import fleet_settings
@@ -159,12 +161,15 @@ async def capture_form(
     )
 
 
-def _note_capture_to_chat(token: str, saved: List[str]) -> None:
+def _note_capture_to_chat(
+    token: str, saved: List[str], promotion: Optional[Dict[str, str]] = None
+) -> None:
     """Tell the originating chat conversation (if any) that credentials
     were stored — the model otherwise keeps asking the user to "let me
     know once you've set the password". Device ids only; NEVER the
     password or username. Best-effort: a note failure must not affect
-    the capture."""
+    the capture. ``promotion`` (FR-CRED-012) adds what happened to the
+    entry list, so the model knows the fleet's list changed — or did not."""
     try:
         from admz.chatbot.sessions import chat_sessions
 
@@ -175,10 +180,79 @@ def _note_capture_to_chat(token: str, saved: List[str]) -> None:
                 "[console] The user submitted credentials for device(s) "
                 f"{', '.join(saved)} via the secure capture form; they were "
                 "stored server-side. (The password is not available in this "
-                "conversation.)",
+                "conversation.)" + _promotion_sentence(promotion),
             )
     except Exception:  # noqa: BLE001 - never break a capture on a note
         logger.debug("chat capture note failed for %s", token, exc_info=True)
+
+
+def _promotion_sentence(promotion: Optional[Dict[str, str]]) -> str:
+    """One sentence for the chat note; no username, no password."""
+    if not promotion:
+        return ""
+    if promotion.get("result") == "promoted":
+        return " The user also promoted it to the fleet's entry list (FR-CRED-012)."
+    if promotion.get("result") == "duplicate":
+        return " It was already on the fleet's entry list."
+    return f" Promotion to the entry list was refused: {promotion.get('reason', '')}."
+
+
+def _promote_if_asked(
+    requested: bool, username: str, password: str, saved: List[str], *,
+    principal: object = None,
+) -> Optional[Dict[str, str]]:
+    """Promote the captured credential to the fleet's entry list (FR-CRED-012).
+
+    A **scope promotion**: the secret becomes something ADMZ will offer to
+    every device it onboards from now on. So it is opt-in per submission,
+    audited as its own event — with the username and the device ids only,
+    never the password — and a refusal (the cap, the prompt-always posture)
+    leaves the capture that just succeeded exactly as it was.
+
+    Nothing raised here reaches the operator: the capture has already
+    succeeded and consumed its token, so an internal failure is logged and
+    reported as a refusal with a fixed reason, never a 500. A duplicate is
+    reported on the done page and not audited — nothing changed, and the
+    capture's own trail already names the device. ``principal`` is the
+    signed-in operator when the request carried one, so a fleet-wide scope
+    change is attributed to whoever made it.
+    """
+    if not requested:
+        return None
+    label = f"promoted from {saved[0]}" if saved else "promoted"
+    if len(saved) > 1:
+        label += f" (+{len(saved) - 1})"
+    try:
+        added = entry_credentials.add_entry_credential(username, password, label=label)
+    except ValueError as exc:
+        return _promotion_refused(principal, username, saved, str(exc))
+    except Exception:  # noqa: BLE001 - the capture already succeeded; never 500 it
+        logger.warning("entry-credential promotion failed for %s", username, exc_info=True)
+        return _promotion_refused(principal, username, saved, "internal error; see the server log")
+    if not added:
+        return {"result": "duplicate", "username": username, "reason": "already on the list"}
+    try:
+        record_event(
+            principal, "entry_credential.promoted",
+            resource="fleet_settings:entry_credentials",
+            details={"username": username, "device_ids": list(saved), "label": label},
+        )
+    except Exception:  # noqa: BLE001 - an audit failure is logged, not surfaced
+        logger.warning("entry-credential promotion audit failed for %s", username, exc_info=True)
+    return {"result": "promoted", "username": username, "reason": ""}
+
+
+def _promotion_refused(principal: object, username: str, saved: List[str], reason: str) -> Dict[str, str]:
+    try:
+        record_event(
+            principal, "entry_credential.promotion_refused",
+            resource="fleet_settings:entry_credentials",
+            details={"username": username, "device_ids": list(saved), "reason": reason},
+            success=False, error_message=reason,
+        )
+    except Exception:  # noqa: BLE001 - an audit failure is logged, not surfaced
+        logger.warning("entry-credential refusal audit failed for %s", username, exc_info=True)
+    return {"result": "refused", "username": username, "reason": reason}
 
 
 @router.post("/capture/{token}", response_class=HTMLResponse, tags=["capture"])
@@ -187,9 +261,16 @@ async def capture_submit(
     token: str,
     username: str = Form(...),
     password: str = Form(...),
+    promote: bool = Form(False),
     registry: DeviceRegistry = Depends(get_registry),
 ):
-    """Process the submitted credentials."""
+    """Process the submitted credentials.
+
+    ``promote`` is the FR-CRED-012 checkbox — a browser sends ``on`` only when
+    the human ticked it, and the bool form field reads ``off``/``false``/``0``
+    as no. A session's ``propose_promote`` is never read here: the flag
+    reaching the store requires the form submission, not the tool argument.
+    """
     # CSRF (#3). Must precede every side effect, including the rate-limit
     # counter — a cross-site POST should not be able to consume an operator's
     # capture budget either.
@@ -255,13 +336,22 @@ async def capture_submit(
     # Mark session as completed (token is now single-use)
     capture_store.complete_session(token)
 
-    _note_capture_to_chat(token, saved)
+    # FR-CRED-012: promotion happens AFTER the device credential is stored
+    # and never undoes or blocks it — a refused promotion is a note, not an
+    # error, and so is a failure inside the promotion itself.
+    promotion = _promote_if_asked(
+        promote, username, password, saved,
+        principal=getattr(request.state, "principal", None),
+    )
+
+    _note_capture_to_chat(token, saved, promotion)
 
     ctx = {
         "request": request,
         "title": "Credentials Saved",
         "device_id": session.device_id,
         "account_id": session.account_id,
+        "promotion": promotion,
     }
 
     if session.is_batch:

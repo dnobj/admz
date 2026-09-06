@@ -468,7 +468,8 @@ async def api_pending_actions(
     2. Scoped through chat_action_links, not a new principal column on
        capture_sessions/confirm_sessions — neither table records an owning
        principal at all (checked: capture_sessions is token/device_id/
-       account_id/account_type/purpose/created_at/ttl/status; confirm_
+       account_id/account_type/purpose/created_at/ttl/status/propose_promote;
+       confirm_
        sessions likewise carries no principal). chat_action_links already
        records, at token-creation time, which principal's conversation
        spawned every confirm/capture token this chat surface has ever

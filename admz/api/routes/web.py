@@ -896,6 +896,17 @@ async def fleet_settings_page(request: Request):
         sensitive = is_sensitive_setting_key(k)
         display[k] = {"value": None if sensitive else v, "sensitive": sensitive}
 
+    from admz import entry_credentials
+
+    try:
+        entry_view = _entry_credentials_view(entry_credentials.describe())
+    except Exception as exc:  # noqa: BLE001 - the page must not fall with the list
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "entry credentials unavailable on the settings page", exc_info=True)
+        entry_view = {"error": type(exc).__name__}
+
     return templates.TemplateResponse(
         request,
         "fleet_settings.html",
@@ -903,8 +914,30 @@ async def fleet_settings_page(request: Request):
             "request": request,
             "settings": display,
             "title": "Fleet Settings",
+            # FR-CRED-012 / ADR-0064 slice D: the first operator view of the
+            # entry list — redacted (usernames and labels; never a password),
+            # every stored entry marked tried or stored-never-tried.
+            "entry_credentials": entry_view,
         },
     )
+
+
+def _entry_credentials_view(desc: dict) -> dict:
+    """Mark each stored entry as tried (it is in ``in_use``) or never tried.
+
+    ``in_use`` is the head of the stored order (the legacy pair first), so the
+    match walks both in order; with the prompt-always posture on nothing is in
+    use and every row says so. Redacted dicts in, redacted dicts out.
+    """
+    remaining = [(c.get("username"), c.get("label")) for c in desc.get("in_use", [])]
+    rows = []
+    for c in desc.get("stored", []):
+        key = (c.get("username"), c.get("label"))
+        tried = key in remaining
+        if tried:
+            remaining.remove(key)
+        rows.append({**c, "tried": tried})
+    return {**desc, "rows": rows}
 
 
 # ── Confirmation settings ────────────────────────────────────────────────
