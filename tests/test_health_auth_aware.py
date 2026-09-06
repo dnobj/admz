@@ -208,7 +208,69 @@ async def test_both_ops_401_is_still_auth_failed(_verify_on):
     # The message names what actually happened — both ops, not just one.
     assert AUTH_CHECK_OP in rec.last_error
     assert CORROBORATION_OP in rec.last_error
+    assert "both" in rec.last_error
     assert rec.learned_probe is None  # a rejection teaches us nothing
+
+
+class _CatalogWithout:
+    """A catalog that has every op except one."""
+    def __init__(self, missing):
+        self._missing = missing
+
+    def get_operation(self, family, op_id):
+        return None if op_id == self._missing else _Op(op_id)
+
+
+@pytest.mark.asyncio
+async def test_corroborator_missing_from_catalog_condemns_and_says_so(_verify_on):
+    """GH #464: the primary op refuses and the corroborator is not in the
+    catalog. The verdict is still auth_failed (a stale password must not read
+    as healthy because the second op is unavailable) — but the message says
+    that, and must not claim an op refused that was never sent."""
+    execs = _Executor({SYSTEMREADY_OP: _systemready_ok(),
+                       AUTH_CHECK_OP: _result(401)})
+    rec = await _probe(_CatalogWithout(CORROBORATION_OP), execs)
+    assert rec.status == DeviceHealthStatus.AUTH_FAILED
+    assert _auth_calls(execs) == [AUTH_CHECK_OP]
+    assert "not in the catalog" in rec.last_error
+    assert "single-op" in rec.last_error
+    assert "both" not in rec.last_error
+    assert AUTH_CHECK_OP in rec.last_error, "names the op that refused"
+    assert CORROBORATION_OP in rec.last_error, "names the op it could not send"
+
+
+@pytest.mark.asyncio
+async def test_marked_device_with_missing_corroborator_names_the_right_ops(_verify_on):
+    """With the probe marker the primary is param.cgi and the corroborator is
+    basicdeviceinfo — the single-op message must follow the actual roles."""
+    execs = _Executor({SYSTEMREADY_OP: _systemready_ok(),
+                       CORROBORATION_OP: _param_result(401)})
+    rec = await _probe(_CatalogWithout(AUTH_CHECK_OP), execs, device_info=dict(_MARKED))
+    assert rec.status == DeviceHealthStatus.AUTH_FAILED
+    assert _auth_calls(execs) == [CORROBORATION_OP]
+    assert rec.last_error.startswith(f"credentials rejected — {CORROBORATION_OP} refused them")
+    assert f"corroborating op {AUTH_CHECK_OP} is not in the catalog" in rec.last_error
+
+
+@pytest.mark.asyncio
+async def test_confirm_credentials_still_returns_the_triple():
+    """External callers (onboarding, reconcile) unpack three values; the
+    verdict-carrying form is a sibling, not a change to this shape."""
+    execs = _Executor({AUTH_CHECK_OP: _result(200, success=True)})
+    out = await health_mod._confirm_credentials(
+        catalog=_Catalog(), executor=execs, device_info={"host": "192.0.2.1"},
+        device_id="dev", credentials={"username": "root", "password": "pw"},
+        timeout_seconds=2.0,
+    )
+    assert isinstance(out, tuple) and len(out) == 3
+    assert out[0] is True
+    full = await health_mod._confirm_credentials_verdict(
+        catalog=_Catalog(), executor=execs, device_info={"host": "192.0.2.1"},
+        device_id="dev", credentials={"username": "root", "password": "pw"},
+        timeout_seconds=2.0,
+    )
+    assert full.verdict == health_mod._VERDICT_ACCEPTED
+    assert full.triple() == out
 
 
 @pytest.mark.asyncio

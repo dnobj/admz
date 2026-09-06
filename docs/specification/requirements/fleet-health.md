@@ -136,7 +136,7 @@ the ADR — never reads a live surface's bad moment as a missing one.
 | Evidence | Verdict |
 |---|---|
 | this sweep's own JSON probe already failed in a **device-wide** missing-surface shape (transport drop after TCP accepted; a 2xx body that is not JSON) | the JSON surface was asked this sweep and was not there — **no second JSON op is sent**; `auth_failed`, error naming this sweep's evidence. A 404-class or JSON-error answer from `systemready` is op-specific and does not qualify: the corroborator is asked |
-| the corroborator refuses too (401/403) | `auth_failed`, error naming both ops |
+| the corroborator refuses too (401/403, or the anchored 401 text) | `auth_failed`, error naming both ops |
 | the corroborator authenticates (2xx) | `reachable_no_api`, "credentials look valid"; its identity facts ride along for the sweep to flush |
 | the corroborator cannot be served by this device — the surface is gone (the same two shapes) or the endpoint is not there (an ADR-0063 absent status code) | `auth_failed`, single-op judgement, error saying the device has no JSON surface to corroborate with |
 | the corroborator is absent from the catalog | `auth_failed`, single-op judgement, error saying so — never "both refused" for an op that was not sent |
@@ -171,6 +171,7 @@ corroborated against a second, independent auth-required op
 `_confirm_credentials` is **tri-state**, not a boolean:
 
 | Both ops refuse | → `auth_failed`, error naming *both* ops |
+| The corroborator is absent from the catalog | → `auth_failed`, deliberately — a stale password must not read as healthy because the second op is unavailable; the error says so, never "both refused" (#464) |
 | The corroborator authenticates (2xx) | → stays **`online`**; a `health_probe` marker records which op works here, so it is preferred next probe |
 | The corroborator errors or answers oddly | → **status is not moved at all** (the ONLINE path; the failure branch's rule is FR-HLT-009's table) |
 
@@ -203,7 +204,7 @@ It now reuses the same `_corroborate_rejection` helper, so:
 | Both ops refuse | → `auth_failed`, error naming *both* ops |
 | The corroborator authenticates (2xx) | → `reachable_no_api` — the host answered and the password is demonstrably fine; ADMZ simply cannot read this device's readiness |
 | The corroborator errors or answers oddly | → not condemned; classified on TCP evidence |
-| The corroborator is absent from the catalog | → `auth_failed`, deliberately (see FR-HLT-008's reasoning: a genuinely stale password must not read as healthy because the second op is unavailable). Its error text still names both ops — #464 |
+| The corroborator is absent from the catalog | → `auth_failed`, deliberately (see FR-HLT-008's reasoning: a genuinely stale password must not read as healthy because the second op is unavailable); the error says the corroborator was not in the catalog and this is single-op judgement — never that it refused (#464) |
 
 The corroborating call only ever runs on a path that has already failed, so a
 healthy device pays nothing for it.
