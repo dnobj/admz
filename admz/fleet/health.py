@@ -749,6 +749,7 @@ async def _corroborate_rejection(
     # either direction, so don't move the status.
     return _Corroboration(None, {}, None, _REFUSAL_INCONCLUSIVE)
 
+
 async def _confirm_credentials_verdict(
     *,
     catalog: Any,
@@ -1336,8 +1337,9 @@ async def probe_device(
                 # generic failure path below does, via the same helper.
                 logger.info(
                     "health: %s returned 401 for %s but %s did not corroborate "
-                    "(creds_ok=%r) — not condemning the stored credentials",
-                    SYSTEMREADY_OP, device_id, CORROBORATION_OP, creds_ok,
+                    "(verdict=%s) — not condemning the stored credentials",
+                    SYSTEMREADY_OP, device_id, CORROBORATION_OP,
+                    corroboration.verdict,
                 )
                 tcp_ms = await _tcp_probe(
                     host, _probe_port(device_info), timeout_seconds
