@@ -92,10 +92,13 @@ python tools/environments.py
 Read-only — port state comes from `netstat`, nothing is connected to and nothing is started.
 It prints observed reality beside the declaration and **exits non-zero when they disagree**,
 including an audit of every `launch.json` on the machine showing the `ADMZ_HOME` each would
-actually resolve to. That last part is not incidental: #399 is a config named `admz`, on
-staging's port, with no `ADMZ_HOME` — so starting it yields a second instance on
-**production's** data with authentication off. An absent variable is more dangerous than a
-wrong one, because a wrong path is visible in the file and an absent one is not.
+actually resolve to. That last part is not incidental: #399 was a config named `admz`, on
+staging's port, with no `ADMZ_HOME` — so starting it yielded a second instance on
+**production's** data with authentication off, which it did once (2026-08-10). It was
+archived on 2026-09-06 (`C:\admz\.claude\archive\`); the machine now has **no** launch
+config, and the checker reports "(none found)". An absent variable is more dangerous than a
+wrong one, because a wrong path is visible in the file and an absent one is not — so any
+new config must set `ADMZ_HOME` explicitly (see `docs/ENVIRONMENTS.md`).
 
 It also answers **which atlas commit each environment is running** (#424), by digesting the
 installed data tree against `ATLAS_SHA` — a directory install records no commit, so the CI

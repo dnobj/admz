@@ -159,15 +159,19 @@ with TestClient(app) as client:             # the context manager runs the lifes
     client.get("/api/health")
 ```
 
-If you need a real listener, add `--port` on something that is neither 4242 nor 4243, and
-**read `C:\admz\.claude\launch.json` first** — see below.
+If you need a real listener, add `--port` on something that is neither 4242 nor 4243, set
+`ADMZ_HOME` explicitly, and check the launch-config audit below first — as of 2026-09-06 the
+machine has no launch config at all, and a new one must not be named `admz`.
 
 ## Launch configs are part of the environment
 
 The checker audits every `launch.json` it can find and reports the `ADMZ_HOME` each one
-would actually resolve to. This is not incidental: #399 is a launch config named `admz`, on
-staging's port, with no `ADMZ_HOME` — so anything that starts it gets a second instance on
-**production's** database with authentication disabled.
+would actually resolve to. This is not incidental: #399 was a launch config named `admz`, on
+staging's port, with no `ADMZ_HOME` — so anything that started it got a second instance on
+**production's** database with authentication disabled, which happened once (2026-08-10).
+It was archived on 2026-09-06 to `C:\admz\.claude\archive\`, and the checker now reports
+"(none found)". If a one-command local instance is wanted again, recreate it with an isolated
+`ADMZ_HOME`, a port that is neither 4242 nor 4243, and a name nothing selects by accident.
 
 A config's danger is in what it **omits**, which is why the checker resolves the effective
 value rather than printing the file.
