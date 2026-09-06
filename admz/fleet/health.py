@@ -854,12 +854,69 @@ _REFUSAL_BOTH = "both_refused"           # the corroborator refused them too
 _REFUSAL_UNCORROBORABLE = "uncorroborable"  # this device has no JSON surface to ask
 _REFUSAL_UNCATALOGUED = "uncatalogued"   # the corroborator is not in the catalog
 _REFUSAL_CLEARED = "cleared"             # the corroborator authenticated
-_REFUSAL_TRANSIENT = "transient"         # 5xx / executor error: proves nothing
+_REFUSAL_TRANSIENT = "transient"         # proves nothing; next sweep
 #: The verdicts that condemn the stored credentials. The middle two are
 #: single-op judgements, deliberately — see the helper's docstring.
 _LEGACY_REFUSAL_CONDEMNS = frozenset(
     {_REFUSAL_BOTH, _REFUSAL_UNCORROBORABLE, _REFUSAL_UNCATALOGUED}
 )
+
+# How a JSON-RPC op's failed answer reads for this sweep's status.
+_JSON_ABSENT = "absent"        # the JSON surface is not there to ask
+_JSON_TRANSIENT = "transient"  # the surface exists; this answer proves nothing
+# The executor's two message shapes (``executor/vapix.py``) for a JSON op the
+# device cannot serve: a dropped/refused connection after TCP accepted, and a
+# 2xx whose body is not JSON at all (HTML where JSON was expected).
+_TRANSPORT_PREFIX = "Transport error:"
+_PARSE_FAILURE_PREFIX = "Failed to parse JSON response"
+
+
+def _json_answer_kind(result: Any) -> str:
+    """Does this failed JSON-RPC answer say the surface is *absent*, or only
+    that it had a bad moment?
+
+    ADR-0063's ``classify`` answers a different question — what lease a
+    capability row should carry — and files a transport refusal, a non-JSON
+    body and every 5xx as *unconfirmed* absence with a short lease rather
+    than a 7-day row. The health status is re-evaluated every sweep, so it
+    can act on the same evidence one sweep at a time; what it must share
+    with the ADR is the refusal to read a live surface's bad moment as a
+    missing one. So, ABSENT: the ADR's own hard-absent line (400/404/405/
+    410/501, and the JSON-RPC marks that literally say "no such method" —
+    both reused from ``device_capabilities``), plus the two shapes a
+    legacy-only device produces: a transport refusal (the T8516 drops an
+    unknown JSON POST — ``"Transport error: "``) and a 2xx body that is not
+    JSON. TRANSIENT: everything else — a 5xx, a 4xx the ADR does not call
+    absent (408, 429), a JSON-RPC *application* error at 2xx (Axis
+    ``1100: Internal error`` comes from an endpoint the device HAS, over an
+    HTTP layer that just accepted the credentials), and a connect or timeout
+    verdict, which is about the host rather than the surface.
+    """
+    from admz.device_capabilities import ABSENT, classify
+
+    if classify(result, device_readable=True) == ABSENT:
+        return _JSON_ABSENT
+    status = getattr(result, "status_code", None)
+    error = str(getattr(result, "error", "") or "")
+    if status is None:
+        return _JSON_ABSENT if error.startswith(_TRANSPORT_PREFIX) else _JSON_TRANSIENT
+    try:
+        code = int(status)
+    except (TypeError, ValueError):
+        return _JSON_TRANSIENT
+    if code >= 400:
+        return _JSON_TRANSIENT
+    if error.startswith(_PARSE_FAILURE_PREFIX):
+        return _JSON_ABSENT
+    return _JSON_TRANSIENT
+
+
+def _reason_of(result: Any, limit: int = 50) -> str:
+    error = str(getattr(result, "error", "") or "")
+    if not error:
+        sc = getattr(result, "status_code", None)
+        error = f"HTTP {sc}" if sc is not None else "no answer"
+    return error[:limit]
 
 
 async def _corroborate_legacy_refusal(
@@ -870,10 +927,11 @@ async def _corroborate_legacy_refusal(
     device_id: str,
     credentials: Dict[str, Any],
     timeout_seconds: float,
+    json_probe: Any,
 ) -> "tuple[str, Dict[str, str], str]":
     """The legacy read (:data:`CORROBORATION_OP`) refused the credentials on a
-    sweep whose JSON probe already failed. Ask :data:`AUTH_CHECK_OP` and say
-    what its answer means (GH #462).
+    sweep whose JSON probe already failed. Decide whether the password is
+    condemned, and say exactly on what evidence (GH #462).
 
     Not :func:`_corroborate_rejection`. That helper folds "the corroborator
     could not answer" into the same *don't condemn* verdict as "it answered
@@ -884,17 +942,32 @@ async def _corroborate_legacy_refusal(
     JSON-RPC op too. On a legacy-only device — the T8516, the device #462 is
     about — it can never answer, and reading that as "not proven" would leave
     a rotated password filed ``reachable_no_api`` forever, which is the
-    defect. So a corroborator that cannot speak on this device is the same
-    case as one that is not in the catalog, and gets the verdict the existing
-    helper already gives that case: the legacy read's refusal is the only
-    evidence this device can give, and a false alarm is safer than a missed
-    one. Only a genuinely transient answer — a 5xx, an executor error —
-    proves nothing and does not move the status.
+    defect. So a JSON surface that is demonstrably not there to ask is the
+    same case as a corroborator that is not in the catalog, and gets the
+    verdict the existing helper already gives that case: the legacy read's
+    refusal is the only evidence this device can give, and a false alarm is
+    safer than a missed one. Which failures mean "not there to ask" is
+    :func:`_json_answer_kind`'s question, drawn on ADR-0063's line — a bad
+    moment on a live surface never condemns.
+
+    ``json_probe`` is this sweep's own :data:`SYSTEMREADY_OP` result (``None``
+    when the probe was skipped on the record). When it already failed in a
+    missing-surface shape, that IS the corroboration: the JSON surface was
+    asked this sweep and was not there, so a second JSON op is not sent — no
+    dead request, and one transport WARNING per sweep rather than two. On a
+    skip sweep there is no fresh evidence, so the corroborator is asked.
 
     Returns ``(verdict, facts, message)``: one of the ``_REFUSAL_*`` words,
     identity facts when the corroborator authenticated, and the
-    ``last_error`` text that names exactly what was asked and what it said.
+    ``last_error`` text naming what was asked and what it said.
     """
+    if json_probe is not None and _json_answer_kind(json_probe) == _JSON_ABSENT:
+        return (
+            _REFUSAL_UNCORROBORABLE, {},
+            f"credentials rejected — {CORROBORATION_OP} refused them; no JSON "
+            f"surface to corroborate ({SYSTEMREADY_OP} this sweep: "
+            f"{_reason_of(json_probe)})",
+        )
     other = await _run_auth_op(
         catalog=catalog, executor=executor, device_info=device_info,
         device_id=device_id, credentials=credentials,
@@ -932,29 +1005,17 @@ async def _corroborate_legacy_refusal(
             "authenticated — credentials look valid; ADMZ cannot read this "
             "device's config",
         )
-    try:
-        server_error = sc is not None and 500 <= int(sc) < 600 and int(sc) != 501
-    except (TypeError, ValueError):
-        server_error = False
-    if server_error:
-        # A server-side failure on an op the device does serve (501 excluded:
-        # "not implemented" is an absent surface). Proves nothing; next sweep.
+    if _json_answer_kind(other) == _JSON_ABSENT:
         return (
-            _REFUSAL_TRANSIENT, {},
-            f"{CORROBORATION_OP} refused the credentials and {AUTH_CHECK_OP} "
-            f"answered HTTP {sc} — credentials NOT condemned on one op's "
-            "evidence",
+            _REFUSAL_UNCORROBORABLE, {},
+            f"credentials rejected — {CORROBORATION_OP} refused them; no JSON "
+            f"surface to corroborate ({AUTH_CHECK_OP}: {_reason_of(other)})",
         )
-    # Transport refusal, 404-class, an HTML body where JSON was expected: the
-    # JSON surface is not there to ask — the T8516 shape (ADR-0063).
-    reason = str(getattr(other, "error", "") or "") or (
-        f"HTTP {sc}" if sc is not None else "no answer"
-    )
     return (
-        _REFUSAL_UNCORROBORABLE, {},
-        f"credentials rejected — {CORROBORATION_OP} refused them and this "
-        "device does not serve the JSON surface that could corroborate "
-        f"({AUTH_CHECK_OP}: {reason[:60]})",
+        _REFUSAL_TRANSIENT, {},
+        f"{CORROBORATION_OP} refused the credentials and {AUTH_CHECK_OP} could "
+        f"not corroborate it ({_reason_of(other, 30)}) — credentials NOT "
+        "condemned on one op's evidence",
     )
 
 
@@ -1301,12 +1362,14 @@ async def probe_device(
                 # limited_api device with a rotated password used to read as
                 # "lost its API surface" (reachable_no_api) on every sweep,
                 # never "lost its password", and nothing routed the operator
-                # to capture. One op's 401 is not proof (GH #149), so the
-                # second auth-required op is asked — by a helper that knows
-                # this branch is only ever entered because the JSON surface
-                # did not answer, so a JSON corroborator that cannot answer
-                # either is the shape of a legacy-only device, not a reason
-                # to withhold the verdict. See _corroborate_legacy_refusal.
+                # to capture. One op's 401 is not proof (GH #149), so a second
+                # auth-required op decides — by a helper that knows this
+                # branch is only ever entered because the JSON surface did not
+                # answer: when this sweep's own JSON probe already failed in a
+                # missing-surface shape that IS the corroboration, and a JSON
+                # corroborator that cannot answer either is the shape of a
+                # legacy-only device, not a reason to withhold the verdict.
+                # See _corroborate_legacy_refusal.
                 legacy_refused = (
                     legacy is not _OP_MISSING
                     and legacy is not _OP_ERRORED
@@ -1319,7 +1382,7 @@ async def probe_device(
                     verdict, facts, why = await _corroborate_legacy_refusal(
                         catalog=catalog, executor=executor, device_info=device_info,
                         device_id=device_id, credentials=credentials,
-                        timeout_seconds=timeout_seconds,
+                        timeout_seconds=timeout_seconds, json_probe=result,
                     )
                     latency = elapsed_ms if not skip_json_probe else (tcp_ms or 0)
                     if verdict in _LEGACY_REFUSAL_CONDEMNS:
