@@ -3903,17 +3903,20 @@ class ADMZMCPServer:
         # the same pair the old approved executor did. If the device turns out
         # to be factory-defaulted, onboarding returns the approval envelope and
         # it is passed straight up.
-        from admz.onboarding import onboard_device_credentials
-
+        #
+        # ADR-0064 slice B (#443): through `_onboard_device`, exactly as
+        # `register_device` does — so a `credentials_needed` outcome opens a
+        # capture session and carries `capture_url`/`capture_token` back to
+        # the caller. This path used to call `onboard_device_credentials`
+        # directly and answer "Device registered." with no way back in; an
+        # A1210 registered here then read `online` for seven hours.
         try:
             self.registry.add_device(device_id, device_info)
         except Exception as exc:  # noqa: BLE001 — already registered, MAC clash
             return {"success": False, "device_id": device_id,
                     "error": f"{type(exc).__name__}: {exc}"}
 
-        onboarding = await onboard_device_credentials(
-            device_id=device_id, registry=self.registry,
-            catalog=self.catalog, executors=self.executors)
+        onboarding = await self._onboard_device(device_id)
         return {
             "success": True, "device_id": device_id, "onboarding": onboarding,
             "message": (f"Device '{device_id}' registered. "

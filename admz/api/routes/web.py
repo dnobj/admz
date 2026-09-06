@@ -435,6 +435,61 @@ async def rotate_account_password(
     return RedirectResponse(url=f"/capture/{session.token}", status_code=303)
 
 
+@router.post(
+    "/device/{device_id}/credentials",
+    response_class=RedirectResponse,
+)
+async def enter_device_credentials(
+    request: Request,
+    device_id: str,
+    registry: DeviceRegistry = Depends(get_registry),
+):
+    """Open a capture session for a device ADMZ cannot authenticate to
+    (ADR-0064 slice B, #443): the durable **Enter credentials** action.
+
+    The rotate route above requires the account to exist; a `no_credentials`
+    device has none, so this route binds the session to the `default`
+    account as an **admin** (the session default is `service`, which the
+    rotate route only avoids by copying an existing account's type). Same
+    ADR-0009 shape otherwise: a single-use token, the standard capture form,
+    the password never in chat, logs or this route. Browser-only, so the
+    same-origin check `capture_submit` performs applies here too.
+    """
+    from admz.api.capture import capture_store
+    from admz.csrf import check_same_origin
+
+    check_same_origin(request)
+    if not registry.device_exists(device_id):
+        return templates.TemplateResponse(
+            request,
+            "error.html",
+            {
+                "request": request,
+                "error": "Device Not Found",
+                "message": f"Device '{device_id}' is not registered.",
+                "title": "Error",
+            },
+            status_code=404,
+        )
+    # `auth_failed` reaches this route too, and then the `default` row exists:
+    # keep its shape exactly as the rotate route does (the capture submit
+    # merges the session's type and purpose into the row). Only a device with
+    # no row at all gets the admin default.
+    existing = next(
+        (a for a in registry.list_accounts(device_id) if a.get("account_id") == "default"),
+        None,
+    )
+    session = capture_store.create_session(
+        device_id=device_id,
+        account_id="default",
+        account_type=(existing or {}).get("account_type") or "admin",
+        purpose=(existing or {}).get("purpose")
+        or "Entered from the device page — ADMZ had no usable stored credential",
+        ttl=300,
+    )
+    return RedirectResponse(url=f"/capture/{session.token}", status_code=303)
+
+
 @router.get("/add-device", response_class=HTMLResponse)
 async def add_device_form(
     request: Request,

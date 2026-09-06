@@ -269,7 +269,10 @@ Add a discovered device to the registry.
   `tags` (array, optional)
 - **Returns:** `{success, device_id, onboarding, message}` — the device is
   registered, then onboarded. **No approval is required to register**, as of
-  ADR-0059.
+  ADR-0059. On `credentials_needed` the `onboarding` object carries
+  `capture_url` and `capture_token` — a capture session is opened exactly as
+  `register_device` opens one (ADR-0064 slice B); this path used to answer
+  "registered" with no way back in.
 - **But onboarding may still return a blocked envelope.** If the device turns
   out to be factory-defaulted, `onboarding` carries
   `{status: "approval_required", blocked: true, confirm_token, confirm_url, …}`

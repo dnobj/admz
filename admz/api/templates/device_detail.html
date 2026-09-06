@@ -343,6 +343,10 @@ const HEALTH = {
     already_credentialed: ['success', 'Stored credentials verified — device is ready.'],
     provision_failed: ['error', 'Automatic provisioning failed — see the health status below.'],
     error: ['error', 'Credential onboarding could not run — set credentials from the Accounts section.'],
+    // ADR-0064 slice B: the three outcomes this map did not know.
+    credentials_needed: ['error', 'Automatic credential resolution failed — use Enter credentials in the banner below, or run onboarding again.'],
+    admz_account_created: ['success', 'ADMZ created its own admin account on the device and now uses it.'],
+    approval_required: ['error', 'Onboarding needs your approval before ADMZ writes an account on the device — Run onboarding below takes you to the approval page.'],
   };
   const note = NOTES[status];
   if (!note) return;
@@ -802,6 +806,42 @@ function recMsg(text, ok) {
         + 'onclick="var x=document.getElementById(\'delete-device-btn\');if(x)x.click();return false;">'
         + 'decommission</a> it.</div>';
       if (window.lucide) lucide.createIcons();
+    } else if (me && (me.status === 'no_credentials' || me.status === 'auth_failed')) {
+      // ADR-0064 slice B: the durable way back in. The chat's capture card
+      // lasts five minutes and the session ten; this banner lasts as long as
+      // the state does. Enter credentials opens a capture session bound to
+      // the default admin account; Run onboarding re-runs the gated flow
+      // (the entry list, the admz account) and follows a capture_url if it
+      // ends in one.
+      const b = document.getElementById('recovery-banner'); if (!b) return;
+      const why = me.status === 'no_credentials'
+        ? 'ADMZ has no stored credential for this device — it is up, but ADMZ cannot manage it.'
+        : 'This device is refusing the stored credential.';
+      b.innerHTML = '<div style="padding:10px 16px;color:var(--fg-amber,#fbbf24);font-size:13px;'
+        + 'border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+        + '<i data-lucide="key-round" style="width:14px;height:14px;vertical-align:-2px"></i> '
+        + '<span>' + why + '</span>'
+        + '<form method="post" action="/device/' + encodeURIComponent(DEVICE_ID) + '/credentials" style="display:inline;margin:0">'
+        + '<button type="submit" class="btn sm">Enter credentials</button></form>'
+        + '<button type="button" class="btn ghost sm" id="run-onboarding-btn">Run onboarding</button>'
+        + '<span id="onboarding-outcome"></span></div>';
+      if (window.lucide) lucide.createIcons();
+      const btn = document.getElementById('run-onboarding-btn');
+      if (btn) btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const out = document.getElementById('onboarding-outcome');
+        try {
+          const resp = await fetch('/api/devices/' + encodeURIComponent(DEVICE_ID) + '/onboard', { method: 'POST' });
+          const j = await resp.json();
+          if (j.capture_url) { window.location = j.capture_url; return; }
+          // A factory-default unit answers with the ADR-0059 approval
+          // envelope: its page is standalone, so go there rather than
+          // rendering prose written for the model.
+          if (j.confirm_url) { window.location = j.confirm_url; return; }
+          out.textContent = j.message || j.reason || j.detail || ('onboarding: ' + (j.status || 'done'));
+        } catch (e) { out.textContent = 'onboarding request failed'; }
+        finally { btn.disabled = false; }
+      });
     }
   } catch (e) { /* non-fatal */ }
 })();
