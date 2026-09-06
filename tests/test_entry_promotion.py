@@ -91,6 +91,7 @@ class TestPromotionFromTheForm:
         assert audit[0]["details"]["username"] == "root"
         assert audit[0]["details"]["device_ids"] == ["cam-1"]
         assert audit[0]["details"]["label"] == "promoted from cam-1"
+        assert audit[0]["principal"] is not None, "attributed to the request's principal"
         assert "s3cret-pw" not in json.dumps(audit)
 
     def test_without_the_box_nothing_is_promoted(self, client, audit):
@@ -274,6 +275,7 @@ class TestPromotionNeverBreaksTheCapture:
                                                  "reason": "at most 3 entry credentials"})
         _note_capture_to_chat("tok", ["cam-1"], None)
         assert "entry list" in notes[0] and "refused" in notes[1] and "entry list" not in notes[2]
+        assert "at most 3 entry credentials" in notes[1], "the refusal's reason travels"
         assert all("root" not in n and "s3cret" not in n for n in notes), "device ids only"
 
 
@@ -351,3 +353,41 @@ class TestTheOperatorSeesWhatIsTried:
         page = client.get("/fleet-settings")
         assert page.status_code == 200
         assert "Entry list unavailable" in page.text and "fernet said no" not in page.text
+
+
+class TestTheEdgesOfTheView:
+    def test_two_entries_with_the_same_name_and_label_are_told_apart(self, client):
+        """The tried/never-tried match is a multiset: a second entry with the
+        same username and label that sits past the bound is never tried, and
+        the page says so rather than counting it as the first one."""
+        from admz.fleet_settings import fleet_settings
+
+        entries = [{"username": "dup", "password": "zz-a", "label": "L"},
+                   {"username": "u1", "password": "zz-b", "label": "b1"},
+                   {"username": "u2", "password": "zz-c", "label": "b2"},
+                   {"username": "u3", "password": "zz-d", "label": "b3"},
+                   {"username": "dup", "password": "zz-e", "label": "L"}]
+        fleet_settings.set(ec.SETTING_KEY, json.dumps(entries))
+        page = client.get("/fleet-settings").text
+        assert page.count('data-entry="tried"') == ec.MAX_ATTEMPTS_PER_PASS
+        assert page.count('data-entry="never-tried"') == len(entries) - ec.MAX_ATTEMPTS_PER_PASS
+
+
+class TestTheMigrationOnlySwallowsDuplicates:
+    def test_a_failure_that_is_not_a_duplicate_column_raises_and_leaves_the_store_unready(
+            self, tmp_path, monkeypatch):
+        """A locked or unwritable database must not be mistaken for "already
+        migrated": the error propagates and `_ready` stays empty, so the next
+        connection retries instead of every later statement failing on a
+        column that never arrived."""
+        import sqlite3
+
+        from admz.api import capture as capture_mod
+
+        monkeypatch.setattr(capture_mod, "_MIGRATION_COLUMNS",
+                            capture_mod._MIGRATION_COLUMNS + (("not a column", "INTEGER"),))
+        store = capture_mod.CaptureStore(db_path=str(tmp_path / "x.db"))
+        with pytest.raises(sqlite3.OperationalError):
+            store.create_session(device_id="cam-1", account_id="default", account_type="admin",
+                                 purpose="p")
+        assert store._ready == set(), "the next connection retries the schema"
