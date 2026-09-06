@@ -134,9 +134,9 @@ onto the `admz` account in place, keeping the credential it came in on.
 **Not yet shipped**, re-planned in
 [ADR-0064](../decisions/0064-a-device-admz-cannot-authenticate-to-is-never-online.md)
 as slices C–F together with #443: the per-pass attempt bound (FR-CRED-013,
-slice C), the promote checkbox (FR-CRED-012, slice D), FR-CRED-007's
-generated-wins ordering (slice E), and most-recently-successful ordering
-(FR-CRED-013, slice F — waits for the lockout measurement). Two facts to hold while reading the
+slice C — shipped 2026-09-06), the promote checkbox (FR-CRED-012, slice D),
+FR-CRED-007's generated-wins ordering (slice E), and most-recently-successful
+ordering (FR-CRED-013, slice F — waits for the lockout measurement). Two facts to hold while reading the
 rest: the list has **no operator-facing writer yet** — `python -m admz settings
 set entry_credentials` and the promote checkbox are the only ways in — so an
 install's effective list is its legacy pair; and the lockout measurement
@@ -158,18 +158,20 @@ risk be measured against a spare device before the trying half ships; the number
 should be revisited **with** that measurement rather than defended as if it were
 one.
 
-**The per-pass attempt bound (ADR-0064 slice C) 📋.** One onboarding pass makes
+**The per-pass attempt bound (ADR-0064 slice C) ✅.** One onboarding pass makes
 at most **3 entries × 2 ops = 6 credentialed operations** — a wrong entry costs
 two, the primary auth-required op and its corroborator (#149/#150) — and at the
 wire **up to 12 credentialed sends**, because the executor re-sends an op once
 when the 401 challenge names a different auth method than the device profile;
 each Digest op also costs one unauthenticated challenge round-trip. The pass
 stops on the first success and breaks on an unreachable (`None`) answer. The
-bound is enforced **in the loop, not only at storage**: the storage-time cap
-above still keeps the settings page honest (`describe()` separates *stored*
-from *in use*), but the CLI writer bypasses it (`_parse` never truncates), so
-without a loop bound one command can make a pass unbounded. This half needs no
-measurement and ships first.
+bound (`MAX_ATTEMPTS_PER_PASS`, equal to the storage cap) is enforced **where
+the attempt list is built** — `entry_credentials.attempt_order()`, which the
+onboarding loop iterates and which `describe()` reports as *in use* — not only
+at storage: the storage-time cap keeps the settings page honest, but the CLI
+writer bypasses it (`_parse` never truncates), so without this one command
+could make a pass unbounded. A list stored over the bound is warned about and
+its tail is never tried. This half needed no measurement and shipped first.
 
 **Most-recently-successful ordering (ADR-0064 slice F) 📋.** `attempt_order`
 tries the most-recently-successful credential first; with no history the

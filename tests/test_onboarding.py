@@ -310,6 +310,65 @@ class TestResolutionOrder:
         assert out["status"] == "already_credentialed"
         assert out["admz_account_error"] == "device said no"
 
+    @staticmethod
+    def _raw_entries(n):
+        """Seed n entries the way the CLI writer can (bypassing the storage
+        cap), with the legacy pair cleared; returns a cleanup callable."""
+        import json as _json
+
+        from admz import entry_credentials as ec
+        from admz.fleet_settings import fleet_settings
+
+        fleet_settings.set(ec.SETTING_KEY, _json.dumps(
+            [{"username": f"u{i}", "password": f"p{i}"} for i in range(n)]))
+        fleet_settings.delete(ec.LEGACY_PASS_KEY)
+
+        def _cleanup():
+            fleet_settings.delete(ec.SETTING_KEY)
+
+        return _cleanup
+
+    def test_one_pass_tries_at_most_the_bound(self, patch_probes):
+        """ADR-0064 slice C: five stored via the raw setting, three tried."""
+        cleanup = self._raw_entries(5)
+        try:
+            patch_probes["confirm"] = [(False, {})] * 5
+            out = _run(registry=_Registry())
+            assert out["status"] == "credentials_needed"
+            assert "rejected" in out["reason"]
+            assert len(patch_probes["confirm"]) == 2, "three tried, two never asked"
+        finally:
+            cleanup()
+
+    def test_a_pass_stops_at_the_first_success(self, patch_probes):
+        from admz.approval_context import approved
+
+        cleanup = self._raw_entries(3)
+        try:
+            patch_probes["confirm"] = [(False, {}), (True, {}), (True, {})]
+            # The account write is gated (ADR-0059); approve it, as the
+            # existing success-path tests do.
+            with approved("register_discovered_device", "tok-test"):
+                out = _run(registry=_Registry())
+            assert out["status"] == "admz_account_created"
+            assert patch_probes["adopt_called"]["username"] == "u1"
+            assert len(patch_probes["confirm"]) == 1, "the third entry was never asked"
+        finally:
+            cleanup()
+
+    def test_a_pass_stops_when_the_device_stops_answering(self, patch_probes):
+        """A None answer is 'unreachable', not 'rejected' — the rest of the
+        list would be N more timeouts against a device that is not there."""
+        cleanup = self._raw_entries(3)
+        try:
+            patch_probes["confirm"] = [(False, {}), (None, {}), (True, {})]
+            out = _run(registry=_Registry())
+            assert out["status"] == "credentials_needed"
+            assert "did not answer" in out["reason"]
+            assert len(patch_probes["confirm"]) == 1
+        finally:
+            cleanup()
+
     def test_fleet_pair_rejected_needs_capture(self, patch_probes, monkeypatch):
         monkeypatch.setattr(
             onboarding.fleet_settings, "get",

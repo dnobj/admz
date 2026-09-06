@@ -3,7 +3,7 @@
 ADR-0061 splits one credential doing two jobs into two credentials doing one
 each. This module owns the first: **getting in** to a device ADMZ does not yet
 manage. The second — the per-device ``admz`` account that becomes the ongoing
-credential — is the next slice of #411 and is not here.
+credential — shipped as #411 slice 2 (``provisioning.adopt_with_admz_account``).
 
 WHY A LIST
 ----------
@@ -62,6 +62,15 @@ LEGACY_PASS_KEY = "default_password"
 #: the trying half ships — until then this number is a conservative guess and
 #: should be revisited with the measurement, not defended as if it were one.
 MAX_STORED = 3
+#: What one onboarding pass may TRY (ADR-0064 slice C). Equal to the storage
+#: cap by design, but enforced separately: the storage cap keeps the settings
+#: page honest, while this bounds the device-facing loop — the CLI writer
+#: (``admz settings set entry_credentials``) bypasses the cap because
+#: :func:`_parse` never truncates, so without this one command could make a
+#: pass unbounded. Each wrong entry costs two credentialed operations (the
+#: primary auth op and its corroborator, GH #149/#150), up to twelve sends at
+#: the wire when the executor re-sends on a method-relearn.
+MAX_ATTEMPTS_PER_PASS = MAX_STORED
 
 #: Posture: this installation stores NO entry credentials and prompts for a
 #: device credential every time (FR-CRED-013).
@@ -155,14 +164,23 @@ def list_entry_credentials() -> List[EntryCredential]:
 
 
 def attempt_order() -> List[EntryCredential]:
-    """What an adoption should try. Identical to the stored list, by design.
+    """What one onboarding pass should try — at most :data:`MAX_ATTEMPTS_PER_PASS`.
 
-    The cap is enforced on storage, so there is nothing to trim here. This
-    function exists as the device-facing name for the same thing: a later slice
-    may reorder it (ADR-0061 suggests most-recently-successful first) without
-    changing what the settings page shows.
+    The one place the attempt list is built: the onboarding loop iterates it
+    and :func:`describe` reports it as ``in_use``, so what is tried and what
+    the settings page says is tried cannot drift. The order is the stored
+    order (the legacy pair first); reordering most-recently-successful-first
+    is ADR-0064 slice F and waits for the lockout measurement.
     """
-    return list_entry_credentials()
+    creds = list_entry_credentials()
+    if len(creds) > MAX_ATTEMPTS_PER_PASS:
+        logger.warning(
+            "%d entry credentials are stored but a pass tries at most %d — "
+            "the rest are never used; trim the list (ADR-0064 slice C)",
+            len(creds), MAX_ATTEMPTS_PER_PASS,
+        )
+        creds = creds[:MAX_ATTEMPTS_PER_PASS]
+    return creds
 
 
 def add_entry_credential(username: str, password: str, label: str = "") -> bool:
@@ -227,5 +245,5 @@ def describe() -> dict:
         "prompt_always": prompt_always(),
         "max_stored": MAX_STORED,
         "stored": [c.redacted() for c in stored],
-        "in_use": [c.redacted() for c in list_entry_credentials()],
+        "in_use": [c.redacted() for c in attempt_order()],
     }

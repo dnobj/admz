@@ -131,11 +131,47 @@ def test_the_legacy_pair_occupies_a_slot(isolated_settings):
 
 
 def test_attempt_order_is_the_stored_list(isolated_settings):
-    """Nothing is trimmed at try-time, because nothing over-large is stored."""
+    """Under the bound nothing is trimmed: the stored order, legacy first."""
     isolated_settings.set(ec.LEGACY_PASS_KEY, "legacy")
     ec.add_entry_credential("a", "1")
     assert ec.attempt_order() == ec.list_entry_credentials()
     assert ec.attempt_order()[0].password == "legacy"
+
+
+def _store_raw(settings, n):
+    """What the CLI writer can do: bypass the storage cap entirely."""
+    settings.set(ec.SETTING_KEY, json.dumps(
+        [{"username": f"u{i}", "password": f"p{i}", "label": f"batch {i}"} for i in range(n)]
+    ))
+
+
+def test_a_pass_tries_at_most_the_bound_when_the_raw_setting_holds_more(isolated_settings, caplog):
+    """ADR-0064 slice C: the storage cap is bypassable (`_parse` never
+    truncates), so the bound lives where the attempt list is built."""
+    _store_raw(isolated_settings, 5)
+    assert len(ec.list_entry_credentials()) == 5, "stored: all five"
+    with caplog.at_level("WARNING", logger="admz.entry_credentials"):
+        tried = ec.attempt_order()
+    assert [c.username for c in tried] == ["u0", "u1", "u2"]
+    assert len(tried) == ec.MAX_ATTEMPTS_PER_PASS == ec.MAX_STORED
+    assert any("tries at most" in r.getMessage() for r in caplog.records)
+
+
+def test_the_legacy_pair_counts_against_the_bound(isolated_settings):
+    isolated_settings.set(ec.LEGACY_PASS_KEY, "legacy")
+    _store_raw(isolated_settings, 5)
+    tried = ec.attempt_order()
+    assert tried[0].password == "legacy"
+    assert len(tried) == ec.MAX_ATTEMPTS_PER_PASS
+
+
+def test_describe_reports_what_is_tried_not_what_is_stored(isolated_settings):
+    """`in_use` is the attempt list, so the settings page cannot claim five
+    credentials are tried when three are."""
+    _store_raw(isolated_settings, 5)
+    d = ec.describe()
+    assert len(d["stored"]) == 5
+    assert len(d["in_use"]) == ec.MAX_ATTEMPTS_PER_PASS
 
 
 # ── the "store none, prompt every time" posture ─────────────────────────────
