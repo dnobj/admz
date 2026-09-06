@@ -107,6 +107,12 @@ class TestTheSwitchIsAskedOnce:
         assert rec2.consecutive_failures == 0
         assert rec2.last_seen_online is not None
         assert "capability record" in rec2.last_error
+        # #460 review, MAJOR-2: a skip sweep teaches NOTHING. Re-teaching on
+        # a skip would bump the streak and push the lease forward every
+        # sweep — a self-reinforcing lease that never lapses, so a switch
+        # that gains JSON-RPC is never re-discovered. Byte-identical row.
+        assert capability_store.get(T8516, "systemready") == row
+        assert rec2.latency_ms == 3, "a skip sweep's latency is the TCP probe's"
 
     @pytest.mark.asyncio
     async def test_unreadable_sweep_teaches_nothing(self, isolated_db):
@@ -155,6 +161,44 @@ class TestTheSwitchIsAskedOnce:
 
 
 class TestHealthyDevicesAreUntouched:
+    @pytest.mark.asyncio
+    async def test_a_surveyed_camera_is_probed_and_its_row_left_alone(
+        self, isolated_db
+    ):
+        """#460 review, MAJOR-1/3: the S2 survey records `systemready`
+        PRESENT for every camera. A PRESENT row must never cause a skip
+        (a mutation that skips on any non-stale row would file the whole
+        fleet limited_api), and a trustworthy PRESENT row must not be
+        rewritten on every ONLINE sweep — the survey's provenance
+        (source=discovery, its reason) is kept."""
+        from admz.device_capabilities import PRESENT, capability_store
+
+        capability_store.record(
+            T8516, "systemready", PRESENT, firmware=FW, source="discovery",
+            reason="getApiList reported 'systemready'", now=time.time(),
+        )
+        before = capability_store.get(T8516, "systemready")
+        ok = MagicMock(
+            success=True, status_code=200, error=None,
+            parsed_data={"systemready": "yes", "needsetup": "no",
+                         "uptime": 100, "bootid": "boot-1"},
+        )
+        catalog, executor, asked = _per_op({
+            SYSTEMREADY_OP: ok,
+            CORROBORATION_OP: MagicMock(
+                success=True, status_code=200, error=None,
+                parsed_data="root.Brand.Brand=AXIS",
+            ),
+        })
+        for _ in range(3):
+            asked.clear()
+            rec = await _sweep(catalog, executor)
+            assert rec.status == DeviceHealthStatus.ONLINE
+            assert asked[0] == SYSTEMREADY_OP, "a PRESENT row never skips the probe"
+        after = capability_store.get(T8516, "systemready")
+        assert after == before, "a trustworthy PRESENT row is not rewritten"
+        assert after.source == "discovery"
+
     @pytest.mark.asyncio
     async def test_a_camera_that_answers_is_never_skipped_and_writes_no_row(
         self, isolated_db
@@ -205,4 +249,32 @@ class TestHealthyDevicesAreUntouched:
         })
         rec = await _sweep(catalog2, executor2)
         assert rec.status == DeviceHealthStatus.ONLINE
-        assert dc.capability_store.get(T8516, "systemready").supported is True
+        row = dc.capability_store.get(T8516, "systemready")
+        assert row.supported is True
+        assert row.source == "health", "rows the health monitor writes say so"
+        # ...and it stays probed from now on (#460 review, MAJOR-3).
+        asked2.clear()
+        await _sweep(catalog2, executor2)
+        assert SYSTEMREADY_OP in asked2
+
+
+class TestSkipSweepVerdictsNameTheirEvidence:
+    @pytest.mark.asyncio
+    async def test_host_down_on_a_skip_sweep_is_the_tcp_probes_verdict(
+        self, isolated_db, monkeypatch
+    ):
+        """#460 review, MINOR-1: on a skip sweep the JSON probe was not
+        sent, so when the host is down the verdict comes from the TCP probe
+        — last_error must say that, not blame the capability record."""
+        catalog, executor, asked = _per_op(_switch_ops())
+        await _sweep(catalog, executor)          # learn: row written
+
+        monkeypatch.setattr(
+            "admz.fleet.health._tcp_probe", AsyncMock(return_value=None)
+        )
+        asked.clear()
+        rec = await _sweep(catalog, executor)    # skip, then host is down
+        assert rec.status == DeviceHealthStatus.UNREACHABLE
+        assert asked == [], "nothing was sent: the JSON probe was skipped and TCP failed first"
+        assert rec.last_error.startswith("host did not accept a TCP connection")
+        assert "capability record" in rec.last_error
