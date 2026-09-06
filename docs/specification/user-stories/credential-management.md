@@ -74,16 +74,16 @@ How device credentials are captured, stored, retrieved, and rotated — with spe
 
 **Related requirements:** [mcp-server](../requirements/mcp-server.md), [credential-storage](../requirements/credential-storage.md).
 
-## US-CR-006 — Fleet-wide default password set via OOB
+## US-CR-006 — Fleet-wide entry credential set via OOB
 
-**As an** enterprise operator deploying 200 cameras, **I want** to set the fleet's default provisioning password once **so that** every provision call uses the same value, **and so that** the password is captured via OOB rather than typed in chat.
+**As an** enterprise operator deploying 200 cameras, **I want** to set the fleet's shared credential once **so that** ADMZ can get into every camera that was set up with it, **and so that** the password is captured via OOB rather than typed in chat.
 
 **Acceptance criteria:**
 1. The LLM calls `set_fleet_setting(key="default_password")` (with `value` omitted).
 2. The MCP returns `{success, action: "capture", capture_url: "/capture/fleet/{token}", token}`.
 3. The user opens the URL, enters the password (and optionally a username) in the form.
 4. On submit, both `default_password` and `default_username` are written to `fleet_settings`.
-5. Subsequent `provision_device(...)` calls use these defaults when no explicit `password` argument is given.
+5. The pair is the fleet's first **entry credential** (FR-CRED-011): onboarding tries it to get into a device set up elsewhere. It is **never written to a device** — `provision_device` and factory-default onboarding generate a per-device password (FR-CRED-007; ADR-0061, shipped by ADR-0064 slice E on 2026-09-06).
 6. `get_fleet_settings` returns the password as a masked placeholder (e.g. `****** (12 chars)`) — both via MCP and via `GET /api/fleet/settings`.
 
 **Related requirements:** [credential-storage](../requirements/credential-storage.md), [mcp-server](../requirements/mcp-server.md), [web-api](../requirements/web-api.md).

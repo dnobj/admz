@@ -117,6 +117,7 @@ class TestProvisionFactoryDefault:
         )
         assert res["password_source"] == "fleet_default"
         assert reg.accounts[("cam-1", "default")]["password"] == "FleetPass123"
+        assert "FleetPass123" not in repr(res)
 
     @pytest.mark.asyncio
     async def test_an_explicit_password_is_still_honoured(self, monkeypatch):
@@ -349,6 +350,15 @@ def test_no_caller_opts_into_the_fleet_default():
 
     import admz
 
+    def _mentions(node, needles):
+        for sub in ast.walk(node):
+            text = getattr(sub, "id", None) or getattr(sub, "attr", None)
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                text = sub.value
+            if text and any(n in text for n in needles):
+                return True
+        return False
+
     root = pathlib.Path(admz.__file__).parent
     offenders = []
     for f in sorted(root.rglob("*.py")):
@@ -356,8 +366,18 @@ def test_no_caller_opts_into_the_fleet_default():
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
+            callee = getattr(node.func, "attr", None) or getattr(node.func, "id", None) or ""
             for kw in node.keywords:
-                if (kw.arg == "allow_fleet_default"
-                        and isinstance(kw.value, ast.Constant) and kw.value.value is True):
-                    offenders.append(f"{f.relative_to(root)}:{node.lineno}")
+                # any value but the literal False — a constant, a name, an
+                # expression — is a way to opt in without writing `True`
+                if kw.arg == "allow_fleet_default" and not (
+                        isinstance(kw.value, ast.Constant) and kw.value.value is False):
+                    offenders.append(f"{f.relative_to(root)}:{node.lineno} allow_fleet_default")
+                # the other door: handing the fleet secret over as the
+                # explicit password
+                if (kw.arg == "password" and callee == "provision_factory_default"
+                        and _mentions(kw.value, ("fleet_settings", "default_password", "LEGACY_PASS_KEY"))):
+                    offenders.append(f"{f.relative_to(root)}:{node.lineno} password")
+    # what this cannot see: **kwargs forwarding and a re-implemented write
+    # (the MCP tool is one — pinned by tests/test_provisioning_mcp_tool.py)
     assert offenders == []

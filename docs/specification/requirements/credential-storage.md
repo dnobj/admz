@@ -81,8 +81,13 @@ Password source: explicit arg > 24-char generated, per device. The fleet
 > The trade, stated plainly: a device provisioned from factory default holds
 > only its generated password, so after a loss of ADMZ's database the entry
 > credentials do not get back into it — it is factory-reset and provisioned
-> again. #296 part 2 (shared versus per-device as a first-class setting) is
-> where a deliberate shared mode would live.
+> again. The recovery control is therefore the one the README already
+> demands: back up `admz.db` **and** `admz.key` together (README §Backup).
+> Under the old ordering the fleet password on the device was a recovery route
+> only when `default_username` was the account written (`root`); an install
+> whose pair is `operator/…` never had one. #296 part 2 (shared versus
+> per-device as a first-class setting) is where a deliberate shared mode
+> would live.
 
 ### FR-CRED-008 — Temporary device-side users ✅
 `create_temp_credentials(device_id, permissions, ttl_seconds)`
@@ -201,10 +206,10 @@ than used — so turning it on stops ADMZ using a credential immediately, with
 nothing to delete first. Nothing is deleted on the operator's behalf, so turning
 it off restores what was there.
 
-It costs less than it appears. Nothing requires a stored fleet password:
-`provision_factory_default` prefers one but falls back to
-`generate_device_password()`, and #185 already made the deferred/scheduled
-reprovision path generate unconditionally. The only thing the posture gives up
+It costs less than it appears. Nothing requires a stored fleet password: since
+ADR-0064 slice E `provision_factory_default` never writes one (the generated
+password wins, FR-CRED-007), as the deferred reprovision path has since #185.
+The only thing the posture gives up
 is that adopting an **already-set-up** device always asks a human — which is
 precisely what it is choosing.
 

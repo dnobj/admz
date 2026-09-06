@@ -171,8 +171,8 @@ time-based snapshot schedules). When the device next reports
 factory-defaulted (`needsetup`), the health-monitor sweep automatically
 re-provisions it — so a factory reset from chat doesn't block on the
 ~1–2 min reboot. The actual provision runs only because it was authorized
-here, up front; the password comes from the fleet default and is never
-shown.
+here, up front; the password is generated per device (never the fleet
+default — FR-CRED-007) and is never shown.
 - **Args:** `device_id` (required); `intent` (only `reprovision` for now);
   `username` (default `root`)
 - **Returns:** `{success, queued, pending_id, device_id, trigger, message}`

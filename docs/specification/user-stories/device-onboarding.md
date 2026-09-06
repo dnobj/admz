@@ -81,7 +81,7 @@ How devices get added to ADMZ. Three paths exist — manual, discovery-driven, a
 1. `discover_network_devices(subnet="10.0.0.0/16")` enumerates devices on the larger network.
 2. For each discovered device, `register_discovered_device` adds it to the registry.
 3. For each registered factory-default device, `provision_device` is called.
-4. A fleet-default password set via `set_fleet_setting("default_password", …)` is used during provisioning when no per-device password is supplied.
+4. A fleet credential set via `set_fleet_setting("default_password", …)` is tried as an entry credential on devices set up elsewhere; a factory-default device is provisioned with a **generated** per-device password whether or not one is set (FR-CRED-007, ADR-0064 slice E).
 5. The fleet-default password is **set via the OOB `/capture/fleet/{token}` flow** — never typed into the LLM chat.
 
 **Related requirements:** [discovery](../requirements/discovery.md), [mcp-server](../requirements/mcp-server.md), [performance](../requirements/performance.md).

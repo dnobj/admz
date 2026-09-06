@@ -2215,8 +2215,8 @@ class ADMZMCPServer:
     async def _onboard_device(self, device_id: str, adopt: bool = False) -> Dict[str, Any]:
         """Resolve a device's credentials without any password entering
         context: verify stored creds / auto-provision a factory-default
-        device from fleet settings / try-and-save the fleet credential
-        pair — and only if none of those work, open a capture session
+        device with a generated password / try the entry credentials and
+        adopt — and only if none of those work, open a capture session
         (the chat console renders it as a secure credential-form card).
         """
         from admz.onboarding import (
@@ -2261,7 +2261,7 @@ class ADMZMCPServer:
         elif status == PROVISIONED:
             result["message"] = (
                 "Device was factory-defaulted; an admin account was "
-                "provisioned automatically from fleet settings "
+                "provisioned automatically with a generated password "
                 f"(password source: {result.get('password_source')}). "
                 "The password was stored server-side and is not available here."
             )
@@ -4170,7 +4170,7 @@ class ADMZMCPServer:
             base_url = os.getenv("ADMZ_BASE_URL", "http://localhost:4242")
             session = capture_store.create_fleet_session(
                 setting_key=key,
-                label="Fleet default password for device provisioning",
+                label="Fleet entry credential — tried on devices set up elsewhere; never written to a device",
             )
             url = f"{base_url}/capture/fleet/{session.token}"
             return {

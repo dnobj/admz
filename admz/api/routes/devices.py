@@ -863,8 +863,8 @@ async def queue_recovery(
 ):
     """Queue a pre-authorized recovery for a factory-defaulted device: when it
     next reports needsetup (now, or after a future factory reset) the health
-    sweep re-provisions it (creates the admin account from the fleet default
-    password). Authenticated + audited."""
+    sweep re-provisions it (creates the admin account with a generated
+    password — never the fleet default: #185, FR-CRED-007). Authenticated + audited."""
     from admz.audit import record_event
     from admz.auth import get_current_principal
     from admz.authz import require_authenticated_principal

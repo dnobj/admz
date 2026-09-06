@@ -281,7 +281,7 @@ async def onboard_device_credentials(
         # Rejected or indeterminate: fall through — a stale stored password
         # is exactly what the fleet-pair try below may repair.
 
-    # ---- 2. Factory-defaulted → provision from fleet settings ------------
+    # ---- 2. Factory-defaulted → provision with a generated password -------
     ready = await read_systemready(
         catalog, executor, probe_info,
         stored or {"username": "", "password": ""},

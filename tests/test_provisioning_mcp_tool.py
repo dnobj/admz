@@ -109,11 +109,26 @@ async def test_force_change_rotates_to_a_generated_password(monkeypatch, fleet_d
     assert FLEET not in repr(out) and GENERATED not in repr(out)
 
 
+@pytest.mark.asyncio
+async def test_an_empty_password_is_not_a_password(monkeypatch, fleet_default_configured):
+    """`password: ""` — a blank field — generates; it neither writes an empty
+    password nor falls back to the fleet one."""
+    _device_answers(monkeypatch, _probe(ProbeStatus.FACTORY_DEFAULT))
+    srv = _Srv()
+    out = await ADMZMCPServer._provision_device(srv, {"device_id": "cam-1", "password": ""})
+    assert out["password_source"] == "generated"
+    assert srv.sent[0][1]["password"] == GENERATED
+
+
 def test_the_tool_description_says_so():
+    import re
+
     from admz.mcp.tools.provision import TOOLS
 
     tool = next(t for t in TOOLS if t.name == "provision_device")
     assert "never written to a device" in tool.description
-    assert "fleet default_password setting >" not in tool.description
+    assert "Password priority" not in tool.description
+    assert re.search(r"fleet default_password[^.]*>", tool.description) is None, \
+        "no ordering may put the fleet password before generation"
     schema = getattr(tool, "inputSchema", None) or tool.input_schema
     assert "never written to a device" in schema["properties"]["password"]["description"]

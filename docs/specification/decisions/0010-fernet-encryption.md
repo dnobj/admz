@@ -107,8 +107,9 @@ JSON. The threshold: we encrypt secrets, not metadata.
 ### Amendment 2026-08-04 — the same key also covers fleet-setting secrets (#296 part 1)
 
 The threshold above was applied only to credentials ADMZ stores **about** a
-device. `fleet_settings.default_password` — the credential ADMZ **writes to**
-devices — sat in the settings table as a plain value, protected only by the
+device. `fleet_settings.default_password` — then the credential ADMZ **wrote to**
+devices; since ADR-0064 slice E (2026-09-06) an entry credential that is never
+written to one — sat in the settings table as a plain value, protected only by the
 directory ACL added in #252. So did `gemini_api_key` and `acs_webhook_token`.
 That was an inconsistency, not an exploit, and it is now closed: the same
 Fernet key encrypts them.

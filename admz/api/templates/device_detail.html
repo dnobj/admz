@@ -338,7 +338,7 @@ const HEALTH = {
   const status = new URLSearchParams(window.location.search).get('onboarding');
   if (!status) return;
   const NOTES = {
-    provisioned: ['success', 'Device was factory-defaulted — an admin account was provisioned automatically from fleet settings.'],
+    provisioned: ['success', 'Device was factory-defaulted — an admin account was provisioned automatically with a generated password.'],
     fleet_credentials_saved: ['success', 'Fleet default credentials authenticated and were saved for this device.'],
     already_credentialed: ['success', 'Stored credentials verified — device is ready.'],
     provision_failed: ['error', 'Automatic provisioning failed — see the health status below.'],
