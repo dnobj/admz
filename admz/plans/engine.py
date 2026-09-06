@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # four-word severity table; every catalog word outside it — ``action``,
 # ``read``, anything new — ranked 0, so a declared ``normal`` overrode it and
 # the gate's fail-closed default never saw the original word.
-from admz.confirm_policy import is_known_risk, risk_rank  # noqa: E402
+from admz.confirm_policy import LEVEL_STRICTNESS, is_known_risk  # noqa: E402
 
 
 class PlanEngine:
@@ -109,19 +109,25 @@ class PlanEngine:
 
             # Raise-only risk floor (ADR-0034): a declared per-step
             # risk_level can escalate the catalog risk so the plan-level
-            # confirmation gate engages, but can never soften it. Ranks come
-            # from the policy vocabulary: a catalog word the policy does not
-            # know ranks as its fail-closed confirmation (url_only), so only a
-            # declared ``dangerous`` can raise it and nothing can lower it. A
-            # declared word the policy does not know is ignored — a caller
+            # confirmation gate engages, but can never soften it. The
+            # comparison is between the EFFECTIVE confirmation levels the
+            # gate will resolve — per-fleet overrides included — not between
+            # default ranks: an operator who raised ``normal`` to
+            # url_and_password must not have a restore plan's declared
+            # ``service-affecting`` (url_only) quietly replace it (#456
+            # review). An unknown catalog word resolves to the fail-closed
+            # level, so only ``dangerous`` can raise it and nothing lowers it;
+            # a declared word the policy does not know is ignored — a caller
             # cannot invent severity in either direction.
             declared = str(step_data.get("risk_level", "") or "")
-            if (
-                declared
-                and is_known_risk(declared)
-                and risk_rank(declared) > risk_rank(risk_level)
-            ):
-                risk_level = declared
+            if declared and is_known_risk(declared):
+                from admz.operations import resolve_confirmation
+
+                if (
+                    LEVEL_STRICTNESS.get(resolve_confirmation(declared), 0)
+                    > LEVEL_STRICTNESS.get(resolve_confirmation(risk_level), 0)
+                ):
+                    risk_level = declared
 
             # Validate device exists in registry
             if not self.registry.device_exists(device_id):

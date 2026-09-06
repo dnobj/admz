@@ -1571,7 +1571,11 @@ def _plan_level_and_risk(steps: Sequence[Any]) -> Tuple[str, str]:
     """Return (max required confirmation level, the risk that drove it)."""
     best_level, best_risk = "none", "read-only"
     for step in steps:
-        risk = getattr(step, "risk_level", "") or "read-only"
+        # A falsy word (an atlas op whose ``risk_level:`` loaded as None or
+        # "") used to be read as ``read-only`` — fail-open, on the one path
+        # the single-op resolver already fails closed on (#456 review).
+        # ``resolve_confirmation`` maps it to the unknown-word level instead.
+        risk = getattr(step, "risk_level", "")
         level = resolve_confirmation(risk)
         if _LEVEL_ORDER.get(level, 0) > _LEVEL_ORDER.get(best_level, 0):
             best_level, best_risk = level, risk

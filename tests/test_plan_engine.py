@@ -784,6 +784,58 @@ class TestStepRiskFloor:
         )
         assert plan.steps[0].risk_level == "action"
 
+    def test_declared_word_never_softens_an_operators_stricter_override(
+        self, monkeypatch, tmp_path
+    ):
+        """#459 review, MAJOR-1: the floor used to rank by DEFAULT levels
+        while the gate resolves EFFECTIVE ones. An operator who raised
+        ``normal`` to url_and_password had every restore plan (which
+        declares ``service-affecting`` on catalog-normal steps) quietly
+        replace it — and gate at url_only. The comparison is now between
+        effective levels, so the catalog word stays and the operator's
+        override wins."""
+        import admz.fleet_settings
+        from admz.fleet_settings import FleetSettings
+        from admz.operations import _plan_level_and_risk
+
+        fs = FleetSettings(db_path=str(tmp_path / "fleet.db"))
+        fs.set("confirm_level_normal", "url_and_password")
+        monkeypatch.setattr(admz.fleet_settings, "fleet_settings", fs)
+
+        engine = self._engine_with("param.cgi:update", "normal")
+        plan = engine.create_plan(
+            description="restore-style step under a stricter override",
+            steps=[{
+                "operation_id": "param.cgi:update",
+                "device_id": "cam-01", "params": {},
+                "risk_level": "service-affecting",   # the restore builder's floor
+            }],
+        )
+        assert plan.steps[0].risk_level == "normal"
+        assert _plan_level_and_risk(plan.steps)[0] == "url_and_password"
+
+    def test_the_floor_still_raises_when_it_should(self, monkeypatch, tmp_path):
+        """Control for the test above: with no override the same step is
+        raised to service-affecting (url_only) — restore's floor works."""
+        import admz.fleet_settings
+        from admz.fleet_settings import FleetSettings
+        from admz.operations import _plan_level_and_risk
+
+        fs = FleetSettings(db_path=str(tmp_path / "fleet.db"))
+        monkeypatch.setattr(admz.fleet_settings, "fleet_settings", fs)
+
+        engine = self._engine_with("param.cgi:update", "normal")
+        plan = engine.create_plan(
+            description="restore-style step, no override",
+            steps=[{
+                "operation_id": "param.cgi:update",
+                "device_id": "cam-01", "params": {},
+                "risk_level": "service-affecting",
+            }],
+        )
+        assert plan.steps[0].risk_level == "service-affecting"
+        assert _plan_level_and_risk(plan.steps)[0] == "url_only"
+
     def test_the_second_vocabulary_table_is_gone(self):
         """No parallel severity table may exist beside the policy's."""
         import admz.plans.engine as engine_module

@@ -135,7 +135,9 @@ asymmetry with the reboot flow remains.
   `admz/api/confirm_store.py` (`action_json`, `is_action`),
   `admz/mcp/server.py` (`_accept_baseline`, `_delete_device`,
   `_DESTRUCTIVE_MCP_TOOLS`), `admz/chatbot/system_prompt.py`,
-  `admz/plans/engine.py` (`_RISK_ORDER`, the raise-only step-risk floor),
+  `admz/plans/engine.py` (the raise-only step-risk floor — compares effective
+  confirmation levels through `confirm_policy`/`resolve_confirmation` since #456;
+  no private severity table),
   `admz/snapshot/restore.py` (step risk + `_chunk_params`),
   `admz/snapshot/facets/base.py` (`is_restorable`, `RESTORE_EXCLUDE`)
 - Tests: `tests/test_mcp_destructive_gate.py` (rewritten to pin the widget

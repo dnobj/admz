@@ -56,9 +56,14 @@ def _catalog_risk_levels() -> dict[str, list[str]]:
             continue
         if not isinstance(data, dict):
             continue
-        risk = data.get("risk_level")
-        if isinstance(risk, str):
-            found.setdefault(risk, []).append(str(path.relative_to(root)))
+        if "risk_level" not in data:
+            continue
+        risk = data["risk_level"]
+        # A non-string or empty value is recorded under a sentinel so the
+        # vocabulary test can refuse it: an atlas `risk_level:` left blank
+        # loads as None, which the isinstance filter used to hide (#459).
+        key = risk if isinstance(risk, str) and risk else f"<non-string:{risk!r}>"
+        found.setdefault(key, []).append(str(path.relative_to(root)))
     return found
 
 
@@ -68,6 +73,8 @@ def test_the_catalog_uses_no_risk_level_admz_cannot_interpret():
         "no risk_level found anywhere in the catalog — the catalog path is "
         "probably wrong, and an empty corpus passes every assertion below"
     )
+    blank = {k: v for k, v in found.items() if k.startswith("<non-string:")}
+    assert not blank, f"catalog ops with a non-string/empty risk_level: {blank}"
 
     unknown = unknown_risk_levels(found)
     detail = {r: found[r][:3] for r in sorted(unknown)}
@@ -143,8 +150,15 @@ class TestOneRiskVocabulary:
         step = lambda risk: SimpleNamespace(risk_level=risk)
         assert _plan_level_and_risk([step("action")])[0] == "url_only"
         assert _plan_level_and_risk([step("critical")])[0] == "url_only"
+        # #459 review, MAJOR-2: a FALSY word (an atlas op whose risk_level
+        # loaded as None or "") used to read as read-only → none. The
+        # single-op resolver already failed closed on it; so does this now.
+        assert _plan_level_and_risk([step(None)])[0] == "url_only"
+        assert _plan_level_and_risk([step("")])[0] == "url_only"
         # control: a genuinely low-risk plan stays inline
         assert _plan_level_and_risk([step("read-only"), step("normal")])[0] == "none"
+        # an empty plan is not a gated plan
+        assert _plan_level_and_risk([])[0] == "none"
 
     def test_operations_level_order_is_the_policy_scale(self):
         from admz import confirm_policy, operations

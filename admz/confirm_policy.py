@@ -64,9 +64,11 @@ _DEFAULT_CONFIRMATION_LEVELS: Dict[str, str] = {
 # in, and it is why the default has to be safe rather than convenient.
 #
 # Two neighbouring decisions already went this way and are the precedent:
-# ``plans/engine.py`` ranks an unknown declared risk ``-1`` so it can never
-# soften the catalog's, and ``mcp/server.py`` resolves an unreadable catalog to
-# ``service-affecting`` because "an unreadable catalog must not open the gate".
+# ``plans/engine.py``'s raise-only step floor ignores a declared risk it does
+# not know and compares EFFECTIVE confirmation levels, so a declared word can
+# never soften a catalog word (#456); and ``mcp/server.py`` resolves an
+# unreadable catalog to ``service-affecting`` because "an unreadable catalog
+# must not open the gate".
 #
 # Choosing ``url_only`` rather than ``url_and_password``: unknown means unknown,
 # not maximally dangerous, and ``url_only`` is a click rather than a password —
@@ -141,8 +143,9 @@ def is_confirm_level_key(key: str) -> bool:
     invariant that has to hold is "no low-privilege caller writes *anything*
     under ``confirm_level_*``" — not "…writes one of today's six".
 
-    A risk class absent from the table already resolves to ``none``, so it
-    cannot be relaxed further; the namespace rule earns its keep by protecting
+    A risk class absent from the table resolves to ``url_only`` (#397), and a
+    ``confirm_level_<word>`` override written for it *would* relax that — which
+    is exactly why the namespace rule earns its keep: it protects
     a *future* table entry from the moment it is added rather than from the
     moment someone remembers to update a second list. This is also what the
     glossary, the llm-agent persona and the security-operator persona have
