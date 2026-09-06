@@ -862,51 +862,66 @@ _LEGACY_REFUSAL_CONDEMNS = frozenset(
 )
 
 # How a JSON-RPC op's failed answer reads for this sweep's status.
-_JSON_ABSENT = "absent"        # the JSON surface is not there to ask
+_JSON_ABSENT = "absent"        # the device cannot serve this op
 _JSON_TRANSIENT = "transient"  # the surface exists; this answer proves nothing
 # The executor's two message shapes (``executor/vapix.py``) for a JSON op the
-# device cannot serve: a dropped/refused connection after TCP accepted, and a
-# 2xx whose body is not JSON at all (HTML where JSON was expected).
+# device cannot serve AT ALL: a dropped/refused connection after TCP accepted,
+# and a 2xx whose body is not JSON (HTML where JSON was expected). Both are
+# device-wide — every JSON POST to a legacy-only device fails one of these
+# ways — unlike a 404, which is about one endpoint.
 _TRANSPORT_PREFIX = "Transport error:"
 _PARSE_FAILURE_PREFIX = "Failed to parse JSON response"
 
 
-def _json_answer_kind(result: Any) -> str:
-    """Does this failed JSON-RPC answer say the surface is *absent*, or only
-    that it had a bad moment?
-
-    ADR-0063's ``classify`` answers a different question — what lease a
-    capability row should carry — and files a transport refusal, a non-JSON
-    body and every 5xx as *unconfirmed* absence with a short lease rather
-    than a 7-day row. The health status is re-evaluated every sweep, so it
-    can act on the same evidence one sweep at a time; what it must share
-    with the ADR is the refusal to read a live surface's bad moment as a
-    missing one. So, ABSENT: the ADR's own hard-absent line (400/404/405/
-    410/501, and the JSON-RPC marks that literally say "no such method" —
-    both reused from ``device_capabilities``), plus the two shapes a
-    legacy-only device produces: a transport refusal (the T8516 drops an
-    unknown JSON POST — ``"Transport error: "``) and a 2xx body that is not
-    JSON. TRANSIENT: everything else — a 5xx, a 4xx the ADR does not call
-    absent (408, 429), a JSON-RPC *application* error at 2xx (Axis
-    ``1100: Internal error`` comes from an endpoint the device HAS, over an
-    HTTP layer that just accepted the credentials), and a connect or timeout
-    verdict, which is about the host rather than the surface.
+def _json_surface_gone(result: Any) -> bool:
+    """Does this failed JSON-RPC answer say the device has no JSON surface
+    at all? Only the two device-wide shapes (the T8516's): a transport drop
+    after TCP accepted, or a 2xx body that is not JSON. A 404 is not that —
+    it says one endpoint is missing (``systemready.cgi`` needs firmware 9.50;
+    ``basicdeviceinfo.cgi`` exists from 6.50) — and a JSON-RPC error object
+    at 2xx is a JSON surface answering.
     """
-    from admz.device_capabilities import ABSENT, classify
-
-    if classify(result, device_readable=True) == ABSENT:
-        return _JSON_ABSENT
     status = getattr(result, "status_code", None)
     error = str(getattr(result, "error", "") or "")
     if status is None:
-        return _JSON_ABSENT if error.startswith(_TRANSPORT_PREFIX) else _JSON_TRANSIENT
+        return error.startswith(_TRANSPORT_PREFIX)
     try:
         code = int(status)
     except (TypeError, ValueError):
-        return _JSON_TRANSIENT
-    if code >= 400:
-        return _JSON_TRANSIENT
-    if error.startswith(_PARSE_FAILURE_PREFIX):
+        return False
+    return 200 <= code < 300 and error.startswith(_PARSE_FAILURE_PREFIX)
+
+
+def _json_answer_kind(result: Any) -> str:
+    """How the *corroborator's* failed answer reads: can this device serve
+    the op at all?
+
+    ABSENT when the JSON surface is gone (:func:`_json_surface_gone`) or the
+    endpoint is not there — ADR-0063's absent status codes (400/404/405/410/
+    501, reused from ``device_capabilities``): a corroborator the device does
+    not have is the catalog-missing case in another form. TRANSIENT for
+    everything else: a 5xx, a 4xx the ADR does not call absent (408, 429), a
+    connect or timeout verdict (about the host, not the surface), and any
+    JSON-RPC error object at 2xx — ``1100: Internal error`` and
+    ``2004: Method not supported`` alike — because that is a JSON surface
+    answering in JSON over an HTTP layer that just accepted the credentials;
+    whatever it says about the method, it cannot mean "no surface to ask".
+    ADR-0063 files the surface-gone shapes as *unconfirmed* absence with a
+    short lease rather than a 7-day row; the health status is re-evaluated
+    every sweep, so acting on the same evidence one sweep at a time is
+    cheaper than a lease — and, like the ADR, a live surface's bad moment
+    never reads as a missing one.
+    """
+    from admz.device_capabilities import ABSENT_STATUS_CODES
+
+    if _json_surface_gone(result):
+        return _JSON_ABSENT
+    status = getattr(result, "status_code", None)
+    try:
+        code = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        code = None
+    if code in ABSENT_STATUS_CODES:
         return _JSON_ABSENT
     return _JSON_TRANSIENT
 
@@ -917,7 +932,6 @@ def _reason_of(result: Any, limit: int = 50) -> str:
         sc = getattr(result, "status_code", None)
         error = f"HTTP {sc}" if sc is not None else "no answer"
     return error[:limit]
-
 
 async def _corroborate_legacy_refusal(
     *,
@@ -952,16 +966,20 @@ async def _corroborate_legacy_refusal(
 
     ``json_probe`` is this sweep's own :data:`SYSTEMREADY_OP` result (``None``
     when the probe was skipped on the record). When it already failed in a
-    missing-surface shape, that IS the corroboration: the JSON surface was
-    asked this sweep and was not there, so a second JSON op is not sent — no
-    dead request, and one transport WARNING per sweep rather than two. On a
-    skip sweep there is no fresh evidence, so the corroborator is asked.
+    *device-wide* missing-surface shape (:func:`_json_surface_gone`), that IS
+    the corroboration: the JSON surface was asked this sweep and was not
+    there, so a second JSON op is not sent — no dead request, and one
+    transport WARNING per sweep rather than two. A 404-class answer from
+    ``systemready`` is not that: it says one endpoint is missing (firmware
+    6.50–9.49 has ``basicdeviceinfo`` and not ``systemready``), so the
+    corroborator is asked. On a skip sweep there is no fresh evidence, so
+    the corroborator is asked.
 
     Returns ``(verdict, facts, message)``: one of the ``_REFUSAL_*`` words,
     identity facts when the corroborator authenticated, and the
     ``last_error`` text naming what was asked and what it said.
     """
-    if json_probe is not None and _json_answer_kind(json_probe) == _JSON_ABSENT:
+    if json_probe is not None and _json_surface_gone(json_probe):
         return (
             _REFUSAL_UNCORROBORABLE, {},
             f"credentials rejected — {CORROBORATION_OP} refused them; no JSON "
@@ -992,7 +1010,7 @@ async def _corroborate_legacy_refusal(
             "errored — credentials NOT condemned on one op's evidence",
         )
     sc = getattr(other, "status_code", None)
-    if sc in (401, 403):
+    if sc in (401, 403) or _reports_401(getattr(other, "error", None)):
         return (
             _REFUSAL_BOTH, {},
             f"credentials rejected — {CORROBORATION_OP} and {AUTH_CHECK_OP} "

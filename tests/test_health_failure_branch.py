@@ -15,10 +15,13 @@ Both found by the adversarial review of #460, both pre-existing:
 The #462 half has a second layer, found by this PR's own reviews: the
 corroborating op is JSON-RPC, and a legacy-only device — the very device #462
 is about — can never answer it. A JSON surface that is *demonstrably not
-there to ask* (this sweep's own probe, or the corroborator, failing in a
-missing-surface shape on ADR-0063's line) is not "unproven"; the legacy read's
-refusal is the only evidence the device can give. A live surface's bad moment
-— a 5xx, a 429, a JSON-RPC application error at 200 — never condemns.
+there to ask* is not "unproven"; the legacy read's refusal is the only
+evidence the device can give. Two distinctions carry that: device-wide
+absence (a transport drop after TCP accepted, a non-JSON 2xx body — the
+only shapes this sweep's own probe may settle the question on) against
+op-specific absence (a 404 from one endpoint); and a JSON surface that is
+gone against a live surface's bad moment (a 5xx, a 429, any JSON-RPC error
+object at 200), which never condemns.
 """
 
 import time
@@ -34,6 +37,8 @@ from admz.fleet.health import (
     SYSTEMREADY_OP,
     DeviceHealthStatus,
     _json_answer_kind,
+    _json_surface_gone,
+    _reason_of,
     probe_device,
 )
 
@@ -98,16 +103,22 @@ BDI_OK = dict(
     }}},
 )
 PARSE_FAIL = "Failed to parse JSON response: Expecting value: line 1 column 1 (char 0)"
-# The three ways a JSON-RPC op fails on a device that has no JSON surface:
-# the production T8516's dropped connection (its ReadError stringifies to
-# nothing), a 404, and HTML where JSON was expected.
-MISSING_SURFACE = [
+# The two DEVICE-WIDE ways a JSON-RPC op fails on a device that has no JSON
+# surface: the production T8516's dropped connection (its ReadError
+# stringifies to nothing) and HTML where JSON was expected.
+SURFACE_GONE = [
     dict(status_code=None, error="Transport error: "),
-    dict(status_code=404, error="HTTP 404: Not Found"),
     dict(status_code=200, error=PARSE_FAIL),
+]
+# An endpoint the device does not have (ADR-0063's absent codes).
+ENDPOINT_ABSENT = [
+    dict(status_code=404, error="HTTP 404: Not Found"),
+    dict(status_code=501, error="HTTP 501: Not Implemented"),
 ]
 # A JSON surface that exists and had a bad moment this sweep.
 SR_503 = dict(status_code=503, error="HTTP 503: Service Unavailable")
+# A camera on firmware 6.50–9.49: basicdeviceinfo exists, systemready does not.
+SR_404 = dict(status_code=404, error="HTTP 404: Not Found")
 
 
 async def _sweep(catalog, executor):
@@ -223,26 +234,54 @@ class TestReachabilityShortcutIsPrefixAnchored:
 
 
 # ---------------------------------------------------------------------------
-# The JSON-answer classifier: ADR-0063's absent line + the legacy-only shapes
+# The JSON-answer classifiers: device-wide vs op-specific, gone vs bad moment
 # ---------------------------------------------------------------------------
 
-class TestJsonAnswerKind:
+class TestJsonAnswerClassifiers:
+    @pytest.mark.parametrize("status_code, error, gone", [
+        (None, "Transport error: ", True),
+        (None, "Transport error: Server disconnected without sending a response.", True),
+        (200, PARSE_FAIL, True),
+        (204, PARSE_FAIL, True),
+        # op-specific, not device-wide
+        (404, "HTTP 404: Not Found", False),
+        (501, "HTTP 501: Not Implemented", False),
+        (200, "-32601: Method not found", False),
+        (200, "2004: Method not supported.", False),
+        # bad moments and host verdicts
+        (200, "1100: Internal error", False),
+        (503, "HTTP 503: Service Unavailable", False),
+        (None, "Connection failed: All connection attempts failed", False),
+        (None, "Request timed out after 10s", False),
+        (None, "", False),
+        ("404", "HTTP 404: Not Found", False),
+        ("x", PARSE_FAIL, False),
+        # the parse-failure text means "not JSON" only on a 2xx; with an
+        # error status it is a bad moment with an unparsable body
+        (500, PARSE_FAIL, False),
+        (404, PARSE_FAIL, False),
+    ])
+    def test_surface_gone(self, status_code, error, gone):
+        assert _json_surface_gone(_r(status_code=status_code, error=error)) is gone
+
     @pytest.mark.parametrize("status_code, error, kind", [
-        # the two legacy-only shapes
+        # the surface is gone
         (None, "Transport error: ", _JSON_ABSENT),
-        (None, "Transport error: Server disconnected without sending a response.", _JSON_ABSENT),
         (200, PARSE_FAIL, _JSON_ABSENT),
-        # ADR-0063's hard-absent codes and method-absent marks, reused
+        # the endpoint is not there — ADR-0063's absent codes, reused
         (400, "HTTP 400: Bad Request", _JSON_ABSENT),
         (404, "HTTP 404: Not Found", _JSON_ABSENT),
         (405, "HTTP 405: Method Not Allowed", _JSON_ABSENT),
         (410, "HTTP 410: Gone", _JSON_ABSENT),
         (501, "HTTP 501: Not Implemented", _JSON_ABSENT),
-        (200, "-32601: Method not found", _JSON_ABSENT),
-        (200, "2000: API version not supported", _JSON_ABSENT),
-        # a live surface's bad moment
+        ("404", "HTTP 404: Not Found", _JSON_ABSENT),
+        # a JSON surface answering in JSON — whatever it says about the method
         (200, "1100: Internal error", _JSON_TRANSIENT),
         (200, "2001: Access forbidden", _JSON_TRANSIENT),
+        (200, "-32601: Method not found", _JSON_TRANSIENT),
+        (200, "2004: Method not supported.", _JSON_TRANSIENT),
+        (200, "2003: The requested API version is not supported.", _JSON_TRANSIENT),
+        # a live surface's bad moment
         (500, "HTTP 500: Internal Server Error", _JSON_TRANSIENT),
         (502, "HTTP 502: Bad Gateway", _JSON_TRANSIENT),
         (503, "HTTP 503: Service Unavailable", _JSON_TRANSIENT),
@@ -254,9 +293,16 @@ class TestJsonAnswerKind:
         (None, "Connection failed: All connection attempts failed", _JSON_TRANSIENT),
         (None, "Request timed out after 10s", _JSON_TRANSIENT),
         (None, "", _JSON_TRANSIENT),
+        ("x", "HTTP x", _JSON_TRANSIENT),
     ])
-    def test_kind(self, status_code, error, kind):
+    def test_answer_kind(self, status_code, error, kind):
         assert _json_answer_kind(_r(status_code=status_code, error=error)) == kind
+
+    def test_reason_of(self):
+        assert _reason_of(_r()) == "no answer"
+        assert _reason_of(_r(status_code=200)) == "HTTP 200"
+        assert _reason_of(_r(error="x" * 80)) == "x" * 50
+        assert _reason_of(_r(error="x" * 80), 30) == "x" * 30
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +336,7 @@ class TestRefusedLegacyReadIsACredentialQuestion:
         self, isolated_db, legacy, corroborator
     ):
         """Both ops are viewer-level in the atlas, so a 403 is the account
-        being refused, not a privilege nuance — the same set
+        being refused, not a privilege nuance — the (401, 403) set
         ``_confirm_credentials`` uses."""
         catalog, executor, asked = _per_op({
             SYSTEMREADY_OP: _r(**SR_503),
@@ -302,19 +348,22 @@ class TestRefusedLegacyReadIsACredentialQuestion:
         assert "both refused" in rec.last_error
         assert asked == [SYSTEMREADY_OP, CORROBORATION_OP, AUTH_CHECK_OP]
 
+    @pytest.mark.parametrize("where", ["legacy", "corroborator"])
     @pytest.mark.asyncio
-    async def test_a_401_reported_in_text_counts_as_refused(self, isolated_db):
-        """Parity with the systemready-401 trigger: an anchored
+    async def test_a_401_reported_in_text_counts_as_refused(self, isolated_db, where):
+        """Parity with the systemready-401 trigger, on both ops: an anchored
         "Authentication failed (401)" text is a refusal even when the result
         carries no status code. (The VAPIX executor sets the code today; the
         clause is defensive, and this pins that it is wired, not decorative.)"""
+        text_401 = _r(error="Authentication failed (401). Check credentials.")
         catalog, executor, asked = _per_op({
             SYSTEMREADY_OP: _r(**SR_503),
-            CORROBORATION_OP: _r(error="Authentication failed (401). Check credentials."),
-            AUTH_CHECK_OP: _r(**BDI_401),
+            CORROBORATION_OP: text_401 if where == "legacy" else _r(**PARAM_401),
+            AUTH_CHECK_OP: text_401 if where == "corroborator" else _r(**BDI_401),
         })
         rec = await _sweep(catalog, executor)
         assert rec.status == DeviceHealthStatus.AUTH_FAILED
+        assert "both refused" in rec.last_error
         assert AUTH_CHECK_OP in asked
 
     @pytest.mark.asyncio
@@ -349,16 +398,16 @@ class TestRefusedLegacyReadIsACredentialQuestion:
 
     # --- the second layer: a JSON surface that is not there to ask ---------
 
-    @pytest.mark.parametrize("probe", MISSING_SURFACE)
+    @pytest.mark.parametrize("probe", SURFACE_GONE)
     @pytest.mark.asyncio
     async def test_this_sweeps_own_json_failure_is_the_corroboration(
         self, isolated_db, probe
     ):
         """The actual #462 device on a probe sweep: the JSON probe failed in
-        a missing-surface shape and the legacy read refused the password.
-        The JSON surface was asked THIS sweep and was not there — no second
-        JSON op is sent (one dead request and one WARNING fewer), and the
-        verdict names this sweep's evidence."""
+        a device-wide missing-surface shape and the legacy read refused the
+        password. The JSON surface was asked THIS sweep and was not there —
+        no second JSON op is sent (one dead request and one WARNING fewer),
+        and the verdict names this sweep's evidence."""
         catalog, executor, asked = _per_op({
             SYSTEMREADY_OP: _r(**probe),
             CORROBORATION_OP: _r(**PARAM_401),
@@ -372,14 +421,40 @@ class TestRefusedLegacyReadIsACredentialQuestion:
         assert "no JSON surface to corroborate" in rec.last_error
         assert SYSTEMREADY_OP in rec.last_error, "names this sweep's evidence"
 
-    @pytest.mark.parametrize("corroborator", MISSING_SURFACE)
+    @pytest.mark.parametrize("probe, corroborator, status, phrase", [
+        (SR_404, BDI_OK, DeviceHealthStatus.REACHABLE_NO_API, "credentials look valid"),
+        (SR_404, BDI_401, DeviceHealthStatus.AUTH_FAILED, "both refused"),
+        (dict(status_code=200, error="-32601: Method not found"), BDI_OK,
+         DeviceHealthStatus.REACHABLE_NO_API, "credentials look valid"),
+    ])
+    @pytest.mark.asyncio
+    async def test_one_missing_endpoint_is_not_a_missing_surface(
+        self, isolated_db, probe, corroborator, status, phrase
+    ):
+        """A 404 from ``systemready`` says one endpoint is missing — a
+        firmware 6.50–9.49 camera has ``basicdeviceinfo`` and not
+        ``systemready`` — and a JSON-RPC error object is a JSON surface
+        answering. Neither settles the credential question: the corroborator
+        is asked and decides (round-3 review F1)."""
+        catalog, executor, asked = _per_op({
+            SYSTEMREADY_OP: _r(**probe),
+            CORROBORATION_OP: _r(**PARAM_401),
+            AUTH_CHECK_OP: _r(**corroborator),
+        })
+        rec = await _sweep(catalog, executor)
+        assert asked == [SYSTEMREADY_OP, CORROBORATION_OP, AUTH_CHECK_OP]
+        assert rec.status == status
+        assert phrase in rec.last_error
+
+    @pytest.mark.parametrize("corroborator", SURFACE_GONE + ENDPOINT_ABSENT)
     @pytest.mark.asyncio
     async def test_the_skip_sweep_asks_and_condemns_the_legacy_only_device(
         self, isolated_db, corroborator
     ):
         """With the JSON probe skipped on the #458 record there is no fresh
         evidence, so the corroborator IS asked — and on a legacy-only device
-        it cannot answer, in any of the three shapes. The legacy read is the
+        it cannot answer: the surface is gone, or the endpoint is not there
+        (the catalog-missing case in another form). The legacy read is the
         only read; its 401 reaches the verdict, with the TCP probe's
         latency."""
         _seed_skip_row()
@@ -396,14 +471,14 @@ class TestRefusedLegacyReadIsACredentialQuestion:
         assert "no JSON surface to corroborate" in rec.last_error
         assert AUTH_CHECK_OP in rec.last_error, "names what it asked"
 
-    @pytest.mark.parametrize("corroborator", MISSING_SURFACE)
+    @pytest.mark.parametrize("corroborator", SURFACE_GONE + ENDPOINT_ABSENT)
     @pytest.mark.asyncio
     async def test_a_live_json_surface_this_sweep_still_asks_and_classifies(
         self, isolated_db, corroborator
     ):
         """The JSON probe had a bad moment (a 503 — the surface exists), so
-        the corroborator is asked; when IT fails in a missing-surface shape
-        the verdict is the same single-op judgement, naming the corroborator."""
+        the corroborator is asked; when IT cannot be served the verdict is
+        the same single-op judgement, naming the corroborator."""
         catalog, executor, asked = _per_op({
             SYSTEMREADY_OP: _r(**SR_503),
             CORROBORATION_OP: _r(**PARAM_401),
@@ -436,17 +511,19 @@ class TestRefusedLegacyReadIsACredentialQuestion:
         _r(status_code=429, error="HTTP 429: Too Many Requests"),
         _r(status_code=200, error="1100: Internal error"),
         _r(status_code=200, error="2001: Access forbidden"),
+        _r(status_code=200, error="2004: Method not supported."),
+        _r(status_code=200, error="-32601: Method not found"),
         RuntimeError("executor blew up"),
     ])
     @pytest.mark.asyncio
     async def test_a_live_surfaces_bad_moment_does_not_condemn(
         self, isolated_db, corroborator
     ):
-        """A 5xx, a 4xx ADR-0063 does not call absent, a JSON-RPC
-        *application* error at 200 (the endpoint exists and answered in
-        JSON, over an HTTP layer that accepted the credentials), or an
-        executor error: the device serves the op, this answer proves nothing.
-        Don't move the status; the next sweep asks again."""
+        """A 5xx, a 4xx ADR-0063 does not call absent, any JSON-RPC error
+        object at 200 (a JSON surface answering in JSON over an HTTP layer
+        that accepted the credentials — whatever it says about the method),
+        or an executor error: this answer proves nothing. Don't move the
+        status; the next sweep asks again."""
         catalog, executor, asked = _per_op({
             SYSTEMREADY_OP: _r(**SR_503),
             CORROBORATION_OP: _r(**PARAM_401),
@@ -458,23 +535,6 @@ class TestRefusedLegacyReadIsACredentialQuestion:
         assert rec.consecutive_failures == 0
         assert rec.last_seen_online is not None
         assert AUTH_CHECK_OP in asked
-
-    @pytest.mark.parametrize("corroborator", [
-        _r(status_code=501, error="HTTP 501: Not Implemented"),
-        _r(status_code=200, error="-32601: Method not found"),
-    ])
-    @pytest.mark.asyncio
-    async def test_adr_0063s_absent_line_is_reused(self, isolated_db, corroborator):
-        """501 and the method-absent JSON-RPC marks are ADR-0063's own
-        "not here" verdicts, not bad moments."""
-        catalog, executor, asked = _per_op({
-            SYSTEMREADY_OP: _r(**SR_503),
-            CORROBORATION_OP: _r(**PARAM_401),
-            AUTH_CHECK_OP: corroborator,
-        })
-        rec = await _sweep(catalog, executor)
-        assert rec.status == DeviceHealthStatus.AUTH_FAILED
-        assert "no JSON surface to corroborate" in rec.last_error
 
     @pytest.mark.asyncio
     async def test_an_uncatalogued_corroborator_is_single_op_judgement(self, isolated_db):
@@ -492,21 +552,34 @@ class TestRefusedLegacyReadIsACredentialQuestion:
         assert "not in the catalog" in rec.last_error
         assert "both refused" not in rec.last_error
 
+    @pytest.mark.parametrize("shape", ["this-sweep", "corroborator", "transient"])
     @pytest.mark.asyncio
-    async def test_the_verdict_message_fits_its_cap_and_keeps_its_reason(self, isolated_db):
+    async def test_the_verdict_message_fits_its_cap_and_keeps_its_tail(
+        self, isolated_db, shape
+    ):
         """``last_error`` is capped at 200; the reason inside is capped first
-        so the cap never eats the diagnostic (round-2 review F5)."""
-        _seed_skip_row()
-        long_reason = "Failed to parse JSON response: " + "x" * 160
-        catalog, executor, asked = _per_op({
-            SYSTEMREADY_OP: _r(error="Transport error: "),
-            CORROBORATION_OP: _r(**PARAM_401),
-            AUTH_CHECK_OP: _r(status_code=200, error=long_reason),
-        })
+        so the cap never eats the diagnostic (round-2 review F5), on every
+        path that carries a device-supplied reason."""
+        long_html = PARSE_FAIL + " " + "x" * 200
+        long_429 = "HTTP 429: " + "y" * 300
+        if shape == "this-sweep":
+            ops = {SYSTEMREADY_OP: _r(status_code=200, error=long_html),
+                   CORROBORATION_OP: _r(**PARAM_401), AUTH_CHECK_OP: _r(**BDI_401)}
+            tail = ")"
+        elif shape == "corroborator":
+            _seed_skip_row()
+            ops = {SYSTEMREADY_OP: _r(error="Transport error: "),
+                   CORROBORATION_OP: _r(**PARAM_401),
+                   AUTH_CHECK_OP: _r(status_code=200, error=long_html)}
+            tail = ")"
+        else:
+            ops = {SYSTEMREADY_OP: _r(**SR_503), CORROBORATION_OP: _r(**PARAM_401),
+                   AUTH_CHECK_OP: _r(status_code=429, error=long_429)}
+            tail = "evidence"
+        catalog, executor, asked = _per_op(ops)
         rec = await _sweep(catalog, executor)
-        assert rec.status == DeviceHealthStatus.AUTH_FAILED
         assert len(rec.last_error) <= 200
-        assert rec.last_error.endswith(")"), rec.last_error
+        assert rec.last_error.endswith(tail), rec.last_error
 
     @pytest.mark.asyncio
     async def test_a_readable_device_is_still_limited_api(self, isolated_db):

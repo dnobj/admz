@@ -80,7 +80,7 @@ concluding anything:
 |---|---|---|
 | answers | `limited_api` | **online** — ADMZ reads and tracks this device |
 | also fails | `reachable_no_api` | needs attention — genuinely unmanageable |
-| refuses the credentials (401/403) | `auth_failed` — after the second auth-required op is asked; table below (GH #462) | needs attention — a credential problem, routed like any other |
+| refuses the credentials (401/403) | `auth_failed` — once a second auth-required op, or this sweep's own JSON probe, has settled the credential question; table below (GH #462) | needs attention — a credential problem, routed like any other |
 
 The first two advance `last_seen_online` and neither accumulates
 `consecutive_failures` — they are settled states, not failing probes.
@@ -116,22 +116,31 @@ case as a corroborator missing from the catalog, and gets the verdict
 `_corroborate_rejection` already gives that case: the legacy read's refusal is
 the only evidence this device can give, and a false alarm is safer than a
 missed one. Which failures mean "not there to ask" is drawn on **ADR-0063's own
-line**: its hard-absent codes (400/404/405/410/501) and method-absent JSON-RPC
-marks, plus the two shapes a legacy-only device produces — a transport refusal
-after TCP accepted, and a 2xx body that is not JSON. ADR-0063 files those two
-as *unconfirmed* absence with a short lease rather than a 7-day row; the health
-status is re-evaluated every sweep, so it acts on the same evidence one sweep
-at a time, and — like the ADR — never reads a live surface's bad moment as a
-missing one.
+line**, with one distinction the ADR does not need — *device-wide* against
+*op-specific*. The two shapes a legacy-only device produces — a transport
+refusal after TCP accepted, and a 2xx body that is not JSON — are device-wide
+(every JSON POST fails that way), and are the only shapes on which this sweep's
+own `systemready` failure may settle the question by itself. The ADR's absent
+status codes (400/404/405/410/501, reused by name) are about one endpoint: from
+the corroborator they mean the device does not have it — the catalog-missing
+case in another form; from `systemready` they say nothing about
+`basicdeviceinfo` (firmware 6.50–9.49 has the latter and not the former), so
+the corroborator is still asked. A JSON-RPC error object at 2xx — `1100:
+Internal error` or `2004: Method not supported` alike — is a JSON surface
+answering in JSON over an HTTP layer that accepted the credentials, and never
+condemns. ADR-0063 files the two device-wide shapes as *unconfirmed* absence
+with a short lease rather than a 7-day row; the health status is re-evaluated
+every sweep, so it acts on the same evidence one sweep at a time, and — like
+the ADR — never reads a live surface's bad moment as a missing one.
 
 | Evidence | Verdict |
 |---|---|
-| this sweep's own JSON probe already failed in a missing-surface shape | the JSON surface was asked this sweep and was not there — **no second JSON op is sent**; `auth_failed`, error naming this sweep's evidence |
+| this sweep's own JSON probe already failed in a **device-wide** missing-surface shape (transport drop after TCP accepted; a 2xx body that is not JSON) | the JSON surface was asked this sweep and was not there — **no second JSON op is sent**; `auth_failed`, error naming this sweep's evidence. A 404-class or JSON-error answer from `systemready` is op-specific and does not qualify: the corroborator is asked |
 | the corroborator refuses too (401/403) | `auth_failed`, error naming both ops |
 | the corroborator authenticates (2xx) | `reachable_no_api`, "credentials look valid"; its identity facts ride along for the sweep to flush |
-| the corroborator cannot answer on this device — transport refusal, non-JSON 2xx body, an ADR-0063 absent code or mark | `auth_failed`, single-op judgement, error saying the device has no JSON surface to corroborate with |
+| the corroborator cannot be served by this device — the surface is gone (the same two shapes) or the endpoint is not there (an ADR-0063 absent status code) | `auth_failed`, single-op judgement, error saying the device has no JSON surface to corroborate with |
 | the corroborator is absent from the catalog | `auth_failed`, single-op judgement, error saying so — never "both refused" for an op that was not sent |
-| the corroborator has a bad moment — a 5xx, a 4xx ADR-0063 does not call absent (408, 429), a JSON-RPC *application* error at 2xx (`1100: Internal error`), or the executor errors | `reachable_no_api`, "NOT condemned" — transient; the next sweep asks again |
+| the corroborator has a bad moment — a 5xx, a 4xx ADR-0063 does not call absent (408, 429), any JSON-RPC error object at 2xx (`1100: Internal error`, `2004: Method not supported`), or the executor errors | `reachable_no_api`, "NOT condemned" — transient; the next sweep asks again |
 
 On a sweep where the JSON probe was skipped on the capability record there is
 no fresh evidence, so the corroborator is asked; the legacy read is the *only*
@@ -142,7 +151,8 @@ is fixed; that is a true symptom of a state that needs the operator. Known
 blind spot: a reverse proxy in front of a legacy-only device would answer the
 JSON op with a 502, which is a bad moment, not a missing surface — no such
 deployment exists here. The implementation is the source of truth
-(`admz/fleet/health.py`, `_corroborate_legacy_refusal`, `_json_answer_kind`).
+(`admz/fleet/health.py`, `_corroborate_legacy_refusal`, `_json_surface_gone`,
+`_json_answer_kind`).
 
 ### FR-HLT-008 — Auth-aware: a `systemready` 200 is not proof of valid creds ✅
 On some Axis firmware `systemready.cgi:systemReady` answers `200` **without
