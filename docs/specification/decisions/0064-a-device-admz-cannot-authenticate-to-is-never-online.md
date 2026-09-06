@@ -125,7 +125,7 @@ The two literal count dictionaries (REST `health.py:76-78`, MCP `server.py:2065-
 
 ## What this does not do
 
-- **Retire `default_username`/`default_password` into the list.** The legacy pair stays authoritative for factory-default provisioning (`entry_credentials.py:26-29`); folding it into the JSON list is a separate decision.
+- **Retire `default_username`/`default_password` into the list.** The legacy pair stays entry #1 (`entry_credentials.py`); since slice E it is no longer written to a factory-defaulted device, and folding it into the JSON list is a separate decision.
 - **Back off the sweep on `auth_failed`.** Today an `auth_failed` device is re-probed with its bad credential every 60 s — systemready, the auth op and its corroborator: up to three failed authentications a minute, indefinitely, with no backoff. That is the larger standing lockout exposure, it predates both issues, and it gets its own issue rather than a paragraph here.
 - **Fix drift's view of a credential-less device.** `snapshot/engine.py:684-692` reports it as `"unreachable"` — the same defect class in a different enum; its own issue.
 - **Retry automatically after a promotion.** Each retry sprays and can raise a gate per device; the done page shows how many devices sit at `no_credentials`, and the operator re-runs `onboard_device` per device.

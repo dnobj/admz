@@ -127,6 +127,7 @@ def test_the_tool_description_says_so():
 
     tool = next(t for t in TOOLS if t.name == "provision_device")
     assert "never written to a device" in tool.description
+    assert "else generated per device" in tool.description, "the meaning, not only the absence of the old phrasing"
     assert "Password priority" not in tool.description
     assert re.search(r"fleet default_password[^.]*>", tool.description) is None, \
         "no ordering may put the fleet password before generation"
