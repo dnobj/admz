@@ -34,6 +34,12 @@
   </p>
   {% endif %}
 
+  {% if promotion is defined and promotion %}
+  <p style="margin-top:12px;font-size:14px;color:{{ '#166534' if promotion.result == 'promoted' else '#991b1b' }};" data-promotion="{{ promotion.result }}">
+    {% if promotion.result == 'promoted' %}Also added to the fleet's entry list as <strong>{{ promotion.username }}</strong> &mdash; ADMZ will offer it to devices it onboards from now on.{% elif promotion.result == 'duplicate' %}Already on the fleet's entry list; nothing was added.{% else %}Not added to the entry list: {{ promotion.reason }}. The device credential above was saved.{% endif %}
+  </p>
+  {% endif %}
+
   <p style="color:#666;font-size:14px;margin-top:24px;">
     You can close this tab and return to your chat session.<br>
     This link is now expired and cannot be reused.

@@ -134,7 +134,7 @@ onto the `admz` account in place, keeping the credential it came in on.
 **Not yet shipped**, re-planned in
 [ADR-0064](../decisions/0064-a-device-admz-cannot-authenticate-to-is-never-online.md)
 as slices C–F together with #443: the per-pass attempt bound (FR-CRED-013,
-slice C — shipped 2026-09-06), the promote checkbox (FR-CRED-012, slice D),
+slice C — shipped 2026-09-06), the promote checkbox (FR-CRED-012, slice D — shipped 2026-09-06),
 FR-CRED-007's generated-wins ordering (slice E), and most-recently-successful
 ordering (FR-CRED-013, slice F — waits for the lockout measurement). Two facts to hold while reading the
 rest: the list has **no operator-facing writer yet** — `python -m admz settings
@@ -199,7 +199,7 @@ reprovision path generate unconditionally. The only thing the posture gives up
 is that adopting an **already-set-up** device always asks a human — which is
 precisely what it is choosing.
 
-### FR-CRED-012 — Captured credentials may be promoted to the entry list 📋
+### FR-CRED-012 — Captured credentials may be promoted to the entry list ✅
 When nothing authenticates, the capture flow (FR-CRED-003 / ADR-0009) offers an
 opt-in *"also try this on other devices."*
 
@@ -213,7 +213,7 @@ displays it and the human confirms. The person typing the secret is the only one
 who knows whether it is safe to spray at the whole fleet, and that judgement
 cannot live in a tool argument.
 
-**Mechanics (ADR-0064 slice D).** The capture session carries `propose_promote`
+**Mechanics (ADR-0064 slice D, shipped 2026-09-06).** The capture session carries `propose_promote`
 (default `False`); the form renders an unchecked checkbox whose label says what
 promotion does, and a proposal renders as a hint that never pre-checks it. On
 submit with the box ticked, the entry is added **after** the device credential

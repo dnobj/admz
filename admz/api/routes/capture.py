@@ -17,7 +17,9 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+from admz import entry_credentials
 from admz.api.capture import capture_store, CaptureStatus
+from admz.audit import record_event
 from admz.device_registry import DeviceRegistry
 from admz.exceptions import DeviceNotFoundError, BackendError
 from admz.fleet_settings import fleet_settings
@@ -181,15 +183,55 @@ def _note_capture_to_chat(token: str, saved: List[str]) -> None:
         logger.debug("chat capture note failed for %s", token, exc_info=True)
 
 
+def _promote_if_asked(
+    requested: bool, username: str, password: str, saved: List[str]
+) -> Optional[Dict[str, str]]:
+    """Promote the captured credential to the fleet's entry list (FR-CRED-012).
+
+    A **scope promotion**: the secret becomes something ADMZ will offer to
+    every device it onboards from now on. So it is opt-in per submission,
+    audited as its own event — with the username and the device ids only,
+    never the password — and a refusal (the cap, the prompt-always posture)
+    leaves the capture that just succeeded exactly as it was.
+    """
+    if not requested:
+        return None
+    label = f"promoted from {saved[0]}" if saved else "promoted"
+    try:
+        added = entry_credentials.add_entry_credential(username, password, label=label)
+    except ValueError as exc:
+        record_event(
+            None, "entry_credential.promotion_refused",
+            resource="fleet_settings:entry_credentials",
+            details={"username": username, "device_ids": list(saved), "reason": str(exc)},
+            success=False, error_message=str(exc),
+        )
+        return {"result": "refused", "username": username, "reason": str(exc)}
+    if not added:
+        return {"result": "duplicate", "username": username, "reason": "already on the list"}
+    record_event(
+        None, "entry_credential.promoted",
+        resource="fleet_settings:entry_credentials",
+        details={"username": username, "device_ids": list(saved), "label": label},
+    )
+    return {"result": "promoted", "username": username, "reason": ""}
+
+
 @router.post("/capture/{token}", response_class=HTMLResponse, tags=["capture"])
 async def capture_submit(
     request: Request,
     token: str,
     username: str = Form(...),
     password: str = Form(...),
+    promote: Optional[str] = Form(None),
     registry: DeviceRegistry = Depends(get_registry),
 ):
-    """Process the submitted credentials."""
+    """Process the submitted credentials.
+
+    ``promote`` is the FR-CRED-012 checkbox — present only when the human
+    ticked it. A session's ``propose_promote`` is never read here: the flag
+    reaching the store requires the form submission, not the tool argument.
+    """
     # CSRF (#3). Must precede every side effect, including the rate-limit
     # counter — a cross-site POST should not be able to consume an operator's
     # capture budget either.
@@ -262,6 +304,9 @@ async def capture_submit(
         "title": "Credentials Saved",
         "device_id": session.device_id,
         "account_id": session.account_id,
+        # FR-CRED-012: promotion happens AFTER the device credential is stored
+        # and never undoes it — a refused promotion is a note, not an error.
+        "promotion": _promote_if_asked(bool(promote), username, password, saved),
     }
 
     if session.is_batch:

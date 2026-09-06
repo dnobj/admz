@@ -51,6 +51,23 @@
              autocomplete="new-password" style="width:100%;font-size:15px;font-family:var(--mono);">
     </div>
 
+    {# FR-CRED-012 (ADR-0061 / ADR-0064 slice D): a scope promotion, opt-in,
+       never pre-checked — a proposal from the assistant renders only as the
+       hint below. The person typing the secret is the only one who knows
+       whether it is safe to offer to the whole fleet. #}
+    <div style="margin:-6px 0 18px;">
+      <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(--text);cursor:pointer;">
+        <input type="checkbox" name="promote" value="on" style="margin-top:3px;">
+        <span>Also offer this credential to devices ADMZ adds later &mdash; adds it to the fleet's <strong>entry list</strong> (a scope promotion: ADMZ will try it on every device it onboards from now on; recorded in the audit log as its own event).</span>
+      </label>
+      {% if session.propose_promote %}
+      <div class="note-band" style="margin-top:8px;">
+        <i data-lucide="info"></i>
+        <span>The assistant suggested promoting this credential. The box stays unchecked until you decide.</span>
+      </div>
+      {% endif %}
+    </div>
+
     <button type="submit" class="btn primary lg full">
       {% if is_batch %}Save credentials to {{ devices|length }} devices{% else %}Save credentials{% endif %}
     </button>

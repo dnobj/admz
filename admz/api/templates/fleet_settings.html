@@ -33,6 +33,26 @@
 </div>
 {% endif %}
 
+{% if entry_credentials is defined %}
+<div class="account-info" id="entry-credentials">
+    <h2>Entry credentials</h2>
+    <p>The list ADMZ tries to get <em>into</em> a device it does not yet manage (FR-CRED-011); a credential that works is used once, to create ADMZ's own <code>admz</code> account. Passwords are never displayed. Add to it from the capture form's <em>also offer this credential</em> box (FR-CRED-012).</p>
+    {% if entry_credentials.prompt_always %}
+    <p><strong>Prompt-always posture is on:</strong> nothing stored is tried; every adoption asks a human.</p>
+    {% endif %}
+    <table>
+        <tr><th>Stored</th><td>{{ entry_credentials.stored|length }} of {{ entry_credentials.max_stored }}</td></tr>
+        <tr><th>Tried per onboarding</th><td>{{ entry_credentials.in_use|length }}</td></tr>
+        {% for c in entry_credentials.in_use %}
+        <tr><th>#{{ loop.index }}</th><td><code>{{ c.get('username', '?') }}</code>{% if c.get('label') %} &mdash; {{ c.get('label') }}{% endif %}</td></tr>
+        {% endfor %}
+        {% if not entry_credentials.in_use %}
+        <tr><th>&nbsp;</th><td class="no-accounts">None in use.</td></tr>
+        {% endif %}
+    </table>
+</div>
+{% endif %}
+
 <div class="actions-footer">
     <a href="/" class="button">Back to Devices</a>
 </div>

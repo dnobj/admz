@@ -240,8 +240,11 @@ never enters the LLM context.
 Create a capture session and return the URL.
 - **Args:** `device_id`, `account_id` (default `"default"`),
   `account_type` (default `"service"`), `purpose` (string, optional),
+  `propose_promote` (boolean, default `false` — suggest the FR-CRED-012
+  "also offer this credential" box; it renders as a hint and is never
+  pre-ticked, so only the human's submission promotes),
   `base_url` (default `http://localhost:4242`, from `ADMZ_BASE_URL`)
-- **Returns:** `{success, url, token, device_id, account_id, expires_in_seconds}`
+- **Returns:** `{success, url, token, device_id, account_id, expires_in_seconds, propose_promote}`
 - **TTL:** 10 minutes
 
 ### `check_capture_status`

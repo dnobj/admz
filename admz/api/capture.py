@@ -45,6 +45,11 @@ class CaptureSession:
     ttl: float = 600.0  # 10 minutes
     status: CaptureStatus = CaptureStatus.PENDING
     device_ids: List[str] = field(default_factory=list)
+    # FR-CRED-012 (ADR-0064 slice D): an MCP caller may PROPOSE promotion of
+    # the captured credential to the fleet's entry list. The form renders the
+    # proposal as a hint and never pre-checks the box; only the human's form
+    # submission promotes. The flag on this object is advice, not consent.
+    propose_promote: bool = False
 
     @property
     def all_device_ids(self) -> List[str]:
@@ -96,6 +101,12 @@ CREATE TABLE IF NOT EXISTS fleet_capture_sessions (
     status       TEXT NOT NULL DEFAULT 'pending'
 );
 """
+
+# Columns added after capture_sessions first shipped; applied via ALTER TABLE
+# for databases created before them (CREATE TABLE IF NOT EXISTS won't).
+_MIGRATION_COLUMNS = (
+    ("propose_promote", "INTEGER NOT NULL DEFAULT 0"),  # FR-CRED-012
+)
 
 
 def _default_db_path() -> Path:
@@ -156,10 +167,19 @@ class CaptureStore:
         ``_ready`` is keyed by path rather than a boolean, so a rebind runs the
         schema against the new file instead of assuming the previous one's
         tables exist. Failures propagate, as they did from ``__init__``; only the moment they can surface moved.
+
+        Columns added after the table first shipped are applied with ALTER
+        TABLE, each swallowing OperationalError when already present — the
+        same pattern the health store uses.
         """
         conn = sqlite3.connect(path)
         try:
             conn.executescript(_CAPTURE_SCHEMA)
+            for col, coltype in _MIGRATION_COLUMNS:
+                try:
+                    conn.execute(f"ALTER TABLE capture_sessions ADD COLUMN {col} {coltype}")
+                except sqlite3.OperationalError:
+                    pass  # already there (fresh table or prior migration)
             conn.commit()
         finally:
             conn.close()
@@ -176,6 +196,7 @@ class CaptureStore:
         purpose: str = "",
         ttl: float = 600.0,
         device_ids: Optional[List[str]] = None,
+        propose_promote: bool = False,
     ) -> CaptureSession:
         """Create a new capture session and return it.
 
@@ -209,15 +230,17 @@ class CaptureStore:
             created_at=now,
             ttl=ttl,
             device_ids=batch_ids,
+            propose_promote=bool(propose_promote),
         )
 
         conn = self._connect()
         try:
             conn.execute(
                 "INSERT INTO capture_sessions "
-                "(token, device_id, account_id, account_type, purpose, created_at, ttl, status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (token, device_id, account_id, account_type, purpose, now, ttl, "pending"),
+                "(token, device_id, account_id, account_type, purpose, created_at, ttl, status, "
+                "propose_promote) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (token, device_id, account_id, account_type, purpose, now, ttl, "pending",
+                 1 if propose_promote else 0),
             )
             for did in batch_ids:
                 conn.execute(
@@ -236,7 +259,7 @@ class CaptureStore:
         try:
             row = conn.execute(
                 "SELECT token, device_id, account_id, account_type, purpose, "
-                "created_at, ttl, status FROM capture_sessions WHERE token=?",
+                "created_at, ttl, status, propose_promote FROM capture_sessions WHERE token=?",
                 (token,),
             ).fetchone()
 
@@ -263,6 +286,7 @@ class CaptureStore:
             ttl=row[6],
             status=CaptureStatus(row[7]),
             device_ids=batch_ids,
+            propose_promote=bool(row[8]),
         )
 
         if session.is_expired and session.status != CaptureStatus.COMPLETED:

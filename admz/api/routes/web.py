@@ -896,6 +896,8 @@ async def fleet_settings_page(request: Request):
         sensitive = is_sensitive_setting_key(k)
         display[k] = {"value": None if sensitive else v, "sensitive": sensitive}
 
+    from admz import entry_credentials
+
     return templates.TemplateResponse(
         request,
         "fleet_settings.html",
@@ -903,6 +905,10 @@ async def fleet_settings_page(request: Request):
             "request": request,
             "settings": display,
             "title": "Fleet Settings",
+            # FR-CRED-012 / ADR-0064 slice D: the first operator view of the
+            # entry list — redacted (usernames and labels; never a password),
+            # stored separately from in use.
+            "entry_credentials": entry_credentials.describe(),
         },
     )
 
