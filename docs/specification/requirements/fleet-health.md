@@ -24,11 +24,13 @@ Full history is the audit log's / a future time-series store's job.
 legacy-CGI read **did** — manageable, just not over the probed surface) |
 `reachable_no_api` (host answered, and **nothing** ADMZ can read did) |
 `auth_failed` (TCP up, VAPIX rejected creds) | `needs_setup` (reachable but
-factory-defaulted) | `unknown` (never checked).
+factory-defaulted) | `no_credentials` 📋 (TCP up, no usable stored credential —
+FR-HLT-011, [ADR-0064](../decisions/0064-a-device-admz-cannot-authenticate-to-is-never-online.md)) |
+`unknown` (never checked).
 Status reflects the last successful probe; `last_seen_online` is the
 **reachability** clock — it advances on every result that proved the host
 answered (`online`, `limited_api`, `auth_failed`, `needs_setup`,
-`reachable_no_api`), so
+`reachable_no_api`, and `no_credentials` once it ships), so
 operators can read "was online 2 minutes ago" for flapping devices. It says
 the host replied; it asserts nothing about what ADMZ verified.
 
@@ -44,8 +46,28 @@ the host replied; it asserts nothing about what ADMZ verified.
    port (`_probe_port`: an explicit `port`, else 443 when the learned scheme
    is https, else 80). Connect OK → `online` (no uptime info); fail →
    `unreachable`.
-The TCP fallback means a device with no stored creds still yields an
-"the IP is up" signal.
+The TCP fallback means a device with no stored creds still yields a
+reachability signal. Today that signal is filed `online`; under FR-HLT-011 📋 it
+is `no_credentials` — the host answered, and ADMZ has no way in.
+
+### FR-HLT-011 — A device with no usable credential is `no_credentials`, never `online` 📋
+[ADR-0064](../decisions/0064-a-device-admz-cannot-authenticate-to-is-never-online.md), #443.
+A device that is registered, whose host answers TCP, and for which ADMZ holds
+no usable stored credential (the Tier-1 predicate: an account with a non-empty
+password) is `no_credentials`. It is **settled** (`_STABLE_STATUSES`; the
+failure counter does not climb), it stamps `last_seen_online` (the host
+answered), it is amber and in the **attention** bucket, and `event_for_status`
+maps it to `None` — no `on_online` task may fire for a device ADMZ cannot
+authenticate to. A device *with* credentials that reaches the TCP tier only
+because the catalog or executor is unavailable stays `online`: the value keys
+on credential absence, not on which tier answered.
+
+The sweep **classifies and never resolves**: it does not re-run onboarding,
+try entry credentials, or open capture sessions (NFR-HLT-002; ADR-0034's one
+gate). Leaving the state is the operator's — capture from the device page or
+the chat card — or a deliberate `onboard_device` re-run. The seven-hour trace
+that forced this: an A1210 registered without credentials read `online` on
+every surface until a baseline capture happened to need a password.
 
 ### FR-HLT-009 — Reachability is never inferred from an API failure ✅
 "Is the host up?" and "can ADMZ speak its API?" are separate questions and
@@ -257,9 +279,11 @@ didn't establish one** (a fresh reachability stamp is never overwritten by a
 stale one) and increments `consecutive_failures` when a probe fails, so a
 device down for several cycles shows a rising failure count rather than
 resetting each sweep. `online`, `limited_api` and `reachable_no_api` reset the
-counter — all three are settled answers, not failures. Note that "settled" and
-"needs attention" are **different questions asked of the same enum**: all three
-are settled, but only `reachable_no_api` belongs in the attention bucket. Both
+counter — all three are settled answers, not failures (`no_credentials` joins
+them under FR-HLT-011 📋: settled, *and* in the attention bucket). Note that
+"settled" and "needs attention" are **different questions asked of the same
+enum**: all three are settled, but only `reachable_no_api` belongs in the
+attention bucket. Both
 predicates were individually correct while the T8516 stayed parked (#357), so
 give a new status the right answer to each rather than making one match the
 other.
@@ -292,11 +316,15 @@ leave off).
 
 ### KL-HLT-004 — `limited_api` / `reachable_no_api` are only reachable from the authenticated tier ⚠️
 Both statuses are produced when the *authenticated* probe gets an unusable
-answer. The credential-less TCP tier still reports a bare connect as `online`
-(FR-HLT-003 §2) — "no credentials stored yet" is a different situation from
-"this device doesn't speak VAPIX", and reclassifying it would relabel every
-device awaiting credential capture. Per-device-class probes (a plain `GET /`
-for a T85, say) and per-class credential verification are GH #15.
+answer. The credential-less TCP tier reports a bare connect as `online`
+(FR-HLT-003 §2). This entry declined to reclassify that — "no credentials
+stored yet" is a different situation from "this device doesn't speak VAPIX",
+and "awaiting credential capture" sounded like a short, visible interval —
+until #443 showed a device *awaiting capture* for seven hours with no capture
+pending. **That refusal is superseded by FR-HLT-011 / ADR-0064** 📋: the
+credential-less device becomes `no_credentials`, a state of its own, distinct
+from both `online` and "doesn't speak VAPIX". Per-device-class probes (a plain
+`GET /` for a T85, say) and per-class credential verification remain GH #15.
 
 The #357 split narrows what is left here rather than closing it: the probe now
 consults a **second real surface** (`param.cgi`) before declaring a device

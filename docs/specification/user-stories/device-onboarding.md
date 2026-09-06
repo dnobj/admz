@@ -91,3 +91,5 @@ How devices get added to ADMZ. Three paths exist — manual, discovery-driven, a
 - ⚠️ **No authentication on the web UI / REST API.** The OOB capture flow protects passwords from the LLM, but anyone on the same network can submit to `/capture/{token}` if they intercept the URL. Tokens are high-entropy, but adding API auth (Phase 4) is the durable fix.
 - ⚠️ **Unbounded fan-out at fleet scale.** Discovery and provisioning open one task per host with no semaphore — fine at 100 devices, problematic at 1000+ (see `performance.md`).
 - 📋 **No device de-duplication policy.** If discovery returns the same device twice (e.g. via two NICs), the operator must merge them manually.
+
+- **A device registered without credentials reads `online` until something needs them** (#443): the health probe falls back to a TCP connect and files the answer as `online`, and the MCP discovered-device path opens no capture session on `credentials_needed`. Planned: [ADR-0064](../decisions/0064-a-device-admz-cannot-authenticate-to-is-never-online.md) — a `no_credentials` status, and registration that always leaves a re-openable capture path (an **Enter credentials** action on the device page).

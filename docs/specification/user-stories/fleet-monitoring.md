@@ -14,7 +14,7 @@ trouble without checking each device by hand.
 1. `get_fleet_health()` (MCP) / `GET /api/fleet/health` (REST) return a
    per-device list plus `counts` by status (`online`, `unreachable`,
    `limited_api`, `reachable_no_api`, `auth_failed`, `needs_setup`,
-   `unknown`).
+   `unknown`; `no_credentials` 📋 once ADR-0064 ships).
 2. Each entry carries `status`, `last_check`, `last_seen_online`,
    `latency_ms`, and `consecutive_failures`; authenticated probes also
    include `uptime_seconds` and `bootid`.

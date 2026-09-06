@@ -69,6 +69,11 @@ generated.
 > moved unattended reprovision to always generate. Under FR-CRED-011 the
 > generated password wins and the fleet credential is an *input for
 > authentication*, never a value written to a device.
+>
+> **Slice E of ADR-0064 ships it** 📋: `allow_fleet_default` defaults to
+> `False`; an explicit `password=` is still honoured. The username stays `root`
+> until a measurement says an Axis unit accepts a non-`root` first account
+> (ADR-0061's table says `admz`; unverified).
 
 ### FR-CRED-008 — Temporary device-side users ✅
 `create_temp_credentials(device_id, permissions, ttl_seconds)`
@@ -123,8 +128,18 @@ sits after a credential is *confirmed to work*, not before the loop: an add that
 falls through to capture must not raise a widget for an account write that never
 happens.
 
-**Not yet shipped:** the promote checkbox (FR-CRED-012), and reordering the
-list most-recently-successful-first.
+**Shipped since (#411 slice 3, #449):** adopting an already-credentialed device
+onto the `admz` account in place, keeping the credential it came in on.
+
+**Not yet shipped**, re-planned in
+[ADR-0064](../decisions/0064-a-device-admz-cannot-authenticate-to-is-never-online.md)
+as slices C–E together with #443: the promote checkbox (FR-CRED-012),
+most-recently-successful ordering with a per-pass attempt bound (FR-CRED-013),
+and FR-CRED-007's generated-wins ordering. Two facts to hold while reading the
+rest: the list has **no operator-facing writer yet** — `python -m admz settings
+set entry_credentials` and the promote checkbox are the only ways in — so an
+install's effective list is its legacy pair; and the lockout measurement
+ADR-0061 asked for has not been run.
 
 Existing devices are **not** migrated automatically. Creating accounts on nine
 live devices as a deploy side effect is a decision, not a consequence.
@@ -141,6 +156,17 @@ Three is a conservative guess, not a measurement. ADR-0061 requires the lockout
 risk be measured against a spare device before the trying half ships; the number
 should be revisited **with** that measurement rather than defended as if it were
 one.
+
+**Attempt bound and ordering (ADR-0064 slice D) 📋.** One onboarding pass makes
+at most **3 entries × 2 ops = 6** credentialed authentications: a wrong entry
+costs two, the primary auth-required op and its corroborator (#149/#150). The
+pass stops on the first success and breaks on an unreachable (`None`) answer;
+the bound is enforced in the loop, not only at storage. `attempt_order` tries
+the most-recently-successful credential first; with no history the legacy pair
+is first, which is today's behaviour and the control. The slice does not merge
+until the lockout behaviour has been measured on a spare Axis unit (ADR-0064,
+decision 7); the result — or the fact that it has not been run — is recorded
+here in words.
 
 An installation may also **store none and prompt every time**
 (`entry_credentials_prompt_always`). That is a posture, not an empty list:
@@ -169,6 +195,17 @@ MCP callers may **propose** the flag in the capture response; the widget
 displays it and the human confirms. The person typing the secret is the only one
 who knows whether it is safe to spray at the whole fleet, and that judgement
 cannot live in a tool argument.
+
+**Mechanics (ADR-0064 slice C).** The capture session carries `propose_promote`
+(default `False`); the form renders an unchecked checkbox whose label says what
+promotion does, and a proposal renders as a hint that never pre-checks it. On
+submit with the box ticked, the entry is added **after** the device credential
+is stored; `entry_credential.promoted` or `entry_credential.promotion_refused`
+(cap, posture) is audited with the username and device ids only — never the
+password — and a refusal never loses the capture; the done page says which
+happened. The Fleet Settings page renders the list's `describe()` (usernames,
+labels, posture, cap) — the first operator view of it. The flag reaching the
+store requires the form submission, never the tool argument.
 
 ### FR-CRED-009 — Device passwords are never displayed; no LLM retrieval ✅
 Device-account passwords are **never displayed** through any web/REST
