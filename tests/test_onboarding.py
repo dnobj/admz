@@ -319,12 +319,15 @@ class TestResolutionOrder:
         from admz import entry_credentials as ec
         from admz.fleet_settings import fleet_settings
 
+        previous_legacy = fleet_settings.get(ec.LEGACY_PASS_KEY)
         fleet_settings.set(ec.SETTING_KEY, _json.dumps(
             [{"username": f"u{i}", "password": f"p{i}"} for i in range(n)]))
         fleet_settings.delete(ec.LEGACY_PASS_KEY)
 
         def _cleanup():
             fleet_settings.delete(ec.SETTING_KEY)
+            if previous_legacy:
+                fleet_settings.set(ec.LEGACY_PASS_KEY, previous_legacy)
 
         return _cleanup
 

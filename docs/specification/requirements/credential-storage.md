@@ -146,32 +146,37 @@ Existing devices are **not** migrated automatically. Creating accounts on nine
 live devices as a deploy side effect is a decision, not a consequence.
 
 ### FR-CRED-013 — At most three entry credentials, or none at all 🚧
-The list is capped at **three**, enforced when a credential is **stored** and
-not when one is tried. Capping attempts while letting the list grow would be
-worse than no cap: the settings page would show six credentials, ADMZ would try
-three, and the other three would be a lie the operator had no way to see. The
-legacy `default_username`/`default_password` pair occupies a slot, because it is
-one of the credentials that gets tried.
+The list is capped at **three** where it is stored, so what the settings page
+shows is what exists; since ADR-0064 slice C the device-facing loop is bounded
+separately to the same number (below), and `describe()` reports both what is
+stored and what is tried, so the page can never show six credentials while ADMZ
+tries three. The legacy `default_username`/`default_password` pair occupies a
+slot, because it is one of the credentials that gets tried.
 
 Three is a conservative guess, not a measurement. ADR-0061 requires the lockout
 risk be measured against a spare device before the trying half ships; the number
 should be revisited **with** that measurement rather than defended as if it were
 one.
 
-**The per-pass attempt bound (ADR-0064 slice C) ✅.** One onboarding pass makes
-at most **3 entries × 2 ops = 6 credentialed operations** — a wrong entry costs
+**The per-pass attempt bound (ADR-0064 slice C) ✅.** The entry loop makes at
+most **3 entries × 2 ops = 6 credentialed operations** — a wrong entry costs
 two, the primary auth-required op and its corroborator (#149/#150) — and at the
 wire **up to 12 credentialed sends**, because the executor re-sends an op once
 when the 401 challenge names a different auth method than the device profile;
-each Digest op also costs one unauthenticated challenge round-trip. The pass
-stops on the first success and breaks on an unreachable (`None`) answer. The
+each Digest op also costs one unauthenticated challenge round-trip. The loop is
+not the whole pass: onboarding first checks a *stored* credential, and a stale
+one is corroborated the same way, so one pass is at most **8 operations /
+16 sends**; nothing dedupes the stored credential against the list (#475). The
+pass stops on the first success and breaks on an unreachable (`None`) answer. The
 bound (`MAX_ATTEMPTS_PER_PASS`, equal to the storage cap) is enforced **where
 the attempt list is built** — `entry_credentials.attempt_order()`, which the
 onboarding loop iterates and which `describe()` reports as *in use* — not only
 at storage: the storage-time cap keeps the settings page honest, but the CLI
 writer bypasses it (`_parse` never truncates), so without this one command
-could make a pass unbounded. A list stored over the bound is warned about and
-its tail is never tried. This half needed no measurement and shipped first.
+could make a pass unbounded. A list stored over the bound is warned about —
+once per pass, counts only, never from the settings page's read — and its tail
+is never tried; `describe()` also reports `max_attempts_per_pass`. This half
+needed no measurement and shipped first.
 
 **Most-recently-successful ordering (ADR-0064 slice F) 📋.** `attempt_order`
 tries the most-recently-successful credential first; with no history the

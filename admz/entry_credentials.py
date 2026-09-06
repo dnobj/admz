@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 from admz.fleet_settings import fleet_settings
@@ -49,12 +49,13 @@ SETTING_KEY = "entry_credentials"
 LEGACY_USER_KEY = "default_username"
 LEGACY_PASS_KEY = "default_password"
 
-#: Ceiling on how many entry credentials may be STORED — not merely tried.
+#: Ceiling on how many entry credentials may be STORED through the writer API.
 #:
-#: Capping attempts while letting the list grow would be worse than no cap: the
-#: settings page would show six credentials, ADMZ would try three, and the other
-#: three would be a lie the operator had no way to see. A limit enforced where
-#: the decision is made is visible; one enforced at try-time is not.
+#: The storage cap keeps the settings page honest — what it shows is what
+#: exists. It is not the only bound: since ADR-0064 slice C the device-facing
+#: loop is bounded separately (``MAX_ATTEMPTS_PER_PASS`` below, the same
+#: number) and ``describe()`` reports both what is stored and what is tried,
+#: so the page can never claim five are tried when three are.
 #:
 #: Three rather than an arbitrary larger number because N credentials is N
 #: failed authentications, and Axis brute-force behaviour varies by model and
@@ -68,8 +69,12 @@ MAX_STORED = 3
 #: (``admz settings set entry_credentials``) bypasses the cap because
 #: :func:`_parse` never truncates, so without this one command could make a
 #: pass unbounded. Each wrong entry costs two credentialed operations (the
-#: primary auth op and its corroborator, GH #149/#150), up to twelve sends at
-#: the wire when the executor re-sends on a method-relearn.
+#: primary auth op and its corroborator, GH #149/#150): the loop is at most
+#: 3 x 2 = 6 operations, up to 12 sends at the wire when the executor re-sends
+#: on a method-relearn. A pass is the loop plus the stored-credential check
+#: that precedes it (``onboarding.py`` step 1), and a stale stored credential
+#: is corroborated the same way — so one pass is at most 8 operations /
+#: 16 sends. Nothing dedupes the stored credential against the list (#475).
 MAX_ATTEMPTS_PER_PASS = MAX_STORED
 
 #: Posture: this installation stores NO entry credentials and prompts for a
@@ -93,7 +98,8 @@ class EntryCredential:
     """One (username, password) pair ADMZ may try to get into a device."""
 
     username: str
-    password: str
+    #: Never in a repr: a ``%s`` over the list or a traceback must not leak it.
+    password: str = field(repr=False)
     #: Free-text note — which batch or era this came from. Never a secret.
     label: str = ""
 
@@ -163,22 +169,30 @@ def list_entry_credentials() -> List[EntryCredential]:
     return creds
 
 
-def attempt_order() -> List[EntryCredential]:
+def attempt_order(*, warn: bool = True) -> List[EntryCredential]:
     """What one onboarding pass should try — at most :data:`MAX_ATTEMPTS_PER_PASS`.
 
     The one place the attempt list is built: the onboarding loop iterates it
     and :func:`describe` reports it as ``in_use``, so what is tried and what
     the settings page says is tried cannot drift. The order is the stored
     order (the legacy pair first); reordering most-recently-successful-first
-    is ADR-0064 slice F and waits for the lockout measurement.
+    is ADR-0064 slice F and waits for the lockout measurement — and it must
+    sort *before* the slice below, or success history could never pull a
+    tail entry into the tried set.
+
+    ``warn=False`` is for readers (:func:`describe`, the settings page): the
+    WARNING about a list stored over the bound belongs to the pass that
+    truncates it, not to every page view. The message carries counts only,
+    never a credential.
     """
     creds = list_entry_credentials()
     if len(creds) > MAX_ATTEMPTS_PER_PASS:
-        logger.warning(
-            "%d entry credentials are stored but a pass tries at most %d — "
-            "the rest are never used; trim the list (ADR-0064 slice C)",
-            len(creds), MAX_ATTEMPTS_PER_PASS,
-        )
+        if warn:
+            logger.warning(
+                "%d entry credentials are stored but a pass tries at most %d — "
+                "the rest are never used; trim the list (ADR-0064 slice C)",
+                len(creds), MAX_ATTEMPTS_PER_PASS,
+            )
         creds = creds[:MAX_ATTEMPTS_PER_PASS]
     return creds
 
@@ -244,6 +258,7 @@ def describe() -> dict:
     return {
         "prompt_always": prompt_always(),
         "max_stored": MAX_STORED,
+        "max_attempts_per_pass": MAX_ATTEMPTS_PER_PASS,
         "stored": [c.redacted() for c in stored],
-        "in_use": [c.redacted() for c in attempt_order()],
+        "in_use": [c.redacted() for c in attempt_order(warn=False)],
     }
