@@ -866,6 +866,42 @@ def _reports_401(error: Any) -> bool:
     return bool(error) and bool(_REPORTED_401.match(str(error)))
 
 
+def _systemready_record(device_id: str, device_info: Dict[str, Any]):
+    """``(row, skip)`` for ``systemready``: the device's row in ANY state (so a
+    device that starts answering again can overwrite its lapsed row), and
+    whether the JSON probe should be skipped — only on a NON-stale row that
+    says unsupported. Best-effort: a store problem means "probe as before",
+    never a failed sweep."""
+    try:
+        from admz.device_capabilities import capability_store, device_firmware
+
+        row = capability_store.get(device_id, "systemready")
+        if row is None:
+            return None, False
+        stale = row.is_stale(device_firmware(device_info), time.time())
+        return row, (not stale and not row.supported)
+    except Exception:  # noqa: BLE001
+        logger.debug("capability record unavailable for %s", device_id, exc_info=True)
+        return None, False
+
+
+def _teach_systemready(device_id: str, device_info: Dict[str, Any], result: Any) -> None:
+    """Record what ``systemready`` answered, on a sweep where the device was
+    demonstrably readable. Best-effort; never fails the sweep."""
+    try:
+        from admz.device_capabilities import capability_store, device_firmware, learn
+
+        learn(
+            capability_store,
+            device_id=device_id,
+            firmware=device_firmware(device_info),
+            outcomes=[("systemready", result)],
+            device_readable=True,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("systemready outcome not recorded for %s", device_id, exc_info=True)
+
+
 async def probe_device(
     *,
     device_id: str,
@@ -948,17 +984,28 @@ async def probe_device(
         except Exception:
             op = None
         if op is not None:
+            # ADR-0063 / GH #458: consult the capability record before the
+            # JSON probe. A device that has demonstrably refused systemready
+            # (a limited_api switch) used to be asked again every sweep — one
+            # dead request and one WARNING per sweep to learn what the record
+            # already said. Only the JSON probe is skipped: the legacy read
+            # below still runs, so reachability and credentials are judged
+            # fresh each sweep; only the request known to fail is not sent.
+            _cap_row, skip_json_probe = _systemready_record(device_id, device_info)
+            result = None
+            elapsed_ms = 0
             started = time.monotonic()
             try:
-                result = await asyncio.wait_for(
-                    executor.execute(
-                        op.to_executor_dict(),
-                        {**device_info, "device_id": device_id},
-                        credentials,
-                        {"timeout": "10"},  # device-side wait in seconds
-                    ),
-                    timeout=timeout_seconds + 2,  # +2 for the executor wrapper
-                )
+                if not skip_json_probe:
+                    result = await asyncio.wait_for(
+                        executor.execute(
+                            op.to_executor_dict(),
+                            {**device_info, "device_id": device_id},
+                            credentials,
+                            {"timeout": "10"},  # device-side wait in seconds
+                        ),
+                        timeout=timeout_seconds + 2,  # +2 for the executor wrapper
+                    )
             except asyncio.TimeoutError:
                 return DeviceHealthRecord(
                     device_id=device_id,
@@ -1049,13 +1096,21 @@ async def probe_device(
                     ),
                 )
 
-            if not getattr(result, "success", False):
-                err = getattr(result, "error", "") or "unknown error"
+            if result is None or not getattr(result, "success", False):
+                if result is None:
+                    # Skipped on the record: say so in words that cannot trip
+                    # the reachability keyword check below.
+                    err = (
+                        f"{SYSTEMREADY_OP} not sent — capability record says "
+                        f"{_cap_row.classification} ({_cap_row.source})"
+                    )
+                else:
+                    err = getattr(result, "error", "") or "unknown error"
                 # Distinguish connect failure (UNREACHABLE) from other
                 # failure modes. httpx connect errors typically have
                 # "connect" or "timeout" in the message.
                 lower = err.lower()
-                if (
+                if result is not None and (
                     "timeout" in lower
                     or "connect" in lower
                     or "refused" in lower
@@ -1120,6 +1175,13 @@ async def probe_device(
                         "did — classifying limited_api, not reachable_no_api",
                         SYSTEMREADY_OP, device_id, err[:80], CORROBORATION_OP,
                     )
+                    if result is not None:
+                        # The legacy read answering with real data is the
+                        # ADR-0063 readability control: the device is readable
+                        # NOW, so systemready failing is evidence about
+                        # systemready. Transport/parse -> unconfirmed (24h->7d
+                        # backoff); a clean 404-class -> absent (7d).
+                        _teach_systemready(device_id, device_info, result)
                     return DeviceHealthRecord(
                         device_id=device_id,
                         status=DeviceHealthStatus.LIMITED_API,
@@ -1209,6 +1271,13 @@ async def probe_device(
                         uptime_seconds=uptime_int,
                         bootid=bootid_str,
                     )
+
+            # A device that now answers systemready overwrites any lingering
+            # absent/unconfirmed row (it will already be expired or stale, but
+            # the record should say what is true). Only when a row exists —
+            # a healthy fleet must not pay a write per device per sweep.
+            if _cap_row is not None:
+                _teach_systemready(device_id, device_info, result)
 
             # Same opportunistic pattern as the facts refresh: while we're
             # authenticated anyway, note whether an SD card is actually
