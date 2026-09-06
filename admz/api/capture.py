@@ -82,7 +82,8 @@ CREATE TABLE IF NOT EXISTS capture_sessions (
     purpose      TEXT NOT NULL DEFAULT '',
     created_at   REAL NOT NULL,
     ttl          REAL NOT NULL DEFAULT 600.0,
-    status       TEXT NOT NULL DEFAULT 'pending'
+    status       TEXT NOT NULL DEFAULT 'pending',
+    propose_promote INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS capture_session_devices (
@@ -168,9 +169,12 @@ class CaptureStore:
         schema against the new file instead of assuming the previous one's
         tables exist. Failures propagate, as they did from ``__init__``; only the moment they can surface moved.
 
-        Columns added after the table first shipped are applied with ALTER
-        TABLE, each swallowing OperationalError when already present — the
-        same pattern the health store uses.
+        Columns added after the table first shipped are declared in the CREATE
+        (a fresh file gets them there) and added with ALTER TABLE for a file
+        that predates them — the health store's pattern. Only the "duplicate
+        column" answer is swallowed; a locked or unwritable database raises,
+        so ``_ready`` is not marked and the next connection retries, instead
+        of every later INSERT and SELECT failing on a column that never came.
         """
         conn = sqlite3.connect(path)
         try:
@@ -178,8 +182,9 @@ class CaptureStore:
             for col, coltype in _MIGRATION_COLUMNS:
                 try:
                     conn.execute(f"ALTER TABLE capture_sessions ADD COLUMN {col} {coltype}")
-                except sqlite3.OperationalError:
-                    pass  # already there (fresh table or prior migration)
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
             conn.commit()
         finally:
             conn.close()

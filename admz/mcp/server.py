@@ -900,9 +900,10 @@ class ADMZMCPServer:
                                 "description": (
                                     "Suggest that the human also add this credential to "
                                     "the fleet's entry list (tried on every device ADMZ "
-                                    "onboards later). Renders as a hint on the form; the "
-                                    "checkbox is never pre-ticked and only the human's "
-                                    "submission promotes."
+                                    "onboards later). Set it only when the human has said "
+                                    "this credential is shared across a batch of devices. "
+                                    "Renders as a hint on the form; the checkbox is never "
+                                    "pre-ticked and only the human's submission promotes."
                                 ),
                                 "default": False,
                             },
@@ -2913,7 +2914,12 @@ class ADMZMCPServer:
         purpose = arguments.get("purpose", "")
         base_url = arguments.get("base_url", "http://localhost:4242")
         # FR-CRED-012: a proposal, rendered as a hint; consent is the form.
-        propose_promote = bool(arguments.get("propose_promote", False))
+        # Only a real true (or the string "true" an LLM client may send)
+        # proposes — "false" is not a proposal.
+        raw_propose = arguments.get("propose_promote", False)
+        propose_promote = raw_propose is True or (
+            isinstance(raw_propose, str) and raw_propose.strip().lower() == "true"
+        )
 
         # Build the full list of target devices
         if device_ids:

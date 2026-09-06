@@ -137,10 +137,10 @@ as slices C–F together with #443: the per-pass attempt bound (FR-CRED-013,
 slice C — shipped 2026-09-06), the promote checkbox (FR-CRED-012, slice D — shipped 2026-09-06),
 FR-CRED-007's generated-wins ordering (slice E), and most-recently-successful
 ordering (FR-CRED-013, slice F — waits for the lockout measurement). Two facts to hold while reading the
-rest: the list has **no operator-facing writer yet** — `python -m admz settings
-set entry_credentials` and the promote checkbox are the only ways in — so an
-install's effective list is its legacy pair; and the lockout measurement
-ADR-0061 asked for has not been run.
+rest: the list has two writers — `python -m admz settings set entry_credentials`
+and, since slice D, the capture form's promote checkbox — and no settings-page
+editor, so an install's effective list is its legacy pair until someone
+promotes; and the lockout measurement ADR-0061 asked for has not been run.
 
 Existing devices are **not** migrated automatically. Creating accounts on nine
 live devices as a deploy side effect is a decision, not a consequence.
@@ -208,8 +208,9 @@ will offer to every device in the fleet. So it defaults **unchecked**, the label
 says what it does rather than "save", and the promotion is audited as its own
 event, separate from the capture.
 
-MCP callers may **propose** the flag in the capture response; the widget
-displays it and the human confirms. The person typing the secret is the only one
+MCP callers may **propose** the flag; the capture *form* renders the proposal
+as a hint (the chat capture card does not show it) and the human decides. The
+person typing the secret is the only one
 who knows whether it is safe to spray at the whole fleet, and that judgement
 cannot live in a tool argument.
 
@@ -221,7 +222,7 @@ is stored; `entry_credential.promoted` or `entry_credential.promotion_refused`
 (cap, posture) is audited with the username and device ids only — never the
 password — and a refusal never loses the capture; the done page says which
 happened. The Fleet Settings page renders the list's `describe()` (usernames,
-labels, posture, cap) — the first operator view of it. The flag reaching the
+labels, posture, cap; every stored entry marked *tried* or *stored, never tried* against slice C's bound; the page renders without the list if reading it fails) — the first operator view of it. A failure inside the promotion itself (anything but the cap or the posture) is logged and reported as a refusal, never a 500 — the capture has already succeeded and consumed its token; audit rows carry the signed-in principal when there is one. The flag reaching the
 store requires the form submission, never the tool argument.
 
 ### FR-CRED-009 — Device passwords are never displayed; no LLM retrieval ✅
