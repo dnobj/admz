@@ -866,6 +866,48 @@ def _reports_401(error: Any) -> bool:
     return bool(error) and bool(_REPORTED_401.match(str(error)))
 
 
+#: Rows the health monitor writes say so. ``learn`` defaults to ``audit``,
+#: which would make a row the drift audit never wrote claim it had.
+_HEALTH_SOURCE = "health"
+
+
+def _systemready_record(device_id: str, device_info: Dict[str, Any]):
+    """``(row, stale, skip)`` for ``systemready``: the device's row in ANY
+    state, whether it is stale for the device's current firmware, and whether
+    the JSON probe should be skipped — only on a NON-stale row that says
+    unsupported. Best-effort: a store problem means "probe as before", never
+    a failed sweep."""
+    try:
+        from admz.device_capabilities import capability_store, device_firmware
+
+        row = capability_store.get(device_id, "systemready")
+        if row is None:
+            return None, False, False
+        stale = row.is_stale(device_firmware(device_info), time.time())
+        return row, stale, (not stale and not row.supported)
+    except Exception:  # noqa: BLE001
+        logger.debug("capability record unavailable for %s", device_id, exc_info=True)
+        return None, False, False
+
+
+def _teach_systemready(device_id: str, device_info: Dict[str, Any], result: Any) -> None:
+    """Record what ``systemready`` answered, on a sweep where the device was
+    demonstrably readable. Best-effort; never fails the sweep."""
+    try:
+        from admz.device_capabilities import capability_store, device_firmware, learn
+
+        learn(
+            capability_store,
+            device_id=device_id,
+            firmware=device_firmware(device_info),
+            outcomes=[("systemready", result)],
+            device_readable=True,
+            source=_HEALTH_SOURCE,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("systemready outcome not recorded for %s", device_id, exc_info=True)
+
+
 async def probe_device(
     *,
     device_id: str,
@@ -948,17 +990,30 @@ async def probe_device(
         except Exception:
             op = None
         if op is not None:
+            # ADR-0063 / GH #458: consult the capability record before the
+            # JSON probe. A device that has demonstrably refused systemready
+            # (a limited_api switch) used to be asked again every sweep — one
+            # dead request and one WARNING per sweep to learn what the record
+            # already said. Only the JSON probe is skipped: the legacy read
+            # below still runs, so reachability and credentials are judged
+            # fresh each sweep; only the request known to fail is not sent.
+            _cap_row, _cap_stale, skip_json_probe = _systemready_record(
+                device_id, device_info
+            )
+            result = None
+            elapsed_ms = 0
             started = time.monotonic()
             try:
-                result = await asyncio.wait_for(
-                    executor.execute(
-                        op.to_executor_dict(),
-                        {**device_info, "device_id": device_id},
-                        credentials,
-                        {"timeout": "10"},  # device-side wait in seconds
-                    ),
-                    timeout=timeout_seconds + 2,  # +2 for the executor wrapper
-                )
+                if not skip_json_probe:
+                    result = await asyncio.wait_for(
+                        executor.execute(
+                            op.to_executor_dict(),
+                            {**device_info, "device_id": device_id},
+                            credentials,
+                            {"timeout": "10"},  # device-side wait in seconds
+                        ),
+                        timeout=timeout_seconds + 2,  # +2 for the executor wrapper
+                    )
             except asyncio.TimeoutError:
                 return DeviceHealthRecord(
                     device_id=device_id,
@@ -1011,6 +1066,11 @@ async def probe_device(
 
                 # Not condemned. systemready still failed, so there is no
                 # parsed body — and therefore no uptime, no bootid, and NO
+                # (Deliberately no capability teaching here: a 401 row would
+                # flip the verdict between REACHABLE_NO_API on probe sweeps
+                # and LIMITED_API on skip sweeps — the ADR-0063 amendment-2
+                # flap. Absence is taught only where the legacy read proved
+                # the device readable.)
                 # needsetup signal (see the ordering note in this function's
                 # docstring). Classify on reachability evidence, exactly as the
                 # generic failure path below does, via the same helper.
@@ -1049,13 +1109,21 @@ async def probe_device(
                     ),
                 )
 
-            if not getattr(result, "success", False):
-                err = getattr(result, "error", "") or "unknown error"
+            if result is None or not getattr(result, "success", False):
+                if skip_json_probe:
+                    # Skipped on the record: say so in words that cannot trip
+                    # the reachability keyword check below.
+                    err = (
+                        f"{SYSTEMREADY_OP} not sent — capability record says "
+                        f"{_cap_row.classification} ({_cap_row.source})"
+                    )
+                else:
+                    err = getattr(result, "error", "") or "unknown error"
                 # Distinguish connect failure (UNREACHABLE) from other
                 # failure modes. httpx connect errors typically have
                 # "connect" or "timeout" in the message.
                 lower = err.lower()
-                if (
+                if result is not None and (
                     "timeout" in lower
                     or "connect" in lower
                     or "refused" in lower
@@ -1081,7 +1149,12 @@ async def probe_device(
                         device_id=device_id,
                         status=DeviceHealthStatus.UNREACHABLE,
                         last_check=now,
-                        last_error=err[:200],
+                        # On a skip sweep the verdict is the TCP probe's, not
+                        # the record's — say which (#460 review).
+                        last_error=(
+                            f"host did not accept a TCP connection ({err})"
+                            if skip_json_probe else err
+                        )[:200],
                         consecutive_failures=1,
                     )
                 # GH #357: the host is up and one probe failed — that is not
@@ -1120,12 +1193,19 @@ async def probe_device(
                         "did — classifying limited_api, not reachable_no_api",
                         SYSTEMREADY_OP, device_id, err[:80], CORROBORATION_OP,
                     )
+                    if result is not None:
+                        # The legacy read answering with real data is the
+                        # ADR-0063 readability control: the device is readable
+                        # NOW, so systemready failing is evidence about
+                        # systemready. Transport/parse -> unconfirmed (24h->7d
+                        # backoff); a clean 404-class -> absent (7d).
+                        _teach_systemready(device_id, device_info, result)
                     return DeviceHealthRecord(
                         device_id=device_id,
                         status=DeviceHealthStatus.LIMITED_API,
                         last_check=now,
                         last_seen_online=now,
-                        latency_ms=elapsed_ms,
+                        latency_ms=elapsed_ms if not skip_json_probe else (tcp_ms or 0),
                         consecutive_failures=0,
                         last_error=(
                             f"{SYSTEMREADY_OP} unusable ({err[:120]}); "
@@ -1140,9 +1220,12 @@ async def probe_device(
                     # The host answered, so the reachability clock advances —
                     # this asserts nothing about the device beyond "it is up".
                     last_seen_online=now,
-                    latency_ms=elapsed_ms,
+                    latency_ms=elapsed_ms if not skip_json_probe else (tcp_ms or 0),
                     consecutive_failures=0,
-                    last_error=err[:200],
+                    last_error=(
+                        f"{CORROBORATION_OP} did not return parameter data "
+                        f"({err})" if skip_json_probe else err
+                    )[:200],
                 )
 
             # Success — pull uptime/bootid/needsetup from the parsed result.
@@ -1209,6 +1292,17 @@ async def probe_device(
                         uptime_seconds=uptime_int,
                         bootid=bootid_str,
                     )
+
+            # A device that now answers systemready overwrites a lingering
+            # absent/unconfirmed (or stale) row so the record says what is
+            # true. NOT when the row is already a trustworthy PRESENT: the S2
+            # survey records `systemready` PRESENT for every camera, so
+            # "teach whenever a row exists" would have been one UPSERT per
+            # camera per sweep — and would have overwritten the survey's
+            # provenance (#460 review, MAJOR-1). A healthy fleet pays no
+            # write per device per sweep.
+            if _cap_row is not None and (not _cap_row.supported or _cap_stale):
+                _teach_systemready(device_id, device_info, result)
 
             # Same opportunistic pattern as the facts refresh: while we're
             # authenticated anyway, note whether an SD card is actually
