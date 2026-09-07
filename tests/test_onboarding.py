@@ -638,3 +638,128 @@ class TestTheFactoryDefaultWriteItself:
         assert execr.sent[0]["password"] != FLEET_PW
         assert reg.accounts["default"]["password"] == execr.sent[0]["password"]
         assert FLEET_PW not in repr(out)
+
+
+class TestTheSamePairIsNotAskedTwice:
+    """#475 / ADR-0065 decision 4.
+
+    Onboarding's step 1 corroborates the stored credential. When the same
+    pair is also on the entry list, step 3 used to ask the device again —
+    two more failed authentications for a question it had just answered.
+    The skip is on a REFUSAL only: an unanswered check says nothing about
+    the credential, and skipping on silence would drop a pair that works.
+    """
+
+    @staticmethod
+    def _seed_entries(pairs):
+        """Seed the entry list with exactly these pairs, legacy pair cleared.
+        Returns a cleanup callable."""
+        import json as _json
+
+        from admz import entry_credentials as ec
+        from admz.fleet_settings import fleet_settings
+
+        previous_legacy = fleet_settings.get(ec.LEGACY_PASS_KEY)
+        fleet_settings.set(ec.SETTING_KEY, _json.dumps(
+            [{"username": u, "password": p} for u, p in pairs]))
+        fleet_settings.delete(ec.LEGACY_PASS_KEY)
+
+        def _cleanup():
+            fleet_settings.delete(ec.SETTING_KEY)
+            if previous_legacy:
+                fleet_settings.set(ec.LEGACY_PASS_KEY, previous_legacy)
+
+        return _cleanup
+
+    @staticmethod
+    def _asked(patch_probes, username, password):
+        return [c for c in patch_probes.get("confirm_calls", [])
+                if c.get("username") == username and c.get("password") == password]
+
+    def test_a_refused_stored_credential_is_not_asked_again(self, patch_probes):
+        """The pair the device just refused is skipped, and the pass moves
+        straight to the next entry."""
+        from admz.approval_context import approved
+
+        cleanup = self._seed_entries([("root", "stale"), ("u1", "p1")])
+        try:
+            reg = _Registry(stored={"username": "root", "password": "stale"})
+            # step 1 refuses; the ONLY remaining scripted answer is for u1
+            patch_probes["confirm"] = [(False, {}), (True, {})]
+            with approved("register_discovered_device", "tok-test"):
+                out = _run(registry=reg)
+        finally:
+            cleanup()
+
+        assert out["status"] == "admz_account_created", out
+        assert patch_probes["adopt_called"]["username"] == "u1"
+        assert len(self._asked(patch_probes, "root", "stale")) == 1, \
+            "asked once in step 1, never again from the list"
+        assert len(self._asked(patch_probes, "u1", "p1")) == 1
+
+    def test_the_skip_costs_nothing_and_ends_the_pass_honestly(self, patch_probes):
+        """A one-entry list whose only entry is the refused stored pair: the
+        loop asks nobody and the pass reports that the list was exhausted."""
+        cleanup = self._seed_entries([("root", "stale")])
+        try:
+            reg = _Registry(stored={"username": "root", "password": "stale"})
+            patch_probes["confirm"] = [(False, {})]
+            out = _run(registry=reg)
+        finally:
+            cleanup()
+
+        assert out["status"] == "credentials_needed"
+        assert "rejected" in out["reason"]
+        assert len(patch_probes["confirm_calls"]) == 1, "step 1 only"
+        assert patch_probes["confirm"] == [], "no scripted answer was consumed by a skip"
+
+    def test_an_unanswered_stored_credential_is_still_asked_from_the_list(self, patch_probes):
+        """`None` is not a refusal. The device said nothing, so the pair is
+        still worth trying — skipping it would drop a credential that works."""
+        from admz.approval_context import approved
+
+        cleanup = self._seed_entries([("root", "maybe-fine"), ("u1", "p1")])
+        try:
+            reg = _Registry(stored={"username": "root", "password": "maybe-fine"})
+            patch_probes["confirm"] = [(None, {}), (True, {})]
+            with approved("register_discovered_device", "tok-test"):
+                out = _run(registry=reg)
+        finally:
+            cleanup()
+
+        assert out["status"] == "admz_account_created", out
+        assert patch_probes["adopt_called"]["username"] == "root"
+        assert len(self._asked(patch_probes, "root", "maybe-fine")) == 2, \
+            "step 1, then the list — silence is not a rejection"
+
+    def test_only_the_refused_pair_is_skipped(self, patch_probes):
+        """The same username with a different password is a different
+        credential and is still tried."""
+        from admz.approval_context import approved
+
+        cleanup = self._seed_entries([("root", "different"), ("u1", "p1")])
+        try:
+            reg = _Registry(stored={"username": "root", "password": "stale"})
+            patch_probes["confirm"] = [(False, {}), (True, {})]
+            with approved("register_discovered_device", "tok-test"):
+                out = _run(registry=reg)
+        finally:
+            cleanup()
+
+        assert out["status"] == "admz_account_created", out
+        assert patch_probes["adopt_called"] == {"username": "root", "password": "different"}
+        assert len(self._asked(patch_probes, "root", "different")) == 1
+        assert self._asked(patch_probes, "u1", "p1") == [], "the pass stopped at the first success"
+
+    def test_no_stored_credential_skips_nothing(self, patch_probes):
+        """A device with no account at all: there is no refusal to carry, and
+        every entry is tried."""
+        cleanup = self._seed_entries([("u0", "p0"), ("u1", "p1")])
+        try:
+            patch_probes["confirm"] = [(False, {}), (False, {})]
+            out = _run(registry=_Registry())
+        finally:
+            cleanup()
+
+        assert out["status"] == "credentials_needed"
+        assert len(patch_probes["confirm_calls"]) == 2, "both entries asked; step 1 never ran"

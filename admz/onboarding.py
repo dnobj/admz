@@ -193,6 +193,15 @@ async def onboard_device_credentials(
 
     # ---- 1. Stored credentials already work? -----------------------------
     stored: Optional[Dict[str, Any]] = None
+    # Did the device REFUSE the stored credential just now? The entry loop
+    # below must not spend two more failed authentications on a pair it has
+    # already answered (#475, ADR-0065). `ok` cannot carry this: the loop
+    # rebinds it on its first iteration.
+    #
+    # A refusal only. `None` means the device did not answer, which says
+    # nothing about the credential — skipping on that would drop a pair that
+    # might work.
+    stored_rejected = False
     try:
         stored = registry.get_credentials(device_id)
     except Exception:  # noqa: BLE001 - no account yet
@@ -203,6 +212,7 @@ async def onboard_device_credentials(
             device_id=device_id, credentials=stored,
             timeout_seconds=timeout_seconds, strict=True,
         )
+        stored_rejected = ok is False
         if ok is True:
             if learned:
                 _persist_probe_marker(registry, device_id, device_info, learned)
@@ -370,8 +380,9 @@ async def onboard_device_credentials(
     # Bounded: attempt_order() returns at most MAX_ATTEMPTS_PER_PASS (ADR-0064
     # slice C), so this loop costs at most that many entries x two ops (6);
     # with step 1's check of a stale stored credential above it, one pass is
-    # at most 8 operations / 16 sends (FR-CRED-013). Nothing dedupes the two
-    # yet (#475).
+    # at most 8 operations / 16 sends (FR-CRED-013). A pair step 1 saw refused
+    # is skipped here rather than asked twice (#475, ADR-0065) — the maximum
+    # is unchanged, but a device is never asked the same question twice.
     candidates = _entry.attempt_order()
     if not candidates:
         reason = ("no entry credentials configured"
@@ -381,6 +392,12 @@ async def onboard_device_credentials(
 
     reason = "every entry credential was rejected by the device"
     for cred in candidates:
+        if stored_rejected and (cred.username, cred.password) == (
+                (stored or {}).get("username"), (stored or {}).get("password")):
+            # Step 1 asked this exact pair and the device refused it. Asking
+            # again costs two more failed authentications and cannot answer
+            # differently (#475, ADR-0065).
+            continue
         pair = {"username": cred.username, "password": cred.password}
         # strict: only an authenticated 2xx proves the pair — saving on a
         # lenient "not rejected" once stored a bad password (P3408, 2026-07-02).
