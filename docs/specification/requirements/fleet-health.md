@@ -112,6 +112,12 @@ latency; and it suffixes the hold onto the condemnation text rather than
 replacing it, idempotently, because that text is what routes an operator to
 capture.
 
+The hold covers a **condemned** credential only. An uncorroborated 401 files
+`reachable_no_api` (FR-HLT-009/010) after spending two credentialed operations,
+and that state neither holds nor escalates: ADMZ does not know the credential is
+bad, so it keeps asking on the cadence. That is a deliberate limit of this
+requirement, not an oversight.
+
 The hold is cleared by a stored-credential write for the `default` account — the
 one the sweep authenticates with — so an operator who enters a password is not
 made to wait out the ceiling; by any outcome that answers the credential
