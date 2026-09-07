@@ -77,8 +77,8 @@ MAX_STORED = 3
 #: that precedes it (``onboarding.py`` step 1), and a stale stored credential
 #: is corroborated the same way — so one pass is at most 8 operations /
 #: 16 sends. A pair the stored-credential check saw REFUSED is skipped when
-#: the loop reaches it, so no device is asked the same question twice in one
-#: pass (#475, ADR-0065).
+#: the loop reaches it, so no pair is put to a device to authenticate twice
+#: in one pass (#475, ADR-0065).
 MAX_ATTEMPTS_PER_PASS = MAX_STORED
 
 #: Posture: this installation stores NO entry credentials and prompts for a
