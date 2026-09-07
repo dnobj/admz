@@ -73,6 +73,10 @@ _DEFAULT_CONCURRENCY = 8               # Concurrent probes in flight
 # condemned device at roughly 120 failed authentications a day instead of
 # 4,300. 0 disables the hold.
 _DEFAULT_AUTH_HOLD_MAX_SECONDS = 1800.0
+# How long a failed schema/migration is remembered before it is retried. Short
+# enough to self-heal the moment a lock clears, long enough that a sustained
+# one does not re-run the schema on every store call.
+_SCHEMA_RETRY_SECONDS = 5.0
 
 # Reachability vs. authentication: ``systemready`` answers 200 even with
 # *invalid* credentials on some Axis firmware, so a 200 there proves the
@@ -316,7 +320,15 @@ def _auth_hold_for(
         return AuthHold(False)
     if prev.auth_retry_after <= now:
         return AuthHold(False)
-    return AuthHold(True, prev.last_error or "", prev.auth_retry_after)
+    # The note's base is only the condemnation when the last row WAS one.
+    # `last_error` is overwritten by any intervening sweep — a flap to
+    # `unreachable`, or the credential-lookup-failure path — and suffixing
+    # the hold onto that text would have the record assert a TCP failure
+    # that did not happen on a row that says `auth_failed`. The specific
+    # wording of the original refusal does not survive a flap; a true
+    # generic one does.
+    base = (prev.last_error or "") if prev.status is DeviceHealthStatus.AUTH_FAILED else ""
+    return AuthHold(True, base, prev.auth_retry_after)
 
 
 def _auth_hold_note(reason: str, wait_seconds: float) -> str:
@@ -326,7 +338,8 @@ def _auth_hold_note(reason: str, wait_seconds: float) -> str:
     password is wrong and sends them to capture. Re-suffixing is idempotent
     so the note cannot grow one sweep at a time.
     """
-    base = (reason or "credentials rejected").split(" \u2014 credential check held")[0]
+    base = (reason or "credentials rejected \u2014 the device refused the stored "
+            "credential").split(" \u2014 credential check held")[0]
     minutes = max(1, int((max(wait_seconds, 0) + 59) // 60))
     return (base + f" \u2014 credential check held ~{minutes} min (#469)")[:200]
 
@@ -457,8 +470,20 @@ class DeviceHealthStore:
                     # Marking it regardless is how a migration that failed
                     # once stays "done" for the life of the process, and every
                     # later statement fails on a column that never arrived.
-                    if self._create_schema(path):
-                        self._ready.add(path)
+                    #
+                    # A failure is remembered briefly, though: re-running the
+                    # whole schema on every connection would make a locked
+                    # database block each store call for the sqlite timeout
+                    # instead of once, and the sweep makes three per device.
+                    failures = getattr(self, "_schema_failed_at", None)
+                    if failures is None:
+                        failures = self._schema_failed_at = {}
+                    if time.time() - failures.get(path, 0.0) >= _SCHEMA_RETRY_SECONDS:
+                        if self._create_schema(path):
+                            self._ready.add(path)
+                            failures.pop(path, None)
+                        else:
+                            failures[path] = time.time()
         conn = sqlite3.connect(path)
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
@@ -1510,11 +1535,17 @@ async def probe_device(
             status=DeviceHealthStatus.AUTH_FAILED,
             last_check=now,
             last_seen_online=now,
+            # A TCP round-trip, not an HTTP one — this sweep sent no
+            # authenticated request to time.
             latency_ms=elapsed_ms,
             # The sweep carries the previous count: this sweep asked the
             # device nothing about its credential.
             consecutive_failures=0,
             last_error=_auth_hold_note(auth_hold.reason, auth_hold.retry_after - now),
+            # The free read answered; keep what it said rather than blanking
+            # facts already in hand.
+            uptime_seconds=(ready or {}).get("uptime"),
+            bootid=(ready or {}).get("bootid"),
         )
 
     # ---- Tier 1: authenticated VAPIX systemReady ----
@@ -2077,7 +2108,22 @@ class HealthMonitor:
         ``force`` ignores the #469 hold (ADR-0065): an operator who asks for
         a check must get one, which is also the recovery path if a device is
         ever wedged. The interval loop never forces.
+
+        Sweeps serialise. Each ``_check`` ends by writing a device's whole
+        row, so a forced sweep running beside the interval loop's would have
+        its result overwritten by whichever finished last — the operator
+        clicks "sweep now", the device authenticates, and the row reverts to
+        `auth_failed` seconds later. The lock is created on first use rather
+        than in ``__init__`` because the monitor is constructed outside a
+        running loop.
         """
+        lock = getattr(self, "_sweep_lock", None)
+        if lock is None:
+            lock = self._sweep_lock = asyncio.Lock()
+        async with lock:
+            return await self._sweep_once(force)
+
+    async def _sweep_once(self, force: bool = False) -> int:
         # The sweep is also when one-shot detection tasks get evaluated —
         # expire stale ones up front so they can't fire late.
         try:
@@ -2264,9 +2310,17 @@ class HealthMonitor:
                 elif prev is not None:
                     # unreachable / reachable_no_api / unknown: nothing was
                     # learned about the credential, so the hold stands rather
-                    # than restarting at the base interval on every flap.
+                    # than restarting at the base interval on every flap. An
+                    # already-expired deadline is dropped instead of carried:
+                    # it holds nothing back and would otherwise sit on the
+                    # read surfaces claiming a credential check is due in the
+                    # past (FR-HLT-012 promises the opposite).
                     record.auth_fail_streak = prev_streak
-                    record.auth_retry_after = prev.auth_retry_after
+                    record.auth_retry_after = (
+                        prev.auth_retry_after
+                        if (prev.auth_retry_after or 0) > time.time()
+                        else None
+                    )
 
                 self.store.upsert(record)
 

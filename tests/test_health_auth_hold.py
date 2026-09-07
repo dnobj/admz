@@ -537,18 +537,51 @@ class TestTheColumnsArrive:
             "PRAGMA table_info(device_health)")}
         assert {"auth_fail_streak", "auth_retry_after"} <= cols
 
-    def test_a_migration_that_is_not_a_duplicate_column_is_not_mistaken_for_done(
+    def test_a_migration_failure_leaves_the_path_unmarked_so_the_next_try_retries(
             self, isolated, monkeypatch):
-        """A locked or unwritable database must leave the path unmarked so the
-        next connection retries, rather than assuming the column arrived."""
+        """Driven through `_connect`, because the property under test is that
+        `_ready` is not populated — asserting it after calling `_create_schema`
+        directly would pass however the code behaved."""
         import admz.fleet.health as health_mod
 
-        store = DeviceHealthStore(str(isolated / "x.db"))
+        path = str(isolated / "x.db")
+        store = DeviceHealthStore(path)
         monkeypatch.setattr(
             health_mod, "_MIGRATION_COLUMNS",
             health_mod._MIGRATION_COLUMNS + (("not a column", "INTEGER"),))
-        assert store._create_schema(str(isolated / "x.db")) is False
-        assert store._db_path not in store._ready
+
+        store._connect().close()
+        assert path not in store._ready, "a failed migration is not 'done'"
+
+        # and it self-heals once the cause is gone, after the retry window
+        monkeypatch.setattr(health_mod, "_SCHEMA_RETRY_SECONDS", 0.0)
+        monkeypatch.setattr(
+            health_mod, "_MIGRATION_COLUMNS",
+            tuple(c for c in health_mod._MIGRATION_COLUMNS if c[0] != "not a column"))
+        store._connect().close()
+        assert path in store._ready
+
+    def test_a_repeated_failure_is_not_re_run_on_every_connection(
+            self, isolated, monkeypatch):
+        """A sustained lock would otherwise re-run the whole schema on each of
+        the three store calls the sweep makes per device."""
+        import admz.fleet.health as health_mod
+
+        path = str(isolated / "y.db")
+        store = DeviceHealthStore(path)
+        attempts = []
+        real = store._create_schema
+
+        def _counting(p):
+            attempts.append(p)
+            return False
+
+        monkeypatch.setattr(store, "_create_schema", _counting)
+        store._connect().close()
+        store._connect().close()
+        store._connect().close()
+        assert len(attempts) == 1, "remembered the failure for the retry window"
+        assert real is not None
 
     def test_the_fields_reach_the_read_surfaces(self, isolated):
         row = DeviceHealthRecord(
@@ -559,7 +592,195 @@ class TestTheColumnsArrive:
         assert d["auth_fail_streak"] == 2 and d["auth_retry_after"] == 1234.0
 
 
-def test_a_hold_needs_a_credential_to_hold(isolated):
+@pytest.mark.asyncio
+async def test_a_hold_needs_a_credential_to_hold(isolated):
     """A device whose credential was removed bypasses the hold entirely and is
-    judged afresh — the verdict is about a credential that no longer exists."""
-    assert AuthHold(True, "rejected", time.time() + 600).active is True
+    judged afresh: the verdict was about a credential that no longer exists,
+    and holding on it would keep a `no_credentials` device reading
+    `auth_failed` until the ceiling."""
+    from admz.exceptions import AccountNotFoundError
+
+    store = DeviceHealthStore(str(isolated / "admz.db"))
+    store.upsert(DeviceHealthRecord(
+        device_id="cam-01", status=DeviceHealthStatus.AUTH_FAILED,
+        last_check=time.time(), last_error="credentials rejected",
+        auth_fail_streak=4, auth_retry_after=time.time() + 1800,
+    ))
+    catalog, executor, calls = _executor({SYSTEMREADY_OP: _systemready(False)})
+    monitor = _monitor(store, catalog, executor)
+    monitor.registry.get_credentials.side_effect = AccountNotFoundError("gone")
+
+    await monitor.sweep_once()
+
+    row = store.get("cam-01")
+    assert row.status is DeviceHealthStatus.NO_CREDENTIALS
+    assert row.auth_fail_streak == 0 and row.auth_retry_after is None
+    assert _credentialed(calls) == []
+
+
+class TestTheHoldTellsTheTruth:
+    @pytest.mark.asyncio
+    async def test_a_flap_does_not_make_the_note_assert_a_tcp_failure(self, isolated):
+        """`last_error` is overwritten by any intervening sweep. Suffixing the
+        hold onto whatever happens to be there would leave a row that says
+        `auth_failed` while its text reports a TCP connect failure that did not
+        happen on this sweep. The specific wording of the original refusal does
+        not survive a flap; a true generic one does."""
+        store = DeviceHealthStore(str(isolated / "admz.db"))
+        catalog, executor, _calls = _executor(
+            {SYSTEMREADY_OP: REFUSED, CORROBORATION_OP: REFUSED})
+        monitor = _monitor(store, catalog, executor)
+
+        await monitor.sweep_once()
+        assert "refused them" in store.get("cam-01").last_error
+
+        with patch("admz.fleet.health._tcp_probe", AsyncMock(return_value=None)):
+            await monitor.sweep_once()
+        assert "TCP connect" in store.get("cam-01").last_error
+
+        await monitor.sweep_once()
+        err = store.get("cam-01").last_error
+        assert store.get("cam-01").status is DeviceHealthStatus.AUTH_FAILED
+        assert "TCP connect" not in err, "the row must not assert a failure it did not see"
+        assert "credential check held" in err and "refused the stored credential" in err
+
+    @pytest.mark.asyncio
+    async def test_the_note_stays_within_the_column_however_long_the_reason(self, isolated):
+        store = DeviceHealthStore(str(isolated / "admz.db"))
+        store.upsert(DeviceHealthRecord(
+            device_id="cam-01", status=DeviceHealthStatus.AUTH_FAILED,
+            last_check=time.time(), last_error="credentials rejected — " + ("x" * 400),
+            auth_fail_streak=1, auth_retry_after=time.time() + 600,
+        ))
+        catalog, executor, _calls = _executor({SYSTEMREADY_OP: REFUSED})
+        monitor = _monitor(store, catalog, executor)
+
+        await monitor.sweep_once()
+        assert len(store.get("cam-01").last_error) <= 200
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_sweep_still_counts_as_a_failure(self, isolated):
+        """Only a sweep that was actually held is exempt from the failure
+        counter. A device that stops answering during a hold really did fail a
+        probe, and FR-HLT-007 must still see it."""
+        store = DeviceHealthStore(str(isolated / "admz.db"))
+        store.upsert(DeviceHealthRecord(
+            device_id="cam-01", status=DeviceHealthStatus.AUTH_FAILED,
+            last_check=time.time(), consecutive_failures=2,
+            last_error="credentials rejected", auth_fail_streak=1,
+            auth_retry_after=time.time() + 600,
+        ))
+        catalog, executor, _calls = _executor({SYSTEMREADY_OP: REFUSED})
+        monitor = _monitor(store, catalog, executor)
+
+        with patch("admz.fleet.health._tcp_probe", AsyncMock(return_value=None)):
+            await monitor.sweep_once()
+
+        row = store.get("cam-01")
+        assert row.status is DeviceHealthStatus.UNREACHABLE
+        assert row.consecutive_failures == 3, "a real failed probe still counts"
+
+    @pytest.mark.asyncio
+    async def test_a_held_sweep_keeps_the_facts_the_free_read_gave_it(self, isolated):
+        store = DeviceHealthStore(str(isolated / "admz.db"))
+        store.upsert(DeviceHealthRecord(
+            device_id="cam-01", status=DeviceHealthStatus.AUTH_FAILED,
+            last_check=time.time(), last_error="credentials rejected",
+            auth_fail_streak=1, auth_retry_after=time.time() + 600,
+        ))
+        catalog, executor, _calls = _executor({SYSTEMREADY_OP: _systemready(False)})
+        monitor = _monitor(store, catalog, executor)
+
+        await monitor.sweep_once()
+
+        row = store.get("cam-01")
+        assert row.status is DeviceHealthStatus.AUTH_FAILED
+        assert row.uptime_seconds == 120 and row.bootid == "b7"
+
+    @pytest.mark.asyncio
+    async def test_an_expired_deadline_is_not_carried_onto_a_flap(self, isolated):
+        """FR-HLT-012 exposes the deadline so an operator can see when the next
+        check is due. A timestamp in the past says nothing and must not sit
+        there."""
+        store = DeviceHealthStore(str(isolated / "admz.db"))
+        store.upsert(DeviceHealthRecord(
+            device_id="cam-01", status=DeviceHealthStatus.AUTH_FAILED,
+            last_check=time.time(), last_error="credentials rejected",
+            auth_fail_streak=3, auth_retry_after=time.time() - 5,
+        ))
+        # No catalog or executor, so nothing can reach a credential verdict:
+        # the deadline has expired, so this is not a held sweep either.
+        monitor = _monitor(store, catalog=None, executor=None)
+
+        with patch("admz.fleet.health._tcp_probe", AsyncMock(return_value=None)):
+            await monitor.sweep_once()
+
+        row = store.get("cam-01")
+        assert row.status is DeviceHealthStatus.UNREACHABLE
+        assert row.auth_retry_after is None
+        assert row.auth_fail_streak == 3, "the escalation itself is not forgotten"
+
+
+class TestSweepsDoNotClobberEachOther:
+    @pytest.mark.asyncio
+    async def test_a_forced_sweep_is_not_undone_by_one_already_in_flight(self, isolated):
+        """`POST /api/fleet/health/sweep` is the documented recovery path. Each
+        `_check` writes a whole row, so without serialisation the operator's
+        result is overwritten by whichever sweep finishes last."""
+        import asyncio
+
+        store = DeviceHealthStore(str(isolated / "admz.db"))
+        store.upsert(DeviceHealthRecord(
+            device_id="cam-01", status=DeviceHealthStatus.AUTH_FAILED,
+            last_check=time.time(), last_error="credentials rejected",
+            auth_fail_streak=5, auth_retry_after=time.time() + 1800,
+        ))
+        gate = asyncio.Event()
+
+        async def _slow_tcp(*_a, **_k):
+            await gate.wait()
+            return 3
+
+        catalog, executor, _calls = _executor(
+            {SYSTEMREADY_OP: _systemready(False),
+             AUTH_CHECK_OP: MagicMock(
+                 success=True, status_code=200, error=None,
+                 parsed_data={"data": {"propertyList": {"ProdNbr": "P3245"}}})})
+        monitor = _monitor(store, catalog, executor)
+
+        with patch("admz.fleet.health._tcp_probe", _slow_tcp):
+            held = asyncio.create_task(monitor.sweep_once())
+            await asyncio.sleep(0)
+            forced = asyncio.create_task(monitor.sweep_once(force=True))
+            await asyncio.sleep(0)
+            gate.set()
+            await asyncio.gather(held, forced)
+
+        row = store.get("cam-01")
+        assert row.status is DeviceHealthStatus.ONLINE, \
+            "the operator's check is the last word, not the sweep it interrupted"
+        assert row.auth_retry_after is None
+
+
+class TestTheResetFollowsItsOwnDatabase:
+    def test_a_registry_with_an_explicit_path_clears_the_right_row(self, isolated, tmp_path):
+        """A registry built with an explicit `db_path` is a supported
+        construction. Clearing through the process-default store would target
+        another file, match nothing, and report success."""
+        from admz.backends.sqlite_backend import SQLiteDeviceRegistry
+
+        elsewhere = str(tmp_path / "elsewhere.db")
+        store = DeviceHealthStore(elsewhere)
+        registry = SQLiteDeviceRegistry(
+            db_path=elsewhere, key_path=str(tmp_path / "admz.key"))
+        registry.add_device("cam-01", {"host": "192.0.2.1"})
+        store.upsert(DeviceHealthRecord(
+            device_id="cam-01", status=DeviceHealthStatus.AUTH_FAILED,
+            last_check=time.time(), auth_fail_streak=3,
+            auth_retry_after=time.time() + 1800,
+        ))
+        assert str(isolated / "admz.db") != elsewhere, "control: not the env path"
+
+        registry.add_account("cam-01", "default", {"username": "root", "password": "new"})
+
+        assert store.get("cam-01").auth_retry_after is None

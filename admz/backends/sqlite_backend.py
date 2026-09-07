@@ -764,9 +764,13 @@ class SQLiteDeviceRegistry(DeviceRegistry):
         if account_id != "default":
             return
         try:
-            from admz.fleet.health import clear_auth_hold
+            from admz.fleet.health import DeviceHealthStore
 
-            clear_auth_hold(device_id)
+            # This registry's own file, not the process default: a registry
+            # built with an explicit `db_path` (a supported construction —
+            # see admz/factory.py) would otherwise clear a hold in a
+            # different database, match nothing, and report success.
+            DeviceHealthStore(str(self._db_path)).clear_auth_hold(device_id)
         except Exception:  # noqa: BLE001 - never break a credential write
             pass
 
