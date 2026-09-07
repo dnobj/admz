@@ -180,15 +180,18 @@ when the 401 challenge names a different auth method than the device profile;
 each Digest op also costs one unauthenticated challenge round-trip. The loop is
 not the whole pass: onboarding first checks a *stored* credential, and a stale
 one is corroborated the same way, so one pass is at most **8 operations /
-16 sends**; nothing dedupes the stored credential against the list.
+16 sends**.
 
-📋 **(ADR-0065 decision 4, #475.)** A pair the stored-credential check saw
-**refused** will be skipped when the loop reaches it: the maximum is unchanged,
-but no pair is put to a device to authenticate twice in one pass. A refusal
-only — an unanswered check says nothing about the credential, and skipping on
-silence would drop a pair that works.
+✅ **(ADR-0065 decision 4, #475 — shipped 2026-09-07.)** A pair the
+stored-credential check saw **refused** is skipped when the loop reaches it:
+the maximum is unchanged, but no pair is put to a device to **authenticate**
+twice in one pass. A refusal only — an unanswered check says nothing about the
+credential, and skipping on silence would drop a pair that works. (Step 2's
+`systemready` read still carries the stored credential; that op is auth-free by
+design but, unlike the health sweep's, its auth is not forced off — #479.)
 
 The
+pass stops on the first success and breaks on an unreachable (`None`) answer. The
 pass stops on the first success and breaks on an unreachable (`None`) answer. The
 bound (`MAX_ATTEMPTS_PER_PASS`, equal to the storage cap) is enforced **where
 the attempt list is built** — `entry_credentials.attempt_order()`, which the
