@@ -83,30 +83,45 @@ every surface until a baseline capture happened to need a password.
 [ADR-0065](../decisions/0065-a-refused-credential-is-not-retried-on-a-fixed-cadence.md), #469.
 Once a credential has been condemned (`auth_failed`, corroborated per
 FR-HLT-008/010), the sweep stops sending it on every cadence. The wait starts at
-one interval and doubles per refusal, capped at a fleet-settable ceiling
-(default 30 minutes): about 120 failed authentications a day instead of 4,300.
-The ceiling is a **chosen** number, not a measured one, and is the first thing
-to revisit when [ADR-0064](../decisions/0064-a-device-admz-cannot-authenticate-to-is-never-online.md)
+one interval — so the first retry lands on the normal cadence — and doubles per
+refusal, capped at a fleet-settable ceiling (default 30 minutes). The reduction
+is exactly the ceiling divided by the interval: **30× fewer** credentialed
+operations at the default cadence, about 144 a day instead of 4,320. The
+ceiling is a **chosen** number, not a measured one, and is the first thing to
+revisit when [ADR-0064](../decisions/0064-a-device-admz-cannot-authenticate-to-is-never-online.md)
 decision 7's lockout measurement exists.
 
-A held sweep **carries the previous status forward and never re-derives one**:
-a device that still holds a credential would otherwise read `online` from the
-TCP tier (FR-HLT-003 §2) and fire `on_online` against a device ADMZ cannot
-authenticate to — the failure FR-HLT-011 exists to prevent. It still sends what
-costs no authentication: the TCP connect, and the unauthenticated `systemready`
-read FR-HLT-011 already uses — so reachability stays fresh, a factory reset
-stays visible, and `on_needs_setup` still fires while the hold is in force. A
-held sweep observed nothing about the credential, so the failure counter of
-FR-HLT-007 does not climb either (GH #138).
+A held sweep re-derives a status **only from credential-free evidence**: a
+failed TCP connect is `unreachable`; an unauthenticated `systemready` reporting
+`needsetup=yes` is `needs_setup`, so the pre-authorised trigger still fires; and
+otherwise the last **credential verdict** — `auth_failed` — is carried forward.
+It does not fall through to the TCP tier and let that decide: a device in a hold
+holds a credential by definition, so that tier would file `online` (FR-HLT-003
+§2) and fire `on_online` against a device ADMZ cannot authenticate to, the
+failure FR-HLT-011 exists to prevent. The unauthenticated read is the one
+FR-HLT-011 uses, but from a call site of its own — FR-HLT-011's sits in the
+credential-less branch, which a held device never reaches. It needs a catalog
+and an executor and is suppressed by the ADR-0063 capability record, so a
+factory reset is usually seen during a hold, not always; that is one more reason
+the hold stays time-bounded.
 
-The hold is cleared by a stored-credential write for the `default` account, so
-an operator who enters a password is not made to wait out the ceiling; by any
-outcome that answers the credential question (`online`, `limited_api`,
-`needs_setup`, `no_credentials`); and by the explicit sweep
-(`POST /api/fleet/health/sweep`), which must always mean what it says. It is
-**not** cleared by `unreachable`, so a flapping device does not restart the
-escalation. The deadline is persisted and exposed on the read surfaces of
-FR-HLT-006, so an operator can see when the next credential check is due.
+A held sweep observed nothing about the credential, so the failure counter of
+FR-HLT-007 does not climb (GH #138). It does advance `last_check` and the
+reachability clock, because the host answered; it reports the TCP round-trip as
+latency; and it suffixes the hold onto the condemnation text rather than
+replacing it, idempotently, because that text is what routes an operator to
+capture.
+
+The hold is cleared by a stored-credential write for the `default` account — the
+one the sweep authenticates with — so an operator who enters a password is not
+made to wait out the ceiling; by any outcome that answers the credential
+question (`online`, `limited_api`, `needs_setup`, `no_credentials`); and by the
+explicit sweep (`POST /api/fleet/health/sweep`), which must always mean what it
+says. It is **not** cleared by `unreachable`, so a flapping device does not
+restart the escalation. A clear that lands while a probe is in flight wins over
+the sweep's own write. The streak and the deadline are persisted and exposed on
+the read surfaces of FR-HLT-006, so an operator can see when the next credential
+check is due.
 
 ### FR-HLT-009 — Reachability is never inferred from an API failure ✅
 "Is the host up?" and "can ADMZ speak its API?" are separate questions and
@@ -334,10 +349,10 @@ other.
 Concurrency is capped by the shared fleet semaphore so health sweeps don't
 fight snapshot sweeps or hammer the network. The interval floors at 5 s
 (anything faster is rejected) and the per-device timeout clamps to [1, 60] s.
-"Non-hostile" also bounds what a sweep spends on a device that has already
-refused it: a condemned credential is retried on the escalating hold of
-FR-HLT-012, not on the cadence. Until ADR-0065 that was true of the polling
-rate and not of the authentication rate.
+📋 **(FR-HLT-012, ADR-0065)** "Non-hostile" *will also* bound what a sweep
+spends on a device that has already refused it: a condemned credential retried
+on an escalating hold rather than on the cadence. As this requirement stands
+today it bounds the polling rate and not the authentication rate.
 
 ### NFR-HLT-002 — Probe is read-only ✅
 Both probe tiers only read (`systemReady` or a TCP connect that writes
