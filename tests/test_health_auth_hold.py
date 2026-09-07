@@ -20,7 +20,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from admz.fleet.health import (
-    AuthHold,
     DeviceHealthRecord,
     DeviceHealthStatus,
     DeviceHealthStore,
@@ -178,6 +177,7 @@ class TestTheSweepStopsSpendingLogins:
             device_id="cam-01", status=DeviceHealthStatus.AUTH_FAILED,
             last_check=time.time(), consecutive_failures=1,
             last_error="credentials rejected — both systemready and param.cgi refused them",
+            auth_condemnation="credentials rejected — both systemready and param.cgi refused them",
             auth_fail_streak=2, auth_retry_after=time.time() + 300,
         ))
         catalog, executor, _calls = _executor({SYSTEMREADY_OP: REFUSED})
@@ -565,8 +565,6 @@ class TestTheColumnsArrive:
             self, isolated, monkeypatch):
         """A sustained lock would otherwise re-run the whole schema on each of
         the three store calls the sweep makes per device."""
-        import admz.fleet.health as health_mod
-
         path = str(isolated / "y.db")
         store = DeviceHealthStore(path)
         attempts = []
@@ -642,7 +640,8 @@ class TestTheHoldTellsTheTruth:
         err = store.get("cam-01").last_error
         assert store.get("cam-01").status is DeviceHealthStatus.AUTH_FAILED
         assert "TCP connect" not in err, "the row must not assert a failure it did not see"
-        assert "credential check held" in err and "refused the stored credential" in err
+        assert "credential check held" in err
+        assert "refused them" in err,             "and the flap did not cost the operator the reason either"
 
     @pytest.mark.asyncio
     async def test_the_note_stays_within_the_column_however_long_the_reason(self, isolated):
@@ -784,3 +783,107 @@ class TestTheResetFollowsItsOwnDatabase:
         registry.add_account("cam-01", "default", {"username": "root", "password": "new"})
 
         assert store.get("cam-01").auth_retry_after is None
+
+
+class TestTheCondemnationCannotBeCorrupted:
+    @pytest.mark.asyncio
+    async def test_a_credential_lookup_failure_does_not_rewrite_the_note(self, isolated):
+        """The lookup-failure path of FR-HLT-011 keeps `auth_failed` while
+        replacing `last_error`, so a status check does not exclude it. The
+        condemnation lives in its own field for exactly this reason."""
+        store = DeviceHealthStore(str(isolated / "admz.db"))
+        catalog, executor, _calls = _executor(
+            {SYSTEMREADY_OP: REFUSED, CORROBORATION_OP: REFUSED})
+        monitor = _monitor(store, catalog, executor)
+
+        await monitor.sweep_once()
+        condemned = store.get("cam-01")
+        assert "refused them" in condemned.auth_condemnation
+
+        # the registry cannot answer for one sweep
+        monitor.registry.get_credentials.side_effect = RuntimeError("database is locked")
+        await monitor.sweep_once()
+        mid = store.get("cam-01")
+        assert mid.status is DeviceHealthStatus.AUTH_FAILED
+        assert "lookup failed" in mid.last_error
+        assert "refused them" in mid.auth_condemnation, "the verdict is untouched"
+
+        monitor.registry.get_credentials.side_effect = None
+        monitor.registry.get_credentials.return_value = {
+            "username": "root", "password": "wrong"}
+        await monitor.sweep_once()
+
+        err = store.get("cam-01").last_error
+        assert "lookup failed" not in err, "the note must not assert something it did not see"
+        assert "refused them" in err and "credential check held" in err
+
+    @pytest.mark.asyncio
+    async def test_the_condemnation_is_cleared_with_the_hold(self, isolated):
+        store = DeviceHealthStore(str(isolated / "admz.db"))
+        store.upsert(DeviceHealthRecord(
+            device_id="cam-01", status=DeviceHealthStatus.AUTH_FAILED,
+            last_check=time.time(), auth_fail_streak=2,
+            auth_retry_after=time.time() - 1, auth_condemnation="credentials rejected",
+        ))
+        catalog, executor, _calls = _executor(
+            {SYSTEMREADY_OP: _systemready(False),
+             AUTH_CHECK_OP: MagicMock(
+                 success=True, status_code=200, error=None,
+                 parsed_data={"data": {"propertyList": {"ProdNbr": "P3245"}}})})
+        monitor = _monitor(store, catalog, executor)
+
+        await monitor.sweep_once()
+
+        row = store.get("cam-01")
+        assert row.status is DeviceHealthStatus.ONLINE
+        assert row.auth_condemnation == ""
+
+    @pytest.mark.asyncio
+    async def test_a_held_sweep_reports_the_tcp_round_trip(self, isolated):
+        """A held sweep sends no authenticated request, so the latency it
+        reports is the TCP connect — measured, not carried."""
+        store = DeviceHealthStore(str(isolated / "admz.db"))
+        store.upsert(DeviceHealthRecord(
+            device_id="cam-01", status=DeviceHealthStatus.AUTH_FAILED,
+            last_check=time.time(), latency_ms=999, auth_fail_streak=1,
+            auth_retry_after=time.time() + 600, auth_condemnation="credentials rejected",
+        ))
+        catalog, executor, _calls = _executor({SYSTEMREADY_OP: REFUSED})
+        monitor = _monitor(store, catalog, executor)
+
+        with patch("admz.fleet.health._tcp_probe", AsyncMock(return_value=7)):
+            await monitor.sweep_once()
+
+        assert store.get("cam-01").latency_ms == 7
+
+    def test_the_expired_check_is_against_now_not_the_last_check(self, isolated):
+        """A deadline is due when it has passed, not when it precedes the row's
+        own timestamp — those differ by a whole sweep."""
+        now = time.time()
+        row = DeviceHealthRecord(
+            device_id="cam-01", status=DeviceHealthStatus.AUTH_FAILED,
+            last_check=now, auth_retry_after=now + 300,
+        )
+        assert _auth_hold_for(row, now).active is True
+        assert _auth_hold_for(row, now + 301).active is False
+
+
+class TestTheResetReusesOneStorePerPath:
+    def test_repeated_clears_do_not_rebuild_the_store(self, isolated, tmp_path):
+        """`clear_auth_hold` runs on every credential write. A fresh store each
+        time would carry neither the schema-ready set nor the failed-migration
+        memo, so a locked database would cost a full sqlite timeout per write."""
+        import admz.fleet.health as health_mod
+        from admz.backends.sqlite_backend import SQLiteDeviceRegistry
+
+        path = str(tmp_path / "own.db")
+        health_mod._hold_stores.clear()
+        registry = SQLiteDeviceRegistry(
+            db_path=path, key_path=str(tmp_path / "admz.key"))
+        registry.add_device("cam-01", {"host": "192.0.2.1"})
+        registry.add_account("cam-01", "default", {"username": "root", "password": "a"})
+        registry.update_account("cam-01", "default", {"password": "b"})
+        registry.update_account("cam-01", "default", {"password": "c"})
+
+        assert list(health_mod._hold_stores) == [path], "one store, kept"
+        assert path in health_mod._hold_stores[path]._ready, "and it stays warm"
