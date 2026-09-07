@@ -79,7 +79,7 @@ the chat card — or a deliberate `onboard_device` re-run. The seven-hour trace
 that forced this: an A1210 registered without credentials read `online` on
 every surface until a baseline capture happened to need a password.
 
-### FR-HLT-012 — A refused credential is retried on an escalating hold 📋
+### FR-HLT-012 — A refused credential is retried on an escalating hold ✅
 [ADR-0065](../decisions/0065-a-refused-credential-is-not-retried-on-a-fixed-cadence.md), #469.
 Once a credential has been condemned (`auth_failed`, corroborated per
 FR-HLT-008/010), the sweep stops sending it on every cadence. The wait starts at

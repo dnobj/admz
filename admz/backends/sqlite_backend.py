@@ -751,6 +751,25 @@ class SQLiteDeviceRegistry(DeviceRegistry):
             conn.commit()
         return purged
 
+    def _forget_auth_hold(self, device_id: str, account_id: str) -> None:
+        """#469 / ADR-0065: the sweep authenticates with the `default`
+        account. Its stored credential just changed, so forget any hold and
+        let the next sweep ask the device again rather than making the
+        operator wait out the ceiling.
+
+        Best-effort: a credential write must never fail because the health
+        store is unavailable. Scoped to `default` — stashing a `recovery`
+        password answers nothing about the credential the sweep uses.
+        """
+        if account_id != "default":
+            return
+        try:
+            from admz.fleet.health import clear_auth_hold
+
+            clear_auth_hold(device_id)
+        except Exception:  # noqa: BLE001 - never break a credential write
+            pass
+
     def add_account(
         self, device_id: str, account_id: str, account_data: Dict[str, Any]
     ) -> None:
@@ -767,6 +786,7 @@ class SQLiteDeviceRegistry(DeviceRegistry):
                 (device_id, account_id, self._store_account_data(account_data)),
             )
             conn.commit()
+        self._forget_auth_hold(device_id, account_id)
 
     def update_device_info(
         self, device_id: str, updates: Dict[str, Any]
@@ -800,6 +820,7 @@ class SQLiteDeviceRegistry(DeviceRegistry):
                 (device_id, account_id),
             )
             conn.commit()
+        self._forget_auth_hold(device_id, account_id)
 
     def update_account(
         self,
@@ -842,6 +863,7 @@ class SQLiteDeviceRegistry(DeviceRegistry):
                 (self._store_account_data(current), device_id, account_id),
             )
             conn.commit()
+        self._forget_auth_hold(device_id, account_id)
 
     # ---------------------------------------------------------------
     # Slice 1: Org / Site / Group CRUD

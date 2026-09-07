@@ -1181,6 +1181,9 @@ class TestProtectedKeys:
             "health_check_interval_seconds",
             "health_check_timeout_seconds",
             "health_verify_credentials",
+            # #469 / ADR-0065: lowering this spends more failed
+            # authentications on a device that has already refused them.
+            "health_auth_hold_max_seconds",
         }
 
 

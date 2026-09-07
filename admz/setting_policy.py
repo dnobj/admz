@@ -128,6 +128,9 @@ KNOWN_SETTING_KEYS: FrozenSet[str] = frozenset({
     "health_check_timeout_seconds",
     # #168: switching this off makes a stale password report healthy.
     "health_verify_credentials",
+    # #469/ADR-0065: the ceiling on the refused-credential hold. Lowering it
+    # spends more failed authentications on a device that already said no.
+    "health_auth_hold_max_seconds",
     # --- survey / contributor mode (ADR-0030) -----------------------------
     "survey_mode_enabled",
     "survey_github_pat",
