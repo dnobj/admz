@@ -392,6 +392,19 @@ class VaultDeviceRegistry(DeviceRegistry):
             for account_id, account_data in accounts.items():
                 self.add_account(device_id, account_id, account_data)
 
+    def _forget_auth_hold(self, device_id: str, account_id: str) -> None:
+        """#469 / ADR-0065: the sweep authenticates with the `default`
+        account, so a change to it must end any refused-credential hold.
+        Best-effort; scoped to `default`. See the SQLite twin."""
+        if account_id != "default":
+            return
+        try:
+            from admz.fleet.health import clear_auth_hold
+
+            clear_auth_hold(device_id)
+        except Exception:  # noqa: BLE001 - never break a credential write
+            pass
+
     def add_account(
         self, device_id: str, account_id: str, account_data: Dict[str, Any]
     ) -> None:
@@ -417,6 +430,7 @@ class VaultDeviceRegistry(DeviceRegistry):
             )
         except VaultError as e:
             raise BackendError(f"Vault error creating account: {e}")
+        self._forget_auth_hold(device_id, account_id)
 
     def remove_device(self, device_id: str) -> None:
         """Remove a device and all its accounts from Vault."""
@@ -487,6 +501,7 @@ class VaultDeviceRegistry(DeviceRegistry):
             )
         except VaultError as e:
             raise BackendError(f"Vault error updating account: {e}")
+        self._forget_auth_hold(device_id, account_id)
 
     def remove_account(self, device_id: str, account_id: str) -> None:
         """Remove an account from a device in Vault."""
@@ -511,3 +526,4 @@ class VaultDeviceRegistry(DeviceRegistry):
             )
         except VaultError as e:
             raise BackendError(f"Vault error deleting account: {e}")
+        self._forget_auth_hold(device_id, account_id)

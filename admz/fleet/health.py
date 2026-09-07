@@ -67,6 +67,17 @@ logger = logging.getLogger(__name__)
 _DEFAULT_INTERVAL_SECONDS = 60.0       # Poll every minute by default
 _DEFAULT_TIMEOUT_SECONDS = 5.0         # Per-device check timeout
 _DEFAULT_CONCURRENCY = 8               # Concurrent probes in flight
+# Ceiling on the #469 escalating hold (ADR-0065). A CHOSEN number, not a
+# measured one: the lockout behaviour ADR-0061 asked about has never been
+# measured, and ADR-0064 decision 7 still owns that. The reduction is the
+# ceiling over the interval, so 30 min at the default cadence settles a
+# condemned device at about 144 credentialed operations a day instead of
+# 4,320. 0 disables the hold.
+_DEFAULT_AUTH_HOLD_MAX_SECONDS = 1800.0
+# How long a failed schema/migration is remembered before it is retried. Short
+# enough to self-heal the moment a lock clears, long enough that a sustained
+# one does not re-run the schema on every store call.
+_SCHEMA_RETRY_SECONDS = 5.0
 
 # Reachability vs. authentication: ``systemready`` answers 200 even with
 # *invalid* credentials on some Axis firmware, so a 200 there proves the
@@ -159,6 +170,23 @@ def _resolve_timeout_seconds() -> float:
     return max(1.0, min(60.0, v))
 
 
+def _resolve_auth_hold_max_seconds() -> float:
+    """Ceiling on the #469 hold. 0 disables it; 24 h is the upper clamp."""
+    raw = _fs().get("health_auth_hold_max_seconds")
+    if raw is None:
+        raw = os.getenv("ADMZ_HEALTH_AUTH_HOLD_MAX_SECONDS")
+    if raw is None or raw == "":
+        return _DEFAULT_AUTH_HOLD_MAX_SECONDS
+    try:
+        v = float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid auth-hold ceiling %r; using %s", raw, _DEFAULT_AUTH_HOLD_MAX_SECONDS
+        )
+        return _DEFAULT_AUTH_HOLD_MAX_SECONDS
+    return max(0.0, min(24 * 3600.0, v))
+
+
 def _is_enabled() -> bool:
     return _fs().get("health_monitor_enabled") == "true"
 
@@ -237,6 +265,85 @@ _STABLE_STATUSES = frozenset(
 )
 
 
+#: Statuses that ANSWER the credential question, so the #469 hold is
+#: forgotten: two prove an authentication succeeded, and two say the
+#: question no longer applies. Deliberately excludes ``unreachable`` and
+#: ``reachable_no_api`` — they answer nothing, and letting a flapping device
+#: reset the escalation is how the burn comes back.
+_AUTH_HOLD_CLEARING_STATUSES = frozenset(
+    {
+        DeviceHealthStatus.ONLINE,
+        DeviceHealthStatus.LIMITED_API,
+        DeviceHealthStatus.NEEDS_SETUP,
+        DeviceHealthStatus.NO_CREDENTIALS,
+    }
+)
+
+
+class AuthHold(NamedTuple):
+    """Why this sweep sends nothing credentialed to one device (#469).
+
+    ``reason`` is the condemnation to carry forward — the text that routes an
+    operator to capture — and ``retry_after`` the absolute deadline, so the
+    hold survives a restart and can be shown on the device page.
+    """
+
+    active: bool
+    reason: str = ""
+    retry_after: float = 0.0
+
+
+def _next_auth_retry_after(streak: int, now: float) -> float:
+    """``min(interval * 2**(streak-1), MAX)`` — ADR-0063's lease shape.
+
+    Returns an absolute unix timestamp, or 0.0 when the hold is disabled.
+    """
+    ceiling = _resolve_auth_hold_max_seconds()
+    if ceiling <= 0:
+        return 0.0
+    exponent = max(int(streak) - 1, 0)
+    wait = min(_resolve_interval_seconds() * float(2 ** min(exponent, 32)), ceiling)
+    return now + wait
+
+
+def _auth_hold_for(
+    prev: "Optional[DeviceHealthRecord]", now: float
+) -> "AuthHold":
+    """Is this device inside its #469 hold right now?"""
+    if prev is None or not prev.auth_retry_after:
+        return AuthHold(False)
+    ceiling = _resolve_auth_hold_max_seconds()
+    if ceiling <= 0:
+        return AuthHold(False)
+    # A clock step backwards (NTP, a resumed VM) must not park the deadline
+    # in the far future: anything beyond one whole ceiling is treated as due.
+    if prev.auth_retry_after > now + ceiling:
+        return AuthHold(False)
+    if prev.auth_retry_after <= now:
+        return AuthHold(False)
+    # The note's base is the condemnation, which has a field of its own.
+    # Reading it from `last_error` is not safe: a flap to `unreachable`
+    # overwrites that, and so does the credential-lookup-failure path — which
+    # keeps `auth_failed`, so a status check does not exclude it. Suffixing
+    # the hold onto either would have the row assert a failure that did not
+    # happen on this sweep, and the corrupted text would then persist,
+    # because the suffix strip is idempotent.
+    return AuthHold(True, prev.auth_condemnation or "", prev.auth_retry_after)
+
+
+def _auth_hold_note(reason: str, wait_seconds: float) -> str:
+    """The condemnation, plus why this sweep asked nothing.
+
+    Suffixed, never replaced: ``reason`` is what tells the operator the
+    password is wrong and sends them to capture. Re-suffixing is idempotent
+    so the note cannot grow one sweep at a time.
+    """
+    base = (reason or "credentials rejected \u2014 the device refused the stored "
+            "credential").split(" \u2014 credential check held")[0]
+    minutes = max(1, int((max(wait_seconds, 0) + 59) // 60))
+    return (base + f" \u2014 credential check held ~{minutes} min (#469)")[:200]
+
+
 @dataclass
 class DeviceHealthRecord:
     """Current-state row for one device."""
@@ -258,6 +365,16 @@ class DeviceHealthRecord:
     # the previous value instead of blanking it.
     sd_status: Optional[str] = None
     sd_total_kb: Optional[int] = None
+    # #469 / ADR-0065: how many times in a row this device's stored
+    # credential has been refused, and the absolute time the sweep may send
+    # it again. A held sweep spends no authentication (FR-HLT-012).
+    auth_fail_streak: int = 0
+    auth_retry_after: Optional[float] = None
+    #: What the device actually said when it refused, kept apart from
+    #: ``last_error`` so no other writer can corrupt the text a held sweep
+    #: suffixes its note onto. Set by a credential verdict; cleared with the
+    #: hold.
+    auth_condemnation: str = ""
     # Transient: model/serial/firmware lifted from the basicdeviceinfo
     # credential-check response (when it ran). Not persisted to the health
     # store — the sweep flushes it to the device registry instead.
@@ -281,6 +398,9 @@ class DeviceHealthRecord:
             "bootid": self.bootid,
             "sd_status": self.sd_status,
             "sd_total_kb": self.sd_total_kb,
+            "auth_fail_streak": self.auth_fail_streak,
+            "auth_retry_after": self.auth_retry_after,
+            "auth_condemnation": self.auth_condemnation,
         }
 
 
@@ -301,7 +421,10 @@ CREATE TABLE IF NOT EXISTS device_health (
     uptime_seconds         INTEGER,
     bootid                 TEXT,
     sd_status              TEXT,
-    sd_total_kb            INTEGER
+    sd_total_kb            INTEGER,
+    auth_fail_streak       INTEGER NOT NULL DEFAULT 0,
+    auth_retry_after       REAL,
+    auth_condemnation      TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -310,6 +433,9 @@ CREATE TABLE IF NOT EXISTS device_health (
 _MIGRATION_COLUMNS = (
     ("sd_status", "TEXT"),
     ("sd_total_kb", "INTEGER"),
+    ("auth_fail_streak", "INTEGER NOT NULL DEFAULT 0"),
+    ("auth_retry_after", "REAL"),
+    ("auth_condemnation", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -348,22 +474,41 @@ class DeviceHealthStore:
                     from admz.paths import ensure_parent_dir
 
                     ensure_parent_dir(path)
-                    self._create_schema(path)
-                    self._ready.add(path)
+                    # Only mark the path ready when the schema really landed.
+                    # Marking it regardless is how a migration that failed
+                    # once stays "done" for the life of the process, and every
+                    # later statement fails on a column that never arrived.
+                    #
+                    # A failure is remembered briefly, though: re-running the
+                    # whole schema on every connection would make a locked
+                    # database block each store call for the sqlite timeout
+                    # instead of once, and the sweep makes three per device.
+                    failures = getattr(self, "_schema_failed_at", None)
+                    if failures is None:
+                        failures = self._schema_failed_at = {}
+                    if time.time() - failures.get(path, 0.0) >= _SCHEMA_RETRY_SECONDS:
+                        if self._create_schema(path):
+                            self._ready.add(path)
+                            failures.pop(path, None)
+                        else:
+                            failures[path] = time.time()
         conn = sqlite3.connect(path)
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
-    def _create_schema(self, path: str) -> None:
+    def _create_schema(self, path: str) -> bool:
         """Open our own connection -- via ``_connect`` this would recurse.
 
         ``_ready`` is keyed by path rather than a boolean, so a rebind runs
         the schema and its migrations against the new file instead of
         assuming the previous one's columns exist.
 
-        Migrates the _MIGRATION_COLUMNS list onto device_health, each ALTER
-        swallowing OperationalError when the column is already present.
-        Swallowed exactly as before.
+        Migrates the _MIGRATION_COLUMNS list onto device_health. Only the
+        "already there" answer is benign: a locked or unwritable database
+        must not be mistaken for a completed migration, so anything else
+        propagates to the caller below, which then leaves the path unmarked
+        and retries on the next connection. Returns True when the schema and
+        its migrations are in place.
         """
         try:
             conn = sqlite3.connect(path)
@@ -374,13 +519,16 @@ class DeviceHealthStore:
                         conn.execute(
                             f"ALTER TABLE device_health ADD COLUMN {col} {coltype}"
                         )
-                    except sqlite3.OperationalError:
-                        pass  # already there (fresh table or prior migration)
+                    except sqlite3.OperationalError as exc:
+                        if "duplicate column" not in str(exc).lower():
+                            raise
                 conn.commit()
             finally:
                 conn.close()
         except sqlite3.Error as exc:  # pragma: no cover - defensive
             logger.warning("DeviceHealthStore table creation failed: %s", exc)
+            return False
+        return True
 
     def _ensure_table(self) -> None:
         """Retained for callers that reach for it by name; ensuring now
@@ -394,8 +542,9 @@ class DeviceHealthStore:
                 "INSERT INTO device_health "
                 "(device_id, status, last_check, last_seen_online, latency_ms, "
                 " consecutive_failures, last_error, uptime_seconds, bootid, "
-                " sd_status, sd_total_kb) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                " sd_status, sd_total_kb, auth_fail_streak, auth_retry_after, "
+                " auth_condemnation) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(device_id) DO UPDATE SET "
                 "  status               = excluded.status, "
                 "  last_check           = excluded.last_check, "
@@ -406,7 +555,10 @@ class DeviceHealthStore:
                 "  uptime_seconds       = excluded.uptime_seconds, "
                 "  bootid               = excluded.bootid, "
                 "  sd_status            = excluded.sd_status, "
-                "  sd_total_kb          = excluded.sd_total_kb",
+                "  sd_total_kb          = excluded.sd_total_kb, "
+                "  auth_fail_streak     = excluded.auth_fail_streak, "
+                "  auth_retry_after     = excluded.auth_retry_after, "
+                "  auth_condemnation    = excluded.auth_condemnation",
                 (
                     record.device_id,
                     record.status.value,
@@ -419,6 +571,9 @@ class DeviceHealthStore:
                     record.bootid,
                     record.sd_status,
                     record.sd_total_kb,
+                    record.auth_fail_streak,
+                    record.auth_retry_after,
+                    record.auth_condemnation,
                 ),
             )
             conn.commit()
@@ -431,7 +586,8 @@ class DeviceHealthStore:
             row = conn.execute(
                 "SELECT device_id, status, last_check, last_seen_online, "
                 "       latency_ms, consecutive_failures, last_error, "
-                "       uptime_seconds, bootid, sd_status, sd_total_kb "
+                "       uptime_seconds, bootid, sd_status, sd_total_kb, "
+                "       auth_fail_streak, auth_retry_after, auth_condemnation "
                 "FROM device_health WHERE device_id=?",
                 (device_id,),
             ).fetchone()
@@ -451,6 +607,9 @@ class DeviceHealthStore:
             bootid=row[8],
             sd_status=row[9],
             sd_total_kb=row[10],
+            auth_fail_streak=row[11] or 0,
+            auth_retry_after=row[12],
+            auth_condemnation=row[13] or "",
         )
 
     def list_all(self) -> List[DeviceHealthRecord]:
@@ -459,7 +618,8 @@ class DeviceHealthStore:
             rows = conn.execute(
                 "SELECT device_id, status, last_check, last_seen_online, "
                 "       latency_ms, consecutive_failures, last_error, "
-                "       uptime_seconds, bootid, sd_status, sd_total_kb "
+                "       uptime_seconds, bootid, sd_status, sd_total_kb, "
+                "       auth_fail_streak, auth_retry_after, auth_condemnation "
                 "FROM device_health ORDER BY device_id"
             ).fetchall()
         finally:
@@ -477,9 +637,31 @@ class DeviceHealthStore:
                 bootid=r[8],
                 sd_status=r[9],
                 sd_total_kb=r[10],
+                auth_fail_streak=r[11] or 0,
+                auth_retry_after=r[12],
+                auth_condemnation=r[13] or "",
             )
             for r in rows
         ]
+
+    def clear_auth_hold(self, device_id: str) -> bool:
+        """Forget one device's #469 hold, so the next sweep asks again.
+
+        An UPDATE, never an upsert: #428 purges health rows inside the
+        device-delete transaction, and a device that has never been swept
+        has no row that should be conjured here. A miss is success.
+        """
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                "UPDATE device_health SET auth_fail_streak=0, auth_retry_after=NULL, "
+                "auth_condemnation='' WHERE device_id=?",
+                (device_id,),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
 
     def delete(self, device_id: str) -> bool:
         """Drop a device's health row (e.g. after device removal)."""
@@ -496,6 +678,40 @@ class DeviceHealthStore:
 
 # Module-level singleton.
 device_health_store = DeviceHealthStore()
+
+
+#: One store per database path. `clear_auth_hold` is called on every
+#: credential write, and a fresh store each time would carry neither the
+#: schema-ready set nor the failed-migration memo — so a locked database
+#: would cost a full sqlite timeout per write instead of one.
+_hold_stores: Dict[str, "DeviceHealthStore"] = {}
+
+
+def clear_auth_hold(device_id: str, db_path: Optional[str] = None) -> None:
+    """Forget the #469 hold for one device (ADR-0065).
+
+    Called by the registry backends when a stored `default` credential
+    changes: the sweep must ask again rather than make the operator wait out
+    the ceiling. Best-effort and never raises — a credential write must not
+    fail because the health store is unavailable. The MCP server is a
+    separate process, so this is a row write rather than a signal.
+
+    ``db_path`` follows the caller's own database. A registry built with an
+    explicit path (see ``admz/factory.py``) would otherwise clear a hold in a
+    different file, match nothing, and report success. That path is the
+    registry's construction-time one by design — this is "the database this
+    registry writes to", not "the database this process would pick now".
+    """
+    try:
+        if db_path is None:
+            store = device_health_store
+        else:
+            store = _hold_stores.get(db_path)
+            if store is None:
+                store = _hold_stores[db_path] = DeviceHealthStore(db_path)
+        store.clear_auth_hold(device_id)
+    except Exception:  # noqa: BLE001 - never break a credential write
+        logger.debug("could not clear the auth hold for %s", device_id, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1178,6 +1394,49 @@ def _teach_systemready(device_id: str, device_info: Dict[str, Any], result: Any)
         logger.debug("systemready outcome not recorded for %s", device_id, exc_info=True)
 
 
+async def _unauth_systemready(
+    catalog: Any,
+    executor: Any,
+    device_id: str,
+    device_info: Dict[str, Any],
+    timeout_seconds: float,
+) -> Optional[Dict[str, Any]]:
+    """Read ``systemready`` with NO credentials at all. Returns None if it
+    could not be asked or did not answer.
+
+    The three courtesies this request is owed: consult the ADR-0063 record so
+    a device known to refuse systemready is not asked every sweep (#458);
+    bound it by the sweep's budget rather than the executor's 15 s; and send
+    it with auth switched off — the op is auth-free by design, and a `basic`
+    profile would otherwise put an empty Basic header on the wire every 60 s,
+    which is a credentialed request from a sweep (NFR-HLT-002).
+    """
+    if catalog is None or executor is None:
+        return None
+    from admz.fleet.systemready import read_systemready
+
+    _row, _stale, skip_read = _systemready_record(device_id, device_info)
+    if skip_read:
+        return None
+    unauth_info = {
+        **device_info,
+        "device_id": device_id,
+        "auth": {**(device_info.get("auth") or {}),
+                 "http": "none", "https": "none"},
+        "auth_method": "none",
+    }
+    try:
+        return await asyncio.wait_for(
+            read_systemready(
+                catalog, executor, unauth_info,
+                {"username": "", "password": ""},
+            ),
+            timeout=timeout_seconds + 2,
+        )
+    except asyncio.TimeoutError:
+        return None
+
+
 async def probe_device(
     *,
     device_id: str,
@@ -1186,6 +1445,7 @@ async def probe_device(
     catalog: Any = None,
     executor: Any = None,
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+    auth_hold: Optional[AuthHold] = None,
 ) -> DeviceHealthRecord:
     """Check one device and return a fresh health record.
 
@@ -1258,6 +1518,67 @@ async def probe_device(
     # this registry stores (the executor's bearer method falls back to the
     # password field; nothing writes a token). ADR-0064.
     has_usable_credential = bool(credentials and credentials.get("password"))
+
+    # ---- Tier 0: the #469 hold (ADR-0065 / FR-HLT-012) ----
+    #
+    # This device's stored credential was refused and the hold has not
+    # expired. Send nothing that costs an authentication; send the two things
+    # that cost none, so reachability stays fresh and a factory reset stays
+    # visible while the hold is in force.
+    #
+    # The previous verdict is carried forward rather than re-derived. Deriving
+    # one here would read `online` off the TCP probe below (a device in this
+    # branch has a credential by definition) and fire `on_online` at a device
+    # ADMZ cannot authenticate to — the failure FR-HLT-011 exists to prevent.
+    #
+    # Above the Tier-1 gate on purpose: inside it, a monitor built without a
+    # catalog or executor would skip the hold and fall through to exactly
+    # that mistake.
+    if auth_hold is not None and auth_hold.active and has_usable_credential:
+        port = _probe_port(device_info)
+        elapsed_ms = await _tcp_probe(host, port, timeout_seconds)
+        if elapsed_ms is None:
+            return DeviceHealthRecord(
+                device_id=device_id,
+                status=DeviceHealthStatus.UNREACHABLE,
+                last_check=now,
+                last_error=(
+                    f"TCP connect to {host}:{port} failed within {timeout_seconds}s"
+                ),
+                consecutive_failures=1,
+            )
+        ready = await _unauth_systemready(
+            catalog, executor, device_id, device_info, timeout_seconds
+        )
+        if ready and ready.get("needsetup"):
+            return DeviceHealthRecord(
+                device_id=device_id,
+                status=DeviceHealthStatus.NEEDS_SETUP,
+                last_check=now,
+                last_seen_online=now,
+                latency_ms=elapsed_ms,
+                consecutive_failures=0,
+                last_error="factory-defaulted (needsetup=yes) — not provisioned",
+                uptime_seconds=ready.get("uptime"),
+                bootid=ready.get("bootid"),
+            )
+        return DeviceHealthRecord(
+            device_id=device_id,
+            status=DeviceHealthStatus.AUTH_FAILED,
+            last_check=now,
+            last_seen_online=now,
+            # A TCP round-trip, not an HTTP one — this sweep sent no
+            # authenticated request to time.
+            latency_ms=elapsed_ms,
+            # The sweep carries the previous count: this sweep asked the
+            # device nothing about its credential.
+            consecutive_failures=0,
+            last_error=_auth_hold_note(auth_hold.reason, auth_hold.retry_after - now),
+            # The free read answered; keep what it said rather than blanking
+            # facts already in hand.
+            uptime_seconds=(ready or {}).get("uptime"),
+            bootid=(ready or {}).get("bootid"),
+        )
 
     # ---- Tier 1: authenticated VAPIX systemReady ----
     if has_usable_credential and catalog is not None and executor is not None:
@@ -1677,35 +1998,9 @@ async def probe_device(
         # the same way and let needsetup=yes win — its CTA and deferred
         # recovery trigger already exist.
         if catalog is not None and executor is not None:
-            from admz.fleet.systemready import read_systemready
-
-            # The same three courtesies Tier 1 pays this request: consult the
-            # ADR-0063 record so a device known to refuse systemready is not
-            # asked every sweep (#458); bound it by the sweep's budget, not
-            # the executor's 15 s; and send it with NO auth at all — the op
-            # is auth-free, and a `basic` profile would otherwise put an
-            # empty Basic header on the wire every 60 s, which is a
-            # credentialed request from a sweep, the thing rule 2 forbids.
-            _row, _stale, skip_read = _systemready_record(device_id, device_info)
-            ready = None
-            if not skip_read:
-                unauth_info = {
-                    **device_info,
-                    "device_id": device_id,
-                    "auth": {**(device_info.get("auth") or {}),
-                             "http": "none", "https": "none"},
-                    "auth_method": "none",
-                }
-                try:
-                    ready = await asyncio.wait_for(
-                        read_systemready(
-                            catalog, executor, unauth_info,
-                            {"username": "", "password": ""},
-                        ),
-                        timeout=timeout_seconds + 2,
-                    )
-                except asyncio.TimeoutError:
-                    ready = None
+            ready = await _unauth_systemready(
+                catalog, executor, device_id, device_info, timeout_seconds
+            )
             if ready and ready.get("needsetup"):
                 return DeviceHealthRecord(
                     device_id=device_id,
@@ -1836,12 +2131,34 @@ class HealthMonitor:
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("Health monitor loop crashed: %s", exc)
 
-    async def sweep_once(self) -> int:
+    async def sweep_once(self, force: bool = False) -> int:
         """Probe every device once. Returns the number of devices checked.
 
         Public so operators (or tests) can trigger a sweep
         on-demand without waiting for the next interval.
+
+        ``force`` ignores the #469 hold (ADR-0065): an operator who asks for
+        a check must get one, which is also the recovery path if a device is
+        ever wedged. The interval loop never forces.
+
+        Sweeps serialise. Each ``_check`` ends by writing a device's whole
+        row, so a forced sweep running beside the interval loop's would have
+        its result overwritten by whichever finished last — the operator
+        clicks "sweep now", the device authenticates, and the row reverts to
+        `auth_failed` seconds later. A forced sweep therefore *queues* behind
+        one already in flight rather than pre-empting it: the operator's
+        check is the last word, at the cost of waiting for the sweep it
+        interrupted. The lock is created on first use rather than in
+        ``__init__`` because the monitor is constructed outside a running
+        loop.
         """
+        lock = getattr(self, "_sweep_lock", None)
+        if lock is None:
+            lock = self._sweep_lock = asyncio.Lock()
+        async with lock:
+            return await self._sweep_once(force)
+
+    async def _sweep_once(self, force: bool = False) -> int:
         # The sweep is also when one-shot detection tasks get evaluated —
         # expire stale ones up front so they can't fire late.
         try:
@@ -1901,6 +2218,10 @@ class HealthMonitor:
                     # an exception escaping _check ends the monitor loop.
                     try:
                         prev = self.store.get(device_id)
+                        # `last_error` is replaced here, which is why the #469
+                        # hold reads its text from `auth_condemnation` and not
+                        # from this field: this path keeps `auth_failed`, so a
+                        # status check would not exclude it.
                         kept = (
                             _dc_replace(prev, last_check=time.time(), last_error=note)
                             if prev is not None
@@ -1920,6 +2241,22 @@ class HealthMonitor:
                         )
                     return
 
+                # Read the previous row BEFORE probing: the #469 hold is
+                # decided from it, and `last_seen_online` / the SD fields are
+                # carried from it below. Wrapped for the same reason the
+                # lookup-failure path above is — the registry and the health
+                # store share one SQLite file, and an exception escaping
+                # _check ends the monitor loop.
+                prev: Optional[DeviceHealthRecord] = None
+                try:
+                    prev = self.store.get(device_id)
+                except Exception:  # noqa: BLE001 - the store is failing
+                    logger.warning(
+                        "health: could not read the previous record for %s; "
+                        "probing as if new", device_id, exc_info=True,
+                    )
+                hold = AuthHold(False) if force else _auth_hold_for(prev, time.time())
+
                 executor = self.executors.get("vapix") if self.executors else None
                 try:
                     record = await probe_device(
@@ -1929,6 +2266,7 @@ class HealthMonitor:
                         catalog=self.catalog,
                         executor=executor,
                         timeout_seconds=timeout,
+                        auth_hold=hold,
                     )
                 except Exception as exc:
                     record = DeviceHealthRecord(
@@ -1941,9 +2279,18 @@ class HealthMonitor:
 
                 # Preserve last_seen_online and bump failure counter
                 # if this probe failed.
-                prev = self.store.get(device_id)
+                held = (
+                    hold.active
+                    and record.status is DeviceHealthStatus.AUTH_FAILED
+                )
                 if prev is not None:
-                    if record.status not in _STABLE_STATUSES:
+                    if held:
+                        # A held sweep asked the device nothing about its
+                        # credential, so it did not observe a failure. Counting
+                        # it would rebuild GH #138's five-figure counters out
+                        # of sweeps that made no request.
+                        record.consecutive_failures = prev.consecutive_failures
+                    elif record.status not in _STABLE_STATUSES:
                         record.consecutive_failures = prev.consecutive_failures + 1
                     # ``last_seen_online`` is the REACHABILITY clock: every
                     # probe that proved the host answered stamps it (online,
@@ -1957,6 +2304,71 @@ class HealthMonitor:
                         # last known value rather than flapping to unknown.
                         record.sd_status = prev.sd_status
                         record.sd_total_kb = prev.sd_total_kb
+
+                # #469 / ADR-0065: the hold's own bookkeeping.
+                #
+                # First, the race the whole-row upsert below would otherwise
+                # lose: a credential write clears the hold by UPDATEing this
+                # row, and it can land while the probe is in flight. Writing
+                # the in-flight record back would resurrect a deadline the
+                # operator just cancelled and leave them waiting it out. Only
+                # re-read for a device that actually had a deadline, so the
+                # ordinary fleet pays nothing.
+                cleared_mid_probe = False
+                if prev is not None and prev.auth_retry_after:
+                    try:
+                        latest = self.store.get(device_id)
+                        cleared_mid_probe = (
+                            latest is None or not latest.auth_retry_after
+                        )
+                    except Exception:  # noqa: BLE001 - the store is failing
+                        cleared_mid_probe = False
+
+                prev_streak = 0 if cleared_mid_probe else (
+                    prev.auth_fail_streak if prev is not None else 0
+                )
+                if cleared_mid_probe:
+                    # The credential changed under us. Whatever this probe
+                    # concluded was about the old one; let the next sweep ask.
+                    record.auth_fail_streak = 0
+                    record.auth_retry_after = None
+                    record.auth_condemnation = ""
+                elif record.status is DeviceHealthStatus.AUTH_FAILED:
+                    if held:
+                        record.auth_fail_streak = prev_streak
+                        record.auth_retry_after = hold.retry_after
+                        record.auth_condemnation = (
+                            prev.auth_condemnation if prev is not None else ""
+                        )
+                    else:
+                        record.auth_fail_streak = prev_streak + 1
+                        record.auth_retry_after = _next_auth_retry_after(
+                            record.auth_fail_streak, time.time()
+                        )
+                        # This sweep reached a credential verdict, so its own
+                        # text IS the condemnation.
+                        record.auth_condemnation = record.last_error
+                elif record.status in _AUTH_HOLD_CLEARING_STATUSES:
+                    # The credential question was answered, or no longer
+                    # applies. Forget the escalation.
+                    record.auth_fail_streak = 0
+                    record.auth_retry_after = None
+                    record.auth_condemnation = ""
+                elif prev is not None:
+                    # unreachable / reachable_no_api / unknown: nothing was
+                    # learned about the credential, so the hold stands rather
+                    # than restarting at the base interval on every flap. An
+                    # already-expired deadline is dropped instead of carried:
+                    # it holds nothing back and would otherwise sit on the
+                    # read surfaces claiming a credential check is due in the
+                    # past (FR-HLT-012 promises the opposite).
+                    record.auth_fail_streak = prev_streak
+                    record.auth_retry_after = (
+                        prev.auth_retry_after
+                        if (prev.auth_retry_after or 0) > time.time()
+                        else None
+                    )
+                    record.auth_condemnation = prev.auth_condemnation
 
                 self.store.upsert(record)
 

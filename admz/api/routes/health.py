@@ -106,8 +106,12 @@ async def trigger_health_sweep(ctx: AppContext = Depends(get_context)):
     Useful right after enabling the monitor (so operators don't
     wait 60s for the first results) or after adding/changing
     devices.
+
+    Forces past the #469 credential hold (ADR-0065): an operator asking for
+    a check must get one, and this is the recovery path if a device is ever
+    wedged behind the escalation.
     """
-    n = await ctx.health_monitor.sweep_once()
+    n = await ctx.health_monitor.sweep_once(force=True)
     return {"checked": n}
 
 

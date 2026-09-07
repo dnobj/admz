@@ -751,6 +751,31 @@ class SQLiteDeviceRegistry(DeviceRegistry):
             conn.commit()
         return purged
 
+    def _forget_auth_hold(self, device_id: str, account_id: str) -> None:
+        """#469 / ADR-0065: the sweep authenticates with the `default`
+        account. Its stored credential just changed, so forget any hold and
+        let the next sweep ask the device again rather than making the
+        operator wait out the ceiling.
+
+        Best-effort: a credential write must never fail because the health
+        store is unavailable. Scoped to `default` — stashing a `recovery`
+        password answers nothing about the credential the sweep uses.
+        """
+        if account_id != "default":
+            return
+        try:
+            from admz.fleet.health import clear_auth_hold
+
+            # This registry's own file, not the process default: a registry
+            # built with an explicit `db_path` (a supported construction —
+            # see admz/factory.py) would otherwise clear a hold in a
+            # different database, match nothing, and report success. The
+            # store behind the path is reused, so a locked database costs one
+            # sqlite timeout rather than one per credential write.
+            clear_auth_hold(device_id, db_path=str(self._db_path))
+        except Exception:  # noqa: BLE001 - never break a credential write
+            pass
+
     def add_account(
         self, device_id: str, account_id: str, account_data: Dict[str, Any]
     ) -> None:
@@ -767,6 +792,7 @@ class SQLiteDeviceRegistry(DeviceRegistry):
                 (device_id, account_id, self._store_account_data(account_data)),
             )
             conn.commit()
+        self._forget_auth_hold(device_id, account_id)
 
     def update_device_info(
         self, device_id: str, updates: Dict[str, Any]
@@ -800,6 +826,7 @@ class SQLiteDeviceRegistry(DeviceRegistry):
                 (device_id, account_id),
             )
             conn.commit()
+        self._forget_auth_hold(device_id, account_id)
 
     def update_account(
         self,
@@ -842,6 +869,7 @@ class SQLiteDeviceRegistry(DeviceRegistry):
                 (self._store_account_data(current), device_id, account_id),
             )
             conn.commit()
+        self._forget_auth_hold(device_id, account_id)
 
     # ---------------------------------------------------------------
     # Slice 1: Org / Site / Group CRUD

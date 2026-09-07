@@ -79,14 +79,16 @@ the chat card — or a deliberate `onboard_device` re-run. The seven-hour trace
 that forced this: an A1210 registered without credentials read `online` on
 every surface until a baseline capture happened to need a password.
 
-### FR-HLT-012 — A refused credential is retried on an escalating hold 📋
+### FR-HLT-012 — A refused credential is retried on an escalating hold ✅
 [ADR-0065](../decisions/0065-a-refused-credential-is-not-retried-on-a-fixed-cadence.md), #469.
 Once a credential has been condemned (`auth_failed`, corroborated per
 FR-HLT-008/010), the sweep stops sending it on every cadence. The wait starts at
 one interval — so the first retry lands on the normal cadence — and doubles per
 refusal, capped at a fleet-settable ceiling (default 30 minutes). The reduction
-is exactly the ceiling divided by the interval: **30× fewer** credentialed
-operations at the default cadence, about 144 a day instead of 4,320. The
+is the ceiling divided by the interval: **30× fewer** credentialed operations at
+the default cadence, about 144 a day instead of 4,320. The interval has no upper
+clamp, so an installation that sets it above the ceiling gets no hold at all —
+the mechanism goes inert rather than wrong. The
 ceiling is a **chosen** number, not a measured one, and is the first thing to
 revisit when [ADR-0064](../decisions/0064-a-device-admz-cannot-authenticate-to-is-never-online.md)
 decision 7's lockout measurement exists.
@@ -110,7 +112,16 @@ FR-HLT-007 does not climb (GH #138). It does advance `last_check` and the
 reachability clock, because the host answered; it reports the TCP round-trip as
 latency; and it suffixes the hold onto the condemnation text rather than
 replacing it, idempotently, because that text is what routes an operator to
-capture.
+capture. The condemnation is kept in a field of its own rather than read back
+out of `last_error`, which any intervening sweep overwrites — including the
+credential-lookup-failure path of FR-HLT-011, which keeps the `auth_failed`
+status while replacing the text.
+
+The hold covers a **condemned** credential only. An uncorroborated 401 files
+`reachable_no_api` (FR-HLT-009/010) after spending two credentialed operations,
+and that state neither holds nor escalates: ADMZ does not know the credential is
+bad, so it keeps asking on the cadence. That is a deliberate limit of this
+requirement, not an oversight.
 
 The hold is cleared by a stored-credential write for the `default` account — the
 one the sweep authenticates with — so an operator who enters a password is not
@@ -349,10 +360,10 @@ other.
 Concurrency is capped by the shared fleet semaphore so health sweeps don't
 fight snapshot sweeps or hammer the network. The interval floors at 5 s
 (anything faster is rejected) and the per-device timeout clamps to [1, 60] s.
-📋 **(FR-HLT-012, ADR-0065)** "Non-hostile" *will also* bound what a sweep
-spends on a device that has already refused it: a condemned credential retried
-on an escalating hold rather than on the cadence. As this requirement stands
-today it bounds the polling rate and not the authentication rate.
+"Non-hostile" also bounds what a sweep spends on a device that has already
+refused it: a condemned credential is retried on the escalating hold of
+FR-HLT-012 rather than on the cadence. Until that shipped this requirement
+bounded the polling rate and not the authentication rate.
 
 ### NFR-HLT-002 — Probe is read-only ✅
 Both probe tiers only read (`systemReady` or a TCP connect that writes
