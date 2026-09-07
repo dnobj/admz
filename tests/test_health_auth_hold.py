@@ -649,6 +649,7 @@ class TestTheHoldTellsTheTruth:
         store.upsert(DeviceHealthRecord(
             device_id="cam-01", status=DeviceHealthStatus.AUTH_FAILED,
             last_check=time.time(), last_error="credentials rejected — " + ("x" * 400),
+            auth_condemnation="credentials rejected — " + ("x" * 400),
             auth_fail_streak=1, auth_retry_after=time.time() + 600,
         ))
         catalog, executor, _calls = _executor({SYSTEMREADY_OP: REFUSED})
