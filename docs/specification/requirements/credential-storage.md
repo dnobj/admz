@@ -167,10 +167,11 @@ stored and what is tried, so the page can never show six credentials while ADMZ
 tries three. The legacy `default_username`/`default_password` pair occupies a
 slot, because it is one of the credentials that gets tried.
 
-Three is a conservative guess, not a measurement. ADR-0061 requires the lockout
-risk be measured against a spare device before the trying half ships; the number
-should be revisited **with** that measurement rather than defended as if it were
-one.
+Three began as a conservative guess. The measurement ADR-0061 asked for is now
+done (**Lockout measurement**, below): on the device tested there is no
+failed-login lockout at all, only a rate throttle ADMZ runs some 400× under. So
+three stands — conservative against a measured floor, no longer a guess defended
+as if it were one.
 
 **The per-pass attempt bound (ADR-0064 slice C) ✅.** The entry loop makes at
 most **3 entries × 2 ops = 6 credentialed operations** — a wrong entry costs
@@ -192,7 +193,6 @@ design but, unlike the health sweep's, its auth is not forced off — #479.)
 
 The
 pass stops on the first success and breaks on an unreachable (`None`) answer. The
-pass stops on the first success and breaks on an unreachable (`None`) answer. The
 bound (`MAX_ATTEMPTS_PER_PASS`, equal to the storage cap) is enforced **where
 the attempt list is built** — `entry_credentials.attempt_order()`, which the
 onboarding loop iterates and which `describe()` reports as *in use* — not only
@@ -205,10 +205,57 @@ needed no measurement and shipped first.
 
 **Most-recently-successful ordering (ADR-0064 slice F) 📋.** `attempt_order`
 tries the most-recently-successful credential first; with no history the
-legacy pair is first, which is today's behaviour and the control. This half
-does not merge until the lockout behaviour has been measured on a spare Axis
-unit (ADR-0064, decision 7); the result — or the fact that it has not been run
-— is recorded here in words.
+legacy pair is first, which is today's behaviour and the control. This half was
+gated on the lockout behaviour being measured (ADR-0064, decision 7); that
+measurement is now done and recorded below, so the gate is lifted — slice F is
+free to plan and build, and its 📋 marks only that it has not yet shipped.
+
+**Lockout measurement (ADR-0064 decision 7) — 2026-09-09.** Run directly over
+Digest against a live fleet device — an AXIS P3408-VE on AXIS OS 12.10.68 — not
+through ADMZ, with owner authorisation to fail logins deliberately and to read
+settings and logs; the account was left clean afterwards (final
+correct-credential probes `200`, nothing on the device changed). It answers both
+halves of decision 7:
+
+- **The right credential is never refused or delayed.** Across ~65 deliberate
+  wrong-password attempts — 5 then 20 in sequence, then 40 at once — every wrong
+  attempt drew a clean `401` at ~210 ms and the correct password answered `200`
+  immediately (~0.3 s) each time. There is **no cumulative failed-login lockout**
+  on this device: nothing accumulates, nothing stays locked.
+- **The anonymous Digest challenge does not count as a failure.** An
+  unauthenticated request draws a `401` *challenge*, not a *failure* — 80 of them
+  at ~41/s registered nothing. Only a completed wrong-credential attempt counts,
+  so the one unauthenticated challenge round-trip each Digest op costs carries no
+  lockout weight; only the authed leg with a bad password does.
+- **The only login-abuse protection is a rate throttle — a forced delay, not a
+  lockout.** Axis labels it "Prevent brute-force attacks"; it is the
+  `root.System.PreventDoSAttack` group, one-to-one with the web-UI panel:
+  `ActivatePasswordThrottling=On`, block for `DoSBlockingPeriod=10` s once auth
+  failures exceed `DoSPageCount`/`DoSSiteCount=20` per
+  `DoSPageInterval`/`DoSSiteInterval=1` s. The block is a fixed 10 s and
+  self-clears. No cumulative-lockout parameter exists anywhere in the device's
+  1,440-line parameter tree, and no brute-force / login-delay / fail2ban entry
+  exists in its 64-endpoint API-discovery list.
+- **A single well-behaved client cannot reach the threshold.** 40 concurrent
+  wrong-password Digest auths completed at ~6/s — the device paces its own CGI
+  throughput — well under the 20/s trip line, so the throttle never engaged. It
+  is built for a connection-reusing flood, not a normal client.
+
+**What it means for the numbers here.** ADMZ's worst case is a device stuck in
+`auth_failed`, re-probed every 60 s at 2–3 failed auths — about **0.05
+failures/s, ~400× below this device's 20/s trip line**. ADMZ cannot trip even
+the rate throttle; if it somehow did, the cost is a self-clearing 10 s delay,
+never a lockout. The cap of three and ADR-0065's 30-minute hold ceiling
+([FR-HLT-012](fleet-health.md)) are confirmed conservative on this device —
+belt-and-suspenders, not load-bearing.
+
+**Caveat — one device.** This is a single older platform. AXIS OS also ships a
+separate, escalating **"Brute force delay protection"** (fail2ban/PAM-backed,
+web UI → System → Security) that *does* act on cumulative failures; it is off by
+default and absent from this model's API set, but a newer device on which an
+operator has enabled it is the one residual case — and it is exactly what
+ADR-0065's escalating hold absorbs under any answer. A second measurement on a
+newer model carrying that feature would close the caveat.
 
 An installation may also **store none and prompt every time**
 (`entry_credentials_prompt_always`). That is a posture, not an empty list:

@@ -89,9 +89,13 @@ is the ceiling divided by the interval: **30× fewer** credentialed operations a
 the default cadence, about 144 a day instead of 4,320. The interval has no upper
 clamp, so an installation that sets it above the ceiling gets no hold at all —
 the mechanism goes inert rather than wrong. The
-ceiling is a **chosen** number, not a measured one, and is the first thing to
-revisit when [ADR-0064](../decisions/0064-a-device-admz-cannot-authenticate-to-is-never-online.md)
-decision 7's lockout measurement exists.
+ceiling is a **chosen** number, not a measured one.
+[ADR-0064](../decisions/0064-a-device-admz-cannot-authenticate-to-is-never-online.md)
+decision 7's lockout measurement now exists
+([FR-CRED-013](credential-storage.md), 2026-09-09): the device tested has no
+failed-login lockout, only a rate throttle ADMZ runs ~400× under, so the
+30-minute ceiling is confirmed conservative and stays — revisit only if a newer
+model with cumulative "Brute force delay protection" enabled is measured.
 
 A held sweep re-derives a status **only from credential-free evidence**: a
 failed TCP connect is `unreachable`; an unauthenticated `systemready` reporting
