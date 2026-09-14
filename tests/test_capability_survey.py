@@ -257,18 +257,35 @@ class TestOnboardingEnqueue:
         return recorded
 
     def test_success_statuses_enqueue(self, calls):
-        from admz.onboarding import (
-            ENTRY_CREDENTIALS_SAVED,
-            OWN_ACCOUNT_CREATED,
-            PROVISIONED,
-            _with_survey,
-        )
+        """ADR-0068 removed the third success status.
 
-        for status in (PROVISIONED, OWN_ACCOUNT_CREATED, ENTRY_CREDENTIALS_SAVED):
+        ``ENTRY_CREDENTIALS_SAVED`` used to mean "the admz write failed so ADMZ
+        stored the entry credential instead", and a survey was queued because
+        the device was, after all, manageable. Nothing produces that status now:
+        the account write failing means nothing is stored, so there is no
+        credential to survey with. The two remaining statuses are the only ones
+        that leave ADMZ able to talk to the device.
+        """
+        from admz.onboarding import OWN_ACCOUNT_CREATED, PROVISIONED, _with_survey
+
+        for status in (PROVISIONED, OWN_ACCOUNT_CREATED):
             _with_survey({"status": status, "device_id": f"d-{status}"})
         assert [c[0] for c in calls] == [
-            "d-provisioned", "d-admz_account_created", "d-fleet_credentials_saved",
+            "d-provisioned", "d-admz_account_created",
         ]
+
+    def test_the_retired_and_new_failure_statuses_never_enqueue(self, calls):
+        """The control for the change above, in both directions: the status that
+        used to queue a survey no longer does, and neither do ADR-0068's two new
+        failure outcomes — both of which leave the device with no usable stored
+        credential."""
+        from admz import onboarding
+
+        for status in (onboarding.ENTRY_CREDENTIALS_SAVED,
+                       onboarding.OWN_ACCOUNT_FAILED,
+                       onboarding.NO_ROOT_PASSWORD_CONFIGURED):
+            _ = onboarding._with_survey({"status": status, "device_id": "d1"})
+        assert calls == []
 
     def test_gated_and_failed_exits_never_enqueue(self, calls):
         from admz.onboarding import (

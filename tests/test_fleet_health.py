@@ -1246,11 +1246,44 @@ class TestDeferredActionAuditRecordsPasswordSource:
                     & set(_AUDITABLE_OUTCOME_KEYS))
 
     def test_the_source_values_are_modes_not_secrets(self):
-        """`password_source` is one of three mode names. Pinned so a future
-        change that puts the password itself in this field fails here."""
+        """`password_source` is a mode name. Pinned so a future change that puts
+        the password itself in this field fails here.
+
+        ADR-0068 changed the vocabulary, not the property. ``"fleet_default"``
+        is gone — the fleet ``default_password`` is an entry credential and is
+        never written to a device — and ``"fleet_root"`` replaces it as the
+        break-glass source for the ROOT account. ``password_source`` still names
+        the source of the stored ``admz`` password and is always
+        ``"generated"``; ``root_password_source`` names the root one.
+        """
         import inspect
 
         from admz import provisioning
         src = inspect.getsource(provisioning)
-        for mode in ('"provided"', '"fleet_default"', '"generated"'):
+        for mode in ('"provided"', '"fleet_root"', '"generated"'):
             assert mode in src
+        assert '"fleet_default"' not in src, (
+            "the fleet default_password is an entry credential; no provisioning "
+            "mode may name it as something written to a device (FR-CRED-007)")
+
+    def test_the_deferred_handler_no_longer_emits_a_source_at_all(self):
+        """ADR-0068's mitigation, pinned where #326's guard lives.
+
+        This class exists because a fired reprovision created a credential and
+        the audit row could not say which mode produced it. Under ADR-0068 the
+        unattended handler does not provision at all — it refuses, because the
+        value it would now write is the FLEET-WIDE break-glass root password and
+        the peer is unverified (#185/#326). So the forensic question this class
+        asks is answered a stronger way: there is no unattended provision to
+        attribute. The allow-list above stays as the guard for any handler that
+        starts returning an outcome again.
+        """
+        import inspect
+
+        from admz.tasks import handlers
+
+        src = inspect.getsource(handlers._run_reprovision)
+        assert "attended=False" in src, (
+            "the unattended reprovision handler must declare itself unattended; "
+            "without it provision_factory_default writes the shared break-glass "
+            "root password to whatever answered")
