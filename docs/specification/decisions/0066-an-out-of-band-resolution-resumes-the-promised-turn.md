@@ -1,6 +1,6 @@
 # ADR-0066 — A resolved out-of-band step resumes the turn it was waiting on: the browser fires one gated continuation, as the operator, once
 
-**Status:** Accepted — 2026-09-14
+**Status:** Accepted — 2026-09-14 · **Shipped:** 2026-09-14 (#482 plan, #483 code) — #444 closed
 **Closes when shipped:** #444
 **Relates to:** [ADR-0009](0009-oob-credential-capture.md) (the out-of-band capture this resumes after) · [ADR-0034](0034-uniform-widget-gating.md) (the one gate every follow-on write still hits) · [ADR-0038](0038-chat-conversation-history.md) (the conversation the note lands in) · [ADR-0062](0062-approve-an-envelope-not-a-step-list.md) / #440 (what an approval authorises when work continues) · [ADR-0064](0064-a-device-admz-cannot-authenticate-to-is-never-online.md) / #443 (an unwatched state, one layer up) · #438 (the chat never plans — why this job was a sequence of one-off gates in the first place) · FR-CB-004/005/006, and the new FR-CB-016
 
