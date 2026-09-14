@@ -33,6 +33,15 @@ Implementation: `admz/api/capture.py::CaptureStore` (SQLite, WAL,
 per-call connections), `admz/api/routes/capture.py` (browser form +
 JSON polling endpoints).
 
+> **[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) adds a second kind of capture session (📋, not yet shipped).** *"The form
+> submits directly to the registry"* describes the only shape that exists today.
+> A **root-adopt** session inverts it: the typed password is used once to
+> authenticate, ADMZ creates its own `admz` account, and *that* is what reaches
+> the registry — the typed password reaches it never. The two are separate
+> handlers selected by a session `kind` (default `account`, unknown values
+> refused), so this requirement keeps holding verbatim for every session that
+> exists today. FR-CRED-014 carries the new one.
+
 ### FR-CRED-004 — Batch capture for fleet provisioning ✅
 A single capture session can carry multiple `device_ids` so an
 operator entering credentials once stores them across N devices.
@@ -88,6 +97,37 @@ Password source: explicit arg > 24-char generated, per device. The fleet
 > whose pair is `operator/…` never had one. #296 part 2 (shared versus
 > per-device as a first-class setting) is where a deliberate shared mode
 > would live.
+
+> **[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) changes what is written and deletes the trade above (📋, not yet
+> shipped).** Measured on production 2026-09-14: **all 11 stored accounts are
+> `root`/`default`; there are zero `admz` accounts** — so the factory-default
+> path has been the fleet's only provisioner and it stops at `root`. Under
+> ADR-0068 it writes **two** accounts: `root` from a new store-encrypted
+> `fleet_root_password` fleet setting — operator-known **break-glass** — and then
+> `admz` with a generated password, of which **only `admz` is stored**. A root
+> credential is never stored per device.
+>
+> Two consequences for the text above. The sentence *"the fleet
+> `default_password` is **never written to a device**"* stays true permanently:
+> the root password is a **different** setting, and `default_password` remains an
+> entry credential only. But the trade in the preceding block — *"after a loss of
+> ADMZ's database the entry credentials do not get back into it — it is
+> factory-reset and provisioned again"* — **is deleted**, because a human knows
+> the break-glass password and can log into any provisioned device without ADMZ.
+> That gain is the reason ADR-0068 knowingly reverses slice E for `root` and
+> reinstates #185/#326's exposure of a shared secret to a `needsetup=yes` peer
+> whose identity is unverified; the ADR states the exposure plainly rather than
+> claiming per-device non-storage mitigates it (it does not — the wire exposure
+> is unchanged; what changes is that the disclosed value unlocks no device's
+> `admz` account). The unattended `reprovision` handler must **not** write it.
+>
+> ADR-0064 decision 9 — whether an Axis unit accepts a non-`root` first account —
+> becomes **moot** rather than deferred: root is written first either way, because
+> the owner's requirement is that ADMZ's generated password is never the device's
+> only credential. `allow_fleet_default` is removed; an unset `fleet_root_password`
+> makes ADMZ **refuse to provision**, writing nothing, rather than fall back to a
+> generated-and-stored or generated-and-discarded root password. #296 part 2's
+> "deliberate shared mode" is what `fleet_root_password` is.
 
 ### FR-CRED-008 — Temporary device-side users ✅
 `create_temp_credentials(device_id, permissions, ttl_seconds)`
@@ -158,6 +198,33 @@ promotes; and the lockout measurement ADR-0061 asked for has not been run.
 
 Existing devices are **not** migrated automatically. Creating accounts on nine
 live devices as a deploy side effect is a decision, not a consequence.
+
+**[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) amends three of the statements above (📋, not yet shipped).**
+
+- **The rotation rule is narrowed.** *"ADMZ never deletes, rotates or disables
+  the account it authenticated with"* becomes: ADMZ never touches a credential a
+  **human** supplied, and **may rotate one it generated itself**. The rule's own
+  stated reason — *"If ADMZ's database is lost, the entry credential is the only
+  way back in"* — is exactly what the break-glass root password removes. So on
+  in-place adoption of a device ADMZ provisioned, `root` is rotated to the
+  break-glass value before `admz` is created, and the per-device `recovery`
+  account (#449) retires: the old value is **invalidated, not lost**, so there is
+  nothing left to preserve. Deletion and disabling remain forbidden everywhere.
+- **The borrowed-credential fallback retires.** *"If the account write fails but
+  the entry credential works, the entry credential is stored under a status and
+  purpose that say so"* — ADMZ stores **nothing** instead. The pair's username
+  defaults to `root`, so storing it is precisely the per-device root credential
+  ADR-0068 forbids. The device reads `no_credentials` (amber, attention, not
+  demo-ready) and the break-glass password is the way back in. This reverses a
+  written trade — *"a managed device on a shared credential beats an unmanaged
+  one"* — deliberately: the operator's break-glass credential is not ADMZ's to
+  keep. `ENTRY_CREDENTIALS_SAVED` stops being a success status.
+- **Migration is not deferred, it is absent.** *"Existing devices are **not**
+  migrated automatically"* stands, and ADR-0068 needs no migration decision at
+  all: ADMZ has not shipped, and the owner re-onboards the existing devices by
+  hand. Re-onboarding an ADMZ-provisioned device rotates its root to the
+  break-glass value, which is how those 11 devices reach the target shape rather
+  than stranding a generated root password nobody holds.
 
 ### FR-CRED-013 — At most three entry credentials, or none at all 🚧
 The list is capped at **three** where it is stored, so what the settings page
@@ -271,6 +338,23 @@ The only thing the posture gives up
 is that adopting an **already-set-up** device always asks a human — which is
 precisely what it is choosing.
 
+**[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) adds one attempt and falsifies the paragraph above (📋, not yet
+shipped).** After ADMZ sets `root` from the break-glass password, a pass that
+fails partway leaves a device whose root password ADMZ *holds* but
+`attempt_order()` does not know — so a retry would fail even though a working
+credential is configured. The break-glass value therefore becomes a **synthetic
+attempt, tried last**, and `describe()` reports it, so the settings page cannot
+understate what ADMZ puts to a device. The measured lockout floor below makes
+the extra attempt free: ADMZ runs some 400× under the only protection that
+exists on the device tested.
+
+And *"Nothing requires a stored fleet password"* stops being true. Under ADR-0068
+provisioning a factory-defaulted device **requires** `fleet_root_password` and
+refuses without it. The `entry_credentials_prompt_always` posture survives — it
+governs the **entry list**, which is a different setting — but its cost is no
+longer "nothing": an installation running that posture still has to set a root
+password, or it cannot provision a factory-default device at all.
+
 ### FR-CRED-012 — Captured credentials may be promoted to the entry list ✅
 When nothing authenticates, the capture flow (FR-CRED-003 / ADR-0009) offers an
 opt-in *"also try this on other devices."*
@@ -296,6 +380,59 @@ password — and a refusal never loses the capture; the done page says which
 happened. The Fleet Settings page renders the list's `describe()` (usernames,
 labels, posture, cap; every stored entry marked *tried* or *stored, never tried* against slice C's bound; the page renders without the list if reading it fails) — the first operator view of it. A failure inside the promotion itself (anything but the cap or the posture) is logged and reported as a refusal, never a 500 — the capture has already succeeded and consumed its token; audit rows carry the signed-in principal when there is one. The flag reaching the
 store requires the form submission, never the tool argument.
+
+> **[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) re-points the ordering rule (📋, not yet shipped).** Promotion happens
+> *"**after** the device credential is stored"* today. A root-adopt session
+> (FR-CRED-014) stores no device credential, so promotion is gated on the
+> **device authenticating** instead: a password the device refused promotes
+> nothing — promoting an unproven secret would spend two failed authentications
+> against every future device forever — while a password that authenticated but
+> whose `admz` write then failed **does** promote if the operator asked, because
+> it demonstrably works and the entry list is then the route to retry. Everything
+> else is unchanged: never pre-checked, audited as its own event with the
+> username and device ids only, a refusal never loses the capture, and the flag
+> reaching the store still requires the form submission.
+
+### FR-CRED-014 — A root password ADMZ is given is used once and never becomes the device's credential 📋
+When nothing ADMZ holds authenticates, it asks the operator for the device's
+administrator password — and that password is **never stored as that device's
+credential**. See
+[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md).
+
+- **The fleet root password is break-glass.** `fleet_root_password` is a
+  store-encrypted fleet setting (FR-SEC-007a) holding the password ADMZ writes to
+  `root` on a device it provisions. It is deliberately **not** per-device, so the
+  operator knows one value that logs into any provisioned device independently of
+  ADMZ's database. It is not LLM-writable — FR-SEC-012's allow-set is unchanged —
+  and the name carries `password`, so masking, reveal-gating and the MCP refusal
+  follow from the name-shape predicate (FR-SEC-007) with no new special case.
+- **The prompt offers exactly two outcomes**, as a `required` radio group with
+  **nothing pre-selected**: add the typed password to the fleet entry list
+  (FR-CRED-012), or discard it. Not a checkbox — an unticked box is a silent
+  answer to an either/or. In **neither** case is it stored for that device.
+- **Submitting performs device I/O**, which no capture session does today: ADMZ
+  authenticates the typed pair strictly, then creates its own `admz` account and
+  stores that. The sequence is synchronous and **bounded**; on expiry the result
+  is reported as unconfirmed, never as success, and nothing is stored. It is
+  synchronous on purpose — parking the typed root password between a POST and a
+  worker would mean persisting it, which is the one thing this requirement exists
+  to prevent.
+- **Storing nothing for the device is a normal outcome, not an error.** Today a
+  submission that stores nothing *is* a 500. For a root-adopt session, **200
+  means ADMZ finished and the page says what happened; 500 means ADMZ left an
+  account behind that it cannot use.** The token stays live for any failure that
+  never touched the device, and is consumed once the `admz` write is attempted.
+- **The form must not overstate what is kept.** It may not reuse the existing
+  *"These credentials are stored encrypted"* copy, which is false here. It says
+  what is checkable — not written to ADMZ's database, its logs, or the
+  assistant's context — and stops short of "erased from memory". It also states
+  that the operator's own password keeps working: ADMZ never changes, disables or
+  deletes it.
+- **The submit button is the approval** (one named ADR-0059 exemption), so its
+  text names the write. This is stronger than the confirmation card it replaces:
+  `POST /confirm/{token}` is authorised by token possession alone with no CSRF
+  check (KL-CRED-003), while this form adds a same-origin check and a human
+  typing that device's own administrator password.
 
 ### FR-CRED-009 — Device passwords are never displayed; no LLM retrieval ✅
 Device-account passwords are **never displayed** through any web/REST

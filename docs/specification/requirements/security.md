@@ -143,7 +143,12 @@ and `tests/test_sensitivity_predicate_completeness.py`.
 Masking (FR-SEC-007) governs what a *caller* is shown; this governs what is in
 the *file*. `default_password`, `gemini_api_key` and `acs_webhook_token` are
 encrypted with the registry's Fernet key (ADR-0010), joining
-`survey_github_pat` and the two `github_app_*` secrets which already were. The
+`survey_github_pat` and the two `github_app_*` secrets which already were.
+`entry_credentials` is encrypted the same way (ADR-0061), and
+[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md)
+adds `fleet_root_password` (📋, not yet shipped) — the break-glass root password,
+which is recovery material for the whole fleet and so is the one entry here
+whose disclosure is worst. The
 value is **recoverable, not hashed** — ADMZ has to send it to a device — which
 is the opposite of `confirm_password_hash`, deliberately left as a hash.
 
