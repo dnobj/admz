@@ -65,6 +65,38 @@ def _make_session(confirmation_level="url_only", risk_level="dangerous"):
     )
 
 
+def _make_plan_session(confirmation_level="url_and_password"):
+    """A PLAN confirm session, shaped as operations.execute_gated_plan stores
+    one: device_id "multiple", operation_id "plan:<id>", and the summary as
+    JSON. ``is_plan`` is derived from plan_id being non-empty
+    (ConfirmSession.is_plan), and ``plan_summary`` from plan_summary_json."""
+    import json
+    from admz.api.confirm_store import confirm_store
+    summary = {
+        "plan_id": "plan-ab12cd34ef56",
+        "description": "Reboot the lobby cameras",
+        "step_count": 2,
+        "risk_summary": {"service-affecting": 2},
+        "on_failure": "stop",
+        "steps": [
+            {"step": 1, "device": "cam-01", "operation": "restart.cgi:restart",
+             "risk": "service-affecting"},
+            {"step": 2, "device": "cam-02", "operation": "restart.cgi:restart",
+             "risk": "service-affecting"},
+        ],
+    }
+    return confirm_store.create_session(
+        device_id="multiple",
+        operation_id="plan:plan-ab12cd34ef56",
+        family="vapix",
+        params={},
+        risk_level="service-affecting",
+        confirmation_level=confirmation_level,
+        plan_id="plan-ab12cd34ef56",
+        plan_summary_json=json.dumps(summary),
+    )
+
+
 # ---------------------------------------------------------------------------
 # GET /api/chat/confirm/{token}
 # ---------------------------------------------------------------------------
@@ -84,6 +116,21 @@ class TestChatConfirmDetails:
         assert body["danger_description"].startswith("Resets")
         assert body["needs_password"] is False
         assert body["is_plan"] is False
+
+    def test_a_plan_session_carries_its_summary(self, client):
+        """#438: the in-chat card now renders plan_summary, and this is the wire
+        contract it depends on. The route already returned both fields — chat.js
+        fetched and discarded them, so a plan approval in chat showed
+        "plan:plan-ab12…" on "multiple" with no steps and no risk breakdown.
+        The is_plan-is-False assertion above is the control."""
+        session = _make_plan_session()
+        r = client.get(f"/api/chat/confirm/{session.token}")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["is_plan"] is True
+        steps = body["plan_summary"]["steps"]
+        assert len(steps) == 2
+        assert {"step", "device", "operation", "risk"} <= set(steps[0])
 
     def test_needs_password_when_configured(self, client):
         from admz.api.confirm_store import hash_confirm_password

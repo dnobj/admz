@@ -26,8 +26,12 @@ The primary workflow tools:
 
 ### FR-MCP-003 — Multi-step plan tools ✅
 - `create_plan(description, steps, on_failure)` — validate + stage
-- `execute_plan(plan_id, confirm_dangerous?)` — run; plans containing
-  dangerous steps require explicit consent (Phase 2D)
+- `execute_plan(plan_id, confirm_dangerous?)` — run; **one** gate covers the
+  whole plan, at the strictest level any step needs. Under default config a
+  dangerous or service-affecting step resolves to `url_only` /
+  `url_and_password`, which `confirm_dangerous` can **never** satisfy: those
+  return a `confirm_url` and are approved on the web form, which then runs the
+  plan. `confirm_dangerous` applies only to the `llm_confirm` tier (#438)
 - `get_plan_status(plan_id)` — progress query
 
 ### FR-MCP-004 — Device + account CRUD tools ✅
@@ -95,6 +99,19 @@ Each tool's `description` (visible to the LLM) explains gating
 behavior, expected inputs, and the "blocked → confirm round trip"
 pattern. The LLM doesn't need to discover the safety model
 empirically.
+
+> **Corrected 2026-09-14 (#438).** This was marked ✅ while `execute_plan`'s
+> description documented a blocked-reason — `plan_contains_dangerous_steps` —
+> that exists nowhere in `admz/`, and never mentioned the `url_*` tier that is
+> the **default** for any dangerous step. A model reading it expected
+> `confirm_dangerous=true` to carry a dangerous plan, which it never can.
+> `docs/MCP_TOOLS_REFERENCE.md` had the gate right the whole time; only the
+> string the model actually consumes was wrong — the same shape as #366. Both
+> plan descriptions were rewritten under
+> [ADR-0067](../decisions/0067-the-chat-plans-when-a-job-is-several-named-operations.md),
+> and `tests/test_plan_tool_descriptions.py` now asserts the phantom reason is
+> absent from the description **and** from `admz/operations.py`, so the two
+> cannot drift apart again in either direction.
 
 ### FR-MCP-014 — No get_credentials tool ✅
 The `get_credentials` tool was removed outright (CR-1) — plaintext

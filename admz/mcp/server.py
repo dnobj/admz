@@ -1093,11 +1093,36 @@ class ADMZMCPServer:
                 Tool(
                     name="create_plan",
                     description=(
-                        "Create a multi-step execution plan for review. "
-                        "Submit a list of operations with concrete parameters. "
-                        "The plan is validated against the catalog and risk-classified. "
-                        "Returns a plan summary for the user to approve. "
-                        "Does NOT execute — call execute_plan after approval."
+                        "Use this when the user's goal needs several device "
+                        "writes you can already name — the same change across "
+                        "several devices, or an ordered sequence on one (reboot "
+                        "the fleet; upgrade firmware on eight cameras; NTP + "
+                        "timezone + verify). A plan takes ONE approval for the "
+                        "whole job; running the same work as separate "
+                        "execute_operation calls makes the user clear a "
+                        "confirmation card per step. "
+                        "Do the read-only discovery FIRST. Every step needs a "
+                        "real catalog operation_id (from query_catalog) and a "
+                        "registered device_id (from list_devices / "
+                        "search_devices); one unknown id rejects the WHOLE plan "
+                        "and creates nothing. Look them up before calling this — "
+                        "reads are never gated. "
+                        "Do NOT use this when a later step's parameters depend on "
+                        "what an earlier step returns: steps run in depends_on "
+                        "order but NO data passes between them, and params are "
+                        "frozen when the plan is created. Read those values with "
+                        "execute_operation first and plan once you know them; if "
+                        "the sequence genuinely cannot be fixed in advance, run it "
+                        "as individual execute_operation calls. "
+                        "Steps are catalog operations on registered devices only "
+                        "— ADMZ's own record tools (create_demo, "
+                        "create_action_rule, queue_device_recovery) can never be "
+                        "plan steps. "
+                        "Does NOT execute and does NOT ask for approval: it "
+                        "validates, risk-classifies every step from the catalog "
+                        "(you cannot set or soften a step's risk), and returns a "
+                        "summary to present to the user. The approval happens at "
+                        "execute_plan."
                     ),
                     inputSchema={
                         "type": "object",
@@ -1183,22 +1208,41 @@ class ADMZMCPServer:
                 Tool(
                     name="execute_plan",
                     description=(
-                        "Execute an approved plan. Runs all steps autonomously — "
-                        "does not pause for per-step approval. For plans with steps "
-                        "on different devices, runs devices in parallel. "
-                        "Returns results for all steps including any errors. "
-                        "Plans containing dangerous-risk steps require "
-                        "confirm_dangerous=true; otherwise the call returns "
-                        "{blocked: true, reason: 'plan_contains_dangerous_steps', "
-                        "error: '...'} listing the offending steps so the user "
-                        "can explicitly approve them."
+                        "Execute a plan that is already staged — from create_plan, "
+                        "or from a tool that builds its own plan (restore_device, "
+                        "prepare_demo, end_demo, scenario activation). Runs every "
+                        "step autonomously with no per-step approval; steps on "
+                        "different devices run in parallel when nothing depends "
+                        "across them. Returns per-step results, errors included. "
+                        "ONE confirmation gate covers the whole plan, at the "
+                        "strictest level any of its steps needs. On a blocked "
+                        "result, read confirmation_level and follow its message. "
+                        "url_only / url_and_password — the default whenever a step "
+                        "is service-affecting or dangerous: the plan CANNOT be run "
+                        "from chat. The result carries blocked: true plus a "
+                        "confirm_url ('/confirm/<token>'); relay that exact URL "
+                        "from THIS result, and the approval page both approves and "
+                        "runs the plan. confirm_dangerous can never satisfy this "
+                        "tier, and confirm_dangerous_operation does not apply to "
+                        "plans. "
+                        "llm_confirm — only where an operator has opted that risk "
+                        "class in, never the default: the result carries reason "
+                        "'plan_requires_confirmation' and retry_with "
+                        "{confirm_dangerous: true}; re-call with "
+                        "confirm_dangerous=true once the user has clearly "
+                        "consented. "
+                        "A plan whose every step is read-only runs immediately."
                     ),
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "plan_id": {
                                 "type": "string",
-                                "description": "Plan ID from create_plan",
+                                "description": (
+                                    "Plan ID from create_plan, or from a tool "
+                                    "that staged a plan (restore_device, "
+                                    "prepare_demo, end_demo)."
+                                ),
                             },
                             "confirm_dangerous": {
                                 "type": "boolean",
@@ -1206,7 +1250,11 @@ class ADMZMCPServer:
                                     "Set to true to confirm execution of a plan "
                                     "that contains any dangerous-risk step. The "
                                     "user must explicitly approve this — do not "
-                                    "set without their consent."
+                                    "set without their consent. Only effective "
+                                    "when the plan's confirmation level is "
+                                    "llm_confirm; for url_only / url_and_password "
+                                    "plans it is ignored and the confirm_url must "
+                                    "be used instead."
                                 ),
                                 "default": False,
                             },

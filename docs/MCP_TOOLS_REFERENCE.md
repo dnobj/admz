@@ -447,7 +447,14 @@ Confirm and execute an operation `execute_operation` blocked at the
 ## 📋 Multi-step plans
 
 ### `create_plan`
-Validate and stage a multi-step plan.
+Validate and stage a multi-step plan. **Reach for this when a goal needs several
+device writes you can already name** — the same change across several devices, or
+an ordered sequence on one. A plan takes **one** approval for the whole job
+instead of a confirmation card per step. Resolve every `operation_id`
+(`query_catalog`) and `device_id` (`list_devices`) **first**: one unknown id
+rejects the whole plan and creates nothing. Params are frozen at creation and no
+data passes between steps, so do not plan work whose later parameters depend on
+an earlier step's result (ADR-0067).
 - **Args:** `description` (string), `steps` (array of `{operation_id,
   device_id, params, depends_on?, description?}`), `on_failure`
   (`"stop"` | `"skip_dependents"` | `"continue"`, default `"stop"`)
@@ -457,7 +464,9 @@ Validate and stage a multi-step plan.
 
 ### `execute_plan`
 Execute an approved plan. Steps on different devices run in parallel.
-- **Args:** `plan_id`, `confirm_dangerous` (bool, default `false`)
+- **Args:** `plan_id` (from `create_plan`, or from a tool that staged a plan —
+  `restore_device`, `prepare_demo`, `end_demo`), `confirm_dangerous` (bool,
+  default `false`; effective **only** on the `llm_confirm` tier)
 - **Returns (executed):** `{success, plan_id, status, steps_total,
   steps_succeeded, steps_failed, steps_skipped, results, rollback_available}`
 - **Returns (blocked):** the plan goes through the **same per-risk gate** as a

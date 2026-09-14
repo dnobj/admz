@@ -464,6 +464,14 @@ class TestPlanGate:
         assert "/confirm/" in result["confirm_url"]
         assert executor.calls == []          # never ran
         assert store.created                  # a plan confirm session was made
+        # #438: a plan is never approved through confirm_dangerous_operation —
+        # that tool takes a single operation, and a plan is approved on the
+        # confirm page. Advertising it here handed the model the one path that
+        # cannot work, contradicting execute_plan's own description: a payload
+        # field disagreeing with the text beside it. The SINGLE-operation
+        # envelope still carries it (tests/test_gate_parity.py asserts the key
+        # set by equality), so this fix is scoped to plans.
+        assert "confirm_tool" not in result
 
     @pytest.mark.asyncio
     async def test_dangerous_plan_runs_when_configured_llm_confirm(self, monkeypatch):

@@ -39,7 +39,9 @@ The central workflow ADMZ exists for: an LLM agent makes device-configuration ch
 **Acceptance criteria:**
 1. `create_plan(description, steps, on_failure)` accepts plans with steps of any risk level — the gate is at execute time, not plan creation.
 2. The plan summary returned by `create_plan` includes a `dangerous_steps` array listing each dangerous step's `step_number`, `operation_id`, and `device_id`.
-3. `execute_plan(plan_id)` returns `{blocked: true, reason: "plan_contains_dangerous_steps", error, retry_with: {confirm_dangerous: true}}` when any step is dangerous.
+3. `execute_plan(plan_id)` returns a blocked envelope when any step needs confirmation. Under default config a dangerous step resolves to `url_and_password`, so the result carries `{blocked: true, confirmation_level, confirm_url}` and is approved on the web form — which then runs the plan. Only on the `llm_confirm` tier does it return `{blocked: true, reason: "plan_requires_confirmation", retry_with: {confirm_dangerous: true}}`.
+
+> **Corrected 2026-09-14 (#438).** Criterion 3 named a reason string, `plan_contains_dangerous_steps`, that exists **nowhere** in `admz/`. This story was its origin, and `execute_plan`'s tool description had copied it verbatim. Correcting only the description would have left the falsehood here to be restored from — which is how it survived this long.
 4. `execute_plan(plan_id, confirm_dangerous=True)` proceeds. The MCP tool schema documents that the LLM must obtain explicit user consent before passing this flag.
 
 **Related requirements:** [plans](../requirements/plans.md), [security](../requirements/security.md).
