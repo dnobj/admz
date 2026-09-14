@@ -214,7 +214,7 @@ or a failed refresh, ADMZ falls back to the declared table. FR-CB-009
 requires ADMZ to run fine with no Gemini key at all, so this must never
 become a startup dependency on the provider being reachable.
 
-### FR-CB-016 — A resolved out-of-band step resumes the promised turn 📋
+### FR-CB-016 — A resolved out-of-band step resumes the promised turn ✅
 After an out-of-band capture (ADR-0009) or approval resolves, ADMZ does not wait
 for the operator to prod it. The browser fires **one** continuation turn — an
 ordinary, fully-gated chat turn run as the operator's own principal — so the

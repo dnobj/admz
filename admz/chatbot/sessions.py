@@ -72,6 +72,16 @@ CREATE TABLE IF NOT EXISTS chat_action_links (
     label            TEXT NOT NULL DEFAULT '',
     created_at       REAL NOT NULL
 );
+
+-- #444 / ADR-0066: which trailing console note a browser has already claimed
+-- the right to answer. Keyed on the chat_history row id, so the claim is
+-- per-resolution. A LEASE, not a tombstone -- see try_claim_resume.
+CREATE TABLE IF NOT EXISTS chat_resume_claims (
+    history_id       INTEGER PRIMARY KEY,  -- the event row being answered
+    principal        TEXT NOT NULL,
+    conversation_id  TEXT NOT NULL,
+    claimed_at       REAL NOT NULL
+);
 """
 
 
@@ -778,8 +788,136 @@ class ChatSessionStore:
             conn.close()
         return True
 
+    # ------------------------------------------------------------------
+    # Continuation turns (#444 / ADR-0066) — an out-of-band resolution
+    # leaves a console note nobody answered; the browser fires one gated
+    # turn to answer it, as the operator, at most once.
+    # ------------------------------------------------------------------
+
+    #: How long one browser's claim on a note holds before another may retry.
+    #: Comfortably longer than a streaming turn, so it never expires under a
+    #: continuation still legitimately running.
+    _RESUME_CLAIM_LEASE_SECONDS = 150.0
+
+    def append_model_turn(
+        self, principal: str, conversation_id: str, text: str
+    ) -> bool:
+        """Append ONE ``role='model'`` row to a specific conversation.
+
+        Unlike :meth:`append_turn` this writes no user row and creates no
+        conversation: a continuation answers a console note that already
+        exists, so there is no user message to invent and nothing to lazily
+        create. It leaves the title alone for the same reason — a resume must
+        never title a conversation from a message the operator never sent.
+
+        No-ops (returns False) when the conversation doesn't exist, belongs to
+        someone else, or the text is empty.
+        """
+        if not text:
+            return False
+        conn = self._connect()
+        try:
+            owned = conn.execute(
+                "SELECT 1 FROM chat_conversations WHERE id=? AND principal=?",
+                (conversation_id, principal),
+            ).fetchone()
+            if owned is None:
+                return False
+            now = _utc_iso()
+            conn.execute(
+                "INSERT INTO chat_history "
+                "(principal, role, text, created_at, conversation_id) "
+                "VALUES (?, 'model', ?, ?, ?)",
+                (principal, text, now, conversation_id),
+            )
+            conn.execute(
+                "UPDATE chat_conversations SET updated_at=? WHERE id=?",
+                (now, conversation_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+
+    def resume_due(self, principal: str, conversation_id: str) -> Optional[int]:
+        """``chat_history.id`` of a trailing ``role='event'`` note, else None.
+
+        A continuation is owed exactly when the last thing in the conversation
+        is a console note nobody answered. The model row a resume persists
+        clears that condition, which is what makes "at most once" a property
+        of the data rather than of bookkeeping.
+
+        Ordered by ``id``, never ``created_at``: :meth:`append_turn` stamps its
+        user and model rows with one identical timestamp, so ties are routine
+        and a timestamp ordering would be nondeterministic on exactly the rows
+        that decide this.
+        """
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT id, role FROM chat_history "
+                "WHERE principal=? AND conversation_id=? "
+                "ORDER BY id DESC LIMIT 1",
+                (principal, conversation_id),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None or row[1] != "event":
+            return None
+        return int(row[0])
+
+    def try_claim_resume(
+        self,
+        principal: str,
+        conversation_id: str,
+        history_id: int,
+        lease_seconds: Optional[float] = None,
+    ) -> bool:
+        """True when this caller won the right to answer ``history_id``.
+
+        Capture opens its form in a second tab and the done page links back to
+        ``/chat``, so two live chat tabs are the normal end state — both would
+        otherwise fire a continuation for the same note.
+
+        The claim is **leased, not permanent**. A continuation that fails
+        persists no model row, so the note stays due; once the lease expires it
+        may be answered on a later reload. A tombstone would trade "fires
+        twice" for "never fires again", reintroducing #444 on the error path.
+        """
+        lease = (
+            self._RESUME_CLAIM_LEASE_SECONDS
+            if lease_seconds is None
+            else lease_seconds
+        )
+        now = time.time()
+        conn = self._connect()
+        try:
+            conn.execute(
+                "DELETE FROM chat_resume_claims WHERE claimed_at < ?",
+                (now - lease,),
+            )
+            try:
+                conn.execute(
+                    "INSERT INTO chat_resume_claims "
+                    "(history_id, principal, conversation_id, claimed_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (history_id, principal, conversation_id, now),
+                )
+            except sqlite3.IntegrityError:
+                # Someone else holds a live claim on this note. Commit the
+                # sweep above anyway so expired rows don't accumulate.
+                conn.commit()
+                return False
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+
     def get_history(
-        self, principal: str, max_turns: int = DEFAULT_HISTORY_TURNS
+        self,
+        principal: str,
+        max_turns: int = DEFAULT_HISTORY_TURNS,
+        conversation_id: Optional[str] = None,
     ) -> list:
         """Return last ``max_turns`` turns of the **active conversation**
         as a chronologically-ordered list of
@@ -791,7 +929,9 @@ class ChatSessionStore:
         """
         if max_turns <= 0:
             return []
-        active = self.get_active_conversation(principal)
+        # An explicit conversation wins: a continuation turn (#444) runs in the
+        # conversation that RESOLVED, which need not be the active one.
+        active = conversation_id or self.get_active_conversation(principal)
         if not active:
             return []
         # 2 rows per turn (user + model). Fetch the latest 2*max_turns

@@ -624,6 +624,8 @@ async def _run_chat_turn(
     model_request: str,
     config,
     use_tools: bool = True,
+    conversation_id: Optional[str] = None,
+    resume: bool = False,
 ):
     """Async generator: yields (event, summary) tuples per chat event.
 
@@ -632,6 +634,19 @@ async def _run_chat_turn(
     consume the events to forward downstream (SSE) or accumulate them
     (JSON). A final ``(None, summary)`` tuple signals end-of-turn with
     the populated summary.
+
+    ``conversation_id`` names the conversation this turn belongs to;
+    ``None`` means the principal's active one, which is what every typed
+    turn wants and keeps ``/chat/stream`` and ``/api/chat`` unchanged. A
+    continuation turn (#444 / ADR-0066) passes it explicitly because the
+    conversation that RESOLVED need not be the active one — and the active
+    pointer decides where the operator's next typed message lands, so a
+    resume must never move it.
+
+    ``resume`` is attribution only: it distinguishes "typed" from
+    "continued" in the audit row, which is the question this feature
+    exists to make answerable. An empty ``message`` is what actually makes
+    the turn seed-free.
     """
     summary = _TurnSummary()
     chosen_model = (
@@ -669,7 +684,12 @@ async def _run_chat_turn(
         return
 
     prev_id = _sessions().get_interaction_id(principal.name)
-    history = _sessions().get_history(principal.name)
+    # Resolved ONCE and used for history, persistence and action linking, so
+    # those three can never disagree about which conversation this turn is in.
+    conv_id = conversation_id or _sessions().get_active_conversation(
+        principal.name
+    )
+    history = _sessions().get_history(principal.name, conversation_id=conv_id)
     system_prompt = build_system_prompt(
         principal_name=principal.name,
         display_name=principal.display_name,
@@ -832,9 +852,29 @@ async def _run_chat_turn(
     # break the already-streamed response.
     if summary.success and summary.response:
         try:
-            _sessions().append_turn(
-                principal.name, message, summary.response
-            )
+            if message:
+                _sessions().append_turn(
+                    principal.name, message, summary.response
+                )
+                # append_turn lazily CREATES the active conversation on a
+                # first turn, so a typed turn's id may only exist now — the
+                # title and action-link steps below both need it. (Resolving
+                # conv_id only at the top of the turn silently skipped both on
+                # every first turn.)
+                if conv_id is None:
+                    conv_id = _sessions().get_active_conversation(
+                        principal.name
+                    )
+            elif conv_id:
+                # A continuation answers a console note that already exists, so
+                # there is no user message to invent — model row only (#444).
+                # Note the enclosing guard: a continuation that fails or returns
+                # nothing persists no row, so the note stays due and may be
+                # answered again once its claim lease lapses. That is the
+                # deliberate choice over a tombstone (ADR-0066 §4).
+                _sessions().append_model_turn(
+                    principal.name, conv_id, summary.response
+                )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning("Failed to append chat history: %s", exc)
 
@@ -842,10 +882,12 @@ async def _run_chat_turn(
         # provisional snippet title to a terse generated one. Best-effort —
         # a failure leaves the snippet title and never affects the response.
         try:
-            conv_id = _sessions().get_active_conversation(principal.name)
+            # A continuation never titles a conversation: `message` is empty on
+            # that path, so there is nothing to title from and the snippet/LLM
+            # title of the original turn must stand (#444).
             meta = (
                 _sessions().get_conversation(principal.name, conv_id)
-                if conv_id else None
+                if (message and conv_id) else None
             )
             if (
                 meta
@@ -869,11 +911,20 @@ async def _run_chat_turn(
     # Best-effort: linkage failure must never break an answered turn.
     if summary.action_tokens:
         try:
-            conv_id = _sessions().get_active_conversation(principal.name)
-            if conv_id:
+            # Link against the conversation this turn actually ran in. For a
+            # continuation that is the one that RESOLVED, not whatever happens
+            # to be active — getting it wrong kills the chain silently, because
+            # the NEXT resolution would find no link and write no console note.
+            # The fallback also covers a turn that created a card but produced
+            # no response, where the persistence step above never ran and so
+            # never resolved a freshly-created conversation.
+            target = conv_id or _sessions().get_active_conversation(
+                principal.name
+            )
+            if target:
                 for kind, token, tool_name in summary.action_tokens:
                     _sessions().link_action(
-                        token, principal.name, conv_id, kind, label=tool_name
+                        token, principal.name, target, kind, label=tool_name
                     )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning("Failed to link action tokens: %s", exc)
@@ -900,6 +951,8 @@ async def _run_chat_turn(
                 "cost_usd": summary.cost_usd,
                 "had_previous_session": prev_id is not None,
                 "tool_calls": summary.tool_calls,
+                # Typed, or continued after an out-of-band resolution (#444)?
+                "resume": resume,
             },
             success=summary.success,
             error_message=summary.error or "",
@@ -1061,6 +1114,122 @@ async def chat_json(
         cost_usd=final_summary.cost_usd,
         tool_calls=final_summary.tool_calls,
         rejected_by_budget=final_summary.rejected_by_budget,
+    )
+
+
+# ---------------------------------------------------------------------------
+# /api/chat/resume — one continuation turn after an out-of-band resolution
+# (#444 / ADR-0066)
+# ---------------------------------------------------------------------------
+
+
+class ResumeRequest(BaseModel):
+    """Body of POST /api/chat/resume."""
+
+    conversation_id: str = Field(
+        ..., description="The conversation whose trailing console note to answer.",
+    )
+    model: Optional[str] = Field(
+        None, description="Gemini model id; falls back to the org default.",
+    )
+
+
+@router.get("/api/chat/resume-due", tags=["chat"])
+async def api_resume_due(
+    conversation_id: Optional[str] = None,
+    principal: Principal = Depends(get_current_principal),
+):
+    """Is a continuation owed on this conversation?
+
+    True exactly when its latest row is a ``role='event'`` console note — an
+    out-of-band capture or approval resolved and nobody answered it. Advisory
+    only: ``POST /api/chat/resume`` re-checks before spending a turn, so a
+    stale browser poll can never cause one.
+
+    Deliberately cheap (one indexed row read): the page calls this on every
+    load and every tab focus, so the common answer — nothing due — must not
+    cost anything.
+    """
+    conv_id = conversation_id or _sessions().get_active_conversation(
+        principal.name
+    )
+    if not conv_id:
+        return {"due": False, "conversation_id": None}
+    if _sessions().get_conversation(principal.name, conv_id) is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {
+        "due": _sessions().resume_due(principal.name, conv_id) is not None,
+        "conversation_id": conv_id,
+    }
+
+
+@router.post("/api/chat/resume", tags=["chat"])
+async def api_chat_resume(
+    body: ResumeRequest = Body(...),
+    principal: Principal = Depends(get_current_principal),
+):
+    """Fire ONE continuation turn, as the caller, into ``conversation_id``.
+
+    Streams SSE in the same wire format as ``/chat/stream`` and runs through
+    the same ``_run_chat_turn`` policy — budget gate, usage, audit, and the
+    principal forwarded to MCP. No ``Principal`` is constructed here: the turn
+    runs as whoever called, which is what keeps this from being an autonomous
+    actor and leaves ADR-0062's envelope shut. The confirmation gate is
+    untouched, so a risky follow-on raises a fresh card rather than executing.
+
+    The turn is **seed-free**: ``message=""``. The trailing console note is
+    already the instruction, and an 'event' row rides as a user turn, so the
+    model receives history alone rather than an ADMZ-authored message.
+
+    Three refusals, all before any spend:
+
+    * the conversation is not the caller's → 404;
+    * nothing is due → 409, which is what stops this being a general-purpose
+      way to run an ungated turn;
+    * another tab already claimed this note → 409. Capture opens its form in a
+      second tab and the done page links back to /chat, so two live chat tabs
+      are the normal end state and both would otherwise fire.
+
+    Anonymous callers are allowed, unlike ``/api/chat/pending-actions``. That
+    endpoint refuses them because *listing* hands out live confirm/capture
+    tokens the caller never had; a resume discloses no token and mints nothing,
+    and the same caller may already type the identical continuation by hand via
+    ``/api/chat``. Refusing here would leave #444 unfixed in the default dev
+    mode while allowing the manual equivalent.
+    """
+    conv_id = body.conversation_id
+    if _sessions().get_conversation(principal.name, conv_id) is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    history_id = _sessions().resume_due(principal.name, conv_id)
+    if history_id is None:
+        raise HTTPException(status_code=409, detail="not_due")
+    if not _sessions().try_claim_resume(principal.name, conv_id, history_id):
+        raise HTTPException(status_code=409, detail="already_claimed")
+
+    config = get_chatbot_config()
+
+    async def event_source() -> AsyncIterator[str]:
+        async for chat_event, _summary in _run_chat_turn(
+            principal=principal,
+            message="",
+            model_request=body.model or "",
+            config=config,
+            conversation_id=conv_id,
+            resume=True,
+        ):
+            if chat_event is None:
+                continue
+            yield chat_event.to_sse()
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

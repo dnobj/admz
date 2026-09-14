@@ -135,6 +135,109 @@ class TestAppendEvent:
 
 
 # ---------------------------------------------------------------------------
+# Continuation turns (#444 / ADR-0066) — an out-of-band resolution leaves a
+# console note nobody answered; the browser fires one gated turn to answer it.
+# ---------------------------------------------------------------------------
+
+
+class TestAppendModelTurn:
+    def test_persists_a_model_row_and_invents_no_user_row(self, store):
+        conv = _conversation(store)
+        store.append_event("alice", conv, "[console] approved; executed.")
+        assert store.append_model_turn("alice", conv, "Captured it.") is True
+        roles = [m["role"] for m in store.get_messages("alice", conv)]
+        assert roles == ["user", "model", "event", "model"]
+        # The continuation answered without inventing a message the operator
+        # never typed — the whole point of not reusing append_turn.
+        assert roles.count("user") == 1
+
+    def test_wrong_principal_is_noop(self, store):
+        conv = _conversation(store)
+        assert store.append_model_turn("mallory", conv, "x") is False
+
+    def test_unknown_conversation_is_not_lazily_created(self, store):
+        assert store.append_model_turn("alice", "ghost-conv", "x") is False
+
+    def test_empty_text_is_noop(self, store):
+        conv = _conversation(store)
+        assert store.append_model_turn("alice", conv, "") is False
+
+
+class TestResumeDue:
+    def test_a_trailing_event_note_is_due(self, store):
+        conv = _conversation(store)
+        store.append_event("alice", conv, "[console] approved; executed.")
+        assert store.resume_due("alice", conv) is not None
+
+    def test_not_due_once_answered(self, store):
+        conv = _conversation(store)
+        store.append_event("alice", conv, "[console] approved; executed.")
+        store.append_model_turn("alice", conv, "Captured it.")
+        assert store.resume_due("alice", conv) is None
+
+    def test_not_due_after_an_ordinary_turn(self, store):
+        conv = _conversation(store)
+        assert store.resume_due("alice", conv) is None
+
+    def test_ordered_by_id_not_timestamp(self, store, monkeypatch):
+        """append_turn stamps its user and model rows with ONE identical
+        timestamp, so ties are routine and a created_at ordering would be
+        nondeterministic on exactly the rows that decide this. Freeze the clock
+        so every row ties: only an id ordering can still be right."""
+        from admz.chatbot import sessions as sessions_mod
+
+        monkeypatch.setattr(
+            sessions_mod, "_utc_iso", lambda: "2026-09-14T12:00:00+00:00"
+        )
+        conv = _conversation(store)
+        store.append_event("alice", conv, "[console] approved; executed.")
+        assert store.resume_due("alice", conv) is not None
+        store.append_model_turn("alice", conv, "Captured it.")
+        assert store.resume_due("alice", conv) is None
+
+    def test_scoped_to_the_owner(self, store):
+        conv = _conversation(store)
+        store.append_event("alice", conv, "[console] approved; executed.")
+        assert store.resume_due("mallory", conv) is None
+
+
+class TestResumeClaim:
+    def test_first_caller_wins_and_the_second_loses(self, store):
+        conv = _conversation(store)
+        store.append_event("alice", conv, "[console] approved; executed.")
+        note = store.resume_due("alice", conv)
+        assert store.try_claim_resume("alice", conv, note) is True
+        # The second chat tab — the normal end state after a capture — must
+        # not fire a duplicate continuation for the same note.
+        assert store.try_claim_resume("alice", conv, note) is False
+
+    def test_a_later_note_claims_independently(self, store):
+        conv = _conversation(store)
+        store.append_event("alice", conv, "[console] one")
+        first = store.resume_due("alice", conv)
+        assert store.try_claim_resume("alice", conv, first) is True
+        store.append_event("alice", conv, "[console] two")
+        second = store.resume_due("alice", conv)
+        assert second != first
+        assert store.try_claim_resume("alice", conv, second) is True
+
+    def test_lease_expires_so_a_failed_continuation_can_retry(
+        self, store, monkeypatch
+    ):
+        """A lease, NOT a tombstone. A continuation that fails persists no
+        model row, so the note stays due — it must become answerable again on
+        a later reload rather than being stranded, which would reintroduce
+        #444 on the error path."""
+        conv = _conversation(store)
+        store.append_event("alice", conv, "[console] approved; executed.")
+        note = store.resume_due("alice", conv)
+        assert store.try_claim_resume("alice", conv, note) is True
+        later = time.time() + 10_000
+        monkeypatch.setattr(time, "time", lambda: later)
+        assert store.try_claim_resume("alice", conv, note) is True
+
+
+# ---------------------------------------------------------------------------
 # Model-context mapping
 # ---------------------------------------------------------------------------
 
@@ -152,6 +255,29 @@ class TestBuildContents:
         roles = [i["role"] for i in items]
         assert roles == ["user", "model", "user", "user"]
         assert items[2]["parts"][0]["text"].startswith("[console]")
+
+    def test_a_continuation_sends_no_synthetic_user_turn(self):
+        """#444 / ADR-0066: a resumed turn carries no message of its own. An
+        'event' row already flattens to a 'user' turn, so history alone is a
+        well-formed contents array — appending unconditionally would hand the
+        model a blank user turn. This is the pin that makes seed-free legal:
+        if a later change stops events riding as 'user', it fails here."""
+        items = _build_contents(
+            [
+                {"role": "user", "text": "upgrade the firmware"},
+                {"role": "model", "text": "approve the card"},
+                {"role": "event", "text": "[console] approved; executed."},
+            ],
+            "",
+        )
+        assert [i["role"] for i in items] == ["user", "model", "user"]
+        assert items[-1]["parts"][0]["text"].startswith("[console]")
+
+    def test_an_ordinary_turn_still_appends_its_message(self):
+        """Control for the above — the guard must not swallow a real turn."""
+        items = _build_contents([{"role": "user", "text": "prior"}], "hello")
+        assert [i["role"] for i in items] == ["user", "user"]
+        assert items[-1]["parts"][0]["text"] == "hello"
 
 
 # ---------------------------------------------------------------------------

@@ -634,6 +634,9 @@
             renderApprovalDone(card, "ok", "Approved — executed");
             resolveApprovedToolCard(token, "ok", "Approved — executed");
           }
+          // The approval POST we just awaited already wrote the console note,
+          // so the continuation is owed right now — no polling needed (#444).
+          maybeResumeConversation();
           return;
         }
         var msg = (resp.body && (resp.body.error || resp.body.status)) || "HTTP " + resp.status;
@@ -962,7 +965,10 @@
     // Only restore into a genuinely empty transcript — skip the no-JS,
     // server-rendered fallback turn (which omits the #chat-empty marker).
     if (!emptyState || transcript.children.length) return;
-    fetch("/api/chat/conversations", { headers: { Accept: "application/json" } })
+    // Returned so callers can sequence after it — the continuation trigger
+    // (#444) MUST NOT append its bubble until the transcript has been
+    // restored, because the guards above bail on a non-empty transcript.
+    return fetch("/api/chat/conversations", { headers: { Accept: "application/json" } })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (data) {
         if (!data || !data.active) return;
@@ -1080,7 +1086,68 @@
     if (e.key === "Escape" && drawer && drawer.classList.contains("open")) closeDrawer();
   });
 
+  // ── Continuation after an out-of-band resolution (#444 / ADR-0066) ───────
+  // A capture or approval resolving elsewhere leaves a console note in the
+  // conversation, and nothing runs the model — so the assistant never finishes
+  // what it just said it would do. When a note is unanswered we send the
+  // continuation the operator would otherwise have to ask for by hand.
+  //
+  // No user bubble is rendered: the operator typed nothing, and inventing a
+  // message they never sent is the defect this avoids, not a cosmetic detail.
+  // The turn is gated exactly like a typed one, so anything risky raises a
+  // fresh card rather than running.
+  var resumeInFlight = false;
+  function maybeResumeConversation() {
+    if (resumeInFlight) return;
+    return fetch("/api/chat/resume-due", { headers: { Accept: "application/json" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data || !data.due || !data.conversation_id) return;
+        if (resumeInFlight) return;
+        resumeInFlight = true;
+        if (emptyState) emptyState.style.display = "none";
+        var assistantBubble = renderAssistantBubble();
+        sendBtn.disabled = true;
+        sendBtn.classList.add("disabled");
+        return fetch("/api/chat/resume", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conversation_id: data.conversation_id }),
+        })
+          .then(function (resp) {
+            if (!resp.ok) {
+              // 409: another tab answered it first, or it stopped being due
+              // between the check and the post. A normal race — drop the
+              // empty bubble rather than showing the operator an error.
+              assistantBubble.remove();
+              return;
+            }
+            return consumeSse(resp.body, assistantBubble);
+          })
+          .catch(function (err) { renderError(assistantBubble, String(err)); })
+          .finally(function () {
+            resumeInFlight = false;
+            sendBtn.disabled = false;
+            sendBtn.classList.remove("disabled");
+            resolveAllPending(assistantBubble);
+            removeTyping(assistantBubble);
+          });
+      })
+      .catch(function () {});
+  }
+
+  // The capture form opens in a SECOND tab, so this chat tab may never reload
+  // and would otherwise never learn the note landed. Refocus is the moment the
+  // operator comes back to look.
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") maybeResumeConversation();
+  });
+
   // Resume the active conversation on Console load (display-only).
-  restoreActiveConversation();
+  // CHAINED, not parallel: restoreActiveConversation() bails when the
+  // transcript is already non-empty, so appending a continuation bubble first
+  // would abort the history restore on exactly the load that matters. A fast
+  // localhost load hides this; a real one does not.
+  Promise.resolve(restoreActiveConversation()).then(maybeResumeConversation);
   rehydratePendingActions();
 })();
