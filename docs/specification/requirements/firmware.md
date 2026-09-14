@@ -72,9 +72,21 @@ The CLI and MCP wrap these to surface actionable messages.
 
 > **Corrected 2026-08-04 (#214).** Marked ✅ while naming three REST endpoints that do not exist. A ✅ on an absent artifact is worse than a 📋 on a present one: it invites a reader to depend on something that was never built.
 
-Upgrade itself goes through the plan engine
-(`create_plan(template="firmware_upgrade", device=..., target=...)`)
-so the LTS-stair, snapshot, and confirmation gates all apply.
+Upgrade itself is a catalog operation (`firmwaremanagement.cgi:upgrade`,
+FR-FW-004), gated per FR-PLN-007 like any other write. A **single-hop** upgrade
+across several devices is plannable once the versions are known — that is
+exactly the shape ADR-0067 steers the model toward.
+
+> **Corrected 2026-09-14 (#438).** This previously read *"goes through the plan
+> engine (`create_plan(template="firmware_upgrade", device=..., target=...)`)"*
+> — fiction on three counts: `create_plan` takes `description` + `steps[]`,
+> there is no `template` parameter (and `additionalProperties: False` makes
+> passing one a hard schema rejection), and FR-PLN-012's templates were never
+> built. The **multi-hop LTS stair is still not plannable**: `admz/plans/engine.py`
+> has no reboot/recovery/wait handling, and `await_device_recovery` is an MCP
+> tool rather than a catalog operation, so it can never be a plan step — meaning
+> a plan whose step N reboots a device and step N+1 touches it is unsound. See
+> [ADR-0067](../decisions/0067-the-chat-plans-when-a-job-is-several-named-operations.md).
 
 ## Non-functional requirements
 

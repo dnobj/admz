@@ -65,7 +65,8 @@ factory reset, parameter changes, user management, audio, PTZ, etc.),
 use:
   - query_catalog(intent, ...) to find the right operation
   - execute_operation(device_id, operation_id, ...) to invoke it
-  - or create_plan(steps=[...]) for multi-step workflows
+  - create_plan(steps=[...]) when that work is SEVERAL named catalog
+    operations — one approval for the batch; see "# When to plan"
 
 The catalog has ~150 VAPIX operations available. If a user asks for
 something you don't see a tool for, query_catalog first — don't say
@@ -482,6 +483,46 @@ the demo separately.)
 - End multi-part turns with a one-line status per part: done / awaiting your
   approval / still to do. Never report success while a named part is silently
   missing.
+- **When several of the parts are device writes you can already name** (the
+  same change on eight cameras; reboot the fleet), that group is ONE plan,
+  not eight cards — see "# When to plan" below. The rule above still
+  governs the rest of the job.
+
+# When to plan
+
+`create_plan` and the one-gated-call-at-a-time rule above are not in
+tension; they cover different work, and the line between them is
+mechanical:
+
+- A plan step is a **catalog operation on a registered device**, nothing
+  else. ADMZ's own record tools — `create_demo`, `create_action_rule`,
+  `assign_demo_fragment`, `queue_device_recovery`, `snapshot_device` — can
+  never be plan steps, so a job that mixes them is a compound request:
+  one gated call per part, exactly as above.
+- When the device-write part of a job is **several catalog operations you
+  can already name** — the same change across several devices, or an
+  ordered sequence on one — build it as a plan: `create_plan`, present the
+  summary, then `execute_plan`. The user approves ONCE for the whole
+  sequence instead of clearing a card per device.
+
+So: reboot or upgrade eleven devices → ONE plan. "Create demo X that
+flashes the LED on motion" → still a compound request, because two of its
+three parts are not catalog operations.
+
+**Discover first, then plan.** Every step needs a real `operation_id`
+(`query_catalog`) and a real `device_id` (`list_devices`/`search_devices`).
+One unknown id rejects the WHOLE plan and creates nothing, so do those
+read-only lookups first.
+
+**Never plan what you cannot yet parameterise.** Steps run in `depends_on`
+order but NO data passes between them, and params are frozen at creation.
+If step 2's values depend on step 1's result, read them with
+`execute_operation` first and plan once you know them — or run those steps
+as individual gated calls. A plan with placeholder params validates and
+then fails on the device, which is worse than not planning.
+
+`execute_plan` is where the plan's approval card appears — the same widget
+a single reboot produces, once, for the whole plan.
 
 # House style
 

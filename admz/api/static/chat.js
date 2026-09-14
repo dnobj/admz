@@ -544,6 +544,42 @@
       });
   }
 
+  // Mirrors the server-rendered plan layout in confirm_form.html: step count,
+  // risk badges, and a collapsed step table. Deliberately minimal — ADR-0062
+  // will revise this toward an envelope, so a rich version now is work thrown
+  // away. The point is only that the operator can see what they are approving.
+  function planSummaryHtml(sum) {
+    var risk = sum.risk_summary || {};
+    var steps = sum.steps || [];
+    var n = sum.step_count != null ? sum.step_count : steps.length;
+    var badges = '<span class="risk-badge grey">' + n + " step" + (n === 1 ? "" : "s") + "</span>";
+    if (risk.dangerous) {
+      badges += '<span class="risk-badge red">' + risk.dangerous + " dangerous</span>";
+    }
+    if (risk["service-affecting"]) {
+      badges += '<span class="risk-badge amber">' + risk["service-affecting"] + " service-affecting</span>";
+    }
+    var rows = steps.map(function (s, i) {
+      return "<tr><td>" + escapeHtml(String(s.step != null ? s.step : i + 1)) + "</td>" +
+        '<td><span class="mono text">' + escapeHtml(s.device || "") + "</span></td>" +
+        '<td><span class="mono text">' + escapeHtml(s.operation || "") + "</span></td>" +
+        "<td>" + riskBadge(s.risk) + "</td></tr>";
+    }).join("");
+    var desc = sum.description
+      ? '<p class="ac-summary">' + escapeHtml(sum.description) + "</p>" : "";
+    var table = steps.length
+      ? "<details open><summary>Plan steps</summary>" +
+        '<table class="step-table"><thead><tr><th>#</th><th>Device</th>' +
+        "<th>Operation</th><th>Risk</th></tr></thead><tbody>" + rows +
+        "</tbody></table></details>"
+      : "";
+    var onFail = sum.on_failure
+      ? '<div class="ac-grid"><span class="section-label">On failure</span>' +
+        '<span class="mono text">' + escapeHtml(sum.on_failure) + "</span></div>"
+      : "";
+    return desc + '<div class="risk-row">' + badges + "</div>" + table + onFail;
+  }
+
   function populateApprovalForm(card, token, details) {
     var dangerous = (details.risk_level || "").toLowerCase() === "dangerous";
     if (dangerous) card.classList.add("dangerous");
@@ -553,13 +589,19 @@
       riskBadge(details.risk_level) + "</span>";
 
     var body = card.querySelector(".approval-body");
-    var opLine =
-      '<div class="ac-grid">' +
-      '<span class="section-label">Operation</span><span class="mono ink" style="font-weight:600">' +
-      escapeHtml(details.operation_id || "operation") + "</span>" +
-      (details.device_id ? '<span class="section-label">Target</span><span class="mono text">' +
-        escapeHtml(details.device_id) + "</span>" : "") +
-      "</div>";
+    // A plan approval is NOT a single operation: operation_id reads
+    // "plan:plan-ab12…" and device_id is the literal "multiple", so the default
+    // layout shows the operator nothing to review — the gate that trains people
+    // to click. plan_summary is already on the wire from
+    // /api/chat/confirm/{token}; it was simply fetched and discarded (#438).
+    var opLine = (details.is_plan && details.plan_summary)
+      ? planSummaryHtml(details.plan_summary)
+      : '<div class="ac-grid">' +
+        '<span class="section-label">Operation</span><span class="mono ink" style="font-weight:600">' +
+        escapeHtml(details.operation_id || "operation") + "</span>" +
+        (details.device_id ? '<span class="section-label">Target</span><span class="mono text">' +
+          escapeHtml(details.device_id) + "</span>" : "") +
+        "</div>";
     var dangerLine = details.danger_description
       ? '<p class="ac-summary">' + escapeHtml(details.danger_description) + "</p>" : "";
     var gate =

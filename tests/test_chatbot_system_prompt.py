@@ -321,6 +321,58 @@ class TestDemoInferenceNarration:
         assert "{demos_section}" not in prompt
 
 
+class TestWhenToPlanGuidance:
+    """#438 / ADR-0067. The plans subsystem worked and the chat essentially
+    never used it — 4 create_plan calls in production history against 53
+    confirm.approve. A trigger on the tool alone would have lost to
+    "# Compound requests", which defines a finished job as a gated call, and a
+    card, per part. These pin that the two sections cover different work and
+    that each says so to the other.
+
+    Note what is NOT edited: the adjacency assertions elsewhere in this file
+    are the control for where the new section may live. Inserting it
+    immediately before "# Compound requests" breaks one of them, which is
+    exactly the tripwire they exist to be.
+    """
+
+    def test_the_section_exists(self):
+        assert "# When to plan" in build_system_prompt("alice")
+
+    def test_the_two_sections_cross_reference_each_other(self):
+        """Both directions. Shipping the new section without amending
+        "# Compound requests" leaves the older rule unqualified and winning, so
+        the forward pointer is the half most likely to be dropped."""
+        prompt = build_system_prompt("alice")
+        assert "that group is ONE plan" in prompt      # forward, from Compound
+        assert "one gated call per part" in prompt     # back, from When to plan
+
+    def test_the_dividing_line_is_mechanical(self):
+        """Derived from the step schema (additionalProperties: False), not from
+        taste: a plan step is a catalog operation on a registered device, so the
+        two sets are disjoint and neither rule can be the wrong answer."""
+        prompt = build_system_prompt("alice")
+        assert "create_action_rule" in prompt
+        assert "never be plan steps" in prompt
+
+    def test_it_orders_discovery_before_planning(self):
+        prompt = build_system_prompt("alice")
+        assert "Discover first, then plan" in prompt
+        assert "rejects the WHOLE plan" in prompt
+
+    def test_it_states_the_anti_trigger(self):
+        prompt = build_system_prompt("alice")
+        assert "Never plan what you cannot yet parameterise" in prompt
+        assert "NO data passes between them" in prompt
+
+    def test_the_capability_bullet_no_longer_demotes_planning(self):
+        """It read "or create_plan(steps=[...]) for multi-step workflows" — a
+        trailing third option in a list whose own examples route firmware
+        upgrade to execute_operation."""
+        prompt = build_system_prompt("alice")
+        assert "or create_plan(steps=[...]) for multi-step workflows" not in prompt
+        assert "one approval for the batch" in prompt
+
+
 class TestAdvancedCapabilitiesSection:
     """ADR-0052 / GH #132 slice 3 — the mode banner, shown only when a
     capability a production install should not have is actually active."""

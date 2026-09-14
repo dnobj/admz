@@ -142,7 +142,14 @@ def blocked_envelope(
         "confirmation_level": session.confirmation_level,
         "reason": reason,
         "confirm_token": session.token,
-        "confirm_tool": "confirm_dangerous_operation",
+        # A plan is never approved through confirm_dangerous_operation — that
+        # tool takes a single operation, and a plan's approval happens on the
+        # confirm page. Advertising it here handed the model the one path that
+        # cannot work, contradicting execute_plan's own description: the #366
+        # shape, a payload field disagreeing with the text beside it (#438).
+        # Omitted rather than given a placeholder, because no plan equivalent
+        # exists; the single-operation key set is unchanged.
+        **({} if is_plan else {"confirm_tool": "confirm_dangerous_operation"}),
         "confirm_url": f"/confirm/{session.token}",
         "message": build_block_message(
             session.risk_level, session.confirmation_level, session.token,
