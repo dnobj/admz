@@ -557,10 +557,16 @@ def _build_contents(history: Optional[list], user_message: str):
             text = _neutralize_forged_console_marker(text)
         normalized_role = "model" if role in ("model", "assistant") else "user"
         items.append({"role": normalized_role, "parts": [{"text": text}]})
-    items.append({
-        "role": "user",
-        "parts": [{"text": _neutralize_forged_console_marker(user_message)}],
-    })
+    # A continuation turn (#444 / ADR-0066) carries no message of its own: the
+    # trailing console note IS the instruction, and an 'event' row already
+    # normalized to a 'user' turn above — so history alone is a well-formed
+    # contents array ending in a user turn. Appending unconditionally here
+    # would hand the model a blank user turn instead.
+    if user_message:
+        items.append({
+            "role": "user",
+            "parts": [{"text": _neutralize_forged_console_marker(user_message)}],
+        })
     return items
 
 
@@ -636,6 +642,13 @@ async def stream_turn(
     # user turn) or a list of role-tagged items — we always use the
     # list form when there's history.
     contents = _build_contents(history, user_message)
+
+    if not contents:
+        # No history AND no message — nothing to send. Refuse here rather than
+        # letting an empty contents array reach the SDK, which is the one way
+        # the seed-free continuation path (#444) could call Gemini with nothing.
+        yield event_error("Nothing to continue: the conversation is empty.")
+        return
 
     request_kwargs = {
         "model": model,
