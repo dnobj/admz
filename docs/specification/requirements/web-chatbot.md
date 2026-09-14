@@ -214,6 +214,41 @@ or a failed refresh, ADMZ falls back to the declared table. FR-CB-009
 requires ADMZ to run fine with no Gemini key at all, so this must never
 become a startup dependency on the provider being reachable.
 
+### FR-CB-016 — A resolved out-of-band step resumes the promised turn 📋
+After an out-of-band capture (ADR-0009) or approval resolves, ADMZ does not wait
+for the operator to prod it. The browser fires **one** continuation turn — an
+ordinary, fully-gated chat turn run as the operator's own principal — so the
+assistant finishes the work it said it would. See
+[ADR-0066](../decisions/0066-an-out-of-band-resolution-resumes-the-promised-turn.md).
+
+- **Browser-driven, as the operator.** The turn goes through the same
+  `_run_chat_turn` policy (budget, audit, usage, principal-into-MCP) as
+  `/chat/stream`; no `Principal` is constructed, so it is not a server-side actor
+  and introduces no autonomous, unattended turn — ADR-0062's envelope is
+  untouched.
+- **Approval is never widened, and the turn carries no instruction of its own.**
+  A resumed turn hits the confirmation gate (NFR-CB-004 / ADR-0034) like any
+  other: a risky follow-on raises a new card and stops; only already-approved or
+  low-risk promised work completes. It is **seed-free** — the model is handed
+  history alone, because a text seed would be a second unmarked channel of
+  ADMZ-authored instruction, the ambiguity the `[console]` marker exists to
+  close. The event note is already the instruction; the gate is the guarantee.
+- **It runs in the conversation that resolved**, not whichever is active. The
+  active pointer decides where the operator's *next typed message* lands, so a
+  resume never moves it; `conversation_id` is threaded explicitly, mirroring the
+  reason `append_event` already takes one.
+- **At most once per resolution.** A resume is *due* only when the conversation's
+  latest row is a `role='event'` note (ordered by row id, never timestamp — a
+  turn's two rows share one). The model row that follows clears it, and the
+  endpoint re-checks server-side before running. Because capture opens in a
+  second tab, two `/chat` tabs are the normal end state, so a short **leased
+  claim** on the trailing note's id stops both firing. The lease is deliberately
+  not a tombstone: a *failed* resume stays due and retries on a later reload,
+  rather than never firing again.
+- **Both flows.** Approvals — whose held work already executed on approval — gain
+  the missing narration; captures — whose follow-on never ran — get it run. A
+  denial is also an event row and is due too; the continuation acknowledges it.
+
 ## Non-functional requirements
 
 ### NFR-CB-001 — Gemini API key never in client code ✅
