@@ -824,7 +824,9 @@ class ADMZMCPServer:
                         "device is untouched). Returns blocked:true with a "
                         "confirm_token — the deletion executes only after the "
                         "user approves the on-screen confirmation card, like "
-                        "any other destructive step."
+                        "any other destructive step. To remove more than one "
+                        "device, call delete_devices once instead: one approval "
+                        "card for the whole batch, not a card per device."
                     ),
                     inputSchema={
                         "type": "object",
@@ -2456,6 +2458,63 @@ class ADMZMCPServer:
         )
         env = operations.blocked_envelope(session)
         env["success"] = False
+        return env
+
+    async def _delete_devices(self, device_ids: Any) -> Dict[str, Any]:
+        """Request removing SEVERAL devices behind one approval (ADR-0069).
+
+        Every id is checked before anything is created: one unknown id rejects
+        the whole request and opens no session, so an approval never covers
+        "most of" what was asked. The session carries single removal's gate
+        unchanged — service-affecting, url_only, the same token lifetime — and
+        its sentence names every device, because both approval surfaces render
+        ``danger_description`` and neither renders the action payload.
+        """
+        if (
+            not isinstance(device_ids, list)
+            or not device_ids
+            or not all(isinstance(d, str) and d.strip() for d in device_ids)
+        ):
+            return {
+                "success": False,
+                "error": "InvalidInput",
+                "message": "device_ids must be a non-empty list of device ID strings.",
+            }
+        # Order kept, duplicates collapsed.
+        ids = list(dict.fromkeys(d.strip() for d in device_ids))
+        unknown = [d for d in ids if not self.registry.device_exists(d)]
+        if unknown:
+            raise DeviceNotFoundError(
+                f"{len(unknown)} of {len(ids)} device ids are not registered "
+                f"({', '.join(unknown)}), so nothing was removed and no approval "
+                "was requested. Check list_devices and call again."
+            )
+        labels = []
+        for d in ids:
+            info = self.registry.get_device_info(d)
+            labels.append(f"{info.get('nickname') or info.get('model') or d} ({d})")
+        if len(ids) == 1:
+            reason = (
+                f"Remove 1 device from the registry: {labels[0]}, including its "
+                "stored accounts and credentials. The device itself is not "
+                "touched; its git config history is retained."
+            )
+        else:
+            reason = (
+                f"Remove {len(ids)} devices from the registry: {', '.join(labels)}, "
+                "including their stored accounts and credentials. The devices "
+                "themselves are not touched; their git config history is retained."
+            )
+        from admz import operations
+        session = operations.create_action_session(
+            action="delete_devices",
+            device_id=ids[0] if len(ids) == 1 else "multiple",
+            payload={"device_ids": ids},
+            reason=reason,
+        )
+        env = operations.blocked_envelope(session)
+        env["success"] = False
+        env["device_count"] = len(ids)
         return env
 
     async def _list_rule_capabilities(self, device_id: str) -> Dict[str, Any]:

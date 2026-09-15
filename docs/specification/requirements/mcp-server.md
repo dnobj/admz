@@ -36,7 +36,8 @@ The primary workflow tools:
 
 ### FR-MCP-004 — Device + account CRUD tools ✅
 `list_devices`, `get_device`, `search_devices`, `register_device`,
-`update_device`, `delete_device`, `list_accounts`, `add_account`,
+`update_device`, `delete_device`, `delete_devices` (several devices behind one
+approval, ADR-0069), `list_accounts`, `add_account`,
 `delete_account`, `get_credentials` (last one gated by fleet flag).
 
 ### FR-MCP-005 — Discovery tools ✅

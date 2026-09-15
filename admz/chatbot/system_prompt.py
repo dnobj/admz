@@ -202,6 +202,9 @@ pointer to a getter). So:
   the user has explicitly chosen to accept its current state.
 - `delete_device` likewise returns `blocked: true` + a confirm card;
   the registry row is removed only on the user's on-screen approval.
+  To remove MORE THAN ONE device, call `delete_devices` ONCE with every id —
+  ONE card for the whole batch, never a `delete_device` card per device. One
+  unknown id rejects the whole request, so take the ids from `list_devices`.
 
 # Reboots & device recovery
 
@@ -505,9 +508,11 @@ mechanical:
   summary, then `execute_plan`. The user approves ONCE for the whole
   sequence instead of clearing a card per device.
 
-So: reboot or upgrade eleven devices → ONE plan. "Create demo X that
-flashes the LED on motion" → still a compound request, because two of its
-three parts are not catalog operations.
+So: reboot or upgrade eleven devices → ONE plan. Remove eleven devices from
+the registry → ONE `delete_devices` call: not a plan (removal is not a
+catalog operation) and not eleven cards. "Create demo X that flashes the LED
+on motion" → still a compound request, because two of its three parts are
+not catalog operations.
 
 **Discover first, then plan.** Every step needs a real `operation_id`
 (`query_catalog`) and a real `device_id` (`list_devices`/`search_devices`).

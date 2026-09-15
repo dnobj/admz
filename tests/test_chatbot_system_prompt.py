@@ -372,6 +372,14 @@ class TestWhenToPlanGuidance:
         assert "or create_plan(steps=[...]) for multi-step workflows" not in prompt
         assert "one approval for the batch" in prompt
 
+    def test_registry_removal_has_its_own_batch_tool(self):
+        """ADR-0069. Registry removal can never be a plan step, so without a
+        batch tool "remove all eleven devices" was eleven cards — the chain that
+        broke on 2026-09-15. Both places the model looks name the batch tool."""
+        prompt = build_system_prompt("alice")
+        assert "call `delete_devices` ONCE with every id" in prompt  # registry bullet
+        assert "ONE `delete_devices` call" in prompt                  # When to plan
+
 
 class TestAdvancedCapabilitiesSection:
     """ADR-0052 / GH #132 slice 3 — the mode banner, shown only when a

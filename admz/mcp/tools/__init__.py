@@ -37,6 +37,7 @@ from admz.mcp.tools import (
     audit,
     capabilities,
     demos,
+    device_removal,
     firmware,
     fleet,
     knowledge,
@@ -66,6 +67,8 @@ MIGRATED_TOOLS: List[Tool] = (
     # tests/test_mcp_tool_order.py is a prefix assertion, so a new domain that
     # lands at the END costs one line there instead of reshuffling 74 names.
     + capabilities.TOOLS
+    # ADR-0069: batch registry removal, appended after it for the same reason.
+    + device_removal.TOOLS
 )
 
 __all__ = ["MIGRATED_TOOLS"]

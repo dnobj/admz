@@ -101,6 +101,9 @@ EXPECTED_TOOL_ORDER = [
     # alone: there is no set_advanced_capability and there never should be
     # (admz/mcp/tools/capabilities.py explains why).
     "get_advanced_capabilities",
+    # ADR-0069 — batch registry removal: several devices behind one approval.
+    # Appended after the capabilities tool, so the frozen prefix is untouched.
+    "delete_devices",
 ]
 
 

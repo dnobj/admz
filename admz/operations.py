@@ -724,6 +724,56 @@ def _action_delete_device(
     }
 
 
+def _action_delete_devices(
+    action: Mapping[str, Any], registry: Any, git_repo: Any = None,
+) -> Dict[str, Any]:
+    """Remove every device an approved batch listed (ADR-0069).
+
+    Each device goes through :func:`_action_delete_device`, so the tombstone,
+    the registry cascade and the tables it deliberately keeps are exactly those
+    of single removal. One failure does not stop the rest: each removal is
+    independent, and stopping partway would leave an arbitrary subset removed.
+    Success means every listed device was removed. There is no cross-device
+    atomicity — each device is its own transaction and its own commit.
+    """
+    device_ids = [d for d in (action.get("device_ids") or []) if isinstance(d, str) and d]
+    removed: list = []
+    failed: list = []
+    for device_id in device_ids:
+        try:
+            result = _action_delete_device(
+                {"device_id": device_id, "removed_by": action.get("removed_by", "")},
+                registry, git_repo,
+            )
+        except Exception as exc:  # noqa: BLE001 - one device must not stop the rest
+            result = {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+        if result.get("success"):
+            removed.append(device_id)
+        else:
+            failed.append({
+                "device_id": device_id,
+                "error": str(result.get("error") or "unknown error"),
+            })
+    out: Dict[str, Any] = {
+        "success": bool(device_ids) and not failed,
+        "action": "delete_devices",
+        "removed": removed,
+        "failed": failed,
+        "message": f"Removed {len(removed)} of {len(device_ids)} devices.",
+    }
+    # Identity fields for the approval's audit row (audit.OUTCOME_IDENTITY_KEYS
+    # records scalars only, so each list is one comma-separated string).
+    if removed:
+        out["removed_devices"] = ",".join(removed)
+    if failed:
+        out["failed_devices"] = ",".join(f["device_id"] for f in failed)
+        out["error"] = f"removed {len(removed)} of {len(device_ids)}; " + "; ".join(
+            f"{f['device_id']}: {f['error']}" for f in failed)
+    elif not device_ids:
+        out["error"] = "the approved batch listed no devices"
+    return out
+
+
 def _action_create_task(
     action: Mapping[str, Any], registry: Any, git_repo: Any = None,
 ) -> Dict[str, Any]:
@@ -1323,6 +1373,9 @@ async def _action_provision_device_credentials(action, registry, git_repo=None):
 _ACTION_EXECUTORS = {
     "accept_baseline": _action_accept_baseline,
     "delete_device": _action_delete_device,
+    # ADR-0069: several devices behind one approval, each removed by the
+    # single-device executor above.
+    "delete_devices": _action_delete_devices,
     "set_event_ingest": _action_set_event_ingest,
     "create_task": _action_create_task,
     "update_task": _action_update_task,

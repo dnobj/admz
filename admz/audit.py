@@ -336,7 +336,14 @@ audit_log = AuditLog()
 #: reached an audit row because nothing inspected it. Audit rows are durable.
 #:
 #: Only extend this after confirming the key is a short, non-secret identifier.
-OUTCOME_IDENTITY_KEYS = ("rule_id", "config_id", "removed_rule", "removed_config")
+#:
+#: ``removed_devices`` / ``failed_devices`` (ADR-0069) are the device ids a batch
+#: removal did and did not remove, each list one comma-separated string because
+#: only scalars are recorded. Device ids are short, non-secret identifiers.
+OUTCOME_IDENTITY_KEYS = (
+    "rule_id", "config_id", "removed_rule", "removed_config",
+    "removed_devices", "failed_devices",
+)
 
 
 def outcome_identity_fields(outcome: Any) -> Dict[str, str]:

@@ -548,3 +548,26 @@ class TestApproveOutcomeIdentityAudit:
 
         details = self._audit().list_recent(action="confirm.approve")[0].details
         assert "rule_id" not in details
+
+    def test_batch_removal_records_which_devices_were_removed(
+        self, client, monkeypatch,
+    ):
+        """ADR-0069 §3. The row's payload keys say only that *some* devices
+        were removed; the ids come from the outcome, each list as one string
+        because only scalars are recorded."""
+        self._patch_outcome(monkeypatch, {
+            "success": False, "action": "delete_devices",
+            "removed": ["cam-a", "cam-c"],
+            "failed": [{"device_id": "cam-b", "error": "Device not found: cam-b"}],
+            "removed_devices": "cam-a,cam-c", "failed_devices": "cam-b",
+            "error": "removed 2 of 3; cam-b: Device not found: cam-b",
+        })
+        session = _make_session()
+        client.post(f"/api/chat/confirm/{session.token}")
+
+        details = self._audit().list_recent(action="confirm.approve")[0].details
+        assert details["removed_devices"] == "cam-a,cam-c"
+        assert details["failed_devices"] == "cam-b"
+        # The lists themselves are not scalars and never cross.
+        assert "removed" not in details
+        assert "failed" not in details

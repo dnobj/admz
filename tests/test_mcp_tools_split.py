@@ -85,6 +85,13 @@ class TestPerDomainModules:
         names = {t.name for t in capabilities.TOOLS}
         assert names == {"get_advanced_capabilities"}
 
+    def test_device_removal_module_has_the_batch_tool(self):
+        """ADR-0069: registry removal's batch path gets its own domain, beside
+        — not inside — capabilities, which must stay a domain of one."""
+        from admz.mcp.tools import device_removal
+        names = {t.name for t in device_removal.TOOLS}
+        assert names == {"delete_devices"}
+
 
 # ---------------------------------------------------------------------------
 # MIGRATED_TOOLS aggregate
@@ -102,8 +109,9 @@ class TestMigratedToolsAggregate:
         # list_demo_proposals / confirm_demo_proposal / dismiss_demo_proposal)
         # + 1 (capabilities: get_advanced_capabilities, GH #132 slice 3)
         # + 1 (knowledge: list_device_capabilities, ADR-0063 S2 #452)
-        # = 41
-        assert len(MIGRATED_TOOLS) == 41
+        # + 1 (device_removal: delete_devices, ADR-0069)
+        # = 42
+        assert len(MIGRATED_TOOLS) == 42
 
     def test_migrated_tools_all_named(self):
         from admz.mcp.tools import MIGRATED_TOOLS

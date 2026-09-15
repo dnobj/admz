@@ -1,6 +1,6 @@
 # ADMZ MCP Tools Reference
 
-Reference for the **76 tools** the ADMZ MCP server exposes (plus whatever an
+Reference for the **77 tools** the ADMZ MCP server exposes (plus whatever an
 enabled platform module appends — ACS Pro contributes its own once connected).
 The frozen wire order lives in `tests/test_mcp_tool_order.py`.
 
@@ -113,6 +113,18 @@ Request removing a device and its accounts (ADR-0034: **widget-gated**).
   — the registry row is removed only after the user approves the on-screen
   confirmation card. The physical device is untouched; git config history
   is retained.
+
+### `delete_devices`
+Request removing **several** devices behind **one** approval (ADR-0069).
+- **Args:** `device_ids` (array, at least one; duplicates collapse)
+- **Returns:** one blocked envelope `{blocked, confirm_token, confirm_url,
+  device_count, ...}` whose card names every device. Every id is checked
+  first: one unknown id rejects the whole request (`DeviceNotFound`) and
+  nothing is created.
+- **On approval:** each device is removed through the same executor as
+  `delete_device`. One failure does not stop the rest; the outcome lists
+  `removed` and `failed` (each with its error), and `success` is true only
+  when every listed device was removed.
 
 ### `list_accounts`
 List accounts on a device (no passwords).

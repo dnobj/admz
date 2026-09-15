@@ -100,6 +100,10 @@ async def _delete_device(ctx, a):
     return await ctx.server._delete_device(a["device_id"])
 
 
+async def _delete_devices(ctx, a):
+    return await ctx.server._delete_devices(a.get("device_ids"))
+
+
 async def _delete_account(ctx, a):
     return await ctx.server._delete_account(a["device_id"], a["account_id"])
 
@@ -480,4 +484,5 @@ TOOL_HANDLERS: Dict[str, ToolHandler] = {
     "create_temp_credentials": _create_temp_credentials,
     "cleanup_temp_credentials": _cleanup_temp_credentials,
     "get_advanced_capabilities": _get_advanced_capabilities,
+    "delete_devices": _delete_devices,
 }

@@ -442,6 +442,61 @@ class TestConfirmResolutionNote:
         _note_resolution_to_chat("tok", _FakeSession(), {"success": True}, "chat")
 
 
+class TestBatchRemovalNotes:
+    """ADR-0069. A batch session's device_id is the literal "multiple", so a
+    note reading "on device multiple" would tell the model nothing about what
+    it had asked for. Both notes say how many devices instead."""
+
+    def _batch_session(self, device_ids):
+        session = _FakeSession("action:delete_devices")
+        session.device_id = device_ids[0] if len(device_ids) == 1 else "multiple"
+        session.action = {"action": "delete_devices", "device_ids": device_ids}
+        return session
+
+    def _resolve(self, store, monkeypatch, session, outcome):
+        import admz.chatbot.sessions as sessions_mod
+        from admz.api.routes.confirm import _note_resolution_to_chat
+
+        monkeypatch.setattr(sessions_mod, "chat_sessions", store)
+        _note_resolution_to_chat("tok-c", session, outcome, "chat")
+
+    def test_the_resolution_note_counts_the_devices(self, store, monkeypatch):
+        conv = _conversation(store)
+        store.link_action("tok-c", "alice", conv, "confirm")
+        self._resolve(
+            store, monkeypatch, self._batch_session(["cam-a", "cam-b", "cam-c"]),
+            {"success": False,
+             "error": "removed 2 of 3; cam-b: Device not found: cam-b"},
+        )
+        text = store.get_messages("alice", conv)[-1]["text"]
+        assert '"delete_devices" on 3 devices' in text
+        assert "device multiple" not in text
+        # A partial result reaches the model as a failure naming the device.
+        assert "FAILED: removed 2 of 3; cam-b" in text
+
+    def test_the_denial_note_counts_the_devices(self, store, monkeypatch):
+        import admz.chatbot.sessions as sessions_mod
+        from admz.api.routes.confirm import _note_denial_to_chat
+
+        monkeypatch.setattr(sessions_mod, "chat_sessions", store)
+        conv = _conversation(store)
+        store.link_action("tok-d", "alice", conv, "confirm")
+        _note_denial_to_chat("tok-d", self._batch_session(["cam-a", "cam-b"]))
+        text = store.get_messages("alice", conv)[-1]["text"]
+        assert '"delete_devices" on 2 devices' in text
+        assert "device multiple" not in text
+        assert "NOT executed" in text
+
+    def test_a_batch_of_one_names_its_device(self, store, monkeypatch):
+        """Control: only a session covering several devices changes wording."""
+        conv = _conversation(store)
+        store.link_action("tok-c", "alice", conv, "confirm")
+        self._resolve(store, monkeypatch, self._batch_session(["cam-a"]),
+                      {"success": True})
+        text = store.get_messages("alice", conv)[-1]["text"]
+        assert '"delete_devices" on device cam-a' in text
+
+
 # ---------------------------------------------------------------------------
 # Denial — store transition, endpoint, and note
 # ---------------------------------------------------------------------------
