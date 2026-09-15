@@ -422,6 +422,19 @@ credential**. See
   ADMZ's database. It is not LLM-writable — FR-SEC-012's allow-set is unchanged —
   and the name carries `password`, so masking, reveal-gating and the MCP refusal
   follow from the name-shape predicate (FR-SEC-007) with no new special case.
+- **It is set from the Fleet Settings page** (`POST /fleet-settings/root-password`),
+  which is the recommended path. `python -m admz settings set` still works, but it
+  takes the value as a command-line argument, which lands in shell history and the
+  process list; a form typed in the browser has neither exposure. The form is gated
+  on **reveal-group membership**, not merely an authenticated caller: whoever sets
+  the value knows it afterwards, so setting it must need at least the permission
+  that revealing it needs, or it would be a back door to reveal. Same-origin is
+  checked before any side effect, the value is typed twice, never echoed and never
+  in an audit row, and refused attempts are audited. An **empty submission is
+  refused rather than read as "clear"** — clearing the value makes provisioning
+  refuse for the whole fleet, so it must not be one accidental submit away. The
+  page states that changing the value does **not** change devices already
+  provisioned: they keep the root password they were given.
 - **The prompt offers exactly two outcomes**, as a `required` radio group with
   **nothing pre-selected**: add the typed password to the fleet entry list
   (FR-CRED-012), or discard it. Not a checkbox — an unticked box is a silent

@@ -5,6 +5,59 @@
     <h1>Fleet Settings</h1>
 </div>
 
+{% if success %}<div class="message success" data-flash="success">{{ success }}</div>{% endif %}
+{% if error %}<div class="message error" data-flash="error">{{ error }}</div>{% endif %}
+
+{# FR-CRED-014 / ADR-0068. The context carries whether the password is SET,
+   never its value — the same rule the settings table below follows for every
+   sensitive key. #}
+<div class="account-info" id="fleet-root-password">
+    <h2>Break-glass root password</h2>
+    <p>The password ADMZ writes to <code>root</code> on every factory-defaulted
+    device it provisions, before creating its own <code>admz</code> account.
+    It is <strong>one value for the whole fleet</strong>, on purpose: keep it
+    somewhere a person can find it, because it is how you get into a device by
+    hand if ADMZ's database is ever lost. ADMZ never stores it per device and
+    never shows it to the AI assistant.</p>
+    <table>
+        <tr><th>Status</th><td>
+        {% if root_password_configured %}
+            <strong data-root-password="set">Set</strong>
+        {% else %}
+            <strong data-root-password="unset">Not set</strong> &mdash;
+            factory-defaulted devices will <strong>not</strong> be provisioned
+            until one is set.
+        {% endif %}
+        </td></tr>
+    </table>
+    <p><strong>Changing it does not change devices ADMZ has already
+    provisioned.</strong> They keep the root password they were given; only
+    devices provisioned after the change get the new value.</p>
+    <form method="POST" action="/fleet-settings/root-password" autocomplete="off">
+        <p>
+            <label for="root_password">{% if root_password_configured %}New root password{% else %}Root password{% endif %}</label><br>
+            {# autocomplete="new-password", not "off": browsers ignore "off" on
+               password fields and would autofill the operator's own saved login,
+               silently setting the WRONG break-glass value. #}
+            <input type="password" id="root_password" name="root_password"
+                   required minlength="{{ root_password_min_length }}"
+                   autocomplete="new-password">
+        </p>
+        <p>
+            <label for="confirm_root_password">Type it again</label><br>
+            <input type="password" id="confirm_root_password"
+                   name="confirm_root_password"
+                   required minlength="{{ root_password_min_length }}"
+                   autocomplete="new-password">
+        </p>
+        <button type="submit" class="button" id="set-root-password">
+            {% if root_password_configured %}Replace root password{% else %}Set root password{% endif %}
+        </button>
+    </form>
+    <p class="no-accounts">Requires membership in a reveal group &mdash; the
+    same permission needed to reveal it.</p>
+</div>
+
 {% if settings %}
 <div class="account-info">
     <h2>Settings</h2>
