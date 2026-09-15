@@ -25,10 +25,11 @@ sensitive.
 
 The legacy ``default_username``/``default_password`` pair is **read as entry #1**
 rather than migrated away. Since ADR-0064 slice E it is no longer written to a
-factory-defaulted device (FR-CRED-007: the generated password wins), so it is
-purely an entry credential; retiring it into the list is still a separate
-decision with its own blast radius — every install's effective list is its
-legacy pair — and this module only stops it being the *whole* answer.
+factory-defaulted device (FR-CRED-007; under ADR-0068 ``root`` gets the fleet
+break-glass password instead), so it is purely an entry credential; retiring it
+into the list is still a separate decision with its own blast radius — every
+install's effective list is its legacy pair — and this module only stops it
+being the *whole* answer.
 """
 
 from __future__ import annotations
@@ -48,9 +49,9 @@ logger = logging.getLogger(__name__)
 #: One encrypted fleet setting holding the JSON list.
 SETTING_KEY = "entry_credentials"
 
-#: Legacy single pair, still authoritative for provisioning a factory-defaulted
-#: device. Read here as the first entry so an existing install keeps working
-#: with no migration step and no window where nothing resolves.
+#: Legacy single pair — an entry credential only: nothing writes it to a device
+#: (FR-CRED-007). Read here as the first entry so an existing install keeps
+#: working with no migration step and no window where nothing resolves.
 LEGACY_USER_KEY = "default_username"
 LEGACY_PASS_KEY = "default_password"
 #: The label the legacy pair is listed and tried under.
