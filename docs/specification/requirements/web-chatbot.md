@@ -237,6 +237,12 @@ assistant finishes the work it said it would. See
   active pointer decides where the operator's *next typed message* lands, so a
   resume never moves it; `conversation_id` is threaded explicitly, mirroring the
   reason `append_event` already takes one.
+- **It runs on the model of the turn it continues.** The console sends the model
+  the operator picked; without one, `/api/chat/resume` uses the model this
+  principal last used, and the org default only when that is not selectable.
+  Falling straight back to the default (fixed 2026-09-15) switched a job typed on
+  one model onto another mid-way — and that model wrote an approval link instead
+  of calling the tool, which the console flags as unbacked.
 - **At most once per resolution.** A resume is *due* only when the conversation's
   latest row is a `role='event'` note (ordered by row id, never timestamp — a
   turn's two rows share one). The model row that follows clears it, and the
