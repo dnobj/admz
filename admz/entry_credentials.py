@@ -33,8 +33,11 @@ legacy pair — and this module only stops it being the *whole* answer.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
+import secrets
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -112,6 +115,15 @@ REFUSED_CAP = "cap-reached"
 REFUSED_UNREADABLE = "unreadable"
 REFUSED_STALE = "stale"
 
+#: The settings the page's view of the list is built from: a write to any of
+#: them can move a row to a different position.
+_REVISION_KEYS = (SETTING_KEY, LEGACY_PASS_KEY, LEGACY_USER_KEY)
+
+#: The MAC key for :func:`list_revision` — random per process, never stored.
+#: ADMZ serves its web UI from one process, so the only cost is that a page
+#: rendered before a restart has its Remove refused as stale; a reload fixes it.
+_REVISION_MAC_KEY = secrets.token_bytes(32)
+
 
 class EntryCredentialRefused(ValueError):
     """A write the list's rules refuse, carrying a stable :attr:`code`.
@@ -166,26 +178,43 @@ def _parse(raw: Optional[str]) -> List[EntryCredential]:
 
 
 def _unreadable(raw: Optional[str]) -> bool:
-    """True when ``raw`` — what ``fleet_settings.get`` returned for the list —
-    is ``None`` only because a stored list cannot be decrypted."""
-    return raw is None and fleet_settings.is_stored(SETTING_KEY)
+    """True when a stored list exists that cannot be read in full.
+
+    ``raw`` is what ``fleet_settings.get`` returned for the list. The list is
+    unreadable when ``raw`` is ``None`` only because the stored value cannot be
+    decrypted, or when it decrypts to something other than a JSON list of
+    complete username/password pairs. A reader is right to treat both as
+    (partly) empty; :func:`_stored_list` says why a writer must not.
+    """
+    if raw is None:
+        return fleet_settings.is_stored(SETTING_KEY)
+    if not raw.strip():
+        return False
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return True
+    return not isinstance(data, list) or len(_parse(raw)) != len(data)
 
 
 def _stored_list() -> List[EntryCredential]:
-    """The stored list, read for a WRITE: refused when it cannot be decrypted.
+    """The stored list, read for a WRITE: refused unless it can be read in full.
 
-    A reader is right to treat an undecryptable list as empty
-    (``setting_crypto.read_stored``). A writer is not, because it rewrites the
-    list from what it read: an add would replace the unreadable value with a
-    one-entry list, when ``read_stored`` promises that value is left alone so
-    that restoring the right key recovers it.
+    Every write rewrites the whole list from what it read. An undecryptable list
+    would therefore be replaced by the one new entry — when
+    ``setting_crypto.read_stored`` promises an unreadable value is left alone so
+    that restoring the right key recovers it — and a list holding anything
+    :func:`_parse` skips (not JSON, not a list, a half-written pair) would lose
+    it silently.
     """
     raw = fleet_settings.get(SETTING_KEY)
     if _unreadable(raw):
         raise EntryCredentialRefused(
             REFUSED_UNREADABLE,
-            "the stored entry list cannot be decrypted, so it cannot be changed "
-            "without destroying it; restore the key file it was written with first",
+            "the stored entry list cannot be read in full (it cannot be decrypted, "
+            "or it is not a list of complete username/password pairs), so it cannot "
+            "be changed without losing part of it; restore the key file it was "
+            f"written with, or correct it with `python -m admz settings set {SETTING_KEY}`",
         )
     return _parse(raw)
 
@@ -195,6 +224,27 @@ def _write_list(creds: List[EntryCredential]) -> None:
         {"username": c.username, "password": c.password, "label": c.label}
         for c in creds
     ]))
+
+
+def list_revision() -> str:
+    """A token that changes whenever the list, or the legacy pair, is written.
+
+    Each Remove button on the settings page carries the token the page was
+    rendered with, and :func:`remove_entry_credential` acts only while it still
+    matches — so a removal applies to exactly the list the operator saw. A
+    position alone cannot promise that. Rows often look identical (the username
+    defaults to ``root`` and the label is optional), so a form resubmitted by a
+    browser reload, a second tab or another writer would otherwise remove a
+    different credential that happens to sit where the shown one was.
+
+    It is an HMAC of the three settings' values *as stored*: a secret contributes
+    its ciphertext, whose random IV changes the token on every write, even of an
+    identical list. Keyed, because a secret can still be at legacy plaintext, and
+    an unkeyed digest in a page would let anyone who can view the page test
+    guesses against it.
+    """
+    digest = fleet_settings.stored_digest(*_REVISION_KEYS)
+    return hmac.new(_REVISION_MAC_KEY, digest, hashlib.sha256).hexdigest()[:32]
 
 
 def prompt_always() -> bool:
@@ -303,10 +353,11 @@ def attempt_order(*, warn: bool = True) -> List[EntryCredential]:
     Composed in one place (:func:`_attempts`): the onboarding loop iterates
     this and :func:`describe` reports the same attempts as ``in_use``, so what
     is tried and what the settings page says is tried cannot drift. The order
-    is the stored order (the legacy pair first); reordering
-    most-recently-successful-first is ADR-0064 slice F and waits for the
-    lockout measurement — and it must sort *before* the slice, or success
-    history could never pull a tail entry into the tried set.
+    is the stored order (the legacy pair first). Reordering
+    most-recently-successful-first is ADR-0064 slice F — not yet built; the
+    lockout measurement that gated it was made on 2026-09-09 — and it must sort
+    *before* the slice, or success history could never pull a tail entry into
+    the tried set.
 
     ``warn=False`` is for readers (:func:`describe`, the settings page): the
     WARNING about a list stored over the bound belongs to the pass that
@@ -332,7 +383,7 @@ def add_entry_credential(username: str, password: str, label: str = "") -> bool:
 
     A refusal raises :class:`EntryCredentialRefused`: the prompt-always
     posture, half a credential, the storage cap, or a stored list that cannot
-    be decrypted (:func:`_stored_list`).
+    be read in full (:func:`_stored_list`).
     """
     if prompt_always():
         raise EntryCredentialRefused(
@@ -371,26 +422,20 @@ def add_entry_credential(username: str, password: str, label: str = "") -> bool:
     return True
 
 
-def remove_entry_credential(position: int, *, username: str, label: str) -> Dict[str, object]:
-    """Remove one stored entry credential — the one the operator was shown.
+def remove_entry_credential(position: int, *, revision: str) -> Dict[str, object]:
+    """Remove one stored entry credential — from exactly the list the page showed.
 
-    ``position`` is the entry's index in :func:`describe`'s ``stored`` list,
-    which is the order the settings page shows (the legacy pair first, when
-    set). ``username`` and ``label`` are what the page showed there, and the
-    entry is removed only if they still match. The page may be stale — a second
-    tab, the CLI writer or a promotion may have changed the list since it was
-    rendered — and removing whatever sits at that position *now* would remove a
-    credential the operator never saw. A mismatch, or a position that no longer
-    exists, raises :class:`EntryCredentialRefused` (``stale``) and changes
-    nothing.
+    ``position`` is the entry's index in :func:`describe`'s ``stored`` list, the
+    order the settings page shows (the legacy pair first, when set).
+    ``revision`` is the :func:`list_revision` the page was rendered with. If
+    anything has written the list or the legacy pair since — a second tab, the
+    CLI writer, a promotion, or this same form resubmitted by a browser reload —
+    the token no longer matches, nothing is removed, and
+    :class:`EntryCredentialRefused` (``stale``) is raised. A position that does
+    not exist is refused the same way; only a hand-made request sends one.
 
-    Two entries with the same username and label cannot be told apart this
-    way. Nor can the operator tell them apart, since passwords are never shown,
-    so the guard is as strong as the page itself — the most it can be without
-    putting a password-derived value into the HTML.
-
-    **Removal narrows what ADMZ tries; it never widens it**, so unlike an add
-    it is allowed under the prompt-always posture. It cannot be undone from the
+    **Removal narrows what ADMZ tries; it never widens it**, so unlike an add it
+    is allowed under the prompt-always posture. It cannot be undone from the
     page: ADMZ never shows the password, so only someone who knows it can add
     it back.
 
@@ -399,27 +444,25 @@ def remove_entry_credential(position: int, *, username: str, label: str) -> Dict
     the password first, so an interrupted removal leaves a username with no
     password, which is read as no legacy entry at all.
 
-    Returns ``{"username", "label", "legacy_pair"}`` for an audit row — never
-    the password.
+    Returns the removed row's ``{"username", "label", "legacy_pair"}``, as read
+    from storage, for an audit row — never the password.
     """
+    if not hmac.compare_digest(str(revision).encode("utf-8"),
+                               list_revision().encode("ascii")):
+        raise _stale()
     if fleet_settings.get(LEGACY_PASS_KEY):
         if position == 0:
-            shown = fleet_settings.get(LEGACY_USER_KEY) or "root"
-            if (shown, LEGACY_LABEL) != (username, label):
-                raise _stale()
+            username = fleet_settings.get(LEGACY_USER_KEY) or "root"
             fleet_settings.delete(LEGACY_PASS_KEY)
             fleet_settings.delete(LEGACY_USER_KEY)
-            return {"username": shown, "label": LEGACY_LABEL, "legacy_pair": True}
+            return {"username": username, "label": LEGACY_LABEL, "legacy_pair": True}
         position -= 1
     existing = _stored_list()
     if not 0 <= position < len(existing):
         raise _stale()
-    cred = existing[position]
-    if (cred.username, cred.label) != (username, label):
-        raise _stale()
-    del existing[position]
+    removed = existing.pop(position)
     _write_list(existing)
-    return {"username": cred.username, "label": cred.label, "legacy_pair": False}
+    return {"username": removed.username, "label": removed.label, "legacy_pair": False}
 
 
 def _stale() -> EntryCredentialRefused:
@@ -436,25 +479,45 @@ def describe() -> dict:
     :func:`prompt_always` those differ and an operator reading "0 credentials"
     would not know whether that is a policy or an empty box.
 
+    ``stored_tried`` runs alongside ``stored``: whether each stored entry is one
+    a pass actually tries. It is worked out from the credentials, not their
+    redacted names, because an exact duplicate is tried only once — of two
+    identical-looking rows only the first is live, and matching on username and
+    label would mark the wrong one tried and invite removing the live one.
+
     ``in_use`` ends with ADMZ's break-glass root password when one is
     configured (ADR-0068), and ``break_glass_last`` says so — letting a page
     count the entry credentials apart from it, rather than report four tried
-    "at most three". ``unreadable`` says a list is stored that cannot be
-    decrypted: it reads as empty, and without the flag a page would say "none
-    stored" about a list that exists.
+    "at most three". ``unreadable`` says a stored list exists that cannot be
+    read in full; it reads as (partly) empty, and without the flag a page would
+    say "none stored" about a list that exists. ``revision`` is
+    :func:`list_revision`, for a page's Remove buttons.
     """
     raw = fleet_settings.get(SETTING_KEY)
     stored = _parse(raw)
-    if fleet_settings.get(LEGACY_PASS_KEY):
+    legacy_pass = fleet_settings.get(LEGACY_PASS_KEY)
+    if legacy_pass:
         stored.insert(0, EntryCredential(
-            fleet_settings.get(LEGACY_USER_KEY) or "root", "", LEGACY_LABEL))
+            fleet_settings.get(LEGACY_USER_KEY) or "root", legacy_pass, LEGACY_LABEL))
     entries, break_glass = _attempts(warn=False)
+    tried = {(c.username, c.password) for c in entries}
+    seen = set()
+    stored_tried = []
+    for cred in stored:
+        pair = (cred.username, cred.password)
+        stored_tried.append(pair in tried and pair not in seen)
+        seen.add(pair)
     return {
         "prompt_always": prompt_always(),
         "max_stored": MAX_STORED,
         "max_attempts_per_pass": MAX_ATTEMPTS_PER_PASS,
         "stored": [c.redacted() for c in stored],
+        "stored_tried": stored_tried,
         "in_use": [c.redacted() for c in entries + break_glass],
         "break_glass_last": bool(break_glass),
         "unreadable": _unreadable(raw),
+        # Last, after every read above: a read can migrate a legacy plaintext
+        # secret to ciphertext, and the token has to describe the state a
+        # Remove will find when it comes back.
+        "revision": list_revision(),
     }

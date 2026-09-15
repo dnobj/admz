@@ -206,7 +206,7 @@ onto the `admz` account in place, keeping the credential it came in on.
 as slices C–F together with #443: the per-pass attempt bound (FR-CRED-013,
 slice C — shipped 2026-09-06), the promote checkbox (FR-CRED-012, slice D — shipped 2026-09-06),
 FR-CRED-007's generated-wins ordering (slice E — shipped 2026-09-06), and most-recently-successful
-ordering (FR-CRED-013, slice F — waits for the lockout measurement). Two facts to hold while reading the
+ordering (FR-CRED-013, slice F — not yet built; the lockout measurement that gated it was made on 2026-09-09). Two facts to hold while reading the
 rest: the list has three writers — `python -m admz settings set entry_credentials`,
 the capture form's promote checkbox (since slice D), and the Fleet Settings page,
 which adds and removes entries (FR-CRED-012, 2026-09-14); and the lockout
@@ -416,14 +416,19 @@ are `entry_credential.added`, `add_refused`, `removed` and `remove_refused`,
 under the `fleet_settings:entry_credentials` resource promotion already records,
 naming the username and label and never the password. The cap and the
 prompt-always posture stay the library's rules, surfaced through a stable
-refusal code rather than restated. A removal names the row the page showed —
-position, username and label — and removes nothing if that row has changed, so a
-stale page cannot remove a credential the operator never saw; because removal
-narrows what is tried, it is allowed under the prompt-always posture. Removing
-the legacy pair deletes `default_password` and `default_username`. Neither route
-rewrites a stored list that cannot be decrypted: it reads as empty, and
-rewriting it from that reading would destroy the value that restoring the key
-recovers.
+refusal code rather than restated. Each Remove carries the list's revision as
+rendered — an HMAC, under a per-process key, of the list and legacy-pair
+settings exactly as stored — and removes nothing once anything has written them
+since. Rows often look identical (the username defaults to `root` and the label
+is optional), so without it a stale tab, another writer or a reload that
+resubmits the form would remove whichever credential had moved into the shown
+one's place. Because removal narrows what is tried, it is allowed under the
+prompt-always posture. Removing the legacy pair deletes `default_password` and
+`default_username`. Neither route rewrites a stored list it cannot read in full
+— undecryptable, or not a list of complete pairs — because every write rewrites
+the whole list from what it read. The page marks an entry *tried* from the
+credentials themselves, so of two identical entries only the first, live one
+is.
 
 > **[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) re-points the ordering rule (✅ shipped 2026-09-14, ADR-0068 S3).** Promotion happens
 > *"**after** the device credential is stored"* today. A root-adopt session
@@ -465,8 +470,10 @@ credential**. See
   provisioned: they keep the root password they were given. A password shorter
   than eight characters is **warned about, not refused** (owner decision,
   2026-09-14): nothing is saved until the operator ticks an acceptance box that
-  is never pre-checked, the acceptance is audited as `short_password_accepted`
-  while the length never is, and accepting waives none of the other refusals.
+  is never pre-checked, and accepting waives none of the other refusals.
+  **Nothing recorded says the password is short** — not its length, not the
+  acceptance, not the unaccepted attempt — because the audit log is readable by
+  any signed-in user, and a length bound is a fact about the secret.
 - **The prompt offers exactly two outcomes**, as a `required` radio group with
   **nothing pre-selected**: add the typed password to the fleet entry list
   (FR-CRED-012), or discard it. Not a checkbox — an unticked box is a silent

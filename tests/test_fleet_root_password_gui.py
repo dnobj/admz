@@ -23,8 +23,9 @@ never echoed, never in an audit row, and stored encrypted at rest.
 
 A short password is a WARNING the operator may accept, not a refusal (owner
 decision, 2026-09-14). ``TestAShortPasswordIsAWarningNotABlock`` pins both
-halves: nothing is saved until the risk is accepted, and accepting it waives
-nothing else. The acceptance is audited; the length never is.
+halves — nothing is saved until the risk is accepted, and accepting it waives
+nothing else — and that nothing recorded says the password is short: the audit
+log is readable by any signed-in user.
 
 The ``client`` fixture repoints every module-level ``fleet_settings`` reference
 at once, copied from ``test_settings_write_authz.py``: a partial repoint leaves
@@ -117,6 +118,11 @@ def _admin():
     return _windows("alice", ["Administrators"])
 
 
+def _outsider():
+    """Signed in, but in no reveal group."""
+    return _windows("bob", groups=[])
+
+
 def _rows():
     from admz.audit import AuditLog
     return [r for r in AuditLog().list_recent(action="fleet_setting.write", limit=50)
@@ -140,7 +146,7 @@ class TestTheGate:
         """THE case this route exists to get right. Merely authenticated is the
         bar `/confirm-settings` uses — and here it would let someone who may not
         REVEAL the break-glass password set it, and so know it."""
-        _as(_windows("bob", groups=[]))
+        _as(_outsider())
         r = _post(client)
         assert r.status_code == 403
         assert client.fs.get(KEY) is None
@@ -154,13 +160,13 @@ class TestTheGate:
     def test_the_403_is_not_swallowed_into_a_rendered_page(self, client):
         """A refusal that rendered a friendly 200 page would look like a UI
         hiccup rather than a refusal."""
-        _as(_windows("bob", groups=[]))
+        _as(_outsider())
         r = _post(client)
         assert r.status_code == 403
         assert "Break-glass root password" not in r.text
 
     def test_a_refused_attempt_is_audited_without_the_value(self, client):
-        _as(_windows("bob", groups=[]))
+        _as(_outsider())
         _post(client)
         rows = _rows()
         assert rows, "a refused attempt to set the break-glass password left no row"
@@ -171,8 +177,13 @@ class TestTheGate:
 
 class TestCrossOrigin:
     def test_a_cross_site_post_is_refused_before_any_side_effect(self, client):
-        """Checked first — so a forged request cannot even write a refusal row."""
-        _as(_admin())
+        """Checked first — so a forged request cannot even write a refusal row.
+
+        Posted as someone OUTSIDE the reveal groups on purpose: the reveal check
+        audits its denials, so only for such a caller does "no row" prove the
+        same-origin check ran first. A reveal-group member writes no row either
+        way, and would let the two checks swap unnoticed."""
+        _as(_outsider())
         r = _post(client, headers={"Origin": "http://evil.example"})
         assert r.status_code == 403
         assert client.fs.get(KEY) is None
@@ -241,13 +252,14 @@ class TestAShortPasswordIsAWarningNotABlock:
         """Anti-vacuity: every test below means nothing if SHORT is not."""
         assert 0 < len(SHORT) < _recommended()
 
-    def test_unaccepted_it_is_not_saved_and_the_page_asks(self, client):
+    def test_unaccepted_nothing_is_saved_or_recorded_and_the_page_asks(self, client):
         _as(_admin())
         r = _short(client)
         assert r.status_code == 200
         assert 'data-flash="warning"' in r.text
         assert 'data-flash="error"' not in r.text, "a warning, not a refusal"
         assert client.fs.get(KEY) is None
+        assert _rows() == [], "a row saying 'short' would describe the password about to be saved"
         box = re.search(r'<div[^>]*id="root-password-short"[^>]*>', r.text).group(0)
         assert "hidden" not in box, "without script the operator could never accept"
         assert SHORT not in r.text
@@ -261,19 +273,18 @@ class TestAShortPasswordIsAWarningNotABlock:
         assert 'data-flash="warning"' in r.text
         assert SHORT not in r.text
 
-    def test_the_acceptance_is_audited_and_the_length_is_not(self, client):
-        """Who accepted the risk is the point of accepting it. How short the
-        password is would be a fact about the secret."""
+    def test_nothing_recorded_says_the_saved_password_is_short(self, client):
+        """The audit log is readable by any signed-in user (`GET /api/audit`), and
+        "the break-glass password is under eight characters" is a fact about the
+        secret. So the unaccepted attempt leaves no row, and the save's row is
+        the one any password gets."""
         _as(_admin())
         _short(client)
         _short(client, accept_short_password="yes")
         rows = _rows()
-        unaccepted = [r for r in rows if not r.success]
-        accepted = [r for r in rows if r.success]
-        assert [r.error_message for r in unaccepted] == ["short-not-accepted"]
-        assert len(accepted) == 1
-        assert set(accepted[0].details or {}) == {"op", "granted_by", "short_password_accepted"}
-        assert accepted[0].details["short_password_accepted"] is True
+        assert [r.success for r in rows] == [True]
+        assert set(rows[0].details or {}) == {"op", "granted_by"}
+        assert "short" not in repr(rows).lower()
         assert SHORT not in repr(rows)
 
     @pytest.mark.parametrize("data,tag", [
@@ -299,21 +310,35 @@ class TestAShortPasswordIsAWarningNotABlock:
         r = _post(client, data={"root_password": at, "confirm_root_password": at})
         assert client.fs.get(KEY) == at
         assert 'data-flash="warning"' not in r.text
-        saved = [row for row in _rows() if row.success]
-        assert len(saved) == 1
-        assert "short_password_accepted" not in (saved[0].details or {})
+        assert [row.success for row in _rows()] == [True], "under: no row; at: the save"
 
-    def test_a_stray_tick_on_a_long_password_records_no_acceptance(self, client):
+    def test_a_stray_tick_on_a_long_password_changes_nothing(self, client):
         _as(_admin())
-        _post(client, data={**FORM, "accept_short_password": "yes"})
+        r = _post(client, data={**FORM, "accept_short_password": "yes"})
         assert client.fs.get(KEY) == SECRET
-        assert "short_password_accepted" not in (_rows()[0].details or {})
+        assert 'data-flash="warning"' not in r.text
+        assert set(_rows()[0].details or {}) == {"op", "granted_by"}
 
-    @pytest.mark.parametrize("value", ["off", "false", "0"])
-    def test_off_and_false_are_not_acceptance(self, client, value):
+    @pytest.mark.parametrize("value", ["off", "false", "0", "no", "", "not-a-boolean"])
+    def test_only_an_actual_tick_is_acceptance(self, client, value):
+        """Asserts the warning page, not merely that nothing was stored — a 422
+        or a 403 would store nothing too."""
         _as(_admin())
-        _short(client, accept_short_password=value)
+        r = _short(client, accept_short_password=value)
+        assert r.status_code == 200
+        assert 'data-flash="warning"' in r.text
         assert client.fs.get(KEY) is None
+
+    def test_a_malformed_tick_meets_the_gate_not_request_validation(self, client):
+        """As a `bool` form field, a value like this was rejected with a 422
+        before the same-origin and reveal checks ran, so a refused caller left
+        no reveal-denied row. It is parsed after the gate now."""
+        _as(_outsider())
+        r = _short(client, accept_short_password="not-a-boolean")
+        assert r.status_code == 403
+        rows = _rows()
+        assert len(rows) == 1
+        assert (rows[0].error_message or "").startswith("reveal-denied")
 
     def test_the_browser_is_not_told_to_block_it(self, client):
         """A `minlength` attribute is a block no one can accept past: the
@@ -329,6 +354,14 @@ class TestAShortPasswordIsAWarningNotABlock:
         assert "hidden" in box
         tick = re.search(r'<input[^>]*name="accept_short_password"[^>]*>', page).group(0)
         assert "checked" not in tick
+
+    def test_the_page_counts_characters_as_the_server_does(self, client):
+        """`value.length` counts UTF-16 units, so a password holding astral
+        characters would read as long enough in the page and short on the
+        server — and with script on it could never be accepted. There is no
+        JavaScript test tooling here, so the counting expression is pinned."""
+        page = client.get("/fleet-settings").text
+        assert "[...input.value].length" in page
 
 
 # --- what happens to the value ----------------------------------------------

@@ -131,22 +131,25 @@
     <p><strong>Prompt-always posture is on:</strong> nothing stored is tried; every adoption asks a human.</p>
     {% endif %}
     {% if entry_credentials.unreadable %}
-    <p data-entry-list="unreadable"><strong>The stored list cannot be decrypted.</strong>
-    It reads as empty and cannot be changed here without destroying it; restore
-    the key file it was written with.</p>
+    <p data-entry-list="unreadable"><strong>The stored list cannot be read in full.</strong>
+    It cannot be decrypted, or it is not a list of complete username/password
+    pairs, so it cannot be changed here without losing part of it. Restore the
+    key file it was written with, or correct it with
+    <code>python -m admz settings set entry_credentials</code>.</p>
     {% endif %}
     <table>
         <tr><th>Stored</th><td>{{ entry_credentials.stored|length }} of {{ entry_credentials.max_stored }}</td></tr>
         <tr><th>Tried per onboarding</th><td>{{ entry_credentials.entries_tried }} (at most {{ entry_credentials.max_attempts_per_pass }}){% if entry_credentials.break_glass_last %}, then ADMZ's break-glass root password{% endif %}</td></tr>
         {% for c in entry_credentials.rows %}
         <tr><th>#{{ loop.index }}</th><td><code>{{ c.get('username', '?') }}</code>{% if c.get('label') %} &mdash; {{ c.get('label') }}{% endif %} {% if c.tried %}<em data-entry="tried">tried</em>{% else %}<em data-entry="never-tried">stored, never tried</em>{% endif %}
-            {# The row is named by what the page showed; a stale page removes
-               nothing (entry_credentials.remove_entry_credential). #}
+            {# The button carries the list's revision as rendered, so a removal
+               applies only to the list this page showed: a form resubmitted by a
+               reload, or a stale tab, removes nothing
+               (entry_credentials.list_revision). #}
             <form method="POST" action="/fleet-settings/entry-credentials/remove" class="inline-form"
                   onsubmit="return confirm('Remove this credential from the entry list? ADMZ never shows the password, so only someone who knows it can add it back.');">
                 <input type="hidden" name="position" value="{{ loop.index0 }}">
-                <input type="hidden" name="username" value="{{ c.get('username', '') }}">
-                <input type="hidden" name="label" value="{{ c.get('label', '') }}">
+                <input type="hidden" name="revision" value="{{ entry_credentials.revision }}">
                 <button type="submit" class="btn ghost sm" data-remove-entry="{{ loop.index0 }}">Remove</button>
             </form></td></tr>
         {% endfor %}
@@ -159,7 +162,7 @@
     {% if entry_credentials.prompt_always %}
     <p class="no-accounts" data-entry-add="posture">Adding is off while the prompt-always posture is on.</p>
     {% elif entry_credentials.unreadable %}
-    <p class="no-accounts" data-entry-add="unreadable">Adding is off until the stored list can be decrypted.</p>
+    <p class="no-accounts" data-entry-add="unreadable">Adding is off until the stored list can be read in full.</p>
     {% elif entry_credentials.stored|length >= entry_credentials.max_stored %}
     <p class="no-accounts" data-entry-add="full">The list is full. Remove one
     before adding another &mdash; each credential is another failed login
@@ -288,7 +291,11 @@ async function copyFleetPassword(idx) {
     if (!input || !warning || !accept) return;
     const recommended = parseInt(input.dataset.recommendedLength, 10) || 8;
     input.addEventListener('input', function () {
-        const short = input.value.length > 0 && input.value.length < recommended;
+        // Code points, as the server's len() counts them. value.length counts
+        // UTF-16 units, which would call a password holding astral characters
+        // long enough here and short on the server — unacceptable either way.
+        const length = [...input.value].length;
+        const short = length > 0 && length < recommended;
         warning.hidden = !short;
         accept.required = short;
         if (!short) accept.checked = false;

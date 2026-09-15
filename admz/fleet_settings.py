@@ -250,6 +250,28 @@ class FleetSettings:
         """
         return bool(self._raw_get(key))
 
+    def stored_digest(self, *keys: str) -> bytes:
+        """A SHA-256 over the values of ``keys`` exactly as stored, for noticing
+        that something wrote them — never for display.
+
+        A secret contributes its ciphertext, whose random IV makes the digest
+        change on every write, even of an identical value. But a secret can still
+        be at legacy plaintext, so this digest must not leave the server unkeyed:
+        a caller that puts a change token in a page MACs it first
+        (``entry_credentials.list_revision``).
+        """
+        import hashlib
+
+        h = hashlib.sha256()
+        for key in keys:
+            for part in (key, self._raw_get(key)):
+                data = b"" if part is None else part.encode("utf-8")
+                # Length-prefixed so no two sequences collide, and unset kept
+                # distinct from empty.
+                h.update((-1 if part is None else len(data)).to_bytes(8, "big", signed=True))
+                h.update(data)
+        return h.digest()
+
     def get(self, key: str) -> Optional[str]:
         """Get a setting value by key. Returns None if not set.
 

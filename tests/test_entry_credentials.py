@@ -374,6 +374,32 @@ def test_describe_says_when_the_list_is_unreadable(isolated_settings):
     assert d["unreadable"] is True and d["stored"] == []
 
 
+@pytest.mark.parametrize("raw", [
+    "not json",
+    '{"username": "u", "password": "p"}',
+    "[1, 2]",
+    '[{"username": "u0", "password": "p0"}, {"username": "half"}]',
+])
+def test_a_list_that_decrypts_but_is_not_complete_pairs_is_unreadable_too(isolated_settings, raw):
+    """Readers skip what `_parse` cannot use. Every write rewrites the whole
+    list from what it read, so a write would silently drop what was skipped —
+    and refuses instead."""
+    isolated_settings.set(ec.SETTING_KEY, raw)
+    before = isolated_settings._raw_get(ec.SETTING_KEY)
+    assert ec.describe()["unreadable"] is True
+    with pytest.raises(ec.EntryCredentialRefused) as exc:
+        ec.add_entry_credential("root", "new")
+    assert exc.value.code == ec.REFUSED_UNREADABLE
+    assert isolated_settings._raw_get(ec.SETTING_KEY) == before
+
+
+@pytest.mark.parametrize("raw", ["", "[]", '[{"username": "u", "password": "p"}]'])
+def test_an_empty_or_complete_list_is_readable(isolated_settings, raw):
+    """Control for the test above."""
+    isolated_settings.set(ec.SETTING_KEY, raw)
+    assert ec.describe()["unreadable"] is False
+
+
 # ── removal ─────────────────────────────────────────────────────────────────
 
 def _three():
@@ -381,33 +407,62 @@ def _three():
         ec.add_entry_credential(f"u{i}", f"p{i}", f"batch {i}")
 
 
-def test_removal_takes_the_entry_shown_and_keeps_the_order(isolated_settings):
+def test_removal_takes_the_entry_at_the_position_and_keeps_the_order(isolated_settings):
     _three()
-    out = ec.remove_entry_credential(1, username="u1", label="batch 1")
+    out = ec.remove_entry_credential(1, revision=ec.list_revision())
     assert out == {"username": "u1", "label": "batch 1", "legacy_pair": False}
     assert [c.username for c in ec.list_entry_credentials()] == ["u0", "u2"]
 
 
-@pytest.mark.parametrize("position,username,label", [
-    (1, "u2", "batch 1"), (1, "u1", "batch 2"), (3, "u1", "batch 1"), (-1, "u2", "batch 2"),
+def test_a_revision_from_before_a_write_is_stale(isolated_settings):
+    """Including this very removal resubmitted, as a browser reload does: its
+    own write moved the revision. By position alone the resubmission would
+    remove the entry that moved up into the removed one's place."""
+    _three()
+    shown = ec.list_revision()
+    ec.remove_entry_credential(0, revision=shown)
+    with pytest.raises(ec.EntryCredentialRefused) as exc:
+        ec.remove_entry_credential(0, revision=shown)
+    assert exc.value.code == ec.REFUSED_STALE
+    assert [c.username for c in ec.list_entry_credentials()] == ["u1", "u2"]
+
+
+@pytest.mark.parametrize("position,revision", [
+    (3, None), (-1, None), (0, "0" * 32), (0, ""), (0, "ünïcödé"),
 ])
-def test_removal_refuses_a_stale_view_and_changes_nothing(
-        isolated_settings, position, username, label):
-    """Removing whatever sits at a position NOW would remove a credential the
-    operator never saw, whenever the list changed after the page rendered."""
+def test_removal_refuses_a_position_or_revision_the_page_never_had(
+        isolated_settings, position, revision):
     _three()
     with pytest.raises(ec.EntryCredentialRefused) as exc:
-        ec.remove_entry_credential(position, username=username, label=label)
+        ec.remove_entry_credential(
+            position, revision=ec.list_revision() if revision is None else revision)
     assert exc.value.code == ec.REFUSED_STALE
     assert len(ec.list_entry_credentials()) == 3
+
+
+def test_the_revision_moves_on_every_write_and_holds_across_reads(isolated_settings):
+    """Rewriting an identical list still moves it — it covers the stored
+    ciphertext, so it is no function of the passwords — and so does setting the
+    legacy pair, whose presence shifts every position by one."""
+    raw = json.dumps([{"username": "u", "password": "p"}])
+    isolated_settings.set(ec.SETTING_KEY, raw)
+    first = ec.list_revision()
+    ec.list_entry_credentials()
+    ec.describe()
+    assert ec.list_revision() == first, "a read must not make an open page stale"
+    isolated_settings.set(ec.SETTING_KEY, raw)
+    second = ec.list_revision()
+    assert second != first
+    isolated_settings.set(ec.LEGACY_PASS_KEY, "legacy")
+    assert ec.list_revision() != second
 
 
 def test_removing_the_legacy_pair_deletes_both_of_its_settings(isolated_settings):
     isolated_settings.set(ec.LEGACY_USER_KEY, "operator")
     isolated_settings.set(ec.LEGACY_PASS_KEY, "legacy")
     ec.add_entry_credential("u0", "p0", "batch 0")
-    out = ec.remove_entry_credential(0, username="operator", label=ec.LEGACY_LABEL)
-    assert out["legacy_pair"] is True
+    out = ec.remove_entry_credential(0, revision=ec.list_revision())
+    assert out == {"username": "operator", "label": ec.LEGACY_LABEL, "legacy_pair": True}
     assert isolated_settings.get(ec.LEGACY_PASS_KEY) is None
     assert isolated_settings.get(ec.LEGACY_USER_KEY) is None
     assert [(c.username, c.password) for c in ec.list_entry_credentials()] == [("u0", "p0")]
@@ -417,7 +472,7 @@ def test_positions_after_the_legacy_pair_count_it(isolated_settings):
     """The position is the settings page's order, where the legacy pair is #1."""
     isolated_settings.set(ec.LEGACY_PASS_KEY, "legacy")
     ec.add_entry_credential("u0", "p0", "batch 0")
-    ec.remove_entry_credential(1, username="u0", label="batch 0")
+    ec.remove_entry_credential(1, revision=ec.list_revision())
     assert [c.password for c in ec.list_entry_credentials()] == ["legacy"]
 
 
@@ -425,7 +480,7 @@ def test_removal_is_allowed_under_prompt_always(isolated_settings):
     """It narrows what is tried; only widening is refused."""
     ec.add_entry_credential("u0", "p0", "batch 0")
     isolated_settings.set(ec.PROMPT_ALWAYS_KEY, "true")
-    ec.remove_entry_credential(0, username="u0", label="batch 0")
+    ec.remove_entry_credential(0, revision=ec.list_revision())
     assert ec.describe()["stored"] == []
 
 
@@ -433,9 +488,35 @@ def test_removal_refuses_an_unreadable_list(isolated_settings):
     foreign = _foreign_ciphertext()
     isolated_settings._raw_set(ec.SETTING_KEY, foreign)
     with pytest.raises(ec.EntryCredentialRefused) as exc:
-        ec.remove_entry_credential(0, username="u", label="")
+        ec.remove_entry_credential(0, revision=ec.list_revision())
     assert exc.value.code == ec.REFUSED_UNREADABLE
     assert isolated_settings._raw_get(ec.SETTING_KEY) == foreign
+
+
+# ── what describe() marks as tried ──────────────────────────────────────────
+
+def test_an_exact_duplicate_is_marked_tried_once(isolated_settings):
+    """It is tried once, so of two identical-looking rows only the first is
+    live — and the distinct credential after them IS tried. Matching on
+    username and label got both of those wrong."""
+    isolated_settings.set(ec.SETTING_KEY, json.dumps([
+        {"username": "root", "password": "p1"},
+        {"username": "root", "password": "p1"},
+        {"username": "root", "password": "p2"},
+    ]))
+    assert ec.describe()["stored_tried"] == [True, False, True]
+
+
+def test_an_entry_duplicating_the_legacy_pair_is_not_marked_tried(isolated_settings):
+    isolated_settings.set(ec.LEGACY_PASS_KEY, "legacy")
+    isolated_settings.set(ec.SETTING_KEY, json.dumps([{"username": "root", "password": "legacy"}]))
+    assert ec.describe()["stored_tried"] == [True, False]
+
+
+def test_nothing_is_marked_tried_under_prompt_always(isolated_settings):
+    ec.add_entry_credential("u0", "p0")
+    isolated_settings.set(ec.PROMPT_ALWAYS_KEY, "true")
+    assert ec.describe()["stored_tried"] == [False]
 
 
 # ── ADMZ's break-glass attempt ──────────────────────────────────────────────

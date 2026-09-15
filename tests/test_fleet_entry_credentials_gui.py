@@ -14,8 +14,9 @@ twice, never echoed, never in an audit row, and encrypted at rest. The cap and
 the prompt-always posture belong to ``admz.entry_credentials`` and are only
 surfaced.
 
-Removal is pinned against a stale page: the form names the row it showed, and
-nothing is removed if that row has changed.
+Removal is pinned against a stale page: each Remove carries the list revision
+it was rendered with, and nothing is removed once anything has written the list
+since — a second tab, another writer, or the same form resubmitted by a reload.
 
 The ``client`` fixture repoints every module-level ``fleet_settings`` reference
 at once — ``admz.entry_credentials``' own included — for the reason
@@ -24,6 +25,7 @@ at once — ``admz.entry_credentials``' own included — for the reason
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 
@@ -37,6 +39,7 @@ PW = "Entry-Pass-gui-51c9"
 SAME_ORIGIN = {"Origin": "http://testserver"}
 ADD = {"entry_username": "root", "entry_password": PW,
        "confirm_entry_password": PW, "entry_label": "batch A"}
+REMOVE_FORM = r'<form[^>]*action="/fleet-settings/entry-credentials/remove".*?</form>'
 
 
 class StubBackend(AuthBackend):
@@ -109,6 +112,11 @@ def _admin():
     return _windows("alice", ["Administrators"])
 
 
+def _outsider():
+    """Signed in, but in no reveal group."""
+    return _windows("bob", groups=[])
+
+
 def _rows():
     """Every entry-list audit row."""
     from admz.audit import AuditLog
@@ -121,10 +129,9 @@ def _add(client, headers=SAME_ORIGIN, **overrides):
                        data={**ADD, **overrides}, headers=headers)
 
 
-def _remove(client, position, username, label, headers=SAME_ORIGIN):
+def _remove(client, position, revision, headers=SAME_ORIGIN):
     return client.post("/fleet-settings/entry-credentials/remove",
-                       data={"position": str(position), "username": username,
-                             "label": label},
+                       data={"position": str(position), "revision": revision},
                        headers=headers)
 
 
@@ -139,6 +146,11 @@ def _section(page: str) -> str:
     return page.split('id="entry-credentials"')[1].split("</table>")[0]
 
 
+def _three():
+    for i in range(3):
+        ec.add_entry_credential(f"u{i}", f"zz-pw-{i}", f"batch {i}")
+
+
 # --- who may change the list -------------------------------------------------
 
 
@@ -146,7 +158,7 @@ class TestTheGate:
     def test_anonymous_may_neither_add_nor_remove(self, client):
         ec.add_entry_credential("keep", "zz-keep-pw", "kept")
         assert _add(client).status_code == 403
-        assert _remove(client, 0, "keep", "kept").status_code == 403
+        assert _remove(client, 0, ec.list_revision()).status_code == 403
         assert _listed() == [("keep", "zz-keep-pw", "kept")]
 
     def test_authenticated_but_not_in_a_reveal_group_is_refused_and_audited(self, client):
@@ -154,9 +166,9 @@ class TestTheGate:
         for "is this password already on the list" — a duplicate is reported —
         and that answer belongs only to someone who may reveal the list."""
         ec.add_entry_credential("keep", "zz-keep-pw", "kept")
-        _as(_windows("bob", groups=[]))
+        _as(_outsider())
         assert _add(client).status_code == 403
-        assert _remove(client, 0, "keep", "kept").status_code == 403
+        assert _remove(client, 0, ec.list_revision()).status_code == 403
         assert _listed() == [("keep", "zz-keep-pw", "kept")]
         rows = _rows()
         assert sorted(r.action for r in rows) == [
@@ -166,7 +178,7 @@ class TestTheGate:
         assert PW not in repr(rows) and "zz-keep-pw" not in repr(rows)
 
     def test_the_403_is_not_swallowed_into_a_rendered_page(self, client):
-        _as(_windows("bob", groups=[]))
+        _as(_outsider())
         r = _add(client)
         assert r.status_code == 403
         assert "Entry credentials" not in r.text
@@ -175,19 +187,23 @@ class TestTheGate:
         _as(_admin())
         assert _add(client).status_code == 200
         assert _listed() == [("root", PW, "batch A")]
-        assert _remove(client, 0, "root", "batch A").status_code == 200
+        assert _remove(client, 0, ec.list_revision()).status_code == 200
         assert _listed() == []
 
 
 class TestCrossOrigin:
     @pytest.mark.parametrize("route", ["add", "remove"])
     def test_a_cross_site_post_is_refused_before_any_side_effect(self, client, route):
-        """Checked first — so a forged request cannot even write a refusal row."""
+        """Checked first — so a forged request cannot even write a refusal row.
+
+        Posted as someone outside the reveal groups: the reveal check audits
+        its denials, so only for such a caller does "no row" prove which check
+        ran first."""
         ec.add_entry_credential("keep", "zz-keep-pw", "kept")
-        _as(_admin())
+        _as(_outsider())
         evil = {"Origin": "http://evil.example"}
         r = (_add(client, headers=evil) if route == "add"
-             else _remove(client, 0, "keep", "kept", headers=evil))
+             else _remove(client, 0, ec.list_revision(), headers=evil))
         assert r.status_code == 403
         assert _listed() == [("keep", "zz-keep-pw", "kept")]
         assert _rows() == [], "a cross-site request reached the audit log"
@@ -263,11 +279,14 @@ class TestAdding:
         assert len(_listed()) == 1, "CONTROL: exactly at the limit is accepted"
 
     def test_the_username_is_trimmed_and_the_password_is_not(self, client):
-        """A username is shown back on the page, so trimming it is visible. A
-        password is not, so a padded one is refused (above), never changed."""
+        """A username is shown back on the page, so trimming it is visible; a
+        password is not, so a padded one is refused (above), never changed. The
+        audit row is checked as well as the list, because the library trims too
+        and only the row proves the route did."""
         _as(_admin())
         _add(client, entry_username="  root  ")
         assert _listed() == [("root", PW, "batch A")]
+        assert _rows()[0].details["username"] == "root"
 
     def test_a_duplicate_is_reported_and_changes_nothing(self, client):
         _as(_admin())
@@ -307,22 +326,30 @@ class TestAdding:
         assert 'data-entry-add="posture"' in r.text
         assert 'id="entry-credential-form"' not in r.text
 
-    def test_an_unreadable_list_is_never_overwritten(self, client):
-        """`setting_crypto.read_stored` leaves an undecryptable value alone so
-        that restoring the right key recovers it. It reads as empty, and an add
-        rewrites the list from what it read — so without the refusal, one
-        submission would replace the whole list."""
+    @pytest.mark.parametrize("how", ["undecryptable", "not a list", "a half-written pair"])
+    def test_a_list_that_cannot_be_read_in_full_is_never_rewritten(self, client, how):
+        """Every write rewrites the whole list from what it read, and each of
+        these reads as (partly) empty — so one submission would lose what the
+        reader skipped. An undecryptable value is also one `setting_crypto`
+        promises to leave alone, so that restoring the key recovers it."""
         from cryptography.fernet import Fernet
 
-        foreign = Fernet(Fernet.generate_key()).encrypt(b"[]").decode()
-        client.fs._raw_set(ec.SETTING_KEY, foreign)
+        if how == "undecryptable":
+            client.fs._raw_set(ec.SETTING_KEY,
+                               Fernet(Fernet.generate_key()).encrypt(b"[]").decode())
+        elif how == "not a list":
+            client.fs.set(ec.SETTING_KEY, '{"username": "u", "password": "zz-pw"}')
+        else:
+            client.fs.set(ec.SETTING_KEY, json.dumps(
+                [{"username": "u0", "password": "zz-pw-0"}, {"username": "half"}]))
+        before = client.fs._raw_get(ec.SETTING_KEY)
         _as(_admin())
         page = client.get("/fleet-settings").text
         assert 'data-entry-list="unreadable"' in page
         assert 'data-entry-add="unreadable"' in page
         r = _add(client)
         assert 'data-flash="error"' in r.text
-        assert client.fs._raw_get(ec.SETTING_KEY) == foreign
+        assert client.fs._raw_get(ec.SETTING_KEY) == before
         assert [x.error_message for x in _rows()] == [ec.REFUSED_UNREADABLE]
 
     def test_the_fields_do_not_invite_browser_autofill(self, client):
@@ -338,24 +365,19 @@ class TestAdding:
 # --- removing ------------------------------------------------------------------
 
 
-def _three():
-    for i in range(3):
-        ec.add_entry_credential(f"u{i}", f"zz-pw-{i}", f"batch {i}")
-
-
 class TestRemoving:
     def test_the_row_shown_is_the_row_removed_and_the_rest_keep_their_order(self, client):
         _three()
         _as(_admin())
-        r = _remove(client, 1, "u1", "batch 1")
+        r = _remove(client, 1, ec.list_revision())
         assert r.status_code == 200, r.text
         assert 'data-flash="success"' in r.text
         assert _listed() == [("u0", "zz-pw-0", "batch 0"), ("u2", "zz-pw-2", "batch 2")]
 
-    def test_it_is_audited_without_the_password(self, client):
+    def test_it_is_audited_from_the_stored_row_without_the_password(self, client):
         _three()
         _as(_admin())
-        _remove(client, 1, "u1", "batch 1")
+        _remove(client, 1, ec.list_revision())
         rows = _rows()
         assert [(x.action, x.success) for x in rows] == [("entry_credential.removed", True)]
         assert rows[0].details["username"] == "u1"
@@ -363,45 +385,84 @@ class TestRemoving:
         assert rows[0].details["legacy_pair"] is False
         assert "zz-pw" not in repr(rows)
 
-    @pytest.mark.parametrize("position,username,label", [
-        (1, "u2", "batch 1"),        # a different username at that position
-        (1, "u1", "batch 2"),        # a different label
-        (7, "u1", "batch 1"),        # a position that no longer exists
-        (-1, "u2", "batch 2"),       # never an index counted from the end
-        ("one", "u1", "batch 1"),    # not a position at all
-    ])
-    def test_a_stale_or_malformed_request_removes_nothing(self, client, position, username, label):
-        """The page may be older than the list — a second tab, the CLI or a
-        promotion changed it — and removing whatever sits at a position now
-        would remove a credential the operator never saw."""
+    def test_a_resubmitted_remove_does_not_take_a_second_credential(self, client):
+        """Rows often look identical — the username defaults to `root` and the
+        label is optional — and a browser reload resubmits the POST without the
+        confirm dialog. By position alone the second submit would remove the
+        OTHER credential, which by then sits where the first one was."""
+        ec.add_entry_credential("root", "zz-pw-first")
+        ec.add_entry_credential("root", "zz-pw-second")
+        _as(_admin())
+        shown = ec.list_revision()
+        assert _remove(client, 0, shown).status_code == 200
+        r = _remove(client, 0, shown)
+        assert 'data-flash="error"' in r.text
+        assert _listed() == [("root", "zz-pw-second", "")]
+        assert [x.error_message for x in _rows() if not x.success] == [ec.REFUSED_STALE]
+
+    def test_a_write_elsewhere_after_the_page_rendered_refuses_the_removal(self, client):
+        """A second tab, the CLI, a promotion: anything that writes the list
+        between the render and the submit."""
+        ec.add_entry_credential("u0", "zz-pw-0", "batch 0")
+        ec.add_entry_credential("u1", "zz-pw-1", "batch 1")
+        _as(_admin())
+        shown = ec.list_revision()
+        ec.add_entry_credential("u2", "zz-pw-2", "batch 2")
+        _remove(client, 0, shown)
+        assert len(_listed()) == 3
+        assert [x.error_message for x in _rows()] == [ec.REFUSED_STALE]
+
+    def test_the_legacy_pair_appearing_after_the_render_refuses_the_removal(self, client):
+        """Position 0 means the legacy pair once `default_password` is set — so a
+        page rendered before something set it must not delete the legacy
+        settings when it meant the list's first entry."""
+        ec.add_entry_credential("root", "zz-pw-0", ec.LEGACY_LABEL)
+        _as(_admin())
+        shown = ec.list_revision()
+        client.fs.set(ec.LEGACY_PASS_KEY, "zz-legacy-pw")
+        _remove(client, 0, shown)
+        assert client.fs.get(ec.LEGACY_PASS_KEY) == "zz-legacy-pw"
+        assert ("root", "zz-pw-0", ec.LEGACY_LABEL) in _listed()
+        assert [x.error_message for x in _rows()] == [ec.REFUSED_STALE]
+
+    @pytest.mark.parametrize("position", ["one", "", "-1", "7"])
+    def test_a_position_that_does_not_exist_removes_nothing(self, client, position):
         _three()
         _as(_admin())
-        r = _remove(client, position, username, label)
+        r = _remove(client, position, ec.list_revision())
         assert r.status_code == 200
         assert 'data-flash="error"' in r.text
         assert len(_listed()) == 3
         assert [(x.action, x.error_message) for x in _rows()] == [
             ("entry_credential.remove_refused", ec.REFUSED_STALE)]
 
+    def test_a_forged_revision_removes_nothing(self, client):
+        _three()
+        _as(_admin())
+        _remove(client, 0, "0" * 32)
+        assert len(_listed()) == 3
+        assert [x.error_message for x in _rows()] == [ec.REFUSED_STALE]
+
     def test_the_legacy_pair_is_removed_by_deleting_its_settings(self, client):
         client.fs.set(ec.LEGACY_USER_KEY, "operator")
         client.fs.set(ec.LEGACY_PASS_KEY, "zz-legacy-pw")
         ec.add_entry_credential("u0", "zz-pw-0", "batch 0")
         _as(_admin())
-        r = _remove(client, 0, "operator", ec.LEGACY_LABEL)
+        r = _remove(client, 0, ec.list_revision())
         assert r.status_code == 200, r.text
         assert client.fs.get(ec.LEGACY_PASS_KEY) is None
         assert client.fs.get(ec.LEGACY_USER_KEY) is None
         assert _listed() == [("u0", "zz-pw-0", "batch 0")]
         rows = _rows()
         assert rows[0].details["legacy_pair"] is True
+        assert rows[0].details["username"] == "operator"
         assert "zz-legacy-pw" not in repr(rows)
 
     def test_positions_after_the_legacy_pair_are_offset_by_it(self, client):
         client.fs.set(ec.LEGACY_PASS_KEY, "zz-legacy-pw")
         ec.add_entry_credential("u0", "zz-pw-0", "batch 0")
         _as(_admin())
-        _remove(client, 1, "u0", "batch 0")
+        _remove(client, 1, ec.list_revision())
         assert client.fs.get(ec.LEGACY_PASS_KEY) == "zz-legacy-pw"
         assert ec.describe()["stored"] == [{"username": "root", "label": ec.LEGACY_LABEL}]
 
@@ -410,27 +471,63 @@ class TestRemoving:
         ec.add_entry_credential("u0", "zz-pw-0", "batch 0")
         client.fs.set(ec.PROMPT_ALWAYS_KEY, "true")
         _as(_admin())
-        _remove(client, 0, "u0", "batch 0")
+        _remove(client, 0, ec.list_revision())
         assert ec.describe()["stored"] == []
 
-    def test_each_row_names_itself_and_carries_no_password(self, client):
+    def test_each_row_carries_its_position_and_the_revision_and_no_password(self, client):
         _three()
         page = client.get("/fleet-settings").text
-        forms = re.findall(
-            r'<form[^>]*action="/fleet-settings/entry-credentials/remove".*?</form>',
-            page, flags=re.S)
+        forms = re.findall(REMOVE_FORM, page, flags=re.S)
         assert len(forms) == 3
+        revision = ec.list_revision()
         for i, form in enumerate(forms):
             assert f'name="position" value="{i}"' in form
-            assert f'name="username" value="u{i}"' in form
-            assert f'name="label" value="batch {i}"' in form
+            assert f'name="revision" value="{revision}"' in form
             assert "zz-pw" not in form
 
+    def test_a_remove_button_works_as_rendered(self, client):
+        """End to end: the token the page renders is the one the route checks."""
+        _three()
+        _as(_admin())
+        second = re.findall(REMOVE_FORM, client.get("/fleet-settings").text, flags=re.S)[1]
+        position = re.search(r'name="position" value="([^"]*)"', second).group(1)
+        revision = re.search(r'name="revision" value="([^"]*)"', second).group(1)
+        assert _remove(client, position, revision).status_code == 200
+        assert [u for u, _, _ in _listed()] == ["u0", "u2"]
 
-# --- what the page counts ------------------------------------------------------
+    def test_a_render_that_migrated_a_value_still_removes(self, client):
+        """Reading a legacy-plaintext secret rewrites it encrypted, which changes
+        the stored state. The page takes its token after its own reads, so the
+        buttons of that very render still work."""
+        ec.add_entry_credential("u0", "zz-pw-0", "batch 0")
+        client.fs._raw_set(ec.LEGACY_PASS_KEY, "zz-legacy-plain")
+        _as(_admin())
+        page = client.get("/fleet-settings").text
+        assert client.fs._raw_get(ec.LEGACY_PASS_KEY) != "zz-legacy-plain", \
+            "CONTROL: the render migrated the legacy value"
+        revision = re.search(r'name="revision" value="([^"]*)"', page).group(1)
+        assert _remove(client, 1, revision).status_code == 200
+        assert _listed() == [("root", "zz-legacy-plain", ec.LEGACY_LABEL)]
 
 
-class TestThePageCountsTheBreakGlassApart:
+# --- what the page marks and counts --------------------------------------------
+
+
+class TestThePageMarksWhatIsActuallyTried:
+    def test_of_two_identical_credentials_only_the_first_is_marked_tried(self, client):
+        """An exact duplicate is tried once. Matched on username and label, the
+        page marked the first two rows tried and the third — the only other
+        credential actually put to a device — "never tried", inviting its
+        removal."""
+        client.fs.set(ec.SETTING_KEY, json.dumps([
+            {"username": "root", "password": "zz-pw-1"},
+            {"username": "root", "password": "zz-pw-1"},
+            {"username": "root", "password": "zz-pw-2"},
+        ]))
+        page = client.get("/fleet-settings").text
+        assert re.findall(r'data-entry="(tried|never-tried)"', page) == [
+            "tried", "never-tried", "tried"]
+
     def test_the_break_glass_attempt_is_named_not_counted_as_an_entry(self, client):
         """ADR-0068 appends ADMZ's break-glass root password to every pass.
         Counted as an entry, the page said "4 (at most 3)" beside a full list."""

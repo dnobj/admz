@@ -1057,7 +1057,7 @@ async def set_fleet_root_password(
     request: Request,
     root_password: str = Form(""),
     confirm_root_password: str = Form(""),
-    accept_short_password: bool = Form(False),
+    accept_short_password: str = Form(""),
 ):
     """Set or replace the break-glass root password (FR-CRED-014, ADR-0068).
 
@@ -1092,11 +1092,17 @@ async def set_fleet_root_password(
 
     **A short password is a warning, not a refusal** (owner decision,
     2026-09-14). Below ``_ROOT_PASSWORD_RECOMMENDED_LENGTH`` nothing is saved
-    until the operator ticks the acceptance box; ticked, the password is saved
-    and the audit row records ``short_password_accepted``, because who accepted
-    the risk is the point of accepting it. The length is never recorded — it is
-    a fact about the secret. Accepting waives nothing else: an empty, mismatched
-    or space-padded submission is refused either way.
+    until the operator ticks the acceptance box, and accepting waives nothing
+    else: an empty, mismatched or space-padded submission is refused either way.
+    **Nothing recorded says the password is short** — not its length, not the
+    acceptance, not the unaccepted attempt before it. The audit log is readable
+    by any signed-in user (``GET /api/audit``), and "the fleet's break-glass
+    password is under eight characters" is a fact about the secret, so the save
+    is recorded exactly as any other.
+
+    ``accept_short_password`` is a string parsed after the gate: as a ``bool``
+    form field, a malformed value would be rejected by request validation before
+    the same-origin and reveal checks had run.
     """
     from admz.audit import record_event
     from admz.provisioning import FLEET_ROOT_PASSWORD_KEY
@@ -1104,6 +1110,7 @@ async def set_fleet_root_password(
     principal, reason = await _authorize_credential_write(
         request, action="fleet_setting.write", resource=FLEET_ROOT_PASSWORD_KEY,
     )
+    accepted = accept_short_password.strip().lower() in ("yes", "on", "true", "1")
 
     # Machine tag for the audit row, operator sentence for the page. Neither
     # ever contains the value.
@@ -1137,12 +1144,9 @@ async def set_fleet_root_password(
         )
 
     short = len(root_password) < _ROOT_PASSWORD_RECOMMENDED_LENGTH
-    if short and not accept_short_password:
-        record_event(
-            principal, "fleet_setting.write",
-            resource=FLEET_ROOT_PASSWORD_KEY,
-            success=False, error_message="short-not-accepted",
-        )
+    if short and not accepted:
+        # A confirmation step, not a refusal, so it writes no audit row: a row
+        # saying "short" would describe the password about to be saved.
         return templates.TemplateResponse(
             request, "fleet_settings.html",
             _build_fleet_settings_context(
@@ -1160,15 +1164,13 @@ async def set_fleet_root_password(
 
     replaced = bool(fleet_settings.get(FLEET_ROOT_PASSWORD_KEY))
     fleet_settings.set(FLEET_ROOT_PASSWORD_KEY, root_password)
-    details = {"op": "replace" if replaced else "set", "granted_by": reason}
-    if short:
-        details["short_password_accepted"] = True
     # After the write, not before: an audit row must never claim a change that
     # did not land. Same ordering as `run_settings` and `capabilities.set_enabled`.
+    # And the same row whatever the password's length — see the docstring.
     record_event(
         principal, "fleet_setting.write",
         resource=FLEET_ROOT_PASSWORD_KEY,
-        details=details,
+        details={"op": "replace" if replaced else "set", "granted_by": reason},
     )
     return templates.TemplateResponse(
         request, "fleet_settings.html",
@@ -1207,9 +1209,11 @@ def _entry_refusal_sentence(code: str, fallback: str = "") -> str:
             "so nothing was added. Remove one first — each credential is another "
             "failed login against every device ADMZ adopts."),
         entry_credentials.REFUSED_UNREADABLE: (
-            "The stored entry list cannot be decrypted, so nothing was changed: "
-            "any change would destroy it. Restore the key file it was written "
-            "with first."),
+            "The stored entry list cannot be read in full, so nothing was "
+            "changed: any change would lose part of it. It cannot be decrypted, "
+            "or it is not a list of complete username/password pairs — restore "
+            "the key file it was written with, or correct it with "
+            "python -m admz settings set entry_credentials."),
         entry_credentials.REFUSED_STALE: (
             "The entry list has changed since this page was loaded, so nothing "
             "was removed. The list below is current."),
@@ -1340,8 +1344,7 @@ async def add_fleet_entry_credential(
 async def remove_fleet_entry_credential(
     request: Request,
     position: str = Form(""),
-    username: str = Form(""),
-    label: str = Form(""),
+    revision: str = Form(""),
 ):
     """Remove one pair from the entry list (FR-CRED-012).
 
@@ -1350,11 +1353,14 @@ async def remove_fleet_entry_credential(
     away the only credential that gets ADMZ into a batch of devices — and it
     cannot be undone from the page, which never shows the password.
 
-    ``position``, ``username`` and ``label`` name the row the page showed, and
-    ``entry_credentials.remove_entry_credential`` removes it only if they still
-    match, so a stale page removes nothing. ``position`` arrives as a string and
-    is parsed here, after the gate: as an ``int`` form field, a malformed value
-    would be rejected by request validation before the gate had run.
+    ``position`` is the row's place in the list the page showed and
+    ``revision`` the list's revision when the page was rendered;
+    ``entry_credentials.remove_entry_credential`` acts only while that revision
+    still holds, so a stale tab, another writer, or this same form resubmitted
+    by a reload removes nothing. The audit row names the removed row as read
+    from storage. ``position`` arrives as a string and is parsed here, after
+    the gate: as an ``int`` form field, a malformed value would be rejected by
+    request validation before the gate had run.
     """
     from admz import entry_credentials
     from admz.audit import record_event
@@ -1363,11 +1369,12 @@ async def remove_fleet_entry_credential(
         request, action="entry_credential.remove_refused",
         resource=_ENTRY_CREDENTIALS_RESOURCE,
     )
-    details = {"username": username, "label": label}
+    # What was asked for, bounded: a refused request may be hand-made.
+    details = {"position": position[:20]}
     try:
         index = int(position)
     except ValueError:
-        # Not a position at all, which only a stale or hand-made request sends.
+        # Not a position at all, which only a hand-made request sends.
         return _entry_write_refused(
             request, principal, action="entry_credential.remove_refused",
             tag=entry_credentials.REFUSED_STALE,
@@ -1375,8 +1382,7 @@ async def remove_fleet_entry_credential(
             details=details,
         )
     try:
-        removed = entry_credentials.remove_entry_credential(
-            index, username=username, label=label)
+        removed = entry_credentials.remove_entry_credential(index, revision=revision)
     except entry_credentials.EntryCredentialRefused as exc:
         return _entry_write_refused(
             request, principal, action="entry_credential.remove_refused",
@@ -1400,27 +1406,21 @@ async def remove_fleet_entry_credential(
 
 
 def _entry_credentials_view(desc: dict) -> dict:
-    """Mark each stored entry as tried (it is in ``in_use``) or never tried.
+    """Pair each stored entry with whether a pass tries it, for the template.
 
-    ``in_use`` is the head of the stored order (the legacy pair first), so the
-    match walks both in order; with the prompt-always posture on nothing is in
-    use and every row says so. ADMZ's break-glass attempt, when ``in_use`` ends
-    with one (``break_glass_last``), is not a stored entry: it is left out of
-    the match and out of ``entries_tried``, so the page names it after the count
-    rather than reporting "4 (at most 3)". Redacted dicts in, redacted dicts out.
+    ``stored_tried`` comes from ``entry_credentials.describe``, which works it
+    out from the credentials themselves — matching redacted usernames and
+    labels here could mark the dead one of two identical entries tried and the
+    live one "never tried". ``entries_tried`` counts the entry credentials a
+    pass tries, leaving out ADMZ's break-glass attempt when ``in_use`` ends with
+    one (``break_glass_last``), so the page names it after the count rather than
+    reporting "4 (at most 3)". Redacted dicts in, redacted dicts out.
     """
-    in_use = list(desc.get("in_use", []))
-    if desc.get("break_glass_last") and in_use:
-        in_use.pop()
-    remaining = [(c.get("username"), c.get("label")) for c in in_use]
-    rows = []
-    for c in desc.get("stored", []):
-        key = (c.get("username"), c.get("label"))
-        tried = key in remaining
-        if tried:
-            remaining.remove(key)
-        rows.append({**c, "tried": tried})
-    return {**desc, "rows": rows, "entries_tried": len(in_use)}
+    flags = desc.get("stored_tried") or []
+    rows = [{**c, "tried": bool(flags[i]) if i < len(flags) else False}
+            for i, c in enumerate(desc.get("stored", []))]
+    entries_tried = len(desc.get("in_use", [])) - (1 if desc.get("break_glass_last") else 0)
+    return {**desc, "rows": rows, "entries_tried": max(entries_tried, 0)}
 
 
 # ── Confirmation settings ────────────────────────────────────────────────
