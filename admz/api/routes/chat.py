@@ -1130,7 +1130,12 @@ class ResumeRequest(BaseModel):
         ..., description="The conversation whose trailing console note to answer.",
     )
     model: Optional[str] = Field(
-        None, description="Gemini model id; falls back to the org default.",
+        None,
+        description=(
+            "Gemini model id — the one the operator picked. Omitted, the model "
+            "this principal last used; the org default only if that is not "
+            "selectable."
+        ),
     )
 
 
@@ -1208,12 +1213,19 @@ async def api_chat_resume(
         raise HTTPException(status_code=409, detail="already_claimed")
 
     config = get_chatbot_config()
+    # A continuation answers the turn before it, so it runs on that turn's
+    # model: the one the page sends, else the one this principal last used, and
+    # only then the org default (_run_chat_turn's fallback for anything not
+    # selectable). Falling straight to the default switched a conversation off
+    # the operator's model mid-job on 2026-09-15 — and the other model wrote an
+    # approval link instead of calling the tool.
+    model_request = body.model or _sessions().last_model(principal.name) or ""
 
     async def event_source() -> AsyncIterator[str]:
         async for chat_event, _summary in _run_chat_turn(
             principal=principal,
             message="",
-            model_request=body.model or "",
+            model_request=model_request,
             config=config,
             conversation_id=conv_id,
             resume=True,

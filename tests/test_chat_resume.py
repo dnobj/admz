@@ -329,3 +329,72 @@ class TestResume:
         assert [m["role"] for m in store.get_messages(PRINCIPAL, conv_a)][-1] == "model"
         # ...and the operator's cursor never moved.
         assert store.get_active_conversation(PRINCIPAL) == conv_b
+
+
+class TestTheContinuationKeepsTheModel:
+    """2026-09-15: a job typed on one model was continued on the org default,
+    because the console sent no model and the endpoint fell straight back to
+    it. The other model wrote an approval link instead of calling the tool.
+    A continuation answers the turn before it, so it runs on that turn's model.
+
+    Each test reads the model back from ``last_model``, which the turn records
+    as the model it actually ran on.
+    """
+
+    @staticmethod
+    def _default_and_other():
+        from admz.chatbot.config import SELECTABLE_MODELS, get_chatbot_config
+
+        default = get_chatbot_config().default_model
+        return default, next(m for m in SELECTABLE_MODELS if m != default)
+
+    def test_it_runs_on_the_model_the_page_sends(self, client):
+        store = _store()
+        conv = _resolved_conversation(store)
+        _seed_api_key()
+        _, other = self._default_and_other()
+        with patch("admz.api.routes.chat.stream_turn", _capturing_stream({})):
+            r = client.post(
+                "/api/chat/resume", json={"conversation_id": conv, "model": other}
+            )
+        assert r.status_code == 200
+        assert store.last_model(PRINCIPAL) == other
+
+    def test_without_one_it_runs_on_the_model_this_principal_last_used(self, client):
+        """The incident's shape: the page sent no model at all."""
+        store = _store()
+        conv = _resolved_conversation(store)
+        _seed_api_key()
+        _, other = self._default_and_other()
+        store.set_interaction_id(PRINCIPAL, "int-0", other)
+        with patch("admz.api.routes.chat.stream_turn", _capturing_stream({})):
+            r = client.post("/api/chat/resume", json={"conversation_id": conv})
+        assert r.status_code == 200
+        assert store.last_model(PRINCIPAL) == other, (
+            "the continuation switched off the model the operator was using")
+
+    def test_an_unselectable_last_model_falls_back_to_the_default(self, client):
+        """Control for the test above: the fallback still exists, it is only
+        no longer the first resort."""
+        store = _store()
+        conv = _resolved_conversation(store)
+        _seed_api_key()
+        default, _ = self._default_and_other()
+        store.set_interaction_id(PRINCIPAL, "int-0", "not-a-real-model")
+        with patch("admz.api.routes.chat.stream_turn", _capturing_stream({})):
+            client.post("/api/chat/resume", json={"conversation_id": conv})
+        assert store.last_model(PRINCIPAL) == default
+
+    def test_the_console_sends_its_model_with_the_continuation(self):
+        """This repo has no JavaScript test tooling, so the request is pinned by
+        its source: the continuation's body must carry the picked model."""
+        import re
+        from pathlib import Path
+
+        import admz.api as api_pkg
+
+        src = (Path(api_pkg.__file__).parent / "static" / "chat.js").read_text(
+            encoding="utf-8")
+        call = re.search(r'fetch\("/api/chat/resume",\s*\{.*?\}\)', src, re.S)
+        assert call, "the continuation request moved — re-pin this test"
+        assert "model:" in call.group(0)

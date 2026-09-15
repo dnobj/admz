@@ -1151,10 +1151,17 @@
         var assistantBubble = renderAssistantBubble();
         sendBtn.disabled = true;
         sendBtn.classList.add("disabled");
+        // Sent with the model the operator picked: the turn this continues ran
+        // on it. A continuation that silently changed models is how a job typed
+        // on one model finished on the default, with a fabricated approval link.
+        var modelEl = document.getElementById("model");
         return fetch("/api/chat/resume", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ conversation_id: data.conversation_id }),
+          body: JSON.stringify({
+            conversation_id: data.conversation_id,
+            model: modelEl ? modelEl.value : undefined,
+          }),
         })
           .then(function (resp) {
             if (!resp.ok) {
