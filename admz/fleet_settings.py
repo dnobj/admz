@@ -239,6 +239,39 @@ class FleetSettings:
             conn.close()
         return row[0] if row else None
 
+    def is_stored(self, key: str) -> bool:
+        """True when a non-empty value is stored under ``key``, readable or not.
+
+        :meth:`get` returns ``None`` both for an unset key and for a secret that
+        cannot be decrypted (``setting_crypto.read_stored``), which is the right
+        answer for a reader. A writer that rewrites a value from what it read
+        has to tell the two apart, or it destroys the unreadable value that
+        restoring the key would have recovered.
+        """
+        return bool(self._raw_get(key))
+
+    def stored_digest(self, *keys: str) -> bytes:
+        """A SHA-256 over the values of ``keys`` exactly as stored, for noticing
+        that something wrote them — never for display.
+
+        A secret contributes its ciphertext, whose random IV makes the digest
+        change on every write, even of an identical value. But a secret can still
+        be at legacy plaintext, so this digest must not leave the server unkeyed:
+        a caller that puts a change token in a page MACs it first
+        (``entry_credentials.list_revision``).
+        """
+        import hashlib
+
+        h = hashlib.sha256()
+        for key in keys:
+            for part in (key, self._raw_get(key)):
+                data = b"" if part is None else part.encode("utf-8")
+                # Length-prefixed so no two sequences collide, and unset kept
+                # distinct from empty.
+                h.update((-1 if part is None else len(data)).to_bytes(8, "big", signed=True))
+                h.update(data)
+        return h.digest()
+
     def get(self, key: str) -> Optional[str]:
         """Get a setting value by key. Returns None if not set.
 

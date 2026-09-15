@@ -928,12 +928,22 @@ async def configuration_redirect(request: Request):
     return RedirectResponse(url=target, status_code=307)
 
 
-#: The shortest break-glass root password the Fleet Settings form accepts.
+#: Below this length the Fleet Settings form WARNS about the break-glass root
+#: password, and saves it only once the operator has said they accept the risk.
 #:
-#: A floor against an accidental or placeholder submission, not a policy on
+#: A warning, not a floor, by the owner's decision (2026-09-14): a short root
+#: password is a risk an operator may knowingly take. Nor is it a policy on
 #: device password strength — Axis units enforce their own rules, and a value
 #: one rejects fails at provisioning's root write, before anything is stored.
-_ROOT_PASSWORD_MIN_LENGTH = 8
+_ROOT_PASSWORD_RECOMMENDED_LENGTH = 8
+
+#: The longest label the entry-credential form accepts. A label is free text
+#: shown on the settings page and in audit rows; this only keeps both legible.
+_ENTRY_LABEL_MAX_LENGTH = 80
+
+#: The audit ``resource`` for every change to the entry list — the same one
+#: the capture form's promotion records, so one filter finds both writers.
+_ENTRY_CREDENTIALS_RESOURCE = "fleet_settings:entry_credentials"
 
 
 def _build_fleet_settings_context(
@@ -941,6 +951,8 @@ def _build_fleet_settings_context(
     *,
     success: Optional[str] = None,
     error: Optional[str] = None,
+    warning: Optional[str] = None,
+    short_password_pending: bool = False,
 ) -> dict:
     """Everything ``fleet_settings.html`` renders, shared by GET and the POSTs.
 
@@ -987,9 +999,14 @@ def _build_fleet_settings_context(
         # FR-CRED-014 / ADR-0068: a boolean, never the value. Read from the
         # `list_all()` above rather than a second query.
         "root_password_configured": bool(settings.get(FLEET_ROOT_PASSWORD_KEY)),
-        "root_password_min_length": _ROOT_PASSWORD_MIN_LENGTH,
+        "root_password_recommended_length": _ROOT_PASSWORD_RECOMMENDED_LENGTH,
+        # Set when a short password arrived without the acceptance box ticked:
+        # the box then renders visible, so accepting works without script too.
+        "short_password_pending": short_password_pending,
+        "entry_label_max_length": _ENTRY_LABEL_MAX_LENGTH,
         "success": success,
         "error": error,
+        "warning": warning,
     }
 
 
@@ -1001,11 +1018,46 @@ async def fleet_settings_page(request: Request):
     )
 
 
+async def _authorize_credential_write(request: Request, *, action: str, resource: str):
+    """The gate every Fleet Settings credential form shares, in its order.
+
+    **Same-origin first**, before any side effect — a cross-site POST must not
+    even be able to write a refusal row. Then **reveal-group membership**, not
+    merely an authenticated caller: whoever sets a credential knows it
+    afterwards, so setting one must need at least the permission that revealing
+    it needs, or the form is a back door to reveal. A refusal is audited under
+    ``action`` and then raised as the canonical 403.
+
+    Returns ``(principal, reason)``; ``reason`` names what granted access.
+    """
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import principal_can_reveal, require_reveal_permission
+    from admz.csrf import check_same_origin
+
+    # CSRF (#3) before every side effect — a cross-site POST must not even be
+    # able to write a refusal row.
+    check_same_origin(request)
+
+    principal = await get_current_principal(request)
+    allowed, reason = principal_can_reveal(principal)
+    if not allowed:
+        record_event(
+            principal, action, resource=resource,
+            success=False, error_message=f"reveal-denied:{reason}",
+        )
+        # Raises the canonical 403, outside any error handling so a refusal can
+        # never be swallowed into a friendly rendered page.
+        require_reveal_permission(principal)
+    return principal, reason
+
+
 @router.post("/fleet-settings/root-password", response_class=HTMLResponse)
 async def set_fleet_root_password(
     request: Request,
     root_password: str = Form(""),
     confirm_root_password: str = Form(""),
+    accept_short_password: str = Form(""),
 ):
     """Set or replace the break-glass root password (FR-CRED-014, ADR-0068).
 
@@ -1015,7 +1067,9 @@ async def set_fleet_root_password(
     neither exposure.
 
     A per-key write handler, like ``POST /confirm-settings``, which is the
-    precedent it follows. It departs from it in four places, deliberately:
+    precedent it follows. It departs from it in four places, deliberately (the
+    first two live in :func:`_authorize_credential_write`, which the entry-list
+    forms share):
 
     - **Gate: reveal-group membership, not merely an authenticated caller.**
       Whoever sets this value knows it afterwards, so setting it must require
@@ -1035,28 +1089,28 @@ async def set_fleet_root_password(
 
     The value is never echoed, never logged, and never in an audit row.
     ``fleet_settings.set`` encrypts it at rest (``STORE_ENCRYPTED_SETTING_KEYS``).
+
+    **A short password is a warning, not a refusal** (owner decision,
+    2026-09-14). Below ``_ROOT_PASSWORD_RECOMMENDED_LENGTH`` nothing is saved
+    until the operator ticks the acceptance box, and accepting waives nothing
+    else: an empty, mismatched or space-padded submission is refused either way.
+    **Nothing recorded says the password is short** — not its length, not the
+    acceptance, not the unaccepted attempt before it. The audit log is readable
+    by any signed-in user (``GET /api/audit``), and "the fleet's break-glass
+    password is under eight characters" is a fact about the secret, so the save
+    is recorded exactly as any other.
+
+    ``accept_short_password`` is a string parsed after the gate: as a ``bool``
+    form field, a malformed value would be rejected by request validation before
+    the same-origin and reveal checks had run.
     """
     from admz.audit import record_event
-    from admz.auth import get_current_principal
-    from admz.authz import principal_can_reveal, require_reveal_permission
-    from admz.csrf import check_same_origin
     from admz.provisioning import FLEET_ROOT_PASSWORD_KEY
 
-    # CSRF (#3) before every side effect — a cross-site POST must not even be
-    # able to write a refusal row.
-    check_same_origin(request)
-
-    principal = await get_current_principal(request)
-    allowed, reason = principal_can_reveal(principal)
-    if not allowed:
-        record_event(
-            principal, "fleet_setting.write",
-            resource=FLEET_ROOT_PASSWORD_KEY,
-            success=False, error_message=f"reveal-denied:{reason}",
-        )
-        # Raises the canonical 403, outside any error handling so a refusal can
-        # never be swallowed into a friendly rendered page.
-        require_reveal_permission(principal)
+    principal, reason = await _authorize_credential_write(
+        request, action="fleet_setting.write", resource=FLEET_ROOT_PASSWORD_KEY,
+    )
+    accepted = accept_short_password.strip().lower() in ("yes", "on", "true", "1")
 
     # Machine tag for the audit row, operator sentence for the page. Neither
     # ever contains the value.
@@ -1076,9 +1130,6 @@ async def set_fleet_root_password(
                    "The password starts or ends with a space. That is almost "
                    "always a paste accident, so it is not accepted — remove it "
                    "and try again.")
-    elif len(root_password) < _ROOT_PASSWORD_MIN_LENGTH:
-        problem = ("too-short",
-                   f"Use at least {_ROOT_PASSWORD_MIN_LENGTH} characters.")
 
     if problem:
         tag, sentence = problem
@@ -1092,10 +1143,30 @@ async def set_fleet_root_password(
             _build_fleet_settings_context(request, error=sentence),
         )
 
+    short = len(root_password) < _ROOT_PASSWORD_RECOMMENDED_LENGTH
+    if short and not accepted:
+        # A confirmation step, not a refusal, so it writes no audit row: a row
+        # saying "short" would describe the password about to be saved.
+        return templates.TemplateResponse(
+            request, "fleet_settings.html",
+            _build_fleet_settings_context(
+                request,
+                warning=(
+                    "Nothing was saved yet: that password is shorter than "
+                    f"{_ROOT_PASSWORD_RECOMMENDED_LENGTH} characters. A short "
+                    "break-glass password is easier to guess, and it logs in to "
+                    "every device ADMZ provisions. To use it anyway, enter it "
+                    "twice again and tick the box to accept the risk."
+                ),
+                short_password_pending=True,
+            ),
+        )
+
     replaced = bool(fleet_settings.get(FLEET_ROOT_PASSWORD_KEY))
     fleet_settings.set(FLEET_ROOT_PASSWORD_KEY, root_password)
     # After the write, not before: an audit row must never claim a change that
     # did not land. Same ordering as `run_settings` and `capabilities.set_enabled`.
+    # And the same row whatever the password's length — see the docstring.
     record_event(
         principal, "fleet_setting.write",
         resource=FLEET_ROOT_PASSWORD_KEY,
@@ -1112,26 +1183,244 @@ async def set_fleet_root_password(
                 "from now on. Devices it has already provisioned keep the root "
                 "password they were given."
             ),
+            warning=(
+                f"It is shorter than {_ROOT_PASSWORD_RECOMMENDED_LENGTH} "
+                "characters, as you accepted. You can replace it with a longer "
+                "one here at any time."
+            ) if short else None,
         ),
     )
 
 
-def _entry_credentials_view(desc: dict) -> dict:
-    """Mark each stored entry as tried (it is in ``in_use``) or never tried.
+def _entry_refusal_sentence(code: str, fallback: str = "") -> str:
+    """What the page says when ``admz.entry_credentials`` refuses a write.
 
-    ``in_use`` is the head of the stored order (the legacy pair first), so the
-    match walks both in order; with the prompt-always posture on nothing is in
-    use and every row says so. Redacted dicts in, redacted dicts out.
+    Keyed on the refusal's code, never its message: the library's messages are
+    written for a log, and they will be reworded.
     """
-    remaining = [(c.get("username"), c.get("label")) for c in desc.get("in_use", [])]
-    rows = []
-    for c in desc.get("stored", []):
-        key = (c.get("username"), c.get("label"))
-        tried = key in remaining
-        if tried:
-            remaining.remove(key)
-        rows.append({**c, "tried": tried})
-    return {**desc, "rows": rows}
+    from admz import entry_credentials
+
+    return {
+        entry_credentials.REFUSED_PROMPT_ALWAYS: (
+            "This installation is set to store no entry credentials and to ask "
+            "every time (the prompt-always posture), so nothing was added."),
+        entry_credentials.REFUSED_CAP: (
+            f"The list already holds the most it may ({entry_credentials.MAX_STORED}), "
+            "so nothing was added. Remove one first — each credential is another "
+            "failed login against every device ADMZ adopts."),
+        entry_credentials.REFUSED_UNREADABLE: (
+            "The stored entry list cannot be read in full, so nothing was "
+            "changed: any change would lose part of it. It cannot be decrypted, "
+            "or it is not a list of complete username/password pairs — restore "
+            "the key file it was written with, or correct it with "
+            "python -m admz settings set entry_credentials."),
+        entry_credentials.REFUSED_STALE: (
+            "The entry list has changed since this page was loaded, so nothing "
+            "was removed. The list below is current."),
+        entry_credentials.REFUSED_INCOMPLETE: "Enter both a username and a password.",
+    }.get(code, fallback)
+
+
+def _entry_write_refused(request: Request, principal, *, action: str, tag: str,
+                         sentence: str, details: dict):
+    """Audit a refused change to the entry list, then re-render the page saying why.
+
+    The audit row carries the machine ``tag`` and the non-secret ``details``
+    (username and label); the page carries the ``sentence``. Neither carries a
+    password.
+    """
+    from admz.audit import record_event
+
+    record_event(
+        principal, action, resource=_ENTRY_CREDENTIALS_RESOURCE,
+        details=details, success=False, error_message=tag,
+    )
+    return templates.TemplateResponse(
+        request, "fleet_settings.html",
+        _build_fleet_settings_context(request, error=sentence),
+    )
+
+
+@router.post("/fleet-settings/entry-credentials", response_class=HTMLResponse)
+async def add_fleet_entry_credential(
+    request: Request,
+    entry_username: str = Form(""),
+    entry_password: str = Form(""),
+    confirm_entry_password: str = Form(""),
+    entry_label: str = Form(""),
+):
+    """Add a pair to the entry list from the Fleet Settings page (FR-CRED-012).
+
+    The list's other writers are the capture form's promote box, which only
+    offers a password a device has just accepted, and
+    ``python -m admz settings set entry_credentials``, which takes the whole
+    list — passwords included — as a command-line argument. This form covers
+    the case neither does: a password an operator knows was set by hand on
+    devices ADMZ has not adopted yet.
+
+    **It widens what ADMZ tries against every device it adopts**, so it carries
+    the break-glass form's protections: :func:`_authorize_credential_write`
+    (same-origin first, then reveal-group membership — which matters doubly
+    here, because a duplicate is reported and so answers "is this password
+    already on the list"), the password typed twice and never echoed, and every
+    refusal audited. The audit row names the username and label, never the
+    password. The storage cap and the prompt-always posture are
+    ``admz.entry_credentials``' rules, surfaced here rather than restated.
+
+    The username is trimmed, because it is shown back on the page where a
+    change is visible; a password with surrounding spaces is refused instead,
+    for the reason the break-glass form gives.
+    """
+    from admz import entry_credentials
+    from admz.audit import record_event
+
+    principal, reason = await _authorize_credential_write(
+        request, action="entry_credential.add_refused",
+        resource=_ENTRY_CREDENTIALS_RESOURCE,
+    )
+    username, label = entry_username.strip(), entry_label.strip()
+    details = {"username": username, "label": label}
+
+    problem = None
+    if not username or not entry_password:
+        problem = (entry_credentials.REFUSED_INCOMPLETE,
+                   _entry_refusal_sentence(entry_credentials.REFUSED_INCOMPLETE))
+    elif entry_password != confirm_entry_password:
+        problem = ("mismatch", "The two passwords do not match.")
+    elif entry_password != entry_password.strip():
+        problem = ("surrounding-whitespace",
+                   "The password starts or ends with a space. That is almost "
+                   "always a paste accident, so it is not accepted — remove it "
+                   "and try again.")
+    elif len(label) > _ENTRY_LABEL_MAX_LENGTH:
+        problem = ("label-too-long",
+                   f"Keep the label to {_ENTRY_LABEL_MAX_LENGTH} characters or fewer.")
+    if problem:
+        tag, sentence = problem
+        return _entry_write_refused(
+            request, principal, action="entry_credential.add_refused",
+            tag=tag, sentence=sentence, details=details,
+        )
+
+    try:
+        added = entry_credentials.add_entry_credential(
+            username, entry_password, label=label)
+    except entry_credentials.EntryCredentialRefused as exc:
+        return _entry_write_refused(
+            request, principal, action="entry_credential.add_refused",
+            tag=exc.code, sentence=_entry_refusal_sentence(exc.code, str(exc)),
+            details=details,
+        )
+    if not added:
+        # Nothing changed, so nothing is audited — as for a duplicate promotion.
+        return templates.TemplateResponse(
+            request, "fleet_settings.html",
+            _build_fleet_settings_context(
+                request,
+                warning=(f"That password for {username} is already on the entry "
+                         "list, so nothing was added."),
+            ),
+        )
+
+    # After the write, as for the break-glass password: an audit row must never
+    # claim a change that did not land.
+    record_event(
+        principal, "entry_credential.added",
+        resource=_ENTRY_CREDENTIALS_RESOURCE,
+        details={**details, "granted_by": reason},
+    )
+    return templates.TemplateResponse(
+        request, "fleet_settings.html",
+        _build_fleet_settings_context(
+            request,
+            success=(f"Added {username} to the entry list. ADMZ tries it on "
+                     "devices it does not yet manage, from the next onboarding "
+                     "on; it is never stored as a device's credential."),
+        ),
+    )
+
+
+@router.post("/fleet-settings/entry-credentials/remove", response_class=HTMLResponse)
+async def remove_fleet_entry_credential(
+    request: Request,
+    position: str = Form(""),
+    revision: str = Form(""),
+):
+    """Remove one pair from the entry list (FR-CRED-012).
+
+    Gated exactly as adding is. Removing narrows what ADMZ tries rather than
+    widening it, but it is still a fleet-wide credential change — it can take
+    away the only credential that gets ADMZ into a batch of devices — and it
+    cannot be undone from the page, which never shows the password.
+
+    ``position`` is the row's place in the list the page showed and
+    ``revision`` the list's revision when the page was rendered;
+    ``entry_credentials.remove_entry_credential`` acts only while that revision
+    still holds, so a stale tab, another writer, or this same form resubmitted
+    by a reload removes nothing. The audit row names the removed row as read
+    from storage. ``position`` arrives as a string and is parsed here, after
+    the gate: as an ``int`` form field, a malformed value would be rejected by
+    request validation before the gate had run.
+    """
+    from admz import entry_credentials
+    from admz.audit import record_event
+
+    principal, reason = await _authorize_credential_write(
+        request, action="entry_credential.remove_refused",
+        resource=_ENTRY_CREDENTIALS_RESOURCE,
+    )
+    # What was asked for, bounded: a refused request may be hand-made.
+    details = {"position": position[:20]}
+    try:
+        index = int(position)
+    except ValueError:
+        # Not a position at all, which only a hand-made request sends.
+        return _entry_write_refused(
+            request, principal, action="entry_credential.remove_refused",
+            tag=entry_credentials.REFUSED_STALE,
+            sentence=_entry_refusal_sentence(entry_credentials.REFUSED_STALE),
+            details=details,
+        )
+    try:
+        removed = entry_credentials.remove_entry_credential(index, revision=revision)
+    except entry_credentials.EntryCredentialRefused as exc:
+        return _entry_write_refused(
+            request, principal, action="entry_credential.remove_refused",
+            tag=exc.code, sentence=_entry_refusal_sentence(exc.code, str(exc)),
+            details=details,
+        )
+
+    record_event(
+        principal, "entry_credential.removed",
+        resource=_ENTRY_CREDENTIALS_RESOURCE,
+        details={**removed, "granted_by": reason},
+    )
+    sentence = f"Removed {removed['username']} from the entry list."
+    if removed["legacy_pair"]:
+        sentence += (" It was the fleet default pair, so the default_username "
+                     "and default_password settings were deleted.")
+    return templates.TemplateResponse(
+        request, "fleet_settings.html",
+        _build_fleet_settings_context(request, success=sentence),
+    )
+
+
+def _entry_credentials_view(desc: dict) -> dict:
+    """Pair each stored entry with whether a pass tries it, for the template.
+
+    ``stored_tried`` comes from ``entry_credentials.describe``, which works it
+    out from the credentials themselves — matching redacted usernames and
+    labels here could mark the dead one of two identical entries tried and the
+    live one "never tried". ``entries_tried`` counts the entry credentials a
+    pass tries, leaving out ADMZ's break-glass attempt when ``in_use`` ends with
+    one (``break_glass_last``), so the page names it after the count rather than
+    reporting "4 (at most 3)". Redacted dicts in, redacted dicts out.
+    """
+    flags = desc.get("stored_tried") or []
+    rows = [{**c, "tried": bool(flags[i]) if i < len(flags) else False}
+            for i, c in enumerate(desc.get("stored", []))]
+    entries_tried = len(desc.get("in_use", [])) - (1 if desc.get("break_glass_last") else 0)
+    return {**desc, "rows": rows, "entries_tried": max(entries_tried, 0)}
 
 
 # ── Confirmation settings ────────────────────────────────────────────────

@@ -1,11 +1,27 @@
 {% extends "base.html" %}
 
+{% block extra_css %}
+<style>
+/* This page's messages, on the theme's colour tokens so they read in light and
+   dark. Scoped to the page: other templates use a bare `.message` whose look
+   their own script sets. */
+#fleet-settings-page .message { padding: 12px 14px; border-radius: 6px; margin: 0 0 16px; }
+#fleet-settings-page .message p { margin: 0 0 8px; }
+#fleet-settings-page .message.success { background: var(--green-bg); border: 1px solid var(--green-bd); color: var(--green-fg); }
+#fleet-settings-page .message.error { background: var(--red-bg); border: 1px solid var(--red-bd); color: var(--red-fg); }
+#fleet-settings-page .message.warning { background: var(--amber-bg); border: 1px solid var(--amber-bd); color: var(--amber-fg); }
+#fleet-settings-page .inline-form { display: inline; margin-left: 8px; }
+</style>
+{% endblock %}
+
 {% block content %}
+<div id="fleet-settings-page">
 <div class="page-header">
     <h1>Fleet Settings</h1>
 </div>
 
 {% if success %}<div class="message success" data-flash="success">{{ success }}</div>{% endif %}
+{% if warning %}<div class="message warning" data-flash="warning">{{ warning }}</div>{% endif %}
 {% if error %}<div class="message error" data-flash="error">{{ error }}</div>{% endif %}
 
 {# FR-CRED-014 / ADR-0068. The context carries whether the password is SET,
@@ -38,19 +54,31 @@
             <label for="root_password">{% if root_password_configured %}New root password{% else %}Root password{% endif %}</label><br>
             {# autocomplete="new-password", not "off": browsers ignore "off" on
                password fields and would autofill the operator's own saved login,
-               silently setting the WRONG break-glass value. #}
+               silently setting the WRONG break-glass value. No minlength: a
+               short password is warned about, never blocked (FR-CRED-014). #}
             <input type="password" id="root_password" name="root_password"
-                   required minlength="{{ root_password_min_length }}"
-                   autocomplete="new-password">
+                   required autocomplete="new-password"
+                   data-recommended-length="{{ root_password_recommended_length }}">
         </p>
         <p>
             <label for="confirm_root_password">Type it again</label><br>
             <input type="password" id="confirm_root_password"
                    name="confirm_root_password"
-                   required minlength="{{ root_password_min_length }}"
-                   autocomplete="new-password">
+                   required autocomplete="new-password">
         </p>
-        <button type="submit" class="button" id="set-root-password">
+        {# A short password is a risk the operator may accept, never a block.
+           The script below reveals this as they type; the server reveals it when
+           a short password arrives without the box ticked, so the no-script path
+           can accept too. The box is never pre-checked. #}
+        <div class="message warning" id="root-password-short"{% if not short_password_pending %} hidden{% endif %}>
+            <p>This password is shorter than {{ root_password_recommended_length }}
+            characters. A short break-glass password is easier to guess, and it
+            logs in to every device ADMZ provisions.</p>
+            <label><input type="checkbox" id="accept_short_password"
+                   name="accept_short_password" value="yes">
+            Use it anyway &mdash; I accept the risk</label>
+        </div>
+        <button type="submit" class="btn primary" id="set-root-password">
             {% if root_password_configured %}Replace root password{% else %}Set root password{% endif %}
         </button>
     </form>
@@ -92,26 +120,91 @@
     {% if entry_credentials.error %}
     <p class="no-accounts">Entry list unavailable ({{ entry_credentials.error }}); see the server log.</p>
     {% else %}
-    <p>The list ADMZ tries to get <em>into</em> a device it does not yet manage (FR-CRED-011); a credential that works is used once, to create ADMZ's own <code>admz</code> account. Passwords are never displayed. Add to it from the capture form's <em>also offer this credential</em> box (FR-CRED-012).</p>
+    <p>The passwords ADMZ tries to get <em>into</em> a device that is
+    <strong>not</strong> factory-defaulted &mdash; one whose root password was
+    set by hand or by another system (FR-CRED-011). A credential that works is
+    used once, to create ADMZ's own <code>admz</code> account; it is never stored
+    as that device's credential. Passwords are never displayed. Entries also
+    arrive from the capture form's <em>also offer this credential</em> box
+    (FR-CRED-012).</p>
     {% if entry_credentials.prompt_always %}
     <p><strong>Prompt-always posture is on:</strong> nothing stored is tried; every adoption asks a human.</p>
     {% endif %}
+    {% if entry_credentials.unreadable %}
+    <p data-entry-list="unreadable"><strong>The stored list cannot be read in full.</strong>
+    It cannot be decrypted, or it is not a list of complete username/password
+    pairs, so it cannot be changed here without losing part of it. Restore the
+    key file it was written with, or correct it with
+    <code>python -m admz settings set entry_credentials</code>.</p>
+    {% endif %}
     <table>
         <tr><th>Stored</th><td>{{ entry_credentials.stored|length }} of {{ entry_credentials.max_stored }}</td></tr>
-        <tr><th>Tried per onboarding</th><td>{{ entry_credentials.in_use|length }} (at most {{ entry_credentials.max_attempts_per_pass }})</td></tr>
+        <tr><th>Tried per onboarding</th><td>{{ entry_credentials.entries_tried }} (at most {{ entry_credentials.max_attempts_per_pass }}){% if entry_credentials.break_glass_last %}, then ADMZ's break-glass root password{% endif %}</td></tr>
         {% for c in entry_credentials.rows %}
-        <tr><th>#{{ loop.index }}</th><td><code>{{ c.get('username', '?') }}</code>{% if c.get('label') %} &mdash; {{ c.get('label') }}{% endif %} {% if c.tried %}<em data-entry="tried">tried</em>{% else %}<em data-entry="never-tried">stored, never tried</em>{% endif %}</td></tr>
+        <tr><th>#{{ loop.index }}</th><td><code>{{ c.get('username', '?') }}</code>{% if c.get('label') %} &mdash; {{ c.get('label') }}{% endif %} {% if c.tried %}<em data-entry="tried">tried</em>{% else %}<em data-entry="never-tried">stored, never tried</em>{% endif %}
+            {# The button carries the list's revision as rendered, so a removal
+               applies only to the list this page showed: a form resubmitted by a
+               reload, or a stale tab, removes nothing
+               (entry_credentials.list_revision). #}
+            <form method="POST" action="/fleet-settings/entry-credentials/remove" class="inline-form"
+                  onsubmit="return confirm('Remove this credential from the entry list? ADMZ never shows the password, so only someone who knows it can add it back.');">
+                <input type="hidden" name="position" value="{{ loop.index0 }}">
+                <input type="hidden" name="revision" value="{{ entry_credentials.revision }}">
+                <button type="submit" class="btn ghost sm" data-remove-entry="{{ loop.index0 }}">Remove</button>
+            </form></td></tr>
         {% endfor %}
         {% if not entry_credentials.rows %}
         <tr><th>&nbsp;</th><td class="no-accounts">None stored.</td></tr>
         {% endif %}
     </table>
+
+    <h3>Add a credential</h3>
+    {% if entry_credentials.prompt_always %}
+    <p class="no-accounts" data-entry-add="posture">Adding is off while the prompt-always posture is on.</p>
+    {% elif entry_credentials.unreadable %}
+    <p class="no-accounts" data-entry-add="unreadable">Adding is off until the stored list can be read in full.</p>
+    {% elif entry_credentials.stored|length >= entry_credentials.max_stored %}
+    <p class="no-accounts" data-entry-add="full">The list is full. Remove one
+    before adding another &mdash; each credential is another failed login
+    against every device ADMZ adopts.</p>
+    {% else %}
+    <p>For a password you know was set by hand on devices ADMZ has not adopted
+    yet. ADMZ tries it on <strong>every</strong> device it adopts from now on,
+    until it is removed.</p>
+    <form method="POST" action="/fleet-settings/entry-credentials" autocomplete="off" id="entry-credential-form">
+        <p>
+            <label for="entry_username">Username</label><br>
+            <input type="text" id="entry_username" name="entry_username"
+                   value="root" required autocomplete="off">
+        </p>
+        <p>
+            <label for="entry_password">Password</label><br>
+            <input type="password" id="entry_password" name="entry_password"
+                   required autocomplete="new-password">
+        </p>
+        <p>
+            <label for="confirm_entry_password">Type it again</label><br>
+            <input type="password" id="confirm_entry_password"
+                   name="confirm_entry_password"
+                   required autocomplete="new-password">
+        </p>
+        <p>
+            <label for="entry_label">Label (optional &mdash; which batch or site it is for; never a secret)</label><br>
+            <input type="text" id="entry_label" name="entry_label"
+                   maxlength="{{ entry_label_max_length }}" autocomplete="off">
+        </p>
+        <button type="submit" class="btn primary" id="add-entry-credential">Add to the entry list</button>
+    </form>
+    {% endif %}
+    <p class="no-accounts">Adding and removing require membership in a reveal
+    group &mdash; the same permission needed to reveal the list.</p>
     {% endif %}
 </div>
 {% endif %}
 
 <div class="actions-footer">
     <a href="/" class="button">Back to Devices</a>
+</div>
 </div>
 {% endblock %}
 
@@ -125,7 +218,7 @@ async function toggleFleetPassword(key, idx) {
     const copyBtn = document.getElementById('copy-' + idx);
 
     if (el.dataset.revealed === 'true') {
-        el.textContent = '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022';
+        el.textContent = '••••••••';
         el.dataset.revealed = 'false';
         btn.textContent = 'Reveal';
         copyBtn.style.display = 'none';
@@ -186,5 +279,27 @@ async function copyFleetPassword(idx) {
         setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
     }
 }
+
+// The short-password warning, as the operator types (FR-CRED-014). While the
+// password is short the acceptance box is required, so the browser asks for it
+// instead of refusing the password; once it is long enough the box is hidden
+// and cleared, so a stale tick never rides along.
+(function () {
+    const input = document.getElementById('root_password');
+    const warning = document.getElementById('root-password-short');
+    const accept = document.getElementById('accept_short_password');
+    if (!input || !warning || !accept) return;
+    const recommended = parseInt(input.dataset.recommendedLength, 10) || 8;
+    input.addEventListener('input', function () {
+        // Code points, as the server's len() counts them. value.length counts
+        // UTF-16 units, which would call a password holding astral characters
+        // long enough here and short on the server — unacceptable either way.
+        const length = [...input.value].length;
+        const short = length > 0 && length < recommended;
+        warning.hidden = !short;
+        accept.required = short;
+        if (!short) accept.checked = false;
+    });
+})();
 </script>
 {% endblock %}
