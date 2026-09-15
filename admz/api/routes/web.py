@@ -928,9 +928,21 @@ async def configuration_redirect(request: Request):
     return RedirectResponse(url=target, status_code=307)
 
 
-@router.get("/fleet-settings", response_class=HTMLResponse)
-async def fleet_settings_page(request: Request):
-    """Fleet settings page — view fleet-wide configuration.
+#: The shortest break-glass root password the Fleet Settings form accepts.
+#:
+#: A floor against an accidental or placeholder submission, not a policy on
+#: device password strength — Axis units enforce their own rules, and a value
+#: one rejects fails at provisioning's root write, before anything is stored.
+_ROOT_PASSWORD_MIN_LENGTH = 8
+
+
+def _build_fleet_settings_context(
+    request: Request,
+    *,
+    success: Optional[str] = None,
+    error: Optional[str] = None,
+) -> dict:
+    """Everything ``fleet_settings.html`` renders, shared by GET and the POSTs.
 
     Sensitive values (``is_sensitive_setting_key`` — the same predicate the
     JSON API and the MCP tool use, admz/redact.py's D-2 consolidation) are
@@ -942,14 +954,18 @@ async def fleet_settings_page(request: Request):
     that missed anything not literally named "password"
     (``gemini_api_key``, ``acs_webhook_token``), so those rendered in
     plaintext directly in the HTML response with no gate at all.
+
+    The break-glass root password follows the same rule: the context carries
+    whether it is SET, never the value.
     """
+    from admz import entry_credentials
+    from admz.provisioning import FLEET_ROOT_PASSWORD_KEY
+
     settings = fleet_settings.list_all()
     display = {}
     for k, v in settings.items():
         sensitive = is_sensitive_setting_key(k)
         display[k] = {"value": None if sensitive else v, "sensitive": sensitive}
-
-    from admz import entry_credentials
 
     try:
         entry_view = _entry_credentials_view(entry_credentials.describe())
@@ -960,18 +976,143 @@ async def fleet_settings_page(request: Request):
             "entry credentials unavailable on the settings page", exc_info=True)
         entry_view = {"error": type(exc).__name__}
 
+    return {
+        "request": request,
+        "settings": display,
+        "title": "Fleet Settings",
+        # FR-CRED-012 / ADR-0064 slice D: the first operator view of the
+        # entry list — redacted (usernames and labels; never a password),
+        # every stored entry marked tried or stored-never-tried.
+        "entry_credentials": entry_view,
+        # FR-CRED-014 / ADR-0068: a boolean, never the value. Read from the
+        # `list_all()` above rather than a second query.
+        "root_password_configured": bool(settings.get(FLEET_ROOT_PASSWORD_KEY)),
+        "root_password_min_length": _ROOT_PASSWORD_MIN_LENGTH,
+        "success": success,
+        "error": error,
+    }
+
+
+@router.get("/fleet-settings", response_class=HTMLResponse)
+async def fleet_settings_page(request: Request):
+    """Fleet settings page — view fleet-wide configuration."""
     return templates.TemplateResponse(
-        request,
-        "fleet_settings.html",
-        {
-            "request": request,
-            "settings": display,
-            "title": "Fleet Settings",
-            # FR-CRED-012 / ADR-0064 slice D: the first operator view of the
-            # entry list — redacted (usernames and labels; never a password),
-            # every stored entry marked tried or stored-never-tried.
-            "entry_credentials": entry_view,
-        },
+        request, "fleet_settings.html", _build_fleet_settings_context(request),
+    )
+
+
+@router.post("/fleet-settings/root-password", response_class=HTMLResponse)
+async def set_fleet_root_password(
+    request: Request,
+    root_password: str = Form(""),
+    confirm_root_password: str = Form(""),
+):
+    """Set or replace the break-glass root password (FR-CRED-014, ADR-0068).
+
+    The web counterpart to ``python -m admz settings set fleet_root_password``,
+    which takes the value as a command-line argument — so it lands in shell
+    history and the process list. A form typed by a human in the browser has
+    neither exposure.
+
+    A per-key write handler, like ``POST /confirm-settings``, which is the
+    precedent it follows. It departs from it in four places, deliberately:
+
+    - **Gate: reveal-group membership, not merely an authenticated caller.**
+      Whoever sets this value knows it afterwards, so setting it must require
+      at least the permission needed to REVEAL it
+      (``GET /api/fleet/settings/{key}/reveal``). A weaker gate would be a
+      back door to reveal.
+    - **Same-origin checked first**, before any side effect including the
+      audit row for a refusal. ``/confirm-settings`` does not do this
+      (KL-CRED-003 records the gap); the capture routes do.
+    - **An empty submission is refused, never treated as "remove".**
+      ``/confirm-settings`` clears its password on an empty submit. Here that
+      would quietly turn off provisioning for the entire fleet, because an
+      unset break-glass password makes ``provision_factory_default`` refuse.
+    - **A refused attempt is audited**, as the reveal endpoint audits its
+      denials. Someone trying to set the fleet's break-glass password without
+      permission is worth a row.
+
+    The value is never echoed, never logged, and never in an audit row.
+    ``fleet_settings.set`` encrypts it at rest (``STORE_ENCRYPTED_SETTING_KEYS``).
+    """
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.authz import principal_can_reveal, require_reveal_permission
+    from admz.csrf import check_same_origin
+    from admz.provisioning import FLEET_ROOT_PASSWORD_KEY
+
+    # CSRF (#3) before every side effect — a cross-site POST must not even be
+    # able to write a refusal row.
+    check_same_origin(request)
+
+    principal = await get_current_principal(request)
+    allowed, reason = principal_can_reveal(principal)
+    if not allowed:
+        record_event(
+            principal, "fleet_setting.write",
+            resource=FLEET_ROOT_PASSWORD_KEY,
+            success=False, error_message=f"reveal-denied:{reason}",
+        )
+        # Raises the canonical 403, outside any error handling so a refusal can
+        # never be swallowed into a friendly rendered page.
+        require_reveal_permission(principal)
+
+    # Machine tag for the audit row, operator sentence for the page. Neither
+    # ever contains the value.
+    problem = None
+    if not root_password:
+        problem = ("empty",
+                   "Enter a password. An empty value is not accepted here: "
+                   "without a break-glass root password ADMZ will not provision "
+                   "factory-defaulted devices at all.")
+    elif root_password != confirm_root_password:
+        problem = ("mismatch", "The two passwords do not match.")
+    elif root_password != root_password.strip():
+        # Refused rather than silently stripped: stripping would store a value
+        # different from the one the operator believes they set, and they would
+        # discover it at a camera's login prompt.
+        problem = ("surrounding-whitespace",
+                   "The password starts or ends with a space. That is almost "
+                   "always a paste accident, so it is not accepted — remove it "
+                   "and try again.")
+    elif len(root_password) < _ROOT_PASSWORD_MIN_LENGTH:
+        problem = ("too-short",
+                   f"Use at least {_ROOT_PASSWORD_MIN_LENGTH} characters.")
+
+    if problem:
+        tag, sentence = problem
+        record_event(
+            principal, "fleet_setting.write",
+            resource=FLEET_ROOT_PASSWORD_KEY,
+            success=False, error_message=tag,
+        )
+        return templates.TemplateResponse(
+            request, "fleet_settings.html",
+            _build_fleet_settings_context(request, error=sentence),
+        )
+
+    replaced = bool(fleet_settings.get(FLEET_ROOT_PASSWORD_KEY))
+    fleet_settings.set(FLEET_ROOT_PASSWORD_KEY, root_password)
+    # After the write, not before: an audit row must never claim a change that
+    # did not land. Same ordering as `run_settings` and `capabilities.set_enabled`.
+    record_event(
+        principal, "fleet_setting.write",
+        resource=FLEET_ROOT_PASSWORD_KEY,
+        details={"op": "replace" if replaced else "set", "granted_by": reason},
+    )
+    return templates.TemplateResponse(
+        request, "fleet_settings.html",
+        _build_fleet_settings_context(
+            request,
+            success=(
+                "Break-glass root password "
+                + ("replaced" if replaced else "set")
+                + ". ADMZ writes it to factory-defaulted devices it provisions "
+                "from now on. Devices it has already provisioned keep the root "
+                "password they were given."
+            ),
+        ),
     )
 
 
