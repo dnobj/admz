@@ -207,15 +207,15 @@ as slices C–F together with #443: the per-pass attempt bound (FR-CRED-013,
 slice C — shipped 2026-09-06), the promote checkbox (FR-CRED-012, slice D — shipped 2026-09-06),
 FR-CRED-007's generated-wins ordering (slice E — shipped 2026-09-06), and most-recently-successful
 ordering (FR-CRED-013, slice F — waits for the lockout measurement). Two facts to hold while reading the
-rest: the list has two writers — `python -m admz settings set entry_credentials`
-and, since slice D, the capture form's promote checkbox — and no settings-page
-editor, so an install's effective list is its legacy pair until someone
-promotes; and the lockout measurement ADR-0061 asked for has not been run.
+rest: the list has three writers — `python -m admz settings set entry_credentials`,
+the capture form's promote checkbox (since slice D), and the Fleet Settings page,
+which adds and removes entries (FR-CRED-012, 2026-09-14); and the lockout
+measurement ADR-0061 asked for has since been run (FR-CRED-013, 2026-09-09).
 
 Existing devices are **not** migrated automatically. Creating accounts on nine
 live devices as a deploy side effect is a decision, not a consequence.
 
-**[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) amends three of the statements above (📋, not yet shipped).**
+**[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) amends three of the statements above (✅ shipped 2026-09-14, ADR-0068 S1).**
 
 - **The rotation rule is narrowed.** *"ADMZ never deletes, rotates or disables
   the account it authenticated with"* becomes: ADMZ never touches a credential a
@@ -354,13 +354,19 @@ The only thing the posture gives up
 is that adopting an **already-set-up** device always asks a human — which is
 precisely what it is choosing.
 
-**[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) adds one attempt and falsifies the paragraph above (📋, not yet
-shipped).** After ADMZ sets `root` from the break-glass password, a pass that
+**[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) adds one attempt and falsifies the paragraph above (✅ shipped
+2026-09-14, ADR-0068 S1).** After ADMZ sets `root` from the break-glass password, a pass that
 fails partway leaves a device whose root password ADMZ *holds* but
 `attempt_order()` does not know — so a retry would fail even though a working
 credential is configured. The break-glass value therefore becomes a **synthetic
 attempt, tried last**, and `describe()` reports it, so the settings page cannot
-understate what ADMZ puts to a device. The measured lockout floor below makes
+understate what ADMZ puts to a device. The attempt is made as **`root`**, the
+account provisioning writes the value to — never under `default_username`, which
+names an unrelated legacy entry credential (corrected 2026-09-14: paired with a
+`default_username` such as `operator`, the attempt could never have logged in).
+The page counts it apart from the entry credentials — *3 (at most 3), then
+ADMZ's break-glass root password* — rather than as a fourth entry
+(`describe()["break_glass_last"]`). The measured lockout floor below makes
 the extra attempt free: ADMZ runs some 400× under the only protection that
 exists on the device tested.
 
@@ -397,7 +403,29 @@ happened. The Fleet Settings page renders the list's `describe()` (usernames,
 labels, posture, cap; every stored entry marked *tried* or *stored, never tried* against slice C's bound; the page renders without the list if reading it fails) — the first operator view of it. A failure inside the promotion itself (anything but the cap or the posture) is logged and reported as a refusal, never a 500 — the capture has already succeeded and consumed its token; audit rows carry the signed-in principal when there is one. The flag reaching the
 store requires the form submission, never the tool argument.
 
-> **[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) re-points the ordering rule (📋, not yet shipped).** Promotion happens
+**Edited from the Fleet Settings page (2026-09-14).** An operator can also add
+and remove entries directly, for the case promotion cannot cover: a password
+known to have been set by hand on devices ADMZ has not adopted yet.
+`POST /fleet-settings/entry-credentials` adds a pair and
+`POST /fleet-settings/entry-credentials/remove` removes one, with the
+break-glass form's protections (FR-CRED-014): same-origin first, then
+**reveal-group membership** — whoever adds a credential knows it, and a
+duplicate is reported, which answers "is this password already on the list" —
+the password typed twice and never echoed, and every refusal audited. The rows
+are `entry_credential.added`, `add_refused`, `removed` and `remove_refused`,
+under the `fleet_settings:entry_credentials` resource promotion already records,
+naming the username and label and never the password. The cap and the
+prompt-always posture stay the library's rules, surfaced through a stable
+refusal code rather than restated. A removal names the row the page showed —
+position, username and label — and removes nothing if that row has changed, so a
+stale page cannot remove a credential the operator never saw; because removal
+narrows what is tried, it is allowed under the prompt-always posture. Removing
+the legacy pair deletes `default_password` and `default_username`. Neither route
+rewrites a stored list that cannot be decrypted: it reads as empty, and
+rewriting it from that reading would destroy the value that restoring the key
+recovers.
+
+> **[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) re-points the ordering rule (✅ shipped 2026-09-14, ADR-0068 S3).** Promotion happens
 > *"**after** the device credential is stored"* today. A root-adopt session
 > (FR-CRED-014) stores no device credential, so promotion is gated on the
 > **device authenticating** instead: a password the device refused promotes
@@ -434,7 +462,11 @@ credential**. See
   refused rather than read as "clear"** — clearing the value makes provisioning
   refuse for the whole fleet, so it must not be one accidental submit away. The
   page states that changing the value does **not** change devices already
-  provisioned: they keep the root password they were given.
+  provisioned: they keep the root password they were given. A password shorter
+  than eight characters is **warned about, not refused** (owner decision,
+  2026-09-14): nothing is saved until the operator ticks an acceptance box that
+  is never pre-checked, the acceptance is audited as `short_password_accepted`
+  while the length never is, and accepting waives none of the other refusals.
 - **The prompt offers exactly two outcomes**, as a `required` radio group with
   **nothing pre-selected**: add the typed password to the fleet entry list
   (FR-CRED-012), or discard it. Not a checkbox — an unticked box is a silent

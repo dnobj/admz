@@ -239,6 +239,17 @@ class FleetSettings:
             conn.close()
         return row[0] if row else None
 
+    def is_stored(self, key: str) -> bool:
+        """True when a non-empty value is stored under ``key``, readable or not.
+
+        :meth:`get` returns ``None`` both for an unset key and for a secret that
+        cannot be decrypted (``setting_crypto.read_stored``), which is the right
+        answer for a reader. A writer that rewrites a value from what it read
+        has to tell the two apart, or it destroys the unreadable value that
+        restoring the key would have recovered.
+        """
+        return bool(self._raw_get(key))
+
     def get(self, key: str) -> Optional[str]:
         """Get a setting value by key. Returns None if not set.
 

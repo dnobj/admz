@@ -21,6 +21,11 @@ quietly weaken it:
 Plus the invariants every secret-writing handler here carries: the value is
 never echoed, never in an audit row, and stored encrypted at rest.
 
+A short password is a WARNING the operator may accept, not a refusal (owner
+decision, 2026-09-14). ``TestAShortPasswordIsAWarningNotABlock`` pins both
+halves: nothing is saved until the risk is accepted, and accepting it waives
+nothing else. The acceptance is audited; the length never is.
+
 The ``client`` fixture repoints every module-level ``fleet_settings`` reference
 at once, copied from ``test_settings_write_authz.py``: a partial repoint leaves
 one route reading a different store than another writes to, which surfaces only
@@ -29,6 +34,7 @@ when test files share a session (#350).
 
 from __future__ import annotations
 
+import re
 import sqlite3
 
 import pytest
@@ -205,19 +211,124 @@ class TestValidation:
         assert 'data-flash="error"' in r.text
         assert client.fs.get(KEY) is None
 
-    def test_a_short_password_is_refused(self, client):
-        _as(_admin())
-        r = _post(client, data={"root_password": "short",
-                                "confirm_root_password": "short"})
-        assert 'data-flash="error"' in r.text
-        assert client.fs.get(KEY) is None
-
     def test_every_refusal_is_audited_as_a_failure(self, client):
         _as(_admin())
         _post(client, data={"root_password": SECRET, "confirm_root_password": "nope"})
         rows = _rows()
         assert rows and rows[0].success is False
         assert rows[0].error_message == "mismatch"
+
+
+# --- a short password: a warning the operator may accept -------------------
+
+
+#: Under the recommended length, and distinctive enough to search a page for.
+SHORT = "Kx7#q2"
+
+
+def _short(client, **extra):
+    return _post(client, data={"root_password": SHORT,
+                               "confirm_root_password": SHORT, **extra})
+
+
+def _recommended() -> int:
+    from admz.api.routes.web import _ROOT_PASSWORD_RECOMMENDED_LENGTH
+    return _ROOT_PASSWORD_RECOMMENDED_LENGTH
+
+
+class TestAShortPasswordIsAWarningNotABlock:
+    def test_the_fixture_is_actually_short(self):
+        """Anti-vacuity: every test below means nothing if SHORT is not."""
+        assert 0 < len(SHORT) < _recommended()
+
+    def test_unaccepted_it_is_not_saved_and_the_page_asks(self, client):
+        _as(_admin())
+        r = _short(client)
+        assert r.status_code == 200
+        assert 'data-flash="warning"' in r.text
+        assert 'data-flash="error"' not in r.text, "a warning, not a refusal"
+        assert client.fs.get(KEY) is None
+        box = re.search(r'<div[^>]*id="root-password-short"[^>]*>', r.text).group(0)
+        assert "hidden" not in box, "without script the operator could never accept"
+        assert SHORT not in r.text
+
+    def test_accepted_it_is_saved_and_the_risk_is_restated(self, client):
+        _as(_admin())
+        r = _short(client, accept_short_password="yes")
+        assert r.status_code == 200, r.text
+        assert client.fs.get(KEY) == SHORT
+        assert 'data-flash="success"' in r.text
+        assert 'data-flash="warning"' in r.text
+        assert SHORT not in r.text
+
+    def test_the_acceptance_is_audited_and_the_length_is_not(self, client):
+        """Who accepted the risk is the point of accepting it. How short the
+        password is would be a fact about the secret."""
+        _as(_admin())
+        _short(client)
+        _short(client, accept_short_password="yes")
+        rows = _rows()
+        unaccepted = [r for r in rows if not r.success]
+        accepted = [r for r in rows if r.success]
+        assert [r.error_message for r in unaccepted] == ["short-not-accepted"]
+        assert len(accepted) == 1
+        assert set(accepted[0].details or {}) == {"op", "granted_by", "short_password_accepted"}
+        assert accepted[0].details["short_password_accepted"] is True
+        assert SHORT not in repr(rows)
+
+    @pytest.mark.parametrize("data,tag", [
+        ({"root_password": "", "confirm_root_password": ""}, "empty"),
+        ({"root_password": SHORT, "confirm_root_password": SHORT + "x"}, "mismatch"),
+        ({"root_password": " " + SHORT, "confirm_root_password": " " + SHORT},
+         "surrounding-whitespace"),
+    ])
+    def test_accepting_the_risk_waives_nothing_else(self, client, data, tag):
+        _as(_admin())
+        r = _post(client, data={**data, "accept_short_password": "yes"})
+        assert 'data-flash="error"' in r.text
+        assert client.fs.get(KEY) is None
+        assert [row.error_message for row in _rows()] == [tag]
+
+    def test_the_boundary(self, client):
+        """One under the recommendation needs the acceptance; exactly at it
+        does not."""
+        _as(_admin())
+        under, at = "k" * (_recommended() - 1), "k" * _recommended()
+        _post(client, data={"root_password": under, "confirm_root_password": under})
+        assert client.fs.get(KEY) is None
+        r = _post(client, data={"root_password": at, "confirm_root_password": at})
+        assert client.fs.get(KEY) == at
+        assert 'data-flash="warning"' not in r.text
+        saved = [row for row in _rows() if row.success]
+        assert len(saved) == 1
+        assert "short_password_accepted" not in (saved[0].details or {})
+
+    def test_a_stray_tick_on_a_long_password_records_no_acceptance(self, client):
+        _as(_admin())
+        _post(client, data={**FORM, "accept_short_password": "yes"})
+        assert client.fs.get(KEY) == SECRET
+        assert "short_password_accepted" not in (_rows()[0].details or {})
+
+    @pytest.mark.parametrize("value", ["off", "false", "0"])
+    def test_off_and_false_are_not_acceptance(self, client, value):
+        _as(_admin())
+        _short(client, accept_short_password=value)
+        assert client.fs.get(KEY) is None
+
+    def test_the_browser_is_not_told_to_block_it(self, client):
+        """A `minlength` attribute is a block no one can accept past: the
+        browser refuses to submit the form at all."""
+        page = client.get("/fleet-settings").text
+        fields = re.findall(r'<input[^>]*name="(?:confirm_)?root_password"[^>]*>', page)
+        assert len(fields) == 2
+        assert all("minlength" not in f for f in fields)
+
+    def test_the_acceptance_box_starts_hidden_and_is_never_pre_checked(self, client):
+        page = client.get("/fleet-settings").text
+        box = re.search(r'<div[^>]*id="root-password-short"[^>]*>', page).group(0)
+        assert "hidden" in box
+        tick = re.search(r'<input[^>]*name="accept_short_password"[^>]*>', page).group(0)
+        assert "checked" not in tick
 
 
 # --- what happens to the value ----------------------------------------------
@@ -289,8 +400,6 @@ class TestThePageSaysWhatMatters:
     def test_the_fields_do_not_invite_browser_autofill(self, client):
         """`autocomplete="off"` is ignored on password fields by browsers; an
         autofilled saved login would silently set the wrong break-glass value."""
-        import re
-
         page = client.get("/fleet-settings").text
         fields = re.findall(r"<input[^>]*type=\"password\"[^>]*>", page)
         root_fields = [f for f in fields if "root_password" in f]
