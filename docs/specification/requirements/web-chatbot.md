@@ -71,6 +71,15 @@ Implementation (Phase 5C):
 - "Dismiss" closes the card without consuming the token —
   matches the semantics of closing the browser tab on the HTML
   flow.
+- **An approval link the model writes itself never reaches the operator**
+  (2026-09-15). A link is real only when a tool call issued its session. Links
+  in the model's own earlier replies are redacted before history is sent back
+  to it, so the conversation stops teaching it the pattern (the stored
+  transcript keeps them). A final reply that links a session no tool issued
+  this turn is held back, and the model is asked once to make the real call
+  (`admz/chatbot/action_links.py`, `_run_manual_tool_loop`). A second invented
+  link is shown as written, and the console flags any link that no tool result
+  carried (`flagUnbackedLinks`).
 
 ### FR-CB-005 — Inline capture cards for credential entry 📋
 `capture_credentials(...)` returns a capture URL that the chat
