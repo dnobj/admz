@@ -363,7 +363,7 @@ class TestTheLevelIsConfigurable:
         from admz.fleet_settings import fleet_settings
         fleet_settings.set(confirm_level_key("service-affecting"), "none")
         for action in ("adopt_demo", "assign_demo_fragment", "delete_device",
-                       "accept_baseline", "create_task"):
+                       "delete_devices", "accept_baseline", "create_task"):
             s = operations.create_action_session(
                 action=action, device_id="d1", payload={}, reason="r")
             assert s.confirmation_level == "url_only", (

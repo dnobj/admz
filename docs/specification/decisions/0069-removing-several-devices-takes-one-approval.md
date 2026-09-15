@@ -1,6 +1,6 @@
 # ADR-0069 — Removing several devices from the registry takes one approval
 
-**Status:** Accepted — 2026-09-15
+**Status:** Accepted — 2026-09-15 · **Shipped:** 2026-09-15 (#495 plan, #496 code)
 **Relates to:** [ADR-0034](0034-uniform-widget-gating.md) (registry actions gate at a pinned `url_only`; this keeps that gate and changes only how many devices one approval covers) · [ADR-0067](0067-the-chat-plans-when-a-job-is-several-named-operations.md) (one approval for a batch — of catalog operations only, so it cannot reach registry removal) · [ADR-0066](0066-an-out-of-band-resolution-resumes-the-promised-turn.md) (the continuation that carried the 2026-09-15 job from card to card) · #493 / #494 (the two failures that stopped that job)
 
 _Plan-first per `process.md`: this document merges before any code. File:line references are against master `b83f5b5`._
@@ -43,7 +43,7 @@ A new executor, registered in `_ACTION_EXECUTORS`, calls `_action_delete_device`
 ### 3. The trail names the devices
 
 - **Audit.** The `confirm.approve` row records payload key names, never values (`_approved_work_fields`, `confirm.py:117-179`), so on its own it would say only that *some* devices were removed. The executor's outcome carries the removed and failed ids, and `OUTCOME_IDENTITY_KEYS` (`admz/audit.py:339`) gains keys for them. Device ids are short, non-secret identifiers — the bar that list's own comment sets. `outcome_identity_fields` records scalars only, so each list is recorded as one comma-separated string. The row stays attributed to the principal who approved.
-- **Console note.** For a batch session, `_note_resolution_to_chat` says *"on 10 devices"* rather than *"on device multiple"*.
+- **Console note.** For a batch session, `_note_resolution_to_chat` says *"on 10 devices"* rather than *"on device multiple"*, and so does the denial note (`_note_denial_to_chat`), which had the same sentence.
 
 ### 4. The model is told when to reach for it
 

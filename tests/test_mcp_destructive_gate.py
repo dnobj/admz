@@ -186,6 +186,262 @@ class TestDeleteDeviceWidgetGate:
 
 
 # ---------------------------------------------------------------------------
+# delete_devices — several devices, one approval (ADR-0069)
+# ---------------------------------------------------------------------------
+
+
+def _session_rows(tmp_path):
+    """How many confirm sessions exist: the "one card" claim, counted."""
+    import contextlib
+    import sqlite3
+
+    import admz.api.confirm_store as cs_module
+    cs_module.confirm_store.get_session("schema-ensure")  # the table exists
+    with contextlib.closing(sqlite3.connect(str(tmp_path / "admz.db"))) as conn:
+        return conn.execute("SELECT COUNT(*) FROM confirm_sessions").fetchone()[0]
+
+
+def _stored_session(token):
+    import admz.api.confirm_store as cs_module
+    session = cs_module.confirm_store.get_session(token)
+    assert session is not None
+    return session
+
+
+def _register(server, *devices):
+    for n, (device_id, nickname) in enumerate(devices, start=10):
+        server.registry.add_device(
+            device_id, {"host": f"192.0.2.{n}", "nickname": nickname})
+
+
+_THREE = (("cam-a", "Lobby"), ("cam-b", "Dock"), ("cam-c", "Gate"))
+_THREE_IDS = [device_id for device_id, _ in _THREE]
+
+
+class TestDeleteDevicesWidgetGate:
+    """On 2026-09-15 "remove all devices" meant a card per device, and the
+    chain broke after the first. One call, one session, one card — behind
+    exactly the gate single removal has."""
+
+    @pytest.mark.asyncio
+    async def test_one_call_opens_one_session_covering_every_device(
+        self, auth_mcp_server, tmp_path,
+    ):
+        _register(auth_mcp_server, *_THREE)
+        result = await _call_tool(
+            auth_mcp_server, "delete_devices", {"device_ids": _THREE_IDS})
+        assert result.get("blocked") is True
+        assert result.get("confirm_url") == f"/confirm/{result['confirm_token']}"
+        assert result.get("device_count") == 3
+        assert _session_rows(tmp_path) == 1
+        session = _stored_session(result["confirm_token"])
+        assert session.action == {"action": "delete_devices",
+                                  "device_ids": _THREE_IDS}
+        assert session.device_id == "multiple"
+        # Nothing happened yet.
+        for device_id in _THREE_IDS:
+            assert auth_mcp_server.registry.device_exists(device_id)
+
+    @pytest.mark.asyncio
+    async def test_the_card_names_every_device(self, auth_mcp_server):
+        """Both approval surfaces render danger_description and neither renders
+        the action payload, so this sentence is the whole review."""
+        _register(auth_mcp_server, *_THREE)
+        result = await _call_tool(
+            auth_mcp_server, "delete_devices", {"device_ids": _THREE_IDS})
+        text = _stored_session(result["confirm_token"]).danger_description
+        assert text.startswith("Remove 3 devices from the registry: ")
+        for device_id, nickname in _THREE:
+            assert f"{nickname} ({device_id})" in text
+
+    @pytest.mark.asyncio
+    async def test_single_removal_is_unchanged(self, auth_mcp_server):
+        """Control: the batch is a new tool beside delete_device, not an edit
+        of it — the single session's payload and sentence stay as they were."""
+        _register(auth_mcp_server, ("cam-a", "Lobby"))
+        result = await _call_tool(
+            auth_mcp_server, "delete_device", {"device_id": "cam-a"})
+        session = _stored_session(result["confirm_token"])
+        assert session.action == {"action": "delete_device", "device_id": "cam-a"}
+        assert session.danger_description == (
+            "Remove Lobby (cam-a) from the registry, including its stored "
+            "accounts/credentials. The device itself is not touched; its git "
+            "config history is retained.")
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_id_rejects_the_whole_request(
+        self, auth_mcp_server, tmp_path,
+    ):
+        _register(auth_mcp_server, *_THREE[:2])
+        result = await _call_tool(
+            auth_mcp_server, "delete_devices",
+            {"device_ids": ["cam-a", "ghost", "cam-b"]})
+        assert result.get("blocked") is not True
+        assert result.get("error") == "DeviceNotFound"
+        assert "ghost" in result.get("message", "")
+        # No session at all — not a card for the two ids that do exist.
+        assert _session_rows(tmp_path) == 0
+        assert auth_mcp_server.registry.device_exists("cam-a")
+        assert auth_mcp_server.registry.device_exists("cam-b")
+
+    @pytest.mark.asyncio
+    async def test_duplicates_collapse_in_order(self, auth_mcp_server):
+        _register(auth_mcp_server, *_THREE[:2])
+        result = await _call_tool(
+            auth_mcp_server, "delete_devices",
+            {"device_ids": ["cam-b", "cam-a", "cam-b"]})
+        assert result.get("device_count") == 2
+        session = _stored_session(result["confirm_token"])
+        assert session.action["device_ids"] == ["cam-b", "cam-a"]
+
+    @pytest.mark.asyncio
+    async def test_a_batch_of_one_keeps_its_device_id(self, auth_mcp_server):
+        _register(auth_mcp_server, ("cam-a", "Lobby"))
+        result = await _call_tool(
+            auth_mcp_server, "delete_devices", {"device_ids": ["cam-a"]})
+        session = _stored_session(result["confirm_token"])
+        assert session.device_id == "cam-a"
+        assert session.danger_description.startswith(
+            "Remove 1 device from the registry: Lobby (cam-a), including its ")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "device_ids", [[], "cam-a", [""], ["cam-a", 7], None],
+        ids=["empty", "not-a-list", "blank-id", "non-string-id", "missing"])
+    async def test_malformed_ids_open_no_session(
+        self, auth_mcp_server, tmp_path, device_ids,
+    ):
+        _register(auth_mcp_server, ("cam-a", "Lobby"))
+        arguments = {} if device_ids is None else {"device_ids": device_ids}
+        result = await _call_tool(auth_mcp_server, "delete_devices", arguments)
+        assert result.get("blocked") is not True
+        assert result.get("error") == "InvalidInput"
+        assert _session_rows(tmp_path) == 0
+        assert auth_mcp_server.registry.device_exists("cam-a")
+
+    @pytest.mark.asyncio
+    async def test_the_gate_is_single_removals(self, auth_mcp_server, monkeypatch):
+        """Same risk class, same pinned level, same token lifetime. The level
+        lookup is forced to "none" — what a softening operator override would
+        yield — so a session resolved through it instead of pinned cannot pass."""
+        from admz import operations
+        monkeypatch.setattr(operations, "resolve_confirmation", lambda risk: "none")
+        _register(auth_mcp_server, *_THREE[:2])
+        single = await _call_tool(
+            auth_mcp_server, "delete_device", {"device_id": "cam-a"})
+        batch = await _call_tool(
+            auth_mcp_server, "delete_devices", {"device_ids": ["cam-a", "cam-b"]})
+        one = _stored_session(single["confirm_token"])
+        many = _stored_session(batch["confirm_token"])
+        assert many.confirmation_level == one.confirmation_level == "url_only"
+        assert many.risk_level == one.risk_level == "service-affecting"
+        assert many.ttl == one.ttl
+
+    @pytest.mark.asyncio
+    async def test_approval_removes_every_device_through_single_removal(
+        self, auth_mcp_server, monkeypatch,
+    ):
+        from admz import operations
+        tombstoned = []
+        monkeypatch.setattr(
+            operations, "tombstone_device",
+            lambda device_id, git_repo, removed_by="": tombstoned.append(device_id))
+        _register(auth_mcp_server, *_THREE)
+        result = await _call_tool(
+            auth_mcp_server, "delete_devices", {"device_ids": _THREE_IDS})
+        outcome = await _approve(result["confirm_token"])
+        assert outcome["success"] is True
+        assert outcome["action"] == "delete_devices"
+        assert outcome["removed"] == _THREE_IDS
+        assert outcome["failed"] == []
+        assert outcome["removed_devices"] == "cam-a,cam-b,cam-c"
+        assert "failed_devices" not in outcome
+        # Each device went through _action_delete_device; the tombstone shows it.
+        assert tombstoned == _THREE_IDS
+        for device_id in _THREE_IDS:
+            assert not auth_mcp_server.registry.device_exists(device_id)
+
+    @pytest.mark.asyncio
+    async def test_one_failure_does_not_stop_the_rest(self, auth_mcp_server):
+        _register(auth_mcp_server, *_THREE)
+        result = await _call_tool(
+            auth_mcp_server, "delete_devices", {"device_ids": _THREE_IDS})
+        # Removed out-of-band between the request and the approval.
+        auth_mcp_server.registry.remove_device("cam-b")
+        outcome = await _approve(result["confirm_token"])
+        assert outcome["success"] is False
+        assert outcome["removed"] == ["cam-a", "cam-c"]
+        assert outcome["failed"] == [
+            {"device_id": "cam-b", "error": "Device not found: cam-b"}]
+        assert outcome["removed_devices"] == "cam-a,cam-c"
+        assert outcome["failed_devices"] == "cam-b"
+        assert outcome["error"].startswith("removed 2 of 3; cam-b: ")
+        assert not auth_mcp_server.registry.device_exists("cam-a")
+        assert not auth_mcp_server.registry.device_exists("cam-c")
+
+    @pytest.mark.asyncio
+    async def test_an_exception_on_one_device_does_not_stop_the_rest(
+        self, auth_mcp_server, monkeypatch,
+    ):
+        from admz import operations
+
+        def _tombstone(device_id, git_repo, removed_by=""):
+            if device_id == "cam-b":
+                raise RuntimeError("config repo locked")
+
+        monkeypatch.setattr(operations, "tombstone_device", _tombstone)
+        _register(auth_mcp_server, *_THREE)
+        result = await _call_tool(
+            auth_mcp_server, "delete_devices", {"device_ids": _THREE_IDS})
+        outcome = await _approve(result["confirm_token"])
+        assert outcome["success"] is False
+        assert outcome["removed"] == ["cam-a", "cam-c"]
+        assert outcome["failed"] == [
+            {"device_id": "cam-b", "error": "RuntimeError: config repo locked"}]
+        assert auth_mcp_server.registry.device_exists("cam-b")
+
+    def test_an_empty_batch_is_not_a_success(self):
+        from admz import operations
+        out = operations._action_delete_devices(
+            {"action": "delete_devices"}, registry=None)
+        assert out["success"] is False
+        assert out["removed"] == [] and out["failed"] == []
+
+    @pytest.mark.asyncio
+    async def test_anonymous_gets_the_same_widget_not_refusal(
+        self, anon_mcp_server,
+    ):
+        _register(anon_mcp_server, *_THREE[:2])
+        result = await _call_tool(
+            anon_mcp_server, "delete_devices", {"device_ids": ["cam-a", "cam-b"]})
+        assert result.get("error") != "PermissionDenied"
+        assert result.get("blocked") is True
+        assert anon_mcp_server.registry.device_exists("cam-a")
+
+
+class TestDeleteDevicesIsWhatTheModelIsTold:
+    """ADR-0069 §4. The description is the artefact the model selects on
+    (#366, #438), so the trigger, the one-approval payoff and the whole-request
+    rejection each have to be in the string itself."""
+
+    @pytest.mark.asyncio
+    async def test_the_batch_tool_states_trigger_payoff_and_consequence(
+        self, auth_mcp_server,
+    ):
+        tool = await mcp_harness.find_tool(auth_mcp_server, "delete_devices")
+        d = tool.description
+        assert "Use this when the user wants MORE THAN ONE device removed" in d
+        assert "ONE approval card for the whole batch" in d
+        assert "ONE unknown id rejects the WHOLE request" in d
+        assert "can never be a create_plan step" in d
+
+    @pytest.mark.asyncio
+    async def test_single_removal_points_to_the_batch_tool(self, auth_mcp_server):
+        tool = await mcp_harness.find_tool(auth_mcp_server, "delete_device")
+        assert "call delete_devices once instead" in tool.description
+
+
+# ---------------------------------------------------------------------------
 # accept_baseline — widget-gated; validation still immediate
 # ---------------------------------------------------------------------------
 

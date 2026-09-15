@@ -371,6 +371,22 @@ async def _approve_session(
     return _Approval("completed", session=session, outcome=outcome)
 
 
+def _note_target(session) -> str:
+    """What a console note says the session acted on.
+
+    A batch removal (ADR-0069) says how many devices it covered: its
+    ``device_id`` is the literal ``"multiple"``, and "on device multiple" tells
+    the model nothing. The approval path hands the notes the session it read
+    BEFORE completion, so the action payload is still present here even though
+    #281 strips it from the stored row. Every other session names its device.
+    """
+    action = getattr(session, "action", None)
+    batch = action.get("device_ids") if isinstance(action, dict) else None
+    if isinstance(batch, list) and len(batch) > 1:
+        return f"on {len(batch)} devices"
+    return f"on device {session.device_id}"
+
+
 def _note_resolution_to_chat(
     token: str, session, outcome: dict, confirmed_by: str
 ) -> None:
@@ -396,16 +412,17 @@ def _note_resolution_to_chat(
             "the confirmation card in this chat"
             if confirmed_by == "chat" else "the confirmation web page"
         )
+        target = _note_target(session)
         if outcome.get("success"):
             text = (
-                f"[console] The user approved \"{what}\" on device "
-                f"{session.device_id} via {surface}; it executed successfully."
+                f"[console] The user approved \"{what}\" {target} "
+                f"via {surface}; it executed successfully."
             )
         else:
             err = str(outcome.get("error") or "unknown error")[:200]
             text = (
-                f"[console] The user approved \"{what}\" on device "
-                f"{session.device_id} via {surface}, but execution FAILED: {err}"
+                f"[console] The user approved \"{what}\" {target} "
+                f"via {surface}, but execution FAILED: {err}"
             )
         chat_sessions.append_event(
             link["principal"], link["conversation_id"], text
@@ -795,8 +812,8 @@ def _note_denial_to_chat(token: str, session) -> None:
             what = f"plan {session.plan_id or ''}".strip()
         chat_sessions.append_event(
             link["principal"], link["conversation_id"],
-            f"[console] The user DENIED \"{what}\" on device "
-            f"{session.device_id} via the confirmation card — the action "
+            f"[console] The user DENIED \"{what}\" {_note_target(session)} "
+            "via the confirmation card — the action "
             "was NOT executed. Do not retry it unless the user asks again.",
         )
     except Exception:  # noqa: BLE001 - never break a denial on a note
