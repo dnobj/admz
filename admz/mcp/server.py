@@ -4310,10 +4310,14 @@ class ADMZMCPServer:
     # Provisioning handler
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _generate_device_password(length: int = 24) -> str:
-        from admz.provisioning import generate_device_password
-        return generate_device_password(length)
+    # `_generate_device_password` and `_store_provisioned_creds` are GONE
+    # (ADR-0068 S2). Both existed only for this server's own inline copy of the
+    # credential write, and that copy is retired: provisioning now goes through
+    # `onboard_device_credentials`, which generates and stores via
+    # `provisioning.adopt_with_admz_account`. They are deleted rather than left
+    # unused deliberately — an idle helper on the MCP server whose whole job is
+    # "write a device credential to the registry" is an invitation for the next
+    # handler to call it and bypass the gate a second time.
 
     @staticmethod
     def _serial_to_mac(serial: str) -> str:
@@ -4337,12 +4341,6 @@ class ADMZMCPServer:
             credentials=credentials, auth_method=auth_method, auth=auth,
             family=family,
         )
-
-    def _store_provisioned_creds(
-        self, device_id: str, username: str, password: str,
-    ) -> None:
-        from admz.provisioning import store_provisioned_creds
-        store_provisioned_creds(self.registry, device_id, username, password)
 
     # --- Deferred recovery (trigger-based pending actions) ---------------
     # These write to the shared pending_device_actions table; the API
@@ -4615,11 +4613,60 @@ class ADMZMCPServer:
     async def _provision_device(
         self, arguments: Dict[str, Any]
     ) -> Dict[str, Any]:
+        """Register a host if needed, then resolve its credentials through the
+        **one** shared path (ADR-0068 S2).
+
+        This handler used to carry its own inline copy of the whole credential
+        write: its own factory-default detector (``probe_credentials`` rather
+        than ``read_systemready``), its own ``pwdgrp.cgi:add-user``, its own
+        ``update-user`` rotation, and its own password ordering. That copy did
+        three things ADR-0068 forbids, and it did them on the path the model can
+        reach:
+
+        - it **stored a root credential per device** on the factory-default
+          branch, which is the invariant this ADR exists to establish;
+        - it stored whatever answered a legacy ``root/pass`` probe as the
+          device's own credential — a shared, published password promoted to
+          standing access;
+        - and it never passed **ADR-0059's gate**. The gate lives at the
+          decision point inside ``onboard_device_credentials``, so a second
+          implementation of the write is a second implementation with no gate
+          at all. Note the fix is routing through the chokepoint, **not** adding
+          this tool to ``_DESTRUCTIVE_MCP_TOOLS`` — that set is deliberately
+          empty because ADR-0034 replaced flat anonymous refusals with widget
+          approval, and re-populating it would reintroduce what ADR-0034 removed.
+
+        So the body is now: resolve or auto-register the device, then delegate to
+        :meth:`_onboard_device` — exactly what ``_register_device`` already does
+        (ADR-0064 slice B). One detector, one write, one gate, one set of
+        statuses, and the capture fallback for free.
+
+        ``username``, ``password`` and ``force_change`` are **retired**. They
+        cannot be forwarded — ``onboard_device_credentials`` takes none of them —
+        and silently ignoring a caller's explicit password would be worse than
+        refusing it. Under ADR-0068 none of them has a meaning left: root's
+        password is the fleet break-glass value, ``admz``'s is generated and must
+        stay unknown to be worth storing, and a password supplied *to an MCP
+        tool* is a password that came from chat, which is the whole thing
+        ADR-0009's out-of-band capture exists to prevent.
+        """
         device_id = arguments.get("device_id")
         host = arguments.get("host")
-        username = arguments.get("username", "root")
-        user_password = arguments.get("password")
-        force_change = arguments.get("force_change", False)
+
+        for retired in ("username", "password", "force_change"):
+            if arguments.get(retired) not in (None, False, ""):
+                return {
+                    "success": False,
+                    "error": (
+                        f"'{retired}' is no longer accepted by provision_device "
+                        "(ADR-0068). A factory-defaulted device gets 'root' from "
+                        "the fleet break-glass root password and then ADMZ's own "
+                        "'admz' account with a generated one; neither is a value "
+                        "a caller chooses. To change a password on a device that "
+                        "already works, use capture_credentials — a password must "
+                        "not reach ADMZ through a tool argument."
+                    ),
+                }
 
         if not host and not device_id:
             return {
@@ -4627,33 +4674,20 @@ class ADMZMCPServer:
                 "error": "Either 'host' or 'device_id' must be provided",
             }
 
-        if device_id and not host:
-            if not self.registry.device_exists(device_id):
-                raise DeviceNotFoundError(f"Device not found: {device_id}")
-            device_info = self.registry.get_device_info(device_id)
-            host = device_info.get("host") or device_info.get("ip_address")
-            if not host:
-                return {
-                    "success": False,
-                    "error": f"Device '{device_id}' has no host/IP address",
-                }
-
-        probe = await probe_credentials(host)
-
-        if probe.status == ProbeStatus.UNREACHABLE:
-            return {
-                "success": False,
-                "status": "unreachable",
-                "host": host,
-                "detail": probe.detail,
-            }
-
         auto_registered = False
         if not device_id:
+            # Host-only: the ONE thing still done here, because onboarding needs
+            # a registered device_id and only a probe can supply the serial.
+            probe = await probe_credentials(host)
+            if probe.status == ProbeStatus.UNREACHABLE:
+                return {
+                    "success": False,
+                    "status": "unreachable",
+                    "host": host,
+                    "detail": probe.detail,
+                }
             serial = (probe.device_info or {}).get("serial_number")
-            if serial and len(serial.replace(":", "").replace("-", "")) == 12:
-                device_id = self._serial_to_mac(serial)
-            else:
+            if not serial or len(serial.replace(":", "").replace("-", "")) != 12:
                 return {
                     "success": False,
                     "error": (
@@ -4663,9 +4697,9 @@ class ADMZMCPServer:
                     "host": host,
                     "device_info": probe.device_info,
                 }
-
+            device_id = self._serial_to_mac(serial)
             if not self.registry.device_exists(device_id):
-                reg_info = {
+                self.registry.add_device(device_id, {
                     "host": host,
                     "ip_address": host,
                     "mac_address": device_id,
@@ -4679,169 +4713,24 @@ class ADMZMCPServer:
                     ),
                     "manufacturer": "Axis Communications",
                     "tags": ["axis", "auto-registered"],
-                }
-                self.registry.add_device(device_id, reg_info)
+                })
                 auto_registered = True
+        elif not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
 
-        password_source = "provided"
-        if user_password:
-            new_password = user_password
-        else:
-            # FR-CRED-007 (ADR-0064 slice E): the generated password wins.
-            # The fleet `default_password` is an entry credential — an input
-            # for authentication, never a value written to a device
-            # (ADR-0061) — so this path no longer reads it. Same rule as
-            # `provisioning.provision_factory_default`, which this tool
-            # does not call.
-            new_password = self._generate_device_password()
-            password_source = "generated"
-
-        if probe.status == ProbeStatus.FACTORY_DEFAULT:
-            ok, error = await self._execute_on_host(
-                host, "pwdgrp.cgi:add-user",
-                params={
-                    "username": username,
-                    "password": new_password,
-                    "group": "root",
-                    "secondary_groups": "admin:operator:viewer:ptz",
-                },
-                auth_method="none",
-            )
-            if not ok:
-                return {
-                    "success": False,
-                    "status": "vapix_error",
-                    "device_id": device_id,
-                    "action_taken": "create_user_failed",
-                    "error": error,
-                }
-
-            self._store_provisioned_creds(device_id, username, new_password)
-            # Device now requires auth — store per-protocol info from probe
-            auth_updates: Dict[str, Any] = {"auth_method": "digest"}
-            if probe.auth:
-                auth_updates["auth"] = probe.auth
-            self.registry.update_device_info(device_id, auth_updates)
-
-            return {
-                "success": True,
-                "status": "provisioned",
-                "action_taken": "created_user",
-                "device_id": device_id,
-                "host": host,
-                "username": username,
-                "password_source": password_source,
-                "auto_registered": auto_registered,
-                "detail": (
-                    f"Created admin user '{username}' on factory-default "
-                    f"device. Credentials stored. The password stays in "
-                    f"ADMZ; for human login mint a temporary account with "
-                    f"create_temp_credentials."
-                ),
-            }
-
-        if probe.status == ProbeStatus.AUTHENTICATED:
-            # Store detected auth info from probe
-            auth_updates_auth: Dict[str, Any] = {}
-            if probe.auth_method:
-                auth_updates_auth["auth_method"] = probe.auth_method
-            if probe.auth:
-                auth_updates_auth["auth"] = probe.auth
-            if auth_updates_auth:
-                self.registry.update_device_info(
-                    device_id, auth_updates_auth
-                )
-
-            if not force_change:
-                self._store_provisioned_creds(
-                    device_id, probe.username, probe.password
-                )
-                return {
-                    "success": True,
-                    "status": "already_configured",
-                    "action_taken": "stored_existing_credentials",
-                    "device_id": device_id,
-                    "host": host,
-                    "username": probe.username,
-                    "auto_registered": auto_registered,
-                    "detail": (
-                        f"Device authenticated with legacy defaults as "
-                        f"'{probe.username}'. Credentials stored. Consider "
-                        f"using force_change=true to rotate the password."
-                    ),
-                }
-
-            ok, error = await self._execute_on_host(
-                host, "pwdgrp.cgi:update-user",
-                params={
-                    "username": username,
-                    "password": new_password,
-                },
-                credentials={
-                    "username": probe.username,
-                    "password": probe.password,
-                },
-                auth_method=probe.auth_method or "digest",
-                auth=probe.auth,
-            )
-            if not ok:
-                self._store_provisioned_creds(
-                    device_id, probe.username, probe.password
-                )
-                return {
-                    "success": False,
-                    "status": "vapix_error",
-                    "device_id": device_id,
-                    "action_taken": "password_change_failed",
-                    "error": error,
-                    "detail": (
-                        "Password change failed, but old credentials "
-                        "were stored successfully."
-                    ),
-                }
-
-            self._store_provisioned_creds(device_id, username, new_password)
-
-            return {
-                "success": True,
-                "status": "provisioned",
-                "action_taken": "changed_password",
-                "device_id": device_id,
-                "host": host,
-                "username": username,
-                "password_source": password_source,
-                "auto_registered": auto_registered,
-                "detail": (
-                    f"Changed password for '{username}'. New credentials "
-                    f"stored. The password stays in ADMZ; for human login "
-                    f"mint a temporary account with create_temp_credentials."
-                ),
-            }
-
-        if probe.status == ProbeStatus.AUTH_FAILED:
-            if probe.auth_method:
-                self.registry.update_device_info(
-                    device_id, {"auth_method": probe.auth_method}
-                )
-            return {
-                "success": False,
-                "status": "auth_failed",
-                "device_id": device_id,
-                "host": host,
-                "auto_registered": auto_registered,
-                "detail": (
-                    "Cannot authenticate with any known credentials. "
-                    "Use capture_credentials to provide the password "
-                    "manually, or use test_device_credentials with "
-                    "specific passwords to probe further."
-                ),
-            }
-
+        # The registry is authoritative for the address from here on. A `host`
+        # passed alongside a known `device_id` is deliberately NOT used to
+        # redirect the write: approving a provision for one device and having it
+        # land on whatever is at a caller-supplied address is #193's shape, and
+        # `operations.py` already refuses when the address moved since approval.
+        onboarding = await self._onboard_device(device_id)
         return {
-            "success": False,
-            "status": probe.status.value,
+            "success": onboarding.get("status") == "provisioned",
             "device_id": device_id,
-            "detail": probe.detail,
+            "auto_registered": auto_registered,
+            "onboarding": onboarding,
+            "status": onboarding.get("status"),
+            "message": onboarding.get("message", ""),
         }
 
     # ------------------------------------------------------------------

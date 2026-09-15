@@ -324,20 +324,31 @@ except for correcting the stored `host`; never registers new devices.
 ## 🔑 Provisioning & temp credentials
 
 ### `provision_device`
-Probe a device, then take state-appropriate action: factory-default →
-create admin user; legacy default → store; unknown → error. Auto-registers
-the device using its MAC if `device_id` is omitted. Generated passwords
-are stored under account `default` and **never returned** in the response
-— the executor uses them internally, and for human login you mint a
+Register the device if only a `host` was given, then run the **same**
+credential resolution as [`onboard_device`](#onboard_device) — same
+detector, same write, same gate, same statuses. A factory-defaulted device
+gets `root` from the fleet break-glass root password and then ADMZ's own
+`admz` account with a generated one; **only the `admz` password is stored**
+and it is **never returned** in the response. For human login you mint a
 short-lived account with `create_temp_credentials`.
-- **Args:** `device_id?` or `host?` (one required), `username` (default
-  `"root"`), `password?` (else 24-char generated per device),
-  `force_change` (bool, default `false`)
-- **Returns:** `{success, device_id, host, status, action_taken,
-  username, password_source, auto_registered, detail}`
-- **Password source:** explicit > generated per device. The fleet
-  `default_password` is an entry credential and is never written to a
-  device (FR-CRED-007, ADR-0064 slice E).
+- **Args:** `device_id?` or `host?` (one required). A `host` passed
+  alongside a registered `device_id` is ignored — the registry is
+  authoritative for the address (#193).
+- **Returns:** `{success, device_id, auto_registered, status, message,
+  onboarding: {…}}`. `success` is true only for `provisioned`.
+- **Retired args (ADR-0068):** `username`, `password` and `force_change`
+  are refused with an explanatory error rather than ignored. No password is
+  a caller's to choose here — root's comes from the fleet setting, `admz`'s
+  is generated and must stay unknown, and a password supplied to an MCP
+  tool is one that came from chat, which ADR-0009's out-of-band capture
+  exists to prevent. To change a password on a working device, use
+  `capture_credentials`.
+- **Why it collapsed:** this tool used to carry its own copy of the
+  credential write — its own factory-default detector, its own
+  `add-user`/`update-user`, its own password ordering — which stored a root
+  credential per device, stored whatever answered a legacy `root/pass`
+  probe, and **never passed ADR-0059's gate**, because that gate lives at
+  the decision point inside onboarding.
 
 ### `test_device_credentials`
 Probe a host with no-auth, legacy `root/pass`, and up to 5 user-supplied

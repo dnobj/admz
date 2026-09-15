@@ -9,19 +9,27 @@ TOOLS: List[Tool] = [
         name="provision_device",
         description=(
             "Provision credentials on a FACTORY-DEFAULTED (needsetup) Axis device "
-            "— first-time setup or post-factory-reset recovery ONLY. Probes the "
-            "device first, then takes the appropriate action based on its state: "
-            "(1) Factory-default: creates an admin user with a password. "
-            "(2) Legacy default password (root/pass): stores creds, suggests rotation. "
-            "(3) Unknown password: returns error. "
+            "— first-time setup or post-factory-reset recovery ONLY. Registers the "
+            "device if you gave only a host, then runs the same credential "
+            "resolution onboard_device does, so the outcome and the statuses are "
+            "identical to that tool. "
+            "A factory-defaulted device gets TWO accounts: 'root' set to the fleet "
+            "break-glass root password, then ADMZ's own 'admz' account with a "
+            "generated password — and ONLY the admz password is stored. A root "
+            "credential is never stored per device (ADR-0068). If no fleet root "
+            "password is configured it writes nothing and says so. "
+            "Creating an account is gated: expect an approval card. "
             "Do NOT use this to set/change/rotate the password on a healthy, "
             "already-managed device — that is the out-of-band capture flow "
             "(capture_credentials). "
-            "Password: the explicit param if given, else generated per device — the fleet "
-            "default_password is an entry credential and is never written to a device (FR-CRED-007). "
-            "Generated passwords are stored in the registry and NEVER returned in the response "
-            "or exposed to the LLM, and are never displayed in the web UI; ADMZ uses them only "
-            "at execution time to reach the device. "
+            "You cannot choose any password here, and there is no argument for one: "
+            "root's comes from the fleet setting, admz's is generated and must stay "
+            "unknown, and the fleet default_password is an entry credential that is "
+            "never written to a device (FR-CRED-007). Stored passwords are NEVER "
+            "returned in the response or exposed to the LLM, and are never displayed "
+            "in the web UI; ADMZ uses them only at execution time to reach the "
+            "device. For human login mint a short-lived account with "
+            "create_temp_credentials. "
             "If only host is provided (no device_id), auto-registers the device using "
             "its MAC address (= serial number) as the device_id."
         ),
@@ -36,31 +44,10 @@ TOOLS: List[Tool] = [
                     "type": "string",
                     "description": (
                         "IP/hostname to probe. If device doesn't exist, "
-                        "auto-registers using MAC as device_id."
+                        "auto-registers using MAC as device_id. Ignored when "
+                        "device_id names a registered device — the registry is "
+                        "authoritative for the address."
                     ),
-                },
-                "username": {
-                    "type": "string",
-                    "description": "Username for the account (default: 'root')",
-                    "default": "root",
-                },
-                "password": {
-                    "type": "string",
-                    "description": (
-                        "Specific password to set. If omitted, a secure per-device "
-                        "password is generated; the fleet default_password is never "
-                        "written to a device."
-                    ),
-                },
-                "force_change": {
-                    "type": "boolean",
-                    "description": (
-                        "If true, change the password even if stored creds "
-                        "already work — only for rotating a default/initial "
-                        "password during provisioning, not general password "
-                        "changes on managed devices."
-                    ),
-                    "default": False,
                 },
             },
             "required": [],

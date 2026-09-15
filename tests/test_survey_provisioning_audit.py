@@ -111,8 +111,16 @@ def survey(monkeypatch):
         if device_id in state["provision"]:
             # The real call writes an admin account and returns this shape —
             # note the password is NOT in it, and must not appear anywhere.
+            # ADR-0068: the real shape is `admz` as the stored username, with
+            # the ROOT password's source named separately. `fleet_default` was
+            # removed as a mode entirely — the fleet default_password is an
+            # entry credential and is never written to a device — so a fixture
+            # inventing it would pin a vocabulary the code no longer has
+            # (tests/test_fleet_health.py asserts its absence from the source).
             return {"status": PROVISIONED, "device_id": device_id,
-                    "username": "root", "password_source": "fleet_default"}
+                    "username": "admz", "root_username": "root",
+                    "root_password_source": "fleet_root",
+                    "password_source": "generated"}
         return {"status": CREDENTIALS_NEEDED, "device_id": device_id}
     monkeypatch.setattr("admz.onboarding.onboard_device_credentials", _onboard_creds)
 
@@ -171,7 +179,10 @@ class TestTheSurveyRecordsWhatItWrote:
         blob = json.dumps({"d": row.details, "r": row.resource,
                            "e": row.error_message})
         assert PASSWORD not in blob
-        assert "fleet_default" not in blob      # password_source is not recorded
+        # Neither password SOURCE is recorded here (the provision audit row
+        # carries those; this survey row carries device ids and counts).
+        assert "fleet_root" not in blob
+        assert "generated" not in blob
 
     def test_a_survey_that_provisions_nothing_says_so(self, survey):
         """The anti-vacuity guard: a row that positively claims zero, rather
