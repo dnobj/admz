@@ -3078,7 +3078,46 @@ class ADMZMCPServer:
                 "status": status,
                 "device_id": session.device_id,
                 "account_id": session.account_id,
+                "kind": session.kind,
+                "outcome": session.outcome,
             }
+            # FR-CRED-014 / ADR-0068. A root-adopt session stores NOTHING for
+            # the device, so "credentials have been saved" is false for every
+            # one of its outcomes. This is the surface the MODEL reads, and
+            # under ADR-0066 a resolved capture now fires a continuation turn —
+            # so a false "saved" here does not merely mislead a reader, it gets
+            # acted on.
+            if session.is_root_adopt:
+                result["message"] = {
+                    "adopted": (
+                        f"ADMZ used the submitted password to create its own "
+                        f"'admz' account on {session.device_id} and now uses "
+                        "that. The submitted password was NOT stored for the "
+                        "device."
+                    ),
+                    "adopt_failed": (
+                        f"The submitted password authenticated to "
+                        f"{session.device_id}, but ADMZ could not create its "
+                        "own 'admz' account. Nothing was stored, so the device "
+                        "still has no usable credential."
+                    ),
+                    "unconfirmed": (
+                        f"ADMZ could not confirm the result for "
+                        f"{session.device_id} — the device stopped answering "
+                        "partway through. Nothing was stored."
+                    ),
+                    "orphaned": (
+                        f"ADMZ may have created an account on "
+                        f"{session.device_id} but could not keep the password. "
+                        "Nothing was stored; this needs a human."
+                    ),
+                }.get(session.outcome) or (
+                    "Waiting for the user to give ADMZ the device's "
+                    "administrator password."
+                    if status == "pending" else
+                    "This capture session has expired."
+                )
+                return result
             if status == "completed":
                 result["message"] = (
                     f"Credentials for {session.device_id}/{session.account_id} "

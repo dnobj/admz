@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{# FR-CRED-014 / ADR-0068. A SEPARATE done page from capture_done.html, which
+   asserts storage in four places — its title, its <h1>, "have been stored
+   securely", and the promotion line's "The device credential above was saved".
+   Every one of those is false for a root-adopt session, and capture_done is
+   ALSO rendered on a GET of a completed token, so reusing it would tell an
+   operator revisiting the URL that their root password had been saved. #}
+
+{% block title %}{{ heading }}{% endblock %}
+
+{% block content %}
+<div style="max-width:520px;margin:60px auto;text-align:center;">
+  <div style="font-size:48px;margin-bottom:16px;">{{ '&#10003;'|safe if outcome == 'adopted' else '&#9888;'|safe }}</div>
+  <h1>{{ heading }}</h1>
+
+  <p style="color:var(--text-muted);text-align:left;margin-top:16px;" data-outcome="{{ outcome }}">
+    {% if outcome == 'adopted' %}
+      ADMZ signed in as <strong>{{ entry_username }}</strong>, created its own
+      <span class="mono">admz</span> administrator account on
+      <strong>{{ device_label }}</strong>, and stored that account's generated
+      password. <strong>The password you typed was not saved.</strong>
+    {% elif outcome == 'adopt_failed' %}
+      The password worked &mdash; ADMZ signed in. Creating the
+      <span class="mono">admz</span> account failed:
+      <strong>{{ reason }}</strong>.
+      <strong>Nothing was stored for this device</strong>, so it still shows
+      <em>No credentials</em>. The password you typed was not saved either.
+      Try <em>Run onboarding</em> on the device page, or check that
+      <strong>{{ entry_username }}</strong> is allowed to create users.
+    {% elif outcome == 'unconfirmed' %}
+      The device stopped answering partway through. An
+      <span class="mono">admz</span> account may or may not have been created,
+      and <strong>nothing was stored</strong>. The password you typed was not
+      saved. Run onboarding on the device page to find out where it stands.
+    {% else %}
+      {{ reason }}
+    {% endif %}
+  </p>
+
+  {# Reuses _promotion_sentence's wording, which is already storage-neutral. #}
+  {% if promotion is defined and promotion %}
+  <p style="margin-top:12px;font-size:14px;text-align:left;color:{{ '#166534' if promotion.result == 'promoted' else '#991b1b' }};" data-promotion="{{ promotion.result }}">
+    {% if promotion.result == 'promoted' %}Also added to the fleet's entry list as <strong>{{ promotion.username }}</strong> &mdash; ADMZ will try it on every device it onboards from now on.{% elif promotion.result == 'duplicate' %}Already on the fleet's entry list; nothing was added.{% else %}Not added to the entry list: {{ promotion.reason }}.{% endif %}
+  </p>
+  {% endif %}
+
+  <p style="color:var(--text-muted);font-size:14px;margin-top:24px;">
+    You can close this tab and return to your chat session.<br>
+    This link is now expired and cannot be reused.
+  </p>
+
+  <p style="margin-top:20px;">
+    <a href="/chat" class="btn primary sm">Return to chat</a>
+  </p>
+</div>
+{% endblock %}

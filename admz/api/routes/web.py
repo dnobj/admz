@@ -490,6 +490,59 @@ async def enter_device_credentials(
     return RedirectResponse(url=f"/capture/{session.token}", status_code=303)
 
 
+@router.post(
+    "/device/{device_id}/adopt-credentials",
+    response_class=RedirectResponse,
+)
+async def adopt_device_credentials(
+    request: Request,
+    device_id: str,
+    registry: DeviceRegistry = Depends(get_registry),
+):
+    """Open a **root-adopt** capture session: let ADMZ in, once (FR-CRED-014).
+
+    The sibling route above stores whatever the operator types as this device's
+    credential — which is right for rotating a password or setting a stale one.
+    This one is the opposite operation: the typed password is used **once** to
+    authenticate so ADMZ can create its own ``admz`` account, and it is never
+    stored for the device (ADR-0068).
+
+    Deliberately a separate route rather than a flag on that one, because the
+    device page offers both and the choice is the operator's: for a device in
+    ``auth_failed`` nothing outside the device can tell whether its password
+    changed (store a new one) or ADMZ's own account was removed (let ADMZ back
+    in). Two routes with two labels keep that choice visible.
+
+    No ``account_type``/``purpose`` is copied from an existing row, unlike the
+    route above: nothing about the typed password becomes an account, so a row
+    shape to preserve does not exist. Browser-only, so the same-origin check
+    ``capture_submit`` performs applies here too.
+    """
+    from admz.api.capture import KIND_ROOT_ADOPT, capture_store
+    from admz.csrf import check_same_origin
+
+    check_same_origin(request)
+    if not registry.device_exists(device_id):
+        return templates.TemplateResponse(
+            request,
+            "error.html",
+            {
+                "request": request,
+                "error": "Device Not Found",
+                "message": f"Device '{device_id}' is not registered.",
+                "title": "Error",
+            },
+            status_code=404,
+        )
+    session = capture_store.create_session(
+        device_id=device_id,
+        kind=KIND_ROOT_ADOPT,
+        purpose="Let ADMZ in — used once to create ADMZ's own account",
+        ttl=300,
+    )
+    return RedirectResponse(url=f"/capture/{session.token}", status_code=303)
+
+
 @router.get("/add-device", response_class=HTMLResponse)
 async def add_device_form(
     request: Request,

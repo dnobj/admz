@@ -821,12 +821,27 @@ function recMsg(text, ok) {
       const why = me.status === 'no_credentials'
         ? 'ADMZ has no stored credential for this device — it is up, but ADMZ cannot manage it.'
         : 'This device is refusing the stored credential.';
+      // ADR-0068 / FR-CRED-014: TWO actions, labelled by what they do, because
+      // one button served two different situations. For `auth_failed` the right
+      // answer is genuinely ambiguous — the device's password may have changed
+      // (update ADMZ's stored one) or ADMZ's own `admz` account may have been
+      // removed (let ADMZ back in and recreate it) — and nothing outside the
+      // device can tell. So both are offered, and the PRIMARY is the likelier
+      // one for the status. They must never share a button: the operator's
+      // mental model ("I am giving ADMZ the password") is identical in both
+      // cases while the outcome is completely different.
+      const noCreds = me.status === 'no_credentials';
+      const adoptBtn = '<form method="post" action="/device/' + encodeURIComponent(DEVICE_ID) + '/adopt-credentials" style="display:inline;margin:0">'
+        + '<button type="submit" class="btn ' + (noCreds ? 'sm' : 'ghost sm') + '" id="adopt-credentials-btn">'
+        + 'Let ADMZ in (root password)</button></form>';
+      const storeBtn = '<form method="post" action="/device/' + encodeURIComponent(DEVICE_ID) + '/credentials" style="display:inline;margin:0">'
+        + '<button type="submit" class="btn ' + (noCreds ? 'ghost sm' : 'sm') + '" id="enter-credentials-btn">'
+        + (noCreds ? 'Set ADMZ\'s stored password' : 'Update ADMZ\'s stored password') + '</button></form>';
       b.innerHTML = '<div style="padding:10px 16px;color:var(--fg-amber,#fbbf24);font-size:13px;'
         + 'border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
         + '<i data-lucide="key-round" style="width:14px;height:14px;vertical-align:-2px"></i> '
         + '<span>' + why + '</span>'
-        + '<form method="post" action="/device/' + encodeURIComponent(DEVICE_ID) + '/credentials" style="display:inline;margin:0">'
-        + '<button type="submit" class="btn sm">Enter credentials</button></form>'
+        + (noCreds ? adoptBtn + storeBtn : storeBtn + adoptBtn)
         + '<button type="button" class="btn ghost sm" id="run-onboarding-btn">Run onboarding</button>'
         + '<span id="onboarding-outcome"></span></div>';
       if (window.lucide) lucide.createIcons();

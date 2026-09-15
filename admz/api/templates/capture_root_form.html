@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+
+{# FR-CRED-014 / ADR-0068. A SEPARATE template from capture_form.html, not a
+   branch inside it. Nearly every string differs, and capture_form's note band
+   says "These credentials are stored encrypted" — which is FALSE here and is
+   the single most misleading sentence this flow could show. A half-branched
+   template is how the wrong sentence survives a refactor. #}
+
+{% block title %}Let ADMZ in — {{ device.get('nickname', session.device_id) }}{% endblock %}
+
+{% block content %}
+<div style="max-width:520px;margin:24px auto;">
+  <h1 class="page-title" style="margin-bottom:16px;">Let ADMZ into this device</h1>
+
+  {# No "Account" row, deliberately. capture_form.html shows
+     `session.account_id` ("default"), and showing that beside a root-password
+     field invites "I am setting the default account's password" — the opposite
+     of what happens. What ADMZ will CREATE is the useful fact instead. #}
+  <div class="card" style="margin-bottom:20px;"><div class="card-body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;">
+    <div class="keyval"><span class="k">Device</span><span class="v">{{ device.get('nickname', session.device_id) }}{% if device.get('model') %} ({{ device.get('model') }}){% endif %}</span></div>
+    <div class="keyval"><span class="k">Host</span><span class="v mono">{{ device.get('host', 'N/A') }}</span></div>
+    <div class="keyval"><span class="k">ADMZ will create</span><span class="v mono">admz</span></div>
+  </div></div>
+
+  <div class="note-band" style="margin-bottom:8px;">
+    <i data-lucide="key-round"></i>
+    <span>Nothing ADMZ has stored gets into this device. Give it the device's
+    administrator password <strong>once</strong> and ADMZ will create its own
+    account to use from then on.</span>
+  </div>
+
+  {# The claims here are deliberately checkable. It stops short of "erased from
+     memory": admz/rules/capture.py established that dropping a reference is not
+     erasure, and a form an operator reads before typing a break-glass
+     credential is the worst possible place to overclaim. #}
+  <div class="note-band" style="margin-bottom:20px;">
+    <i data-lucide="shield"></i>
+    <span><strong>The password you type here is not saved as this device's
+    credential</strong> &mdash; not now, not later. ADMZ uses it for this one
+    request to log in, creates a separate <span class="mono">admz</span> account
+    with a new random password, and stores <em>that</em> instead. Your
+    administrator password keeps working: ADMZ never changes, disables or
+    deletes it. It is not written to ADMZ's database, its logs, or the AI
+    assistant's context.</span>
+  </div>
+
+  {% if error %}
+  <div class="message error" style="margin-bottom:18px;">{{ error }}</div>
+  {% endif %}
+
+  <form method="POST" action="/capture/{{ token }}" autocomplete="off" id="adopt-form">
+    <div style="margin-bottom:16px;">
+      <label for="username" style="display:block;margin-bottom:5px;font-weight:600;color:var(--text);">Administrator username on the device</label>
+      {# Pre-filled, not hard-coded: ADR-0061 measured that usernames vary by
+         setup era (production's default_username was `operator` while eight of
+         nine devices used `root`). #}
+      <input type="text" id="username" name="username" value="root" required
+             autocomplete="off" spellcheck="false" style="width:100%;font-size:15px;">
+      <p class="page-sub" style="margin:4px 0 0;font-size:12px;">Usually <span class="mono">root</span>. Whatever account you use to sign in to the device itself.</p>
+    </div>
+
+    <div style="margin-bottom:22px;">
+      <label for="password" style="display:block;margin-bottom:5px;font-weight:600;color:var(--text);">Administrator password</label>
+      <input type="password" id="password" name="password" required
+             autocomplete="new-password" style="width:100%;font-size:15px;font-family:var(--mono);">
+    </div>
+
+    {# The owner's two outcomes, as a REQUIRED radio group with nothing
+       pre-selected. Not a checkbox: an unticked box is a silent answer to an
+       either/or, and FR-CRED-012's "never pre-checked" guarantee is preserved
+       and strengthened by forcing an explicit choice. #}
+    {% if prompt_always %}
+    <div class="note-band" style="margin-bottom:22px;">
+      <i data-lucide="info"></i>
+      <span>This installation stores no entry credentials by policy, so this
+      password will be used once and discarded.</span>
+    </div>
+    <input type="hidden" name="entry_action" value="discard">
+    {% else %}
+    <fieldset style="margin:0 0 22px;border:1px solid var(--border-subtle);border-radius:8px;padding:12px 14px;">
+      <legend class="section-label" style="padding:0 6px;">Afterwards, what should ADMZ do with this password?</legend>
+
+      <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;margin-bottom:10px;cursor:pointer;">
+        <input type="radio" name="entry_action" value="discard" required style="margin-top:3px;">
+        <span><strong>Use it once and discard it.</strong> Nothing about this
+        password is kept. The next device that needs it &mdash; or this one after
+        a factory reset &mdash; will ask you again.</span>
+      </label>
+
+      <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;cursor:pointer;">
+        <input type="radio" name="entry_action" value="add_to_fleet_list" required style="margin-top:3px;">
+        <span><strong>Add it to ADMZ's fleet entry list.</strong> ADMZ will try
+        this username and password on every device it onboards from now on, so it
+        can let itself in without asking. Stored encrypted; the username
+        &mdash; never the password &mdash; appears on Fleet Settings, and the
+        addition is recorded in the audit log as its own event.</span>
+      </label>
+
+      {% if session.propose_promote %}
+      <div class="note-band" style="margin-top:10px;">
+        <i data-lucide="info"></i>
+        <span>The assistant suggested adding this credential to the fleet list.
+        Nothing is selected until you choose.</span>
+      </div>
+      {% endif %}
+    </fieldset>
+    {% endif %}
+
+    {# This button IS the ADR-0059 approval (ADR-0068 §9), so its text names the
+       write. Load-bearing, and pinned by a test. #}
+    <button type="submit" class="btn primary lg full" id="adopt-submit">
+      Log in and create ADMZ's own account
+    </button>
+    <p class="page-sub" style="margin-top:10px;font-size:12px;">
+      Submitting contacts <span class="mono">{{ device.get('host', 'this device') }}</span>
+      now. This is the action that creates an administrator account on it.
+    </p>
+  </form>
+</div>
+
+<script>
+// Progressive enhancement only — the plain form POST is the no-JS path, as the
+// device-page and account-page actions already are.
+(function () {
+  var form = document.getElementById('adopt-form');
+  var btn = document.getElementById('adopt-submit');
+  if (!form || !btn) return;
+  form.addEventListener('submit', function () {
+    btn.disabled = true;
+    btn.textContent = 'Contacting the device…';
+  });
+})();
+</script>
+{% endblock %}

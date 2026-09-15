@@ -33,8 +33,9 @@ Implementation: `admz/api/capture.py::CaptureStore` (SQLite, WAL,
 per-call connections), `admz/api/routes/capture.py` (browser form +
 JSON polling endpoints).
 
-> **[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) adds a second kind of capture session (📋, not yet shipped).** *"The form
-> submits directly to the registry"* describes the only shape that exists today.
+> **[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) adds a second kind of capture session — ✅ shipped 2026-09-15 (S3).** *"The form
+> submits directly to the registry"* remains true of the `account` kind, which is
+> every session any existing opener mints.
 > A **root-adopt** session inverts it: the typed password is used once to
 > authenticate, ADMZ creates its own `admz` account, and *that* is what reaches
 > the registry — the typed password reaches it never. The two are separate
@@ -408,7 +409,7 @@ store requires the form submission, never the tool argument.
 > username and device ids only, a refusal never loses the capture, and the flag
 > reaching the store still requires the form submission.
 
-### FR-CRED-014 — A root password ADMZ is given is used once and never becomes the device's credential 📋
+### FR-CRED-014 — A root password ADMZ is given is used once and never becomes the device's credential ✅
 When nothing ADMZ holds authenticates, it asks the operator for the device's
 administrator password — and that password is **never stored as that device's
 credential**. See

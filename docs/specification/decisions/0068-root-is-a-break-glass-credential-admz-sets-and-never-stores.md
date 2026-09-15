@@ -1,6 +1,6 @@
 # ADR-0068 — Root is a break-glass credential ADMZ sets and never stores: every device carries two accounts, and only ADMZ's own is kept
 
-**Status:** **Accepted** — 2026-09-14 · **Shipped:** S0 (#487, the plan) and **S1, the core flow** (2026-09-14); S2 and S3 remain
+**Status:** **Accepted** — 2026-09-14 · **Shipped in full:** S0 (#487, the plan), S1 the core flow (#488), S2 the MCP collapse (#489), and S3 the operator prompt (2026-09-15). **Not verified against hardware** — see Verification.
 **Closes when shipped:** the remainder of #411 (FR-CRED-011/012 — ADMZ's own account, in practice) · tracked as #486
 **Amends:** [ADR-0061](0061-entry-credentials-and-the-admz-account.md) decision 3 (*"The entry credential is never deleted or rotated by ADMZ"* — narrowed) · [ADR-0064](0064-a-device-admz-cannot-authenticate-to-is-never-online.md) — reverses slice E's password ordering for `root`, moots decision 9, narrows §2 rule 3, and makes the S3/S4 state rows unreachable
 **Relates to:** [ADR-0059](0059-gate-provisioning-at-the-decision-point.md) (account creation is the decision point — this adds one named exemption) · [ADR-0009](0009-oob-credential-capture.md) (the prompt this re-shapes) · [ADR-0034](0034-uniform-widget-gating.md) (one gate, no flat refusals) · [ADR-0010](0010-fernet-encryption.md) (what makes a stored fleet password safe at rest) · FR-CRED-003/007/011/012/013 and a new FR-CRED-014 · #185 / #326 / #199 (the exposure this knowingly reinstates) · #296 (shared vs per-device as first-class modes) · #165 (`add-user` is ungated)
