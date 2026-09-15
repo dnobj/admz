@@ -98,8 +98,13 @@ Password source: explicit arg > 24-char generated, per device. The fleet
 > per-device as a first-class setting) is where a deliberate shared mode
 > would live.
 
-> **[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) changes what is written and deletes the trade above (📋, not yet
-> shipped).** Measured on production 2026-09-14: **all 11 stored accounts are
+> ⚠️ **The block above is superseded for `root`.** Its account of the fleet
+> `default_password` is still correct and permanent; its account of *what is
+> written to a factory-defaulted device*, and the database-loss trade it
+> accepts, are not. Read the next block before acting on it.
+
+> **[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) changes what is written and deletes the trade above — ✅ shipped
+> 2026-09-14 (S1).** Measured on production 2026-09-14: **all 11 stored accounts are
 > `root`/`default`; there are zero `admz` accounts** — so the factory-default
 > path has been the fleet's only provisioner and it stops at `root`. Under
 > ADR-0068 it writes **two** accounts: `root` from a new store-encrypted
@@ -128,6 +133,16 @@ Password source: explicit arg > 24-char generated, per device. The fleet
 > makes ADMZ **refuse to provision**, writing nothing, rather than fall back to a
 > generated-and-stored or generated-and-discarded root password. #296 part 2's
 > "deliberate shared mode" is what `fleet_root_password` is.
+>
+> **As shipped (S1).** `write_root_account` takes no `registry`, so "this cannot
+> store a credential" is checkable from the signature rather than from a boolean
+> a caller might pass wrongly; `provision_factory_default` keeps its name and
+> signature (three gate-test suites bind to it) and becomes the composition
+> root → `admz` → store `admz`. Two refusals write nothing: `attended=False`,
+> which is how the unattended `reprovision` handler is now stopped, and no
+> break-glass configured. The success status stays `PROVISIONED` — `operations.py`
+> reports `ok = status == PROVISIONED`, so renaming it would have told the
+> operator who approved the write that it failed.
 
 ### FR-CRED-008 — Temporary device-side users ✅
 `create_temp_credentials(device_id, permissions, ttl_seconds)`

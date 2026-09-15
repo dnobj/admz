@@ -7,13 +7,14 @@ Resolution order (first hit wins):
 1. **Stored credentials verify** — the device already has a working
    ``default`` account: nothing to do.
 2. **Factory-defaulted** (unauthenticated ``systemready`` says
-   ``needsetup=yes``): provision the ``root`` admin account with a generated
-   password via :func:`admz.provisioning.provision_factory_default` — the
-   fleet pair is an entry credential, never a value written to a device
-   (FR-CRED-007, ADR-0064 slice E).
-3. **Fleet credential pair authenticates**: the device was set up elsewhere
-   with the fleet-standard credentials — save them as the device's account,
-   entirely server-side.
+   ``needsetup=yes``): provision **two** accounts via
+   :func:`admz.provisioning.provision_factory_default` — ``root`` from the
+   fleet break-glass password, then ADMZ's own ``admz`` account — and store
+   only ``admz`` (FR-CRED-014, ADR-0068). The fleet ``default_password`` is an
+   entry credential and is still never written to a device (FR-CRED-007).
+3. **An entry credential authenticates**: the device was set up elsewhere, so
+   ADMZ uses that one-time access to create its own ``admz`` account and
+   stores *that*. The entry credential itself is never stored for the device.
 4. **Neither**: the caller must ask the operator — chat/MCP callers create a
    credential-capture session (the chat console renders it as an inline
    secure-form widget); the web form links to the capture page.
@@ -45,48 +46,57 @@ logger = logging.getLogger(__name__)
 _DISABLE_ENV = "ADMZ_DISABLE_ONBOARDING_PROBES"
 _DISABLE_CAPABILITY = "test.no_onboarding_probes"
 
-#: The account id the pre-adoption credential is kept under (ADR-0061, #411).
-RECOVERY_ACCOUNT_ID = "recovery"
-
-
-def _keep_recovery_account(registry: Any, device_id: str, stored: Dict[str, Any]) -> None:
-    """Preserve the credential ADMZ held before switching to its own account.
-
-    ``store_provisioned_creds`` REPLACES the ``default`` account, so without
-    this the old password is gone from ADMZ the moment ``admz`` is created. For
-    a device whose stored password was ADMZ-generated that would be the only
-    copy -- exactly the loss a registry wipe would cause, arriving through the
-    front door. Best effort: failing to keep it must not stop the adoption,
-    but it is logged loudly because it is the recovery path.
-    """
-    try:
-        data = {
-            "username": stored.get("username"),
-            "password": stored.get("password"),
-            "account_type": "recovery",
-            "purpose": ("Credential ADMZ held before creating its own account "
-                        "(ADR-0061 recovery path)"),
-        }
-        if registry.account_exists(device_id, RECOVERY_ACCOUNT_ID):
-            registry.update_account(device_id, RECOVERY_ACCOUNT_ID, data)
-        else:
-            registry.add_account(device_id, RECOVERY_ACCOUNT_ID, data)
-    except Exception:  # noqa: BLE001
-        logger.error("device %s: could not keep the pre-adoption credential as "
-                     "the recovery account -- adoption continues, but the old "
-                     "password may now exist only on the device", device_id,
-                     exc_info=True)
+# ``RECOVERY_ACCOUNT_ID`` / ``_keep_recovery_account`` are RETIRED (ADR-0068).
+#
+# In-place adoption used to stash the pre-adoption credential under a per-device
+# ``recovery`` account, because `store_provisioned_creds` replaces `default` and
+# for an ADMZ-generated password that stash was the only surviving copy. Under
+# ADR-0068 a root credential is never stored per device, so the stash is exactly
+# what the invariant forbids.
+#
+# The resolution removes the thing being preserved rather than the preservation:
+# where ADMZ generated the password itself, root is ROTATED to the fleet
+# break-glass value, so the old secret is *invalidated, not lost* and there is
+# nothing left to keep. Where a human supplied it, root is left completely alone
+# — it is theirs, it exists outside ADMZ, and that is the case ADR-0061's
+# "never rotate the account you came in on" was actually protecting.
 
 
 # Statuses (stable API for callers/tests):
 ALREADY_CREDENTIALED = "already_credentialed"
 PROVISIONED = "provisioned"
 PROVISION_FAILED = "provision_failed"
-#: Kept as the wire value so existing callers/tests are unaffected; the name
-#: now means "adopted on the entry credential", which is the fallback path
-#: rather than the good one (ADR-0061).
+#: RETIRED as an outcome by ADR-0068 — nothing returns this any more.
+#:
+#: It meant "the admz write failed, so ADMZ stored the entry credential
+#: instead". The entry pair's username defaults to ``root``
+#: (``entry_credentials.py``), so storing it is precisely the per-device root
+#: credential ADR-0068 forbids — the owner's *"not as a fallback"*. The
+#: constants stay defined so nothing importing them breaks; the status is no
+#: longer produced. :data:`OWN_ACCOUNT_FAILED` is what that case returns now,
+#: and it stores nothing.
 ENTRY_CREDENTIALS_SAVED = "fleet_credentials_saved"
 FLEET_CREDENTIALS_SAVED = ENTRY_CREDENTIALS_SAVED
+#: ADR-0068 decision 4: a credential worked, ADMZ's own account write did not,
+#: and **nothing was stored**. The device reads ``no_credentials`` — amber, in
+#: the attention bucket, not demo-ready — which is the honest projection of what
+#: happened. Recovery is the fleet break-glass root password.
+#:
+#: Named ``OWN_ACCOUNT_FAILED`` to pair with :data:`OWN_ACCOUNT_CREATED`, and
+#: deliberately **not** given an ``ADMZ_``-prefixed spelling: the capability
+#: drift scanner reads any upper-case ``ADMZ_`` token anywhere in ``admz/`` as
+#: an **environment variable** and demands it be classified in
+#: ``admz/capabilities.py``
+#: (``tests/test_advanced_capabilities.py::TestDriftGuard``). Classifying it
+#: would have been the wrong fix — this is a status string, not an env var — so
+#: the name stops impersonating one instead. Note the scanner is a plain token
+#: scan, so even writing the rejected spelling out in a comment trips it; that
+#: is why this says what the shape was rather than giving the example.
+OWN_ACCOUNT_FAILED = "admz_account_failed"
+#: ADR-0068: ``fleet_root_password`` is unset, so provisioning refused and wrote
+#: NOTHING. The alternatives were storing root (forbidden) or generating and
+#: discarding it (a device nobody can log into). Same naming rule as above.
+NO_ROOT_PASSWORD_CONFIGURED = "root_password_not_configured"
 #: The good path: ADMZ created and stored its own per-device account.
 OWN_ACCOUNT_CREATED = "admz_account_created"
 CREDENTIALS_NEEDED = "credentials_needed"
@@ -118,7 +128,9 @@ def _with_survey(result: Dict[str, Any]) -> Dict[str, Any]:
         return result
     from admz.device_capabilities import capability_store, enqueue_capability_survey
 
-    if status in (PROVISIONED, OWN_ACCOUNT_CREATED, ENTRY_CREDENTIALS_SAVED):
+    # ENTRY_CREDENTIALS_SAVED is deliberately absent (ADR-0068): it is no longer
+    # a success, and no longer produced at all.
+    if status in (PROVISIONED, OWN_ACCOUNT_CREATED):
         enqueue_capability_survey(
             device_id, reason=f"onboarded ({status})", approved_by="system:onboarding",
         )
@@ -154,7 +166,11 @@ async def onboard_device_credentials(
         _tcp_probe,
     )
     from admz.fleet.systemready import read_systemready
-    from admz.provisioning import provision_factory_default, store_provisioned_creds
+    # `store_provisioned_creds` is deliberately NOT imported: the only call site
+    # in this module was the retired entry-credential fallback (ADR-0068). The
+    # only thing that stores a credential here now is
+    # `adopt_with_admz_account`, and what it stores is always `admz`.
+    from admz.provisioning import provision_factory_default
 
     # NOTE (GH #132): this used to be a bare ``if os.getenv(...)``, so ANY
     # non-empty value enabled the suppressor — ``=0`` meant "probes off". The
@@ -247,8 +263,14 @@ async def onboard_device_credentials(
                     reason=(
                         f"Device '{device_id}' at {host} is managed with a stored "
                         f"'{stored.get('username')}' credential. Approving creates "
-                        "ADMZ's own 'admz' admin account on it and switches to that; "
-                        "the current credential is kept as a recovery account."
+                        "ADMZ's own 'admz' admin account on it and switches to that."
+                        + (" That stored password was generated by ADMZ, so "
+                           "'{}' is then reset to the fleet break-glass root "
+                           "password — a value you know, which is what makes the "
+                           "device recoverable by hand.".format(
+                               stored.get("username"))
+                           if stored.get("generated_by_admz") else
+                           " Your existing credential is left exactly as it is.")
                     ),
                 )
                 record_event(
@@ -263,12 +285,6 @@ async def onboard_device_credentials(
             reach = dict(device_info)
             if learned:
                 reach.update(learned)
-            # Keep what got us in BEFORE the default account is replaced. For a
-            # device adopted via the entry list the recovery path is the list
-            # itself; here it is this credential, and it may exist nowhere
-            # else. ADR-0061's "never delete the credential you came in on",
-            # one level down.
-            _keep_recovery_account(registry, device_id, stored)
             result = await adopt_with_admz_account(
                 catalog, executors, registry,
                 device_id=device_id, host=host,
@@ -276,11 +292,39 @@ async def onboard_device_credentials(
                 device_info=reach,
             )
             if result.get("success"):
+                # ADR-0068 §8, and the order matters: `admz` is created FIRST,
+                # then root is rotated. Rotating first would invalidate the very
+                # credential needed to authenticate the add-user call. This way
+                # a rotation that fails leaves a device ADMZ can still reach.
+                #
+                # Only where ADMZ generated the stored password itself: that
+                # value exists nowhere else, so rotating it to the operator-known
+                # break-glass password strictly improves recoverability. A
+                # human-supplied credential is never touched.
+                rotated = None
+                if stored.get("generated_by_admz"):
+                    from admz.provisioning import rotate_root_to_break_glass
+
+                    rotated, rot_error = await rotate_root_to_break_glass(
+                        catalog, executors, host=host,
+                        entry={"username": stored["username"],
+                               "password": stored["password"]},
+                        device_info=reach,
+                    )
+                    if rotated is False:
+                        logger.warning(
+                            "device %s: adopted onto admz, but resetting '%s' to "
+                            "the fleet break-glass password failed: %s — that "
+                            "account still holds an ADMZ-generated password no "
+                            "human knows", device_id, stored.get("username"),
+                            rot_error,
+                        )
                 return _with_survey(
                     {"status": OWN_ACCOUNT_CREATED, "device_id": device_id,
                      "username": result["username"],
                      "entry_username": stored.get("username"),
-                     "adopted_in_place": True})
+                     "adopted_in_place": True,
+                     "root_rotated_to_break_glass": rotated})
             # The stored credential still works and is untouched; say why the
             # switch did not happen rather than pretending it did.
             logger.warning("device %s: adopt-in-place could not create the admz "
@@ -325,7 +369,11 @@ async def onboard_device_credentials(
                 {"device_id": device_id, "host": host},
                 reason=(
                     f"Device '{device_id}' at {host} is factory-defaulted. "
-                    "Approving creates a root admin account on it."
+                    "Approving creates TWO admin accounts on it: 'root', set to "
+                    "the fleet break-glass root password you configured, and "
+                    "then ADMZ's own 'admz' account with a generated password. "
+                    "Only the 'admz' password is stored — the root password is "
+                    "never kept per device."
                 ),
             )
             record_event(
@@ -352,6 +400,9 @@ async def onboard_device_credentials(
                     "host": host,
                     "username": result.get("username"),
                     "password_source": result.get("password_source"),
+                    # ADR-0068: which root password was written, by SOURCE only.
+                    "root_username": result.get("root_username"),
+                    "root_password_source": result.get("root_password_source"),
                     "under_approval": approved_action(),
                     "confirm_token": approved_token(),
                 },
@@ -360,9 +411,19 @@ async def onboard_device_credentials(
                 "status": PROVISIONED, "device_id": device_id,
                 "username": result.get("username"),
                 "password_source": result.get("password_source"),
+                "root_username": result.get("root_username"),
+                "root_password_source": result.get("root_password_source"),
             })
-        return {"status": PROVISION_FAILED, "device_id": device_id,
-                "error": result.get("error")}
+        # ADR-0068 gave this branch outcomes a bare PROVISION_FAILED cannot
+        # express — an unset break-glass password (nothing written at all) and a
+        # root-set-but-admz-failed device (nothing stored). Pass the specific
+        # status through so the operator is told which; `operations.py`'s
+        # `ok = status == PROVISIONED` keeps reporting all of them as failures.
+        return {"status": result.get("status") or PROVISION_FAILED,
+                "device_id": device_id,
+                "error": result.get("error"),
+                "root_set": result.get("root_set"),
+                "root_password_source": result.get("root_password_source")}
 
     # ---- 3. Entry credentials, then ADMZ's own account -------------------
     #
@@ -483,21 +544,27 @@ async def onboard_device_credentials(
                  "username": result["username"],
                  "entry_username": cred.username})
 
-        # Creating the account failed but the entry credential works. Store it
-        # rather than lose the device: a managed device on a shared credential
-        # is worse than one on its own, and much better than an unmanaged one.
-        # The status says which happened so nobody reads it as the good path.
-        store_provisioned_creds(
-            registry, device_id, cred.username, cred.password,
-            purpose="Entry credential verified at onboarding; admz account not created",
-        )
+        # Creating the account failed and the entry credential works — and ADMZ
+        # STORES NOTHING (ADR-0068 decision 4).
+        #
+        # This used to store the entry pair "rather than lose the device". That
+        # pair's username defaults to `root`, so it was the per-device root
+        # credential the invariant now forbids: the operator's entry credential
+        # is not ADMZ's to keep. It reverses a written trade — "a managed device
+        # on a shared credential beats an unmanaged one" — deliberately.
+        #
+        # The device therefore reads `no_credentials`: amber, attention bucket,
+        # not demo-ready. That is the honest projection, and the way back in is
+        # the entry credential the operator already has, or the break-glass root
+        # password.
         logger.warning(
-            "device %s adopted on its entry credential — creating the admz "
-            "account failed: %s", device_id, result.get("error"),
+            "device %s: entry credential '%s' authenticates but creating the "
+            "admz account failed: %s — nothing stored (ADR-0068); the device "
+            "has no usable stored credential", device_id, cred.username,
+            result.get("error"),
         )
-        return _with_survey(
-            {"status": ENTRY_CREDENTIALS_SAVED, "device_id": device_id,
-             "username": cred.username,
-             "admz_account_error": result.get("error")})
+        return {"status": OWN_ACCOUNT_FAILED, "device_id": device_id,
+                "entry_username": cred.username,
+                "admz_account_error": result.get("error")}
 
     return {"status": CREDENTIALS_NEEDED, "device_id": device_id, "reason": reason}

@@ -88,12 +88,18 @@ MAX_ATTEMPTS_PER_PASS = MAX_STORED
 #: changes it. This is a decision: adds are refused while it holds, and any
 #: value already stored is ignored rather than used.
 #:
-#: Viable because nothing requires a stored fleet password: since ADR-0064
-#: slice E ``provision_factory_default`` never writes it (the generated password
-#: wins, FR-CRED-007), as the deferred reprovision path has since #185. The
-#: only thing this posture costs
+#: Viable because nothing requires a stored *entry* credential: since ADR-0064
+#: slice E ``provision_factory_default`` never writes the fleet
+#: ``default_password`` (FR-CRED-007), as the deferred reprovision path has
+#: since #185. The only thing this posture costs
 #: is that adopting an already-set-up device always asks a human — which is
 #: precisely what it is choosing.
+#:
+#: **It no longer costs nothing, though** (ADR-0068). Provisioning a
+#: factory-defaulted device now REQUIRES ``fleet_root_password`` and refuses
+#: without it, so an installation running this posture still has to set a root
+#: password — a different setting, governed by neither this flag nor the cap —
+#: or it cannot provision a factory-default device at all.
 PROMPT_ALWAYS_KEY = "entry_credentials_prompt_always"
 
 
@@ -173,8 +179,40 @@ def list_entry_credentials() -> List[EntryCredential]:
     return creds
 
 
+def _break_glass_attempt(already: List[EntryCredential]) -> List[EntryCredential]:
+    """ADMZ's own break-glass root password, as a synthetic attempt (ADR-0068).
+
+    Not an entry credential — nobody stored it here, and it is not in the list.
+    It is the value ADMZ itself wrote to ``root`` when it provisioned the
+    device, and without it a pass that failed partway is unretryable: root
+    holds a password ADMZ *has* and ``attempt_order`` would not offer it.
+
+    Tried **last**, so it never displaces a credential an operator configured,
+    and reported by :func:`describe` so the settings page cannot understate
+    what ADMZ puts to a device. The extra attempt is affordable on measured
+    evidence, not assumption: the lockout measurement (FR-CRED-013, 2026-09-09)
+    found no cumulative lockout at all on the device tested, only a 20/s rate
+    throttle ADMZ runs some 400x under.
+
+    **The prompt-always posture does not suppress it.** That posture is about
+    *storing entry credentials*; this value is ADMZ's own, and suppressing it
+    would lock ADMZ out of a device it had just provisioned itself.
+    """
+    from admz.provisioning import FLEET_ROOT_PASSWORD_KEY
+
+    break_glass = fleet_settings.get(FLEET_ROOT_PASSWORD_KEY)
+    if not break_glass:
+        return []
+    username = fleet_settings.get(LEGACY_USER_KEY) or "root"
+    if any((c.username, c.password) == (username, break_glass) for c in already):
+        return []
+    return [EntryCredential(username, break_glass, "ADMZ break-glass root")]
+
+
 def attempt_order(*, warn: bool = True) -> List[EntryCredential]:
-    """What one onboarding pass should try — at most :data:`MAX_ATTEMPTS_PER_PASS`.
+    """What one onboarding pass should try — at most :data:`MAX_ATTEMPTS_PER_PASS`
+    entry credentials, **plus** ADMZ's break-glass root password when one is
+    configured (ADR-0068; appended last by :func:`_break_glass_attempt`).
 
     The one place the attempt list is built: the onboarding loop iterates it
     and :func:`describe` reports it as ``in_use``, so what is tried and what
@@ -198,6 +236,10 @@ def attempt_order(*, warn: bool = True) -> List[EntryCredential]:
                 len(creds), MAX_ATTEMPTS_PER_PASS,
             )
         creds = creds[:MAX_ATTEMPTS_PER_PASS]
+    # After the slice, deliberately: the break-glass value is ADMZ's own way
+    # back into a device it provisioned, and a full entry list must not be able
+    # to crowd it out.
+    creds.extend(_break_glass_attempt(creds))
     return creds
 
 

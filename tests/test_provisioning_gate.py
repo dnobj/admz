@@ -171,6 +171,34 @@ class TestApproved:
         assert PASSWORD not in repr(out)
         assert out.get("password_source") == "generated"
 
+    @pytest.mark.asyncio
+    async def test_the_approved_executor_still_reports_success(
+        self, registry, provision_spy, monkeypatch
+    ):
+        """ADR-0068 kept the factory-default success status as ``provisioned``
+        for one concrete reason: ``operations.py`` reports
+        ``ok = status == PROVISIONED``. Returning ``admz_account_created``
+        instead — tempting, since ``admz`` is now what gets stored — would tell
+        the operator who just approved the write that it had failed.
+        """
+        from admz import operations
+        from unittest.mock import MagicMock as _MM
+
+        monkeypatch.setattr(
+            "admz.api.context.get_context",
+            lambda: _MM(catalog=_MM(), executors={"vapix": _MM()}),
+        )
+        with approved("provision_device_credentials", "tok-exec"):
+            out = await operations._action_provision_device_credentials(
+                {"action": "provision_device_credentials",
+                 "device_id": "cam-fresh", "host": "192.0.2.50"},
+                registry,
+            )
+        assert out["status"] == PROVISIONED
+        assert out["success"] is True, (
+            "a successful provision reported failure to the operator who "
+            "approved it — see operations.py's `ok = status == PROVISIONED`")
+
 
 # ---------------------------------------------------------------------------
 # The paths that must NOT change — "operators won't notice" is the claim

@@ -1,11 +1,11 @@
 # ADR-0068 — Root is a break-glass credential ADMZ sets and never stores: every device carries two accounts, and only ADMZ's own is kept
 
-**Status:** Proposed — 2026-09-14
-**Closes when shipped:** the remainder of #411 (FR-CRED-011/012 — ADMZ's own account, in practice)
+**Status:** **Accepted** — 2026-09-14 · **Shipped:** S0 (#487, the plan) and **S1, the core flow** (2026-09-14); S2 and S3 remain
+**Closes when shipped:** the remainder of #411 (FR-CRED-011/012 — ADMZ's own account, in practice) · tracked as #486
 **Amends:** [ADR-0061](0061-entry-credentials-and-the-admz-account.md) decision 3 (*"The entry credential is never deleted or rotated by ADMZ"* — narrowed) · [ADR-0064](0064-a-device-admz-cannot-authenticate-to-is-never-online.md) — reverses slice E's password ordering for `root`, moots decision 9, narrows §2 rule 3, and makes the S3/S4 state rows unreachable
 **Relates to:** [ADR-0059](0059-gate-provisioning-at-the-decision-point.md) (account creation is the decision point — this adds one named exemption) · [ADR-0009](0009-oob-credential-capture.md) (the prompt this re-shapes) · [ADR-0034](0034-uniform-widget-gating.md) (one gate, no flat refusals) · [ADR-0010](0010-fernet-encryption.md) (what makes a stored fleet password safe at rest) · FR-CRED-003/007/011/012/013 and a new FR-CRED-014 · #185 / #326 / #199 (the exposure this knowingly reinstates) · #296 (shared vs per-device as first-class modes) · #165 (`add-user` is ungated)
 
-_Plan-first per `process.md`: this document merges before any code. File:line references are against master `e27d34c`._
+_Plan-first per `process.md`: this document merged (#487) before any code. File:line references are against master `e27d34c`, so the line numbers below describe the tree **as it was when this was decided** — S1 has since changed several of them, deliberately._
 
 ## Context
 
@@ -111,8 +111,10 @@ An unknown `kind` fails closed (410) — it must never fall through to the path 
 
 `_keep_recovery_account`'s docstring is the real argument against simply deleting it: for a device whose stored password ADMZ generated, that row *"would be the only copy — exactly the loss a registry wipe would cause, arriving through the front door."* True, and §3 still forbids keeping it. The resolution is to remove the thing being preserved rather than the preservation:
 
-- **Where ADMZ generated the current password** (it provisioned this device), rotate `root` to the break-glass value via `pwdgrp.cgi:update-user` *before* creating `admz`. The old value is then **invalidated, not lost** — nothing needs stashing.
+- **Where ADMZ generated the current password** (it provisioned this device), rotate `root` to the break-glass value via `pwdgrp.cgi:update-user`. The old value is then **invalidated, not lost** — nothing needs stashing.
 - **Where a human supplied it** (entry list or capture), leave `root` alone. It is the operator's, it exists outside ADMZ, and this is exactly the case ADR-0061 decision 3 was protecting.
+
+**Corrected during S1 — the order is adopt, then rotate.** This section originally said to rotate `root` *before* creating `admz`. That is wrong, and wrong in a way that would have failed on the first real device: the rotation changes the password of the very account the `add-user` call authenticates as, so creating `admz` afterwards would present a credential the device had just stopped accepting. `admz` is therefore created **first**, and the rotation follows as a best-effort step. The ordering also fails better — a rotation that fails leaves a device ADMZ can still reach and manage, whereas a failed adopt after a successful rotation would have left neither party holding a working credential. The recorded intent is unchanged; only the sequence is.
 
 Provenance is an explicit boolean on the stored account, written by ADMZ's own provisioning path; absent means human-supplied, so the conservative branch is the default. **This is the narrowing of ADR-0061 decision 3:** ADMZ may rotate a credential it generated itself, because the reason for the rule — *"If ADMZ's database is lost, every generated `admz` password is lost with it"* — is precisely what the break-glass password removes.
 

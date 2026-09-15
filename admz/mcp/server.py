@@ -695,18 +695,19 @@ class ADMZMCPServer:
                         "(or whose stored credentials stopped working) — all "
                         "server-side, no password enters this conversation. "
                         "Order: verify stored credentials; if the device is "
-                        "factory-defaulted, create an admin account for ADMZ; "
-                        "else try each ENTRY credential and, on the first that "
-                        "logs in, create ADMZ's own 'admz' admin account and use "
-                        "that (ADR-0061). Only when none of those work does it "
-                        "open a credential-capture session (shown to the user as "
-                        "a secure form card in the ADMZ console). Account "
-                        "creation is gated — expect an approval card. "
-                        "register_device already runs this for new devices. "
-                        "USE adopt=true when the user asks to move an existing, "
-                        "already-working device onto ADMZ's own account: it keeps "
-                        "the current credential as a recovery account and does "
-                        "not require removing and re-adding the device."
+                        "factory-defaulted, set 'root' to the fleet break-glass "
+                        "root password and then create ADMZ's own 'admz' account "
+                        "(only the admz password is stored — a root credential is "
+                        "never stored per device, ADR-0068); else try each ENTRY "
+                        "credential and, on the first that logs in, create ADMZ's "
+                        "own 'admz' admin account and use that (ADR-0061). Only "
+                        "when none of those work does it open a credential-capture "
+                        "session (shown to the user as a secure form card in the "
+                        "ADMZ console). Account creation is gated — expect an "
+                        "approval card. register_device already runs this for new "
+                        "devices. USE adopt=true when the user asks to move an "
+                        "existing, already-working device onto ADMZ's own account: "
+                        "it does not require removing and re-adding the device."
                     ),
                     inputSchema={
                         "type": "object",
@@ -720,9 +721,12 @@ class ADMZMCPServer:
                                 "description": (
                                     "For a device whose stored credential ALREADY "
                                     "works: use it to create ADMZ's own 'admz' admin "
-                                    "account on the device and switch to that, keeping "
-                                    "the current credential as a recovery account "
-                                    "(ADR-0061). Gated — returns an approval card. "
+                                    "account on the device and switch to that "
+                                    "(ADR-0061). A credential a human supplied is "
+                                    "left untouched; one ADMZ generated itself is "
+                                    "reset to the fleet break-glass root password, "
+                                    "so it exists somewhere a person knows "
+                                    "(ADR-0068). Gated — returns an approval card. "
                                     "Without this, an already-credentialed device is "
                                     "left as it is. Use it to bring devices registered "
                                     "before ADR-0061 onto their own account without "
@@ -2271,8 +2275,9 @@ class ADMZMCPServer:
             ALREADY_CREDENTIALED,
             APPROVAL_REQUIRED,
             CREDENTIALS_NEEDED,
-            FLEET_CREDENTIALS_SAVED,
+            NO_ROOT_PASSWORD_CONFIGURED,
             OWN_ACCOUNT_CREATED,
+            OWN_ACCOUNT_FAILED,
             PROVISIONED,
             onboard_device_credentials,
         )
@@ -2299,24 +2304,54 @@ class ADMZMCPServer:
                     "credential is unchanged."
                 )
         elif status == OWN_ACCOUNT_CREATED:
-            result["message"] = (
-                "ADMZ created its own 'admz' admin account on the device and now "
-                "uses it. The previous credential is kept as a recovery account."
-                if result.get("adopted_in_place") else
-                "ADMZ created its own 'admz' admin account on the device using an "
-                "entry credential, and now uses it."
-            )
+            if result.get("adopted_in_place"):
+                result["message"] = (
+                    "ADMZ created its own 'admz' admin account on the device and "
+                    "now uses it."
+                )
+                # ADR-0068: the pre-adoption credential is no longer stashed as a
+                # per-device 'recovery' account. Say which of the two things
+                # actually happened to it rather than the old blanket promise.
+                if result.get("root_rotated_to_break_glass") is True:
+                    result["message"] += (
+                        " That device's previous password was one ADMZ generated, "
+                        "so its account was reset to the fleet break-glass root "
+                        "password — a value the operator knows."
+                    )
+                else:
+                    result["message"] += (
+                        " The credential it came in on was left exactly as it was."
+                    )
+            else:
+                result["message"] = (
+                    "ADMZ created its own 'admz' admin account on the device using "
+                    "an entry credential, and now uses it."
+                )
         elif status == PROVISIONED:
             result["message"] = (
-                "Device was factory-defaulted; an admin account was "
-                "provisioned automatically with a generated password "
-                f"(password source: {result.get('password_source')}). "
-                "The password was stored server-side and is not available here."
+                "Device was factory-defaulted; ADMZ set "
+                f"'{result.get('root_username', 'root')}' to the fleet break-glass "
+                "root password and then created its own 'admz' account with a "
+                "generated password. Only the 'admz' password is stored "
+                f"(root source: {result.get('root_password_source')}); neither is "
+                "available here."
             )
-        elif status == FLEET_CREDENTIALS_SAVED:
+        elif status == OWN_ACCOUNT_FAILED:
             result["message"] = (
-                "The fleet default credentials authenticated and were saved "
-                "as this device's account — no user action needed."
+                "A credential authenticated, but ADMZ could not create its own "
+                f"'admz' account: {result.get('admz_account_error', 'unknown')}. "
+                "Nothing was stored for this device (ADR-0068), so it still has no "
+                "usable credential. If it was factory-defaulted, root is now set "
+                "to the fleet break-glass password and an operator can get in by "
+                "hand."
+            )
+        elif status == NO_ROOT_PASSWORD_CONFIGURED:
+            result["message"] = (
+                "The device is factory-defaulted, but no fleet root password is "
+                "configured — ADMZ refused to provision it and wrote nothing, "
+                "rather than leave a device whose only credential is one nobody "
+                "knows. Ask the operator to set fleet_root_password, then run "
+                "onboarding again."
             )
         elif status == CREDENTIALS_NEEDED:
             session = capture_store.create_session(

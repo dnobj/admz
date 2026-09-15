@@ -350,31 +350,35 @@ async def _run_reprovision(task: Task, ctx: TaskContext) -> Dict[str, Any]:
     recovery_actions.py; now reads deps from ``ctx`` instead of a startup
     closure.
 
-    ``allow_fleet_default=False`` (GH #185) — deliberate, not an oversight.
-    This handler fires unattended, on the health sweep's schedule, up to 24h
-    after an operator approved the task — against whatever host answers at
-    the device's registered address *at that later moment*. The trigger
-    (``needsetup=yes``) is itself an unauthenticated device response, and
-    nothing on this path re-verifies the peer before firing (that's the whole
-    of GH #185's investigation — no verifiable identity exists here; see the
-    handoff for why). Sending the shared fleet-wide ``default_password`` to
-    an unverified peer hands a fleet-wide credential to whoever answered.
-    Sending a fresh generated one instead doesn't verify the peer either —
-    nothing here can — but it makes who the peer turns out to be matter much
-    less: see :func:`admz.provisioning.provision_factory_default`'s
-    ``allow_fleet_default`` docstring for the full reasoning. Since ADR-0064
-    slice E (FR-CRED-007) generating is also the function's default and the
-    interactive ``provision_device`` path generates too; the explicit ``False``
-    here stays as the statement of intent on the unattended path.
+    ``attended=False`` (ADR-0068) — **this handler no longer provisions.** It
+    reports a refusal instead, and that is the point rather than a regression.
 
-    **What this does NOT fix, on purpose — do not read a green test suite as
-    "GH #185 closed":** ADMZ's registry still ends up believing it holds a
-    working credential for a device it may never have actually contacted (the
-    real device, still factory-default, was simply never reached), and *some*
-    secret is still sent in cleartext to an unverified peer. Both need either
-    real peer identity (unverified as buildable today) or deferring this
-    action to an attended flow — a real trade, not a bug fix. Tracked as a
-    separate, harder issue referencing #185 and this fix.
+    Since ADR-0068 provisioning writes the fleet **break-glass** root password
+    — one value, shared across every device ADMZ provisions, known to the
+    operator by design. This handler fires unattended, on the health sweep's
+    schedule, up to 24h after an operator approved the task, against whatever
+    host answers at the device's registered address *at that later moment*. The
+    trigger (``needsetup=yes``) is itself an unauthenticated device response and
+    nothing on this path re-verifies the peer (#185; #326 for the residual). So
+    a spoofed peer — a reassigned DHCP lease, ARP spoofing, the port a
+    decommissioned camera vacated — would walk away with a credential valid on
+    every device ADMZ has provisioned. That is a fleet-wide credential handed to
+    whoever answered, which is categorically worse than the per-device generated
+    password this path used to write.
+
+    The previous answer was ``allow_fleet_default=False``: opt out of the shared
+    secret and generate per device. ADR-0068 removes that flag, because the root
+    password now has its own setting — and removing it *without* this refusal
+    would have made this handler silently START sending the shared value, which
+    is the exposure the ADR exists to prevent. The refusal is therefore
+    structural, not a comment.
+
+    **Deferring to an attended flow is what this file already recommended** as
+    the honest fix for #185/#326, alongside real peer identity (unverified as
+    buildable today). This is that deferral. The visible cost: a factory-
+    defaulted device that appears while nobody is watching stays
+    ``needs_setup`` until an operator onboards it, where before it would have
+    been provisioned with a password only ADMZ held.
     """
     from admz.provisioning import provision_factory_default
 
@@ -389,7 +393,7 @@ async def _run_reprovision(task: Task, ctx: TaskContext) -> Dict[str, Any]:
         ctx.catalog, ctx.executors, ctx.registry,
         device_id=device_id, host=host,
         username=(task.action_params or {}).get("username", "root"),
-        allow_fleet_default=False,
+        attended=False,
     )
     if not result.get("success"):
         raise RuntimeError(result.get("error") or "provision failed")

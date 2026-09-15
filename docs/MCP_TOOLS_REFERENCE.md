@@ -59,21 +59,34 @@ Add a new device, then resolve its credentials automatically (see
 
 ### `onboard_device`
 Resolve credentials for a registered device server-side — no password
-enters the conversation. Order (ADR-0061): verify stored credentials
-(`already_credentialed`) → factory-defaulted device gets an admin account
-created for ADMZ (`provisioned`, gated) → each **entry credential** is tried
-and, on the first that logs in, ADMZ creates its own `admz` admin account and
-uses that (`admz_account_created`, gated; if the account write fails the entry
-credential is stored instead, `fleet_credentials_saved`) → otherwise a capture
+enters the conversation. Order (ADR-0061, ADR-0068): verify stored credentials
+(`already_credentialed`) → a factory-defaulted device gets **two** accounts:
+`root` set to the fleet break-glass root password, then ADMZ's own `admz`
+account with a generated one (`provisioned`, gated) → each **entry credential**
+is tried and, on the first that logs in, ADMZ creates its own `admz` admin
+account and uses that (`admz_account_created`, gated) → otherwise a capture
 session is opened (`credentials_needed` + `capture_url`; the chat console
 renders it as a secure form card). Gated steps return `approval_required` with
 the standard blocked envelope. `register_device` runs this for new devices.
 
+**Only the `admz` password is ever stored.** A root credential is never stored
+per device (ADR-0068), so two outcomes mean the device is left with no usable
+credential and say so: `admz_account_failed` (a credential worked but the
+account write did not — nothing stored; if the device was factory-defaulted,
+root now holds the break-glass password an operator knows) and
+`root_password_not_configured` (no `fleet_root_password` is set, so ADMZ wrote
+nothing at all rather than leave a device whose only credential nobody knows).
+`fleet_credentials_saved` is **retired** — ADMZ no longer stores a borrowed
+entry credential as a device's own.
+
 With **`adopt: true`**, a device whose stored credential already works is moved
 onto ADMZ's own `admz` account: the stored credential is used to create it
-(gated, same approval), then kept as a `recovery` account rather than
-discarded — some stored passwords are ADMZ-generated and exist nowhere else.
-`admz_account_created` with `adopted_in_place: true` on success;
+(gated, same approval). What happens to that credential afterwards depends on
+where it came from — one a human supplied is left untouched, while one ADMZ
+generated itself is reset to the fleet break-glass root password, so it exists
+somewhere a person knows instead of only in ADMZ's database. The per-device
+`recovery` account is retired. `admz_account_created` with
+`adopted_in_place: true` on success (plus `root_rotated_to_break_glass`);
 `already_credentialed` with `admz_account_error` if the account write fails
 (the device is no worse off). A device already on `admz` is a no-op.
 - **Args:** `device_id`, `adopt` (bool, default false)

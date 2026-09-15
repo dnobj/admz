@@ -146,9 +146,11 @@ encrypted with the registry's Fernet key (ADR-0010), joining
 `survey_github_pat` and the two `github_app_*` secrets which already were.
 `entry_credentials` is encrypted the same way (ADR-0061), and
 [ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md)
-adds `fleet_root_password` (📋, not yet shipped) — the break-glass root password,
+adds `fleet_root_password` (✅ 2026-09-14) — the break-glass root password,
 which is recovery material for the whole fleet and so is the one entry here
-whose disclosure is worst. The
+whose disclosure is worst. It is also absent from `LLM_WRITABLE_SETTING_KEYS`,
+so FR-SEC-012's allow-set is unchanged: the model may neither set nor read the
+credential that unlocks every device ADMZ has provisioned. The
 value is **recoverable, not hashed** — ADMZ has to send it to a device — which
 is the opposite of `confirm_password_hash`, deliberately left as a hash.
 

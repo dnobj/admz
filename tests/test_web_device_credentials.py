@@ -134,7 +134,15 @@ class TestTheDevicePageOffersTheActions:
         assert re.search(r"action=\"/device/' \+ encodeURIComponent\(DEVICE_ID\) \+ '/credentials\"", text)
 
     def test_the_onboarding_notes_know_every_outcome(self):
-        """The `?onboarding=` banner used to know five of the eight outcomes."""
+        """The `?onboarding=` banner used to know five of the eight outcomes.
+
+        ADR-0068 swapped one outcome for two. ``ENTRY_CREDENTIALS_SAVED`` is
+        retired (nothing stores a borrowed credential any more), and
+        ``OWN_ACCOUNT_FAILED`` / ``NO_ROOT_PASSWORD_CONFIGURED`` replace it.
+        Both are cases where the device ends up with **no** usable credential, so
+        a missing entry here would leave an operator looking at a blank banner
+        after exactly the failure they most need to act on.
+        """
         from admz import onboarding
 
         text = (TEMPLATES / "device_detail.html").read_text(encoding="utf-8", errors="replace")
@@ -143,5 +151,11 @@ class TestTheDevicePageOffersTheActions:
         for word in (onboarding.CREDENTIALS_NEEDED, onboarding.OWN_ACCOUNT_CREATED,
                      onboarding.APPROVAL_REQUIRED, onboarding.PROVISIONED,
                      onboarding.ALREADY_CREDENTIALED, onboarding.PROVISION_FAILED,
-                     onboarding.ENTRY_CREDENTIALS_SAVED):
+                     onboarding.OWN_ACCOUNT_FAILED,
+                     onboarding.NO_ROOT_PASSWORD_CONFIGURED):
             assert re.search(rf"\b{word}\s*:", notes.group(1)), f"NOTES lacks {word}"
+        # ...and the retired one is gone, so the map cannot keep promising an
+        # outcome the server can no longer produce.
+        assert not re.search(rf"\b{onboarding.ENTRY_CREDENTIALS_SAVED}\s*:",
+                             notes.group(1)), (
+            "NOTES still carries the retired fleet_credentials_saved outcome")

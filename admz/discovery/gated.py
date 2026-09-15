@@ -116,8 +116,10 @@ def survey_reason(subnet: Any, register_new: bool) -> str:
     # would mean the operator approved something the card never mentioned,
     # which is the failure #411's review caught in the first draft.
     tail = ("register unknown devices it finds and, on each, create an admin "
-            "account for ADMZ — a fresh root account if the device is "
-            "factory-defaulted, or ADMZ's own 'admz' account if an entry "
+            "account for ADMZ — on a factory-defaulted device TWO accounts: "
+            "'root' set to the fleet break-glass root password, then ADMZ's own "
+            "'admz' account (only 'admz' is stored); or on a device that is "
+            "already set up, just ADMZ's own 'admz' account if an entry "
             "credential can log in (the entry credential is left in place)"
             if register_new else "register unknown devices it finds")
     return (f"Deep survey: scan {where}, then {tail}. This writes to devices "

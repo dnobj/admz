@@ -244,11 +244,19 @@ class TestResolutionOrder:
         assert out["status"] == "credentials_needed"
         assert "adopt_called" not in patch_probes
 
-    def test_adoption_falls_back_to_the_entry_credential_if_the_account_write_fails(
+    def test_a_failed_account_write_stores_NOTHING(
         self, patch_probes, monkeypatch
     ):
-        """A managed device on a shared credential beats an unmanaged one — but
-        the status must say which happened, so nobody reads it as the good path."""
+        """ADR-0068 decision 4, and the **inversion** of what this test used to
+        assert.
+
+        It used to pin the entry credential being stored as the device's own —
+        "a managed device on a shared credential beats an unmanaged one". That
+        pair's username defaults to `root`, so it was precisely the per-device
+        root credential ADR-0068 forbids: the operator's credential is not
+        ADMZ's to keep. The device is left at `no_credentials` instead, which is
+        the honest projection of what happened.
+        """
         from admz.approval_context import approved
 
         monkeypatch.setattr(
@@ -260,10 +268,10 @@ class TestResolutionOrder:
         reg = _Registry()
         with approved("register_discovered_device", "tok-test"):
             out = _run(registry=reg)
-        assert out["status"] == "fleet_credentials_saved"
+        assert out["status"] == "admz_account_failed"
         assert out["admz_account_error"] == "device said no"
-        assert reg.accounts["default"]["password"] == FLEET_PW
-        assert "not created" in reg.accounts["default"]["purpose"]
+        assert reg.accounts == {}, "the entry credential was stored as a fallback"
+        assert FLEET_PW not in json.dumps(out)
 
     # ---- adopt in place (#411): existing devices onto their own account ----
 
@@ -280,34 +288,104 @@ class TestResolutionOrder:
 
     def test_adopt_in_place_GATES_when_not_approved(self, patch_probes):
         """Same decision point, same approval as every other account write.
-        The card must say the current credential is KEPT -- that is what makes
-        this safe for a device whose stored password exists nowhere else."""
+
+        The card's promise changed with ADR-0068: it no longer says the old
+        credential is kept as a recovery account (that account is retired — it
+        was a per-device root credential by construction). For a human-supplied
+        credential it says the credential is left alone, which is the stronger
+        statement.
+        """
         patch_probes["confirm"] = [(True, {})]
         reg = _Registry(stored={"username": "root", "password": "existing"})
         out = _run(registry=reg, adopt=True)
         assert out["status"] == "approval_required"
         assert "adopt_called" not in patch_probes
-        assert "recovery" in out.get("reason", "").lower()
+        reason = out.get("reason", "").lower()
+        assert "admz" in reason
+        assert "left exactly as it is" in reason
+        assert "recovery account" not in reason
 
-    def test_adopt_in_place_creates_admz_and_KEEPS_the_old_credential(self, patch_probes):
-        """The whole point. Some stored passwords are ADMZ-generated and exist
-        nowhere else; a wipe would lose them, and so would an adoption that
-        overwrote the default account without keeping a copy."""
+    def test_adopt_in_place_stores_only_admz_and_keeps_no_recovery_row(
+        self, patch_probes
+    ):
+        """ADR-0068 §8: the per-device ``recovery`` account is retired.
+
+        It stashed the pre-adoption credential under its own account id, which
+        for a device ADMZ came into as ``root`` is exactly the per-device root
+        credential the invariant forbids.
+        """
         from admz.approval_context import approved
 
         patch_probes["confirm"] = [(True, {})]
-        reg = _Registry(stored={"username": "root", "password": "generated-once"})
+        reg = _Registry(stored={"username": "root", "password": "human-set"})
         with approved("register_discovered_device", "tok-test"):
             out = _run(registry=reg, adopt=True)
         assert out["status"] == "admz_account_created"
         assert out["adopted_in_place"] is True
         assert out["entry_username"] == "root"
         # the stored credential is what authenticated the account write...
-        assert patch_probes["adopt_called"] == {"username": "root", "password": "generated-once"}
-        # ...and it was kept as the recovery account BEFORE anything replaced it
-        rec = reg.accounts.get("recovery")
-        assert rec and rec["password"] == "generated-once"
-        assert "recovery" in rec["purpose"].lower()
+        assert patch_probes["adopt_called"] == {"username": "root", "password": "human-set"}
+        # ...and no copy of it was kept anywhere
+        assert "recovery" not in reg.accounts
+        assert "human-set" not in json.dumps(reg.accounts)
+
+    def test_a_human_supplied_credential_is_never_rotated(self, patch_probes):
+        """ADR-0061's rule, narrowed rather than dropped (ADR-0068 §8). ADMZ may
+        rotate a password it generated itself; a human's is left alone, and this
+        is the control that keeps the narrowing narrow."""
+        from admz.approval_context import approved
+
+        rotations = []
+
+        async def _rotate(*a, **k):
+            rotations.append(k)
+            return True, None
+
+        patch_probes["confirm"] = [(True, {})]
+        reg = _Registry(stored={"username": "root", "password": "human-set"})
+        import admz.provisioning as prov
+
+        original = prov.rotate_root_to_break_glass
+        prov.rotate_root_to_break_glass = _rotate
+        try:
+            with approved("register_discovered_device", "tok-test"):
+                out = _run(registry=reg, adopt=True)
+        finally:
+            prov.rotate_root_to_break_glass = original
+        assert out["status"] == "admz_account_created"
+        assert out["root_rotated_to_break_glass"] is None
+        assert rotations == [], "rotated a credential ADMZ did not generate"
+
+    def test_an_admz_generated_credential_IS_rotated_to_break_glass(self, patch_probes):
+        """The other half. That password exists nowhere but ADMZ's database, so
+        resetting it to the operator-known break-glass value strictly improves
+        recoverability — and the order matters: ``admz`` is created FIRST,
+        because rotating first would invalidate the credential needed to
+        authenticate the add-user call."""
+        from admz.approval_context import approved
+
+        rotations = []
+
+        async def _rotate(*a, **k):
+            rotations.append(k["entry"])
+            return True, None
+
+        patch_probes["confirm"] = [(True, {})]
+        reg = _Registry(stored={"username": "root", "password": "generated-once",
+                                "generated_by_admz": True})
+        import admz.provisioning as prov
+
+        original = prov.rotate_root_to_break_glass
+        prov.rotate_root_to_break_glass = _rotate
+        try:
+            with approved("register_discovered_device", "tok-test"):
+                out = _run(registry=reg, adopt=True)
+        finally:
+            prov.rotate_root_to_break_glass = original
+        assert out["status"] == "admz_account_created"
+        assert out["root_rotated_to_break_glass"] is True
+        assert rotations == [{"username": "root", "password": "generated-once"}]
+        assert "recovery" not in reg.accounts
 
     def test_adopt_in_place_is_a_no_op_when_already_on_admz(self, patch_probes):
         """Control: adopting twice must not create a second account or a
@@ -617,9 +695,16 @@ class TestTheFactoryDefaultWriteItself:
             self.sent.append(dict(params))
             return TestTheFactoryDefaultWriteItself._Result()
 
-    def test_onboarding_provisions_a_factory_default_device_with_a_generated_password(self, monkeypatch):
-        from admz.approval_context import approved
+    BREAK_GLASS = "BreakGlass-Root-onboarding-1f"
 
+    def _wire(self, monkeypatch, *, break_glass):
+        """The probes, plus fleet settings configured BY KEY.
+
+        Key-specific on purpose: a blind lambda would set
+        ``fleet_root_password`` to the same literal as ``default_password`` and
+        this test could no longer tell the entry credential from the root one —
+        which is the whole thing it exists to distinguish.
+        """
         monkeypatch.delenv("ADMZ_DISABLE_ONBOARDING_PROBES", raising=False)
 
         async def _tcp_up(host, port, timeout):
@@ -630,9 +715,16 @@ class TestTheFactoryDefaultWriteItself:
 
         monkeypatch.setattr("admz.fleet.health._tcp_probe", _tcp_up)
         monkeypatch.setattr("admz.fleet.systemready.read_systemready", _ready)
-        # the fleet default IS configured — and must not be what is written
+        values = {"default_password": FLEET_PW}
+        if break_glass:
+            values["fleet_root_password"] = break_glass
         monkeypatch.setattr("admz.fleet_settings.fleet_settings.get",
-                            lambda k: FLEET_PW if k == "default_password" else None)
+                            lambda k: values.get(k))
+
+    def test_onboarding_writes_root_then_admz_and_stores_only_admz(self, monkeypatch):
+        from admz.approval_context import approved
+
+        self._wire(monkeypatch, break_glass=self.BREAK_GLASS)
         execr = self._Executor()
         reg = _Registry()
         with approved("register_discovered_device", "tok-test"):
@@ -640,10 +732,38 @@ class TestTheFactoryDefaultWriteItself:
                 device_id="dev-1", registry=reg, catalog=self._Catalog(),
                 executors={"vapix": execr}))
         assert out["status"] == "provisioned"
+        assert out["username"] == "admz"
+        assert out["root_password_source"] == "fleet_root"
         assert out["password_source"] == "generated"
-        assert len(execr.sent) == 1 and execr.sent[0]["username"] == "root"
-        assert execr.sent[0]["password"] != FLEET_PW
-        assert reg.accounts["default"]["password"] == execr.sent[0]["password"]
+        # TWO writes, root first, and root got the break-glass password
+        assert [s["username"] for s in execr.sent] == ["root", "admz"]
+        assert execr.sent[0]["password"] == self.BREAK_GLASS
+        # only admz is stored, and it is not the break-glass value
+        assert set(reg.accounts) == {"default"}
+        assert reg.accounts["default"]["username"] == "admz"
+        assert reg.accounts["default"]["password"] == execr.sent[1]["password"]
+        assert reg.accounts["default"]["password"] != self.BREAK_GLASS
+        # neither the entry credential nor the root password is stored or echoed
+        assert FLEET_PW not in repr(out) and FLEET_PW not in repr(reg.accounts)
+        assert self.BREAK_GLASS not in repr(out)
+        assert self.BREAK_GLASS not in repr(reg.accounts)
+
+    def test_onboarding_refuses_when_no_break_glass_is_configured(self, monkeypatch):
+        """ADR-0068 decision 8, through the real write path: the entry
+        credential is not a fallback for a missing root password, and the device
+        is never contacted."""
+        from admz.approval_context import approved
+
+        self._wire(monkeypatch, break_glass=None)
+        execr = self._Executor()
+        reg = _Registry()
+        with approved("register_discovered_device", "tok-test"):
+            out = asyncio.run(onboard_device_credentials(
+                device_id="dev-1", registry=reg, catalog=self._Catalog(),
+                executors={"vapix": execr}))
+        assert out["status"] == "root_password_not_configured"
+        assert execr.sent == []
+        assert reg.accounts == {}
         assert FLEET_PW not in repr(out)
 
 

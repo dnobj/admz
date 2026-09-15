@@ -107,6 +107,12 @@ KNOWN_SETTING_KEYS: FrozenSet[str] = frozenset({
     # secret — declared here so it is a known key, and deliberately not
     # LLM-writable, since turning it OFF would re-enable stored credentials.
     "entry_credentials_prompt_always",
+    # The break-glass root password ADMZ writes to every device it provisions
+    # (FR-CRED-014, ADR-0068). Unlike the entry list this one IS written to a
+    # device — deliberately, so a human has a way in after a database loss.
+    # Deliberately NOT LLM-writable: the model must not be able to choose, read
+    # or change the credential that unlocks every provisioned device.
+    "fleet_root_password",
     # --- confirmation / credential gates (ADR-0006, ADR-0020) -------------
     "confirm_password_hash",
     # Who may APPROVE a confirmation session (GH #178). Deliberately absent
@@ -217,6 +223,10 @@ STORE_ENCRYPTED_SETTING_KEYS: FrozenSet[str] = frozenset({
     # route back into a fleet after a database loss, so they are recovery
     # material rather than merely sensitive.
     "entry_credentials",
+    # The break-glass root password (FR-CRED-014, ADR-0068). Recovery material
+    # for the WHOLE fleet — it is the one value here whose disclosure is worst,
+    # because ADMZ writes it to every device it provisions.
+    "fleet_root_password",
     "gemini_api_key",
     "acs_webhook_token",
 })
