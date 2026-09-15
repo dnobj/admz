@@ -536,12 +536,20 @@ def _build_contents(history: Optional[list], user_message: str):
     if not history:
         return _neutralize_forged_console_marker(user_message)
 
+    from admz.chatbot.action_links import redact_links
+
     items = []
     for entry in history:
         role = entry.get("role", "user")
         text = entry.get("text", "")
         if not text:
             continue
+        if role in ("model", "assistant"):
+            # A link in an earlier reply points at a single-use session that is
+            # usually spent, and replaying it teaches the model to write links
+            # instead of calling the tool (2026-09-15). Only what is sent back to
+            # the model is redacted; the stored transcript keeps the link.
+            text = redact_links(text)
         # Normalize: Gemini accepts only 'user' and 'model'. 'event' rows
         # (console notes about out-of-band approvals/captures — text already
         # carries the "[console]" prefix) ride as user turns; the system
@@ -1391,9 +1399,30 @@ def _get_empty_retry_thinking_budget() -> int:
         return 1024
 
 
+#: Sent to the model when its final reply links an approval or capture session
+#: that no tool call issued this turn (see ``admz.chatbot.action_links``).
+#: Marked as a console note so the model reads it as ADMZ, not the operator.
+_UNBACKED_LINK_CORRECTION = (
+    f"{_CONSOLE_MARKER} Your reply linked an approval or capture session that "
+    "no tool call in this turn created, so nothing was started and there is "
+    "nothing to approve. The reply was not shown. If the action should happen, "
+    "call the tool now; it returns the real approval card. Otherwise tell the "
+    "user plainly that nothing was started, and include no link."
+)
+
+
 async def _run_manual_tool_loop(models, model, contents, sys_inst, mcp_session):
-    """Drive the function-calling loop in ADMZ; yield translator-ready chunks."""
+    """Drive the function-calling loop in ADMZ; yield translator-ready chunks.
+
+    A final reply that links an approval no tool issued this turn is held back,
+    and the model is asked once to make the real call. On 2026-09-15 a
+    continuation announced a card for the next device with a link it had
+    invented, when nothing had been started. Each reply is known in full before
+    any of it is yielded, so the operator never sees the invented link.
+    """
     from google.genai import types  # type: ignore[import-not-found]
+
+    from admz.chatbot.action_links import tokens_in, unbacked_tokens
 
     gen = getattr(models, "generate_content", None)
     if gen is None:
@@ -1428,10 +1457,12 @@ async def _run_manual_tool_loop(models, model, contents, sys_inst, mcp_session):
     max_iter = _get_max_tool_iterations()
     next_call_id = 0  # unique per executed tool, across iterations
     recent_param_groups: list = []  # groups the last query_catalog named
+    issued: set = set()  # session tokens the tools issued this turn
+    corrected = False    # at most one "make the real call" correction per turn
 
     hit_cap = True
     empty_retries = _get_empty_response_retries()
-    for _ in range(max_iter):
+    for iteration in range(max_iter):
         calls, content, text = [], None, ""
         for _attempt in range(empty_retries + 1):
             # Attempt 0 uses the normal (dynamic-thinking) config; retries use
@@ -1461,6 +1492,27 @@ async def _run_manual_tool_loop(models, model, contents, sys_inst, mcp_session):
                 )
 
         if not calls:
+            invented = unbacked_tokens(text, issued)
+            if invented and not corrected and iteration + 1 < max_iter:
+                # Nothing was started, so the reply must not be shown as though
+                # something was. Ask once for the real call. A second invented
+                # link is shown as written (the console flags it) rather than
+                # spending the turn re-asking; so is one on the last iteration,
+                # where re-asking would drop the reply altogether.
+                corrected = True
+                logger.warning(
+                    "[chat] reply linked %d approval session(s) no tool issued "
+                    "this turn; asking the model to make the call instead",
+                    len(invented),
+                )
+                convo.append(
+                    content if content is not None
+                    else types.Content(role="model", parts=[types.Part(text=text)])
+                )
+                convo.append(types.Content(
+                    role="user", parts=[types.Part(text=_UNBACKED_LINK_CORRECTION)],
+                ))
+                continue
             for piece in _chunk_text(text):
                 yield _TextChunk(piece)
             hit_cap = False
@@ -1479,6 +1531,7 @@ async def _run_manual_tool_loop(models, model, contents, sys_inst, mcp_session):
                 name, args=_redact_for_display(dict(raw_args)), call_id=call_id
             )
             payload = await _call_mcp_tool(mcp_session, name, raw_args)
+            issued |= tokens_in(payload)
             safe_payload = _redact_for_display(payload)
             status, summary = _classify_tool_result(safe_payload)
             yield _ToolResultChunk(

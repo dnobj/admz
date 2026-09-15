@@ -469,3 +469,100 @@ class TestMcpDeclarationsCarryTheRealSchema:
 
         with pytest.raises(TypeError, match="input_schema"):
             await client._mcp_declarations(_Session(), genai_types)
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-15 — a reply linking an approval no tool issued
+# ---------------------------------------------------------------------------
+
+INVENTED = "F" * 24
+ISSUED = "R" * 24
+
+
+def _text(events):
+    return "".join(
+        e.payload.get("chunk", "") for e in events if e.type == ChatEventType.TEXT
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_reply_linking_an_unissued_approval_is_held_back_and_the_tool_called():
+    """A continuation said "the confirmation card for AXIS P8815-2 is ready"
+    with a /confirm/ link it had written itself. Now the reply is held back and
+    the model asked once to make the real call; the operator sees only the card
+    the tool issued."""
+    models = _FakeModels([
+        _Resp(text=f"The card is ready: `/confirm/{INVENTED}`", usage=(10, 5)),
+        _Resp(function_calls=[_FC("execute_operation", {"device_id": "P88"})],
+              content=object(), usage=(10, 2)),
+        _Resp(text=f"Approve the card: `/confirm/{ISSUED}`", usage=(10, 4)),
+    ])
+    session = _FakeSession([{"blocked": True, "confirm_url": f"/confirm/{ISSUED}"}])
+
+    events = _events(await _run(models, session))
+
+    assert INVENTED not in _text(events), "the invented link reached the operator"
+    assert ISSUED in _text(events)
+    assert session.calls == [("execute_operation", {"device_id": "P88"})]
+    # the model was told why, inside the turn's own contents
+    correction = models.call_contents[1][-1]
+    assert correction.parts[0].text == client._UNBACKED_LINK_CORRECTION
+    assert "nothing was started" in correction.parts[0].text
+    # and every call's tokens were counted
+    assert events[-1].payload["input_tokens"] == 30
+
+
+@pytest.mark.asyncio
+async def test_relaying_a_link_a_tool_issued_this_turn_is_left_alone():
+    """Control: the legitimate path — call the tool, then show its link."""
+    models = _FakeModels([
+        _Resp(function_calls=[_FC("execute_operation", {"device_id": "P88"})],
+              content=object()),
+        _Resp(text=f"Approve the card: `/confirm/{ISSUED}`"),
+        _Resp(text="(unused)"),
+    ])
+    session = _FakeSession([{"blocked": True, "confirm_url": f"/confirm/{ISSUED}"}])
+
+    events = _events(await _run(models, session))
+
+    assert len(models.call_contents) == 2, "a link the tool issued was corrected"
+    assert ISSUED in _text(events)
+
+
+@pytest.mark.asyncio
+async def test_the_correction_is_asked_for_once_not_in_a_loop():
+    """A second invented link is shown as written — the console flags it —
+    rather than the turn being spent re-asking."""
+    second = "G" * 24
+    models = _FakeModels([
+        _Resp(text=f"Card: `/confirm/{INVENTED}`"),
+        _Resp(text=f"Card again: `/confirm/{second}`"),
+        _Resp(text="(unused)"),
+    ])
+
+    events = _events(await _run(models, _FakeSession([])))
+
+    assert len(models.call_contents) == 2
+    assert second in _text(events)
+
+
+@pytest.mark.asyncio
+async def test_a_reply_with_no_link_is_never_corrected():
+    models = _FakeModels([_Resp(text="All eleven devices are online."), _Resp(text="(unused)")])
+
+    events = _events(await _run(models, _FakeSession([])))
+
+    assert len(models.call_contents) == 1
+    assert "online" in _text(events)
+
+
+@pytest.mark.asyncio
+async def test_with_no_iteration_left_the_reply_is_shown_not_dropped(monkeypatch):
+    monkeypatch.setenv("ADMZ_GEMINI_MAX_TOOL_ITERATIONS", "1")
+    models = _FakeModels([_Resp(text=f"Card: `/confirm/{INVENTED}`"), _Resp(text="(unused)")])
+
+    events = _events(await _run(models, _FakeSession([])))
+
+    assert len(models.call_contents) == 1
+    assert INVENTED in _text(events)
+    assert "Stopped after" not in _text(events)
