@@ -15,6 +15,7 @@ database so that both the MCP server process and the API server process
 can see and manage them.
 """
 
+import logging
 import os
 import secrets
 import sqlite3
@@ -25,11 +26,29 @@ from enum import Enum
 from pathlib import Path
 from typing import List, Optional
 
+logger = logging.getLogger(__name__)
+
 
 class CaptureStatus(str, Enum):
     PENDING = "pending"
     COMPLETED = "completed"
     EXPIRED = "expired"
+
+
+#: What a capture session is FOR (FR-CRED-014, ADR-0068).
+#:
+#: Two genuinely different operations, not one with a modifier — different form,
+#: different copy, different submit handler, different success predicate,
+#: different failure semantics. A boolean would produce a matrix half of whose
+#: cells are nonsense, and a second table would fork the token, the TTL, the
+#: single-use completion and the chat-note chain the way ``fleet_capture_sessions``
+#: already has.
+KIND_ACCOUNT = "account"
+#: Ask the operator for a device's administrator password, use it ONCE to
+#: authenticate, create ADMZ's own ``admz`` account, and store **that**. The
+#: typed password is never stored as this device's credential.
+KIND_ROOT_ADOPT = "root_adopt"
+_KNOWN_KINDS = frozenset({KIND_ACCOUNT, KIND_ROOT_ADOPT})
 
 
 @dataclass
@@ -50,6 +69,18 @@ class CaptureSession:
     # proposal as a hint and never pre-checks the box; only the human's form
     # submission promotes. The flag on this object is advice, not consent.
     propose_promote: bool = False
+    #: Which operation this session performs. Defaults to ``account`` so every
+    #: existing opener and every pre-ADR-0068 row keeps its exact behaviour.
+    kind: str = KIND_ACCOUNT
+    #: What happened, for a session that has completed. Persisted because the
+    #: POST is long gone by the time the status poller, the chat card and a
+    #: revisit of the spent URL come asking — and for a root-adopt session all
+    #: three currently assert the credential was saved, which is false.
+    outcome: str = ""
+
+    @property
+    def is_root_adopt(self) -> bool:
+        return self.kind == KIND_ROOT_ADOPT
 
     @property
     def all_device_ids(self) -> List[str]:
@@ -83,7 +114,9 @@ CREATE TABLE IF NOT EXISTS capture_sessions (
     created_at   REAL NOT NULL,
     ttl          REAL NOT NULL DEFAULT 600.0,
     status       TEXT NOT NULL DEFAULT 'pending',
-    propose_promote INTEGER NOT NULL DEFAULT 0
+    propose_promote INTEGER NOT NULL DEFAULT 0,
+    kind         TEXT NOT NULL DEFAULT 'account',
+    outcome      TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS capture_session_devices (
@@ -107,6 +140,11 @@ CREATE TABLE IF NOT EXISTS fleet_capture_sessions (
 # for databases created before them (CREATE TABLE IF NOT EXISTS won't).
 _MIGRATION_COLUMNS = (
     ("propose_promote", "INTEGER NOT NULL DEFAULT 0"),  # FR-CRED-012
+    # FR-CRED-014 / ADR-0068. Both default to today's behaviour, so every row
+    # written before this — and every opener that does not pass a kind — stays
+    # an `account` session with no outcome recorded.
+    ("kind", "TEXT NOT NULL DEFAULT 'account'"),
+    ("outcome", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -202,6 +240,7 @@ class CaptureStore:
         ttl: float = 600.0,
         device_ids: Optional[List[str]] = None,
         propose_promote: bool = False,
+        kind: str = KIND_ACCOUNT,
     ) -> CaptureSession:
         """Create a new capture session and return it.
 
@@ -214,7 +253,16 @@ class CaptureStore:
             device_ids: For batch mode — list of device IDs to receive
                 the same credentials.  When provided, *device_id* is set
                 to the first entry for backwards-compatibility.
+            kind: :data:`KIND_ACCOUNT` (the default — store what is typed) or
+                :data:`KIND_ROOT_ADOPT` (use what is typed once to authenticate,
+                create ADMZ's own account, store *that*; FR-CRED-014). Validated
+                here so an unknown value cannot reach the database at all.
         """
+        if kind not in _KNOWN_KINDS:
+            raise ValueError(
+                f"unknown capture kind {kind!r}; expected one of "
+                f"{sorted(_KNOWN_KINDS)}"
+            )
         self._cleanup()
 
         # Normalise batch vs single
@@ -236,6 +284,7 @@ class CaptureStore:
             ttl=ttl,
             device_ids=batch_ids,
             propose_promote=bool(propose_promote),
+            kind=kind,
         )
 
         conn = self._connect()
@@ -243,9 +292,9 @@ class CaptureStore:
             conn.execute(
                 "INSERT INTO capture_sessions "
                 "(token, device_id, account_id, account_type, purpose, created_at, ttl, status, "
-                "propose_promote) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "propose_promote, kind, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (token, device_id, account_id, account_type, purpose, now, ttl, "pending",
-                 1 if propose_promote else 0),
+                 1 if propose_promote else 0, kind, ""),
             )
             for did in batch_ids:
                 conn.execute(
@@ -264,7 +313,8 @@ class CaptureStore:
         try:
             row = conn.execute(
                 "SELECT token, device_id, account_id, account_type, purpose, "
-                "created_at, ttl, status, propose_promote FROM capture_sessions WHERE token=?",
+                "created_at, ttl, status, propose_promote, kind, outcome "
+                "FROM capture_sessions WHERE token=?",
                 (token,),
             ).fetchone()
 
@@ -281,6 +331,22 @@ class CaptureStore:
 
         batch_ids = [r[0] for r in batch_rows] if batch_rows else []
 
+        kind = row[9] or KIND_ACCOUNT
+        if kind not in _KNOWN_KINDS:
+            # FAIL CLOSED (FR-CRED-014). A row carrying a kind this build does
+            # not know — one written by a newer version, or hand-edited — must
+            # not fall through to the `account` path, because that is the path
+            # that STORES the typed password as the device's credential. The
+            # caller renders "expired" for a None session, which is the right
+            # answer: this token cannot be honoured by this build. Same posture
+            # as #397, where an unrecognised risk word stopped resolving to the
+            # permissive default.
+            logger.error(
+                "capture session %s declares unknown kind %r; refusing it "
+                "rather than treating it as an account capture", token, kind,
+            )
+            return None
+
         session = CaptureSession(
             token=row[0],
             device_id=row[1],
@@ -292,6 +358,8 @@ class CaptureStore:
             status=CaptureStatus(row[7]),
             device_ids=batch_ids,
             propose_promote=bool(row[8]),
+            kind=kind,
+            outcome=row[10] or "",
         )
 
         if session.is_expired and session.status != CaptureStatus.COMPLETED:
@@ -299,8 +367,16 @@ class CaptureStore:
 
         return session
 
-    def complete_session(self, token: str) -> bool:
-        """Mark a session as completed.  Returns False if not found / expired."""
+    def complete_session(self, token: str, outcome: str = "") -> bool:
+        """Mark a session as completed.  Returns False if not found / expired.
+
+        ``outcome`` records WHAT happened, in the same UPDATE that marks
+        completion so a session can never be ``completed`` with the outcome
+        still unset. The POST that did the work is long gone by the time the
+        status poller, the chat card and a revisit of the spent URL come asking
+        — and for a root-adopt session all three would otherwise assert the
+        credential was saved, which is false (FR-CRED-014).
+        """
         session = self.get_session(token)
         if session is None or session.effective_status != CaptureStatus.PENDING:
             return False
@@ -308,8 +384,8 @@ class CaptureStore:
         conn = self._connect()
         try:
             conn.execute(
-                "UPDATE capture_sessions SET status=? WHERE token=?",
-                ("completed", token),
+                "UPDATE capture_sessions SET status=?, outcome=? WHERE token=?",
+                ("completed", outcome, token),
             )
             conn.commit()
         finally:

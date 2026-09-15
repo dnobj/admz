@@ -187,13 +187,32 @@ async def _run_onboarding(device_id: str, registry: DeviceRegistry, *, adopt: bo
         if result.get("status") == APPROVAL_REQUIRED:
             return result
         if result.get("status") == CREDENTIALS_NEEDED:
-            from admz.api.capture import capture_store
+            from admz.api.capture import (
+                KIND_ACCOUNT, KIND_ROOT_ADOPT, capture_store,
+            )
+            from admz.onboarding import REASON_ENTRY_EXHAUSTED
 
+            # FR-CRED-014 / ADR-0068. Only ONE of the reasons for
+            # `credentials_needed` means "ask for the device's root password so
+            # ADMZ can let itself in": the entry list was put to the device and
+            # refused. For an unreachable or never-probed device the root-adopt
+            # submit would fail at its TCP preflight *after* the operator had
+            # typed a password, so those keep the ordinary capture form.
+            #
+            # Keyed on `reason_code`, never on the prose `reason` — that string
+            # is operator copy and will be reworded.
+            exhausted = result.get("reason_code") == REASON_ENTRY_EXHAUSTED
             session = capture_store.create_session(
                 device_id=device_id,
-                purpose="Device onboarding — automatic resolution failed",
+                kind=KIND_ROOT_ADOPT if exhausted else KIND_ACCOUNT,
+                purpose=(
+                    "Let ADMZ in — every stored credential was refused"
+                    if exhausted else
+                    "Device onboarding — automatic resolution failed"
+                ),
             )
             result["capture_url"] = f"/capture/{session.token}"
+            result["capture_kind"] = session.kind
         return result
     except Exception as exc:  # noqa: BLE001 - never fail the add
         return {"status": "error", "reason": str(exc)}

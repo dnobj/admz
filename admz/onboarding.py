@@ -97,6 +97,36 @@ OWN_ACCOUNT_FAILED = "admz_account_failed"
 #: NOTHING. The alternatives were storing root (forbidden) or generating and
 #: discarding it (a device nobody can log into). Same naming rule as above.
 NO_ROOT_PASSWORD_CONFIGURED = "root_password_not_configured"
+
+# --- why CREDENTIALS_NEEDED happened (FR-CRED-014, ADR-0068) ----------------
+#
+# `CREDENTIALS_NEEDED` is returned for four unrelated reasons, and only ONE of
+# them means "ask the operator for the device's root password": the entry list
+# was tried and the device refused all of it. Offering a root-adopt form for a
+# device that is not answering, or that was never probed, is a promise ADMZ
+# cannot keep — the submit would fail at the TCP preflight after the operator
+# had already typed a password.
+#
+# A machine-readable field, beside the prose `reason`, because `reason` is
+# operator-facing copy and WILL be reworded. Matching on it would break
+# silently, which is how a caller ends up minting the wrong kind of session.
+# One producer (this module), three consumers (the REST device route, the MCP
+# onboard handler, and the approval executor).
+#: Every entry credential was put to the device and refused. The ONLY code that
+#: may open a root-adopt prompt.
+REASON_ENTRY_EXHAUSTED = "entry_exhausted"
+#: The device did not answer — TCP preflight failed, or it stopped answering
+#: mid-pass. Nothing to prompt for yet.
+REASON_UNREACHABLE = "unreachable"
+#: No credential was put to the device at all: probes disabled, or no
+#: executor/catalog. ADMZ does not know what the device would accept.
+REASON_NOT_PROBED = "not_probed"
+#: The device is not in the registry, or the registry could not be read.
+REASON_LOOKUP_FAILED = "lookup_failed"
+#: Nothing to try: the entry list is empty, or the prompt-always posture holds.
+#: Distinct from `entry_exhausted` — the device refused nothing because it was
+#: asked nothing, so a prompt is the right answer but not because of a refusal.
+REASON_NO_ENTRY_CREDENTIALS = "no_entry_credentials"
 #: The good path: ADMZ created and stored its own per-device account.
 OWN_ACCOUNT_CREATED = "admz_account_created"
 CREDENTIALS_NEEDED = "credentials_needed"
@@ -180,17 +210,20 @@ async def onboard_device_credentials(
 
     if capabilities.is_active(_DISABLE_CAPABILITY):
         return {"status": CREDENTIALS_NEEDED, "device_id": device_id,
+                "reason_code": REASON_NOT_PROBED,
                 "reason": "onboarding probes disabled in this environment"}
 
     try:
         device_info = registry.get_device_info(device_id)
     except Exception as exc:  # noqa: BLE001 - unknown device
         return {"status": CREDENTIALS_NEEDED, "device_id": device_id,
+                "reason_code": REASON_LOOKUP_FAILED,
                 "reason": f"device lookup failed: {exc}"}
 
     executor = (executors or {}).get("vapix")
     if executor is None or catalog is None:
         return {"status": CREDENTIALS_NEEDED, "device_id": device_id,
+                "reason_code": REASON_NOT_PROBED,
                 "reason": "vapix executor/catalog unavailable"}
 
     probe_info = {**device_info, "device_id": device_id}
@@ -205,6 +238,7 @@ async def onboard_device_credentials(
             up = await _tcp_probe(host, 443, 1.5)
         if up is None:
             return {"status": CREDENTIALS_NEEDED, "device_id": device_id,
+                    "reason_code": REASON_UNREACHABLE,
                     "reason": f"device at {host} is not reachable"}
 
     # ---- 1. Stored credentials already work? -----------------------------
@@ -452,9 +486,11 @@ async def onboard_device_credentials(
         reason = ("no entry credentials configured"
                   if not _entry.prompt_always() else
                   "this installation stores no entry credentials by policy")
-        return {"status": CREDENTIALS_NEEDED, "device_id": device_id, "reason": reason}
+        return {"status": CREDENTIALS_NEEDED, "device_id": device_id,
+                "reason_code": REASON_NO_ENTRY_CREDENTIALS, "reason": reason}
 
     reason = "every entry credential was rejected by the device"
+    reason_code = REASON_ENTRY_EXHAUSTED
     for cred in candidates:
         if stored_rejected and (cred.username, cred.password) == (
                 (stored or {}).get("username"), (stored or {}).get("password")):
@@ -477,6 +513,10 @@ async def onboard_device_credentials(
                 # Unreachable, not rejected. Trying the rest would be N more
                 # timeouts against a device that is not answering.
                 reason = "device did not answer the credential check"
+                # NOT `entry_exhausted`: the device refused nothing, it went
+                # quiet. A root-adopt prompt here would fail at the preflight
+                # after the operator had already typed their password.
+                reason_code = REASON_UNREACHABLE
                 break
             continue
 
@@ -567,4 +607,5 @@ async def onboard_device_credentials(
                 "entry_username": cred.username,
                 "admz_account_error": result.get("error")}
 
-    return {"status": CREDENTIALS_NEEDED, "device_id": device_id, "reason": reason}
+    return {"status": CREDENTIALS_NEEDED, "device_id": device_id,
+            "reason_code": reason_code, "reason": reason}
