@@ -35,7 +35,7 @@ agents, or experiments at :4242." ``main()`` refuses outright (raises, not a
 silent no-op) if ``--base-url`` resolves there; see ``admz.target_guard``
 for the check and its escape hatch (#180).
 
-Usage (run from C:\\admz\\admz with the API server up on :4243, staging):
+Usage (run from C:\\admz\\admz-dev with the API server up on :4243, staging):
 
     # one-shot: approve everything currently pending and in-scope
     ADMZ_DEV_AUTO_APPROVE=1 .venv/Scripts/python.exe tools/dev_auto_approve.py

@@ -70,7 +70,7 @@ These are the two things the old procedure got wrong, so they come first.
 
 | | Value | Why it matters |
 |---|---|---|
-| Interpreter | `<checkout>\.venv\Scripts\python.exe` | The venv **inside** the checkout. On this project's host the checkout is `C:\admz\admz`, so it is `C:\admz\admz\.venv\Scripts\python.exe` — `C:\admz\` is the worktree *parent*, one level up. |
+| Interpreter | `<checkout>\.venv\Scripts\python.exe` | The venv **inside** the checkout. On this project's host the checkout is `C:\admz\admz-prod`, so it is `C:\admz\admz-prod\.venv\Scripts\python.exe` — `C:\admz\` is the worktree *parent*, one level up. |
 | `ADMZ_HOME` | `C:\ProgramData\admz` | **Set it explicitly.** Unset, `admz/paths.py` defaults to `~/.admz` under whatever account the service runs as, and the instance silently builds a fresh `admz.db` and `admz.key` there. |
 
 A wrong interpreter path fails loudly. A missing `ADMZ_HOME` does not — which is
@@ -99,7 +99,7 @@ LocalSystem, delayed-auto start, auto-restart, rotating logs.
 
 ```powershell
 # ELEVATED. Adjust the checkout path to yours.
-$py = "C:\admz\admz\.venv\Scripts\python.exe"
+$py = "C:\admz\admz-prod\.venv\Scripts\python.exe"
 $dataDir = "C:\ProgramData\admz"
 
 New-Item -ItemType Directory -Force $dataDir | Out-Null
@@ -118,7 +118,7 @@ icacls $dataDir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI
 
 # --system, NOT --global (ADR-0054): --global writes the *interactive admin's*
 # .gitconfig, and the service runs as LocalSystem, which never reads it.
-git config --system --add safe.directory C:/admz/admz
+git config --system --add safe.directory C:/admz/admz-prod
 
 shawl add --name admz --restart --log-dir "$dataDir\logs" -- $py -m admz api --host 127.0.0.1 --port 4242
 sc.exe config admz start= delayed-auto
@@ -186,7 +186,7 @@ stored; SSO never sees one at all.
 ## Step 5 — Mint an API key for an agent
 
 ```powershell
-C:\admz\admz\.venv\Scripts\python.exe -m admz api-key create --name nightly-snapshot-bot
+C:\admz\admz-prod\.venv\Scripts\python.exe -m admz api-key create --name nightly-snapshot-bot
 ```
 
 The plaintext key is shown **once** — copy it then; only its hash is stored.
@@ -279,8 +279,8 @@ choco install nssm
 # (Service accounts with strong passwords are preferred for production.)
 
 # Install the service. Replace paths and the account as needed.
-nssm install ADMZ "C:\admz\admz\.venv\Scripts\python.exe" "-m admz api --host 127.0.0.1 --port 4242"
-nssm set ADMZ AppDirectory "C:\admz\admz"
+nssm install ADMZ "C:\admz\admz-prod\.venv\Scripts\python.exe" "-m admz api --host 127.0.0.1 --port 4242"
+nssm set ADMZ AppDirectory "C:\admz\admz-prod"
 nssm set ADMZ AppEnvironmentExtra `
     "ADMZ_HOME=C:\\ProgramData\\admz" `
     "ADMZ_AUTH_BACKEND=composite" `

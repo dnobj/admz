@@ -18,7 +18,7 @@ alone was previously the only safety latch, which is what #180 fixed.
 ## Running
 
 ```
-cd C:\admz\admz
+cd C:\admz\admz-dev
 # 1. Make sure a fresh staging server is running:
 .venv\Scripts\python.exe -m admz api --host 127.0.0.1 --port 4243
 

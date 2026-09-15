@@ -153,7 +153,7 @@ product/architecture decisions. A detailed issue body alone does not qualify.
 
 ## Worktree and checkout safety
 
-- The main checkout `C:\admz\admz` may be mid-work at any time. **Never**
+- The main checkout `C:\admz\admz-dev` may be mid-work at any time. **Never**
   branch, reset, or commit there for delegated work — treat uncommitted
   changes as the human's.
 - Implementation uses sibling worktrees: `git worktree add ../admz-<topic>

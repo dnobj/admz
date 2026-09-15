@@ -4,7 +4,8 @@
 `C:\admz\admz-prod`, detached at `545a706`, on `C:\admz\admz-prod\.venv`. Verified three
 ways: the service configuration, production holding `admz-prod\.venv\Scripts\python.exe`
 open while the dev interpreter is unlocked, and the fleet poll resuming against live
-devices. `C:\admz\admz` is now purely a dev workspace.
+devices. `C:\admz\admz` is now purely a dev workspace (renamed `C:\admz\admz-dev` on
+2026-09-15; the paths below record the layout as it was decided).
 Implementation plan: [`docs/plans/dev-prod-split.md`](../../plans/dev-prod-split.md).
 Absorbs issue #173 (the deployment guide documents a procedure production does
 not use). **Blocked on #235 / PR #236** — see *Prerequisite*, which is

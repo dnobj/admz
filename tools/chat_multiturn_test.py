@@ -4,7 +4,7 @@ Each scenario clears chat history before starting so the threading is
 observable from turn 1. Designed to be human-readable on stdout — not
 a pytest test.
 
-Run from C:\\admz\\admz with the server up on :4242 and a Gemini API
+Run from C:\\admz\\admz-dev with the server up on :4242 and a Gemini API
 key configured:
 
     .venv\\Scripts\\python.exe tools\\chat_multiturn_test.py
