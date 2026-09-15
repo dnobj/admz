@@ -9,7 +9,7 @@ This project runs the **[code-teem](https://github.com/pettheory/code-teem) play
 Practical consequences:
 
 - **Writes serialize; reads parallelize.** The Master implements ready issues **itself**, one at a time, in an isolated worktree per PR. A dedicated `Build` session is the exception — only when the work needs a large sustained context the Master should not carry. Parallel implementation is reserved for hard resource boundaries (a separate repo with its own version stream and zero file overlap; `axis-api-atlas` qualifies, two issues here do not). The fan-out that pays is **review, research, and audit**. See [Why implementation is serial](docs/specification/orchestration.md#why-implementation-is-serial) — that section carries the evidence, from a day of running five concurrent writers on this repo.
-- **Never do implementation work in the main checkout** — `C:\admz\admz` belongs to the human. Use a sibling worktree regardless of who is writing.
+- **Never do implementation work in the main checkout** — `C:\admz\admz-dev` belongs to the human. Use a sibling worktree regardless of who is writing.
 - **A plan is merged before implementation begins.** `status: planning` → docs-only PR → merge → `status: ready`.
 - **The PR that ships behavior also fixes the docs describing it** (spec status markers `📋 → ✅` flip in the same PR).
 - Every open issue carries exactly one `status:` label — see the playbook's `conventions/status-labels.md`.
@@ -118,7 +118,7 @@ branch delete or prune in the dev tree cannot reach production's object store. I
 checked out **detached at a pinned commit**, with its own `.venv` built from that commit's
 `requirements.txt` and its own **non-editable** copy of `axis-api-atlas`.
 
-**So `C:\admz\admz` is now purely a dev workspace.** Pulling, branching, installing and
+**So `C:\admz\admz-dev` is now purely a dev workspace.** Pulling, branching, installing and
 breaking it is no longer a production event. That is the point of the split.
 
 Why it exists: on **2026-08-04**, before the split, a merge landed code requiring `mcp` 2.x
@@ -181,7 +181,7 @@ Staging exists so UI and behavior can be exercised without touching production. 
 ## Running things
 
 ```
-C:/admz/admz/.venv/Scripts/python.exe -m pytest -q
+C:/admz/admz-dev/.venv/Scripts/python.exe -m pytest -q
 ```
 
 - **Always use the `.venv` interpreter.** The base conda environment has an old `google-genai` that 400s on Gemini 3.x tool turns.
@@ -195,7 +195,7 @@ git fetch origin master
 git worktree add ../admz-<topic> -b <branch> origin/master
 ```
 
-Sibling worktrees under `C:\admz\`, always branched from `origin/master`. The main checkout `C:\admz\admz` belongs to the human — treat its uncommitted state as theirs, never commit there, never `reset` it. Before dispatching parallel implementation work, check for file overlap across in-flight branches; two correct PRs that touch the same file cannot both merge.
+Sibling worktrees under `C:\admz\`, always branched from `origin/master`. The main checkout `C:\admz\admz-dev` belongs to the human — treat its uncommitted state as theirs, never commit there, never `reset` it. Before dispatching parallel implementation work, check for file overlap across in-flight branches; two correct PRs that touch the same file cannot both merge.
 
 ## GitHub identities
 
@@ -242,7 +242,7 @@ Load-bearing invariants worth knowing before you start:
 
 Delegated work runs as **durable headless sessions through the switchyard bridge** (formerly claude-reach / session-bridge), on machine `dnlt`. Engines available: Claude and Codex — Codex is used for **cross-engine adversarial review**, which has previously found defects a same-engine review missed.
 
-- **Trust mode** for this repo is `auto`; `C:\admz` and `C:\admz\admz` are both registered.
+- **Trust mode** for this repo is `auto`; `C:\admz` and `C:\admz\admz-dev` are both registered.
 - **Dispatch shape:** short synchronous orientation turn → full brief asynchronously → `await_job`, or end the turn with the session on the watchdog. `create_session` runs its first turn synchronously, so a long first message will block the caller until it finishes.
 - **Report-back is a handoff file** at `C:\admz\.claude\handoffs\<branch>.md`, because a worker cannot message an open cockpit session. GitHub stays the canonical work record.
 - Ask the bridge for `recommendedResultSchema` and pass it as `resultSchema` when a machine-readable completion report is wanted; a malformed report is flagged, never failed.

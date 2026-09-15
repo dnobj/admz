@@ -46,7 +46,7 @@ to tell an obsolete check from a load-bearing one.
 # staging: its own ADMZ_HOME, a copy of real device data, health polling
 # turned down, GitHub config-push disabled
 ADMZ_HOME=C:\ProgramData\admz-staging \
-  C:/admz/admz/.venv/Scripts/python.exe -m admz api --host 127.0.0.1 --port 4243
+  C:/admz/admz-dev/.venv/Scripts/python.exe -m admz api --host 127.0.0.1 --port 4243
 ```
 
 Staging carries a **copy of real device credentials** — treat its `ADMZ_HOME`

@@ -132,8 +132,8 @@ environments:
   dev:
     port: null
     admz_home: null
-    checkout: 'C:\admz\admz'
-    venv: 'C:\admz\admz\.venv'
+    checkout: 'C:\admz\admz-dev'
+    venv: 'C:\admz\admz-dev\.venv'
     atlas: editable
     expect_listening: false
     touch: 'freely, but it is the human working tree — never commit there'

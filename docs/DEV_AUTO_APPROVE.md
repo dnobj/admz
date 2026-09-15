@@ -78,7 +78,7 @@ which verifies it normally.
 
 ## Usage
 
-Run from `C:\admz\admz` with the API server up on `:4243` (staging —
+Run from `C:\admz\admz-dev` with the API server up on `:4243` (staging —
 never `:4242`, which is production on this machine):
 
 ```bash
