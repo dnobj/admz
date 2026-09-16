@@ -1,6 +1,6 @@
 # ADR-0070 — Drift is reviewed in the console chat: deterministic triage, gated tools, one card per decision
 
-**Status:** Accepted — 2026-09-16 (#504 plan) · **Shipped:** —
+**Status:** Accepted — 2026-09-16 (#504 plan) · **Shipped:** PR 1 (#508 — triage, one review annotator, the accept guard on every path, `note`/`ignore_keys` on accept, the seed rule); PR 2 not yet
 **Closes when shipped:** the implementation issues filed from [the plan](../plans/drift-review-in-chat.md)
 **Relates to:** [ADR-0031](0031-live-observation-baseline.md) (baseline vs observation — what accept blesses) · [ADR-0034](0034-uniform-widget-gating.md) (every write behind one gate; nothing here softens it) · [ADR-0047](0047-demo-config-fragments.md) (attribution buckets; the accept guard this record makes universal) · [ADR-0055](0055-order-insensitive-drift-comparison.md) (what counts as drift — triage never changes that) · [ADR-0056](0056-drift-attribution-annotates-never-suppresses.md) (the annotate-only contract triage adopts) · [ADR-0062](0062-approve-an-envelope-not-a-step-list.md) (where a true one-card composite belongs) · [ADR-0066](0066-an-out-of-band-resolution-resumes-the-promised-turn.md) (the continuation that carries a review from card to card) · [ADR-0069](0069-removing-several-devices-takes-one-approval.md) (one approval for a batch of record operations) · [ADR-0071](0071-a-task-raises-a-notice-the-console-delivers-it.md) (the notice that starts a review)
 
@@ -60,6 +60,8 @@ The classes, first match wins, matching on the canonical key with the same glob 
 The order carries the judgement: identity sits **above** `added_key` so a new admin account is high even though it "appeared"; `runtime_state` sits **above** network config so a DHCP re-lease is not a security alarm; `read_only` sits **below** the security rules so a non-revertable security change stays high.
 
 The firmware context is read from git, not remembered: the engine writes `firmware_version` into `fleet/<id>/device.yaml` on every capture (`engine.py:638-665`, `:874-891`), so `device.yaml` at `baseline_sha` versus at `observed_sha` says whether the firmware moved. That one fact explains most low rows on a device that was just upgraded, and the model is told to say so.
+
+_As built (PR 1):_ two `service_config` triggers — an action rule, and an application started or stopped — are evaluated **above** `read_only`. Both facets are read-only for restore by design, so in the table's order those triggers could never fire and every rule edit would read "low, accept or ignore". The general service-parameter trigger stays below `read_only`, where a non-writable mirror belongs. Every label also names the `rule` that produced it, and an application's version or signature is firmware-managed only when the firmware moved too.
 
 The table is a Python tuple in `triage.py`, editable without prompt surgery. The atlas has no per-parameter volatility metadata today; when it grows some, the Axis-fact rows move there and this table keeps only ADMZ-policy rows. The four rows from the operator's screenshot classify `cosmetic`, `firmware_managed`, `added_key`, `added_key` — highest importance **low** — so the model proposes one accept with a cause-based note and asks nothing.
 

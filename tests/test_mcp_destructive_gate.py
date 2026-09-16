@@ -518,6 +518,190 @@ class TestAcceptBaselineWidgetGate:
 
 
 # ---------------------------------------------------------------------------
+# accept_baseline — note, principal, exclusions (ADR-0070 §3)
+# ---------------------------------------------------------------------------
+
+
+def _observed(server, device_id="test-cam", value="1920x1080"):
+    """Register the device with one recorded observation; return its sha."""
+    if not server.registry.device_exists(device_id):
+        server.registry.add_device(
+            device_id, {"host": "192.0.2.10", "nickname": "Lobby"})
+    sha = _commit_facet(server, device_id, "image",
+                        {"I0.Resolution": value}, f"Audit: {device_id}")
+    server.registry.set_config_pointers(device_id, latest_observed_sha=sha)
+    return sha
+
+
+async def _approve_with_repo(server, token):
+    """``_approve``, plus the git repo the confirm route passes."""
+    from admz import operations
+    import admz.api.confirm_store as cs_module
+    store = cs_module.confirm_store
+    session = store.get_session(token)
+    store.complete_session(token, confirmed_by="test-approver")
+    return await operations.execute_approved_session(
+        session, catalog=None, registry=server.registry, executors={},
+        git_repo=server.git_repo,
+    )
+
+
+class TestAcceptBaselineCarriesTheReview:
+    @pytest.mark.asyncio
+    async def test_the_card_names_the_note_and_the_exclusions(self, auth_mcp_server):
+        sha = _observed(auth_mcp_server)
+        result = await _call_tool(auth_mcp_server, "accept_baseline", {
+            "device_id": "test-cam", "note": "fw 12.9.57→12.11.77 upgrade",
+            "ignore_keys": ["root.Properties.FirmwareManagement.*"],
+            "ignore_scope": "device:test-cam",
+        })
+        assert result["blocked"] is True
+        card = _stored_session(result["confirm_token"]).danger_description
+        assert card == (
+            f"Accept the current observed config of Lobby (test-cam) as its new "
+            f"baseline (commit {sha[:12]}, 1 facet). "
+            'Note: "fw 12.9.57→12.11.77 upgrade". '
+            "Also exclude from drift tracking (device:test-cam): "
+            "root.Properties.FirmwareManagement.*."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_chat_accept_writes_the_changelog_with_the_principal(
+            self, auth_mcp_server):
+        import yaml
+        sha = _observed(auth_mcp_server)
+        result = await _call_tool(auth_mcp_server, "accept_baseline", {
+            "device_id": "test-cam", "note": "MQTT prefix case normalised"})
+        outcome = await _approve_with_repo(auth_mcp_server, result["confirm_token"])
+        assert outcome["success"] is True
+        text = auth_mcp_server.git_repo.get_file(
+            "fleet/test-cam/BASELINE.yaml", "HEAD")
+        doc = yaml.safe_load(text)
+        assert doc["note"] == "MQTT prefix case normalised"
+        assert doc["accepted_by"] == "HOMELAB\\alice"
+        assert doc["baseline_sha"] == sha
+
+    @pytest.mark.asyncio
+    async def test_exclusions_land_only_when_the_card_is_approved(
+            self, auth_mcp_server):
+        from admz.audit import outcome_identity_fields
+        from admz.snapshot import ignore
+        _observed(auth_mcp_server)
+        result = await _call_tool(auth_mcp_server, "accept_baseline", {
+            "device_id": "test-cam",
+            "ignore_keys": ["root.Properties.FirmwareManagement.*",
+                            "root.Noise.Counter", "root.Noise.Counter"],
+        })
+        key = "root.Properties.FirmwareManagement.Version"
+        assert not ignore.is_ignored(key, "test-cam", [])        # minted only
+
+        outcome = await _approve_with_repo(auth_mcp_server, result["confirm_token"])
+        assert outcome["success"] is True
+        assert ignore.is_ignored(key, "test-cam", [])            # approved
+        assert ignore.is_ignored("root.Noise.Counter", "other-cam", [])  # global
+        assert outcome["ignore_added_keys"] == (
+            "root.Properties.FirmwareManagement.*, root.Noise.Counter")
+        assert outcome_identity_fields(outcome)["ignore_added_keys"] == (
+            outcome["ignore_added_keys"])
+
+    @pytest.mark.asyncio
+    async def test_a_rule_already_in_force_is_not_news(self, auth_mcp_server):
+        from admz.snapshot import ignore
+        _observed(auth_mcp_server)
+        ignore.add_rules([{"key": "root.Noise.Counter", "scope": "global"}])
+        result = await _call_tool(auth_mcp_server, "accept_baseline", {
+            "device_id": "test-cam", "ignore_keys": ["root.Noise.Counter"]})
+        session = _stored_session(result["confirm_token"])
+        assert "exclude" not in session.danger_description
+        assert "ignore_rules" not in session.action
+        outcome = await _approve_with_repo(auth_mcp_server, result["confirm_token"])
+        assert "ignore_added_keys" not in outcome
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("args, fragment", [
+        # the schema rejects these before the handler runs
+        ({"note": "x" * 501}, "is too long"),
+        ({"ignore_keys": "root.A"}, "is not of type 'array'"),
+        ({"ignore_keys": [f"root.K{i}" for i in range(51)]}, "is too long"),
+        ({"ignore_keys": [7]}, "is not of type 'string'"),
+        # the schema cannot express these; the handler rejects them
+        ({"ignore_keys": ["root.A\nroot.B"]}, "single-line"),
+        ({"ignore_keys": ["root.A"], "ignore_scope": "fleet"}, "ignore_scope"),
+    ])
+    async def test_bad_input_opens_no_card(self, auth_mcp_server, tmp_path,
+                                           args, fragment):
+        _observed(auth_mcp_server)
+        before = _session_rows(tmp_path)
+        result = await _call_tool(auth_mcp_server, "accept_baseline",
+                                  {"device_id": "test-cam", **args})
+        assert result["success"] is False
+        assert result["error"] == "InvalidInput"
+        assert fragment in result["message"]
+        assert _session_rows(tmp_path) == before
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kwargs, fragment", [
+        ({"note": "x" * 501}, "500"),
+        ({"ignore_keys": "root.A"}, "ignore_keys"),
+        ({"ignore_keys": [f"root.K{i}" for i in range(51)]}, "at most 50"),
+        ({"ignore_keys": [7]}, "ignore_keys"),
+    ])
+    async def test_the_handler_does_not_rely_on_the_schema(
+            self, auth_mcp_server, tmp_path, kwargs, fragment):
+        _observed(auth_mcp_server)
+        before = _session_rows(tmp_path)
+        result = await auth_mcp_server._accept_baseline("test-cam", None, **kwargs)
+        assert result["error"] == "InvalidInput"
+        assert fragment in result["message"]
+        assert _session_rows(tmp_path) == before
+
+    @pytest.mark.asyncio
+    async def test_the_reviewed_observation_is_the_default_target(
+            self, auth_mcp_server, tmp_path, monkeypatch):
+        """Accept blesses what the operator was shown — the cached review's
+        observation — not a newer one recorded since (the REST order)."""
+        from admz.snapshot import drift_alerts as da_module
+        from admz.snapshot.models import DriftField, DriftReport
+        alerts = da_module.DriftAlertStore(str(tmp_path / "admz.db"))
+        monkeypatch.setattr(da_module, "drift_alerts", alerts)
+
+        reviewed = _observed(auth_mcp_server, value="1280x720")
+        auth_mcp_server.registry.set_config_pointers(
+            "test-cam", baseline_sha=reviewed)
+        report = DriftReport(
+            device_id="test-cam", has_drift=True, baseline_sha=reviewed,
+            observed_sha=reviewed,
+            fields=[DriftField(facet="image", path="I0.A", expected="1", actual="2"),
+                    DriftField(facet="image", path="I0.B", expected="1", actual="3"),
+                    DriftField(facet="image", path="I0.C", expected="1", actual="4",
+                               bucket="demo_set")])
+        alerts.store_report(report)
+        newer = _observed(auth_mcp_server, value="640x480")
+        assert newer != reviewed
+
+        result = await _call_tool(auth_mcp_server, "accept_baseline",
+                                  {"device_id": "test-cam"})
+        session = _stored_session(result["confirm_token"])
+        assert session.action["baseline_sha"] == reviewed
+        assert session.action["drifted_count"] == 2
+        assert session.action["accepted_by"] == "HOMELAB\\alice"
+        assert session.danger_description.startswith(
+            "Accept the current observed config of Lobby (test-cam)")
+        assert "2 drifted fields absorbed" in session.danger_description
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_historical_commit_is_named_as_one(
+            self, auth_mcp_server):
+        old = _observed(auth_mcp_server, value="1280x720")
+        _observed(auth_mcp_server, value="640x480")
+        result = await _call_tool(auth_mcp_server, "accept_baseline",
+                                  {"device_id": "test-cam", "commit_sha": old})
+        card = _stored_session(result["confirm_token"]).danger_description
+        assert card.startswith(
+            f"Accept the config recorded at commit {old[:12]} of Lobby")
+
+
+# ---------------------------------------------------------------------------
 # restore_device / execute_plan — reach their handlers (plan gate covers them)
 # ---------------------------------------------------------------------------
 

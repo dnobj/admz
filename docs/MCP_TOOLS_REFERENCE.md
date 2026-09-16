@@ -554,13 +554,25 @@ Accept/promote an observed configuration as a device's new blessed
 drift is intentional. Metadata-only (no device traffic), but it re-points
 what drift means and what restore replays — so it executes only via the
 standard link/widget approval (ADR-0034).
-- **Args:** `device_id`, `commit_sha` (optional — default: the device's
-  latest recorded observation)
+- **Args:** `device_id`, `commit_sha` (optional — default: the observation
+  the cached drift review was computed against, else the device's latest
+  recorded observation), `note` (optional, ≤500 characters — the device's
+  git changelog entry, recorded with the principal in `BASELINE.yaml`),
+  `ignore_keys` (optional, ≤50 canonical keys or globs to exclude from drift
+  tracking) and `ignore_scope` (`global` by default, `tag:<tag>`,
+  `device:<id>`) (ADR-0070 §3)
 - **Returns:** a blocked envelope `{blocked, confirm_token, confirm_url, ...}`
   (ADR-0034) — the baseline is re-pointed only after the user approves the
-  on-screen confirmation card.
+  on-screen confirmation card. The card quotes the note and names every
+  exclusion and its scope; exclusions already in force are left off it. On
+  approval the exclusions are written first, then the pointer moves; the
+  outcome lists them as `ignore_added_keys`.
 - Errors immediately (no widget) when there is no observation to accept, or
   when the target commit holds no config for the device.
+- **Refused, with no widget,** while an active demo owns config on the device
+  (`refused: "active_demo"`), or when that check cannot run
+  (`refused: "guard_unavailable"`) — ADR-0047's guard, which also runs again
+  at approval, before the pointer moves (ADR-0070 §4).
 
 ### `diff_device`
 Show config changes for a device between two refs.

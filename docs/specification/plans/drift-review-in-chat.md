@@ -1,6 +1,6 @@
 # Plan: Drift review in the console chat — notices, triage, gated tools
 
-Status: **approved, not yet built** — the decision records are
+Status: **approved; PR 1 built (#508), PR 2 and PR 3 not yet** — the decision records are
 [ADR-0070](../decisions/0070-drift-is-reviewed-in-the-console-chat.md) (triage, tools, guidance) and
 [ADR-0071](../decisions/0071-a-task-raises-a-notice-the-console-delivers-it.md) (notices and delivery),
 both Proposed 2026-09-16. Three code PRs follow the docs merge; issues are filed from the slices below.

@@ -284,10 +284,13 @@ is drifted or a notice is open (FR-CB-020); otherwise the prompt is byte-identic
 never a verdict: every row is still drift and the user decides. See
 [ADR-0070](../decisions/0070-drift-is-reviewed-in-the-console-chat.md).
 
-### FR-CB-018 — A chat accept writes the changelog with a note and the principal 📋
-`accept_baseline` from the chat records `note` and `accepted_by` in the device's `BASELINE.yaml` commit
-exactly as the web UI's Accept drift does today. The model is told to always pass a short, cause-based
-note ("fw 12.9.57→12.11.77 upgrade; MQTT prefix case normalised"). Today the MCP tool has no `note`.
+### FR-CB-018 — A chat accept writes the changelog with a note and the principal ✅
+`accept_baseline` from the chat records `note` (≤500 characters) and `accepted_by` in the device's
+`BASELINE.yaml` commit exactly as the web UI's Accept drift does. `accepted_by` is the principal's
+**name**: the REST routes wrote the whole principal object (`str()` of a dataclass, groups included) and
+now write the name too. The card quotes the note, so the operator approves the changelog entry they will
+get. The tool description asks for a short, cause-based note ("fw 12.9.57→12.11.77 upgrade; MQTT prefix
+case normalised").
 
 ### FR-CB-019 — Fleet notices are reviewable in the Console 📋
 A "Needs attention" strip above the composer lists open notices (FR-DRF-018, FR-SCH-015) with

@@ -446,16 +446,22 @@ class TestTemplateWiring:
 class TestCallSites:
     """Attribution sits BELOW to_summary() so the REST route and the MCP tool
     both get it — the chat surface is where an operator most often meets a
-    drift report."""
+    drift report. Since ADR-0070 both reach it through the one review
+    annotator, which runs attribution; tests/test_drift_review.py drives both
+    surfaces and asserts the annotation itself."""
 
     def _src(self, path):
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 
+    def test_the_review_annotator_runs_attribution(self):
+        src = self._src("admz/snapshot/review.py")
+        assert "annotate_attribution(summary, device_id=device_id)" in src
+
     def test_rest_route_annotates(self):
         src = self._src("admz/api/routes/snapshot.py")
-        assert "annotate_attribution(summary, device_id=device_id)" in src
+        assert "review.annotate_review(" in src
 
     def test_mcp_tool_annotates(self):
         src = self._src("admz/mcp/server.py")
-        assert "annotate_attribution(" in src
+        assert "review.annotate_review(" in src

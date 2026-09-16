@@ -168,6 +168,10 @@ class TestInspectServesCache:
         assert len(body["drifted_fields"]) == 1
         assert "computed_at" in body
         assert calls == []  # served from cache — never probed the device
+        # ADR-0070: the cached path is reviewed exactly like the live one.
+        assert "triage" in body["drifted_fields"][0]
+        assert "revertable" in body["drifted_fields"][0]
+        assert "summary_by_class" in body
 
     def test_refresh_forces_live(self, client, monkeypatch):
         ctx = _seed(client, "cam-x")
@@ -195,6 +199,42 @@ class TestInspectServesCache:
         r = client.get("/api/snapshot/drift?device_id=cam-y")
         assert r.status_code == 200
         assert r.json()["cached"] is False and calls == ["cam-y"]
+
+
+class TestAcceptRecordsTheName:
+    """ADR-0070 / FR-CB-018: ``accepted_by`` is the principal's name. It used
+    to be ``str(principal)`` — the whole dataclass repr, groups included —
+    written into the config repo."""
+
+    def _observed(self, client, did):
+        ctx = _ctx()
+        ctx.registry.add_device(did, {"host": "192.0.2.11"})
+        ctx.git_repo.write_facet(did, "image", {"I0.Resolution": "1280x720"})
+        sha = ctx.git_repo.commit_snapshot(did, message="Audit", auto_push=False)
+        ctx.registry.set_config_pointers(did, latest_observed_sha=sha)
+        return ctx
+
+    def test_single_accept(self, client):
+        import yaml
+        ctx = self._observed(client, "cam-name")
+        with _with_admin():
+            r = client.post("/api/snapshot/accept-baseline",
+                            json={"device_id": "cam-name", "note": "fw upgrade"})
+        assert r.status_code == 200, r.text
+        doc = yaml.safe_load(
+            (ctx.git_repo.device_path("cam-name") / "BASELINE.yaml").read_text())
+        assert doc["accepted_by"] == "AXIS\\admin"
+
+    def test_bulk_accept(self, client):
+        import yaml
+        ctx = self._observed(client, "cam-bulk")
+        with _with_admin():
+            r = client.post("/api/snapshot/accept-baseline-bulk",
+                            json={"device_ids": ["cam-bulk"], "note": "fw upgrade"})
+        assert r.status_code == 200, r.text
+        doc = yaml.safe_load(
+            (ctx.git_repo.device_path("cam-bulk") / "BASELINE.yaml").read_text())
+        assert doc["accepted_by"] == "AXIS\\admin"
 
 
 class TestRevertUsesCache:

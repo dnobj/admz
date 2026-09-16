@@ -340,9 +340,13 @@ audit_log = AuditLog()
 #: ``removed_devices`` / ``failed_devices`` (ADR-0069) are the device ids a batch
 #: removal did and did not remove, each list one comma-separated string because
 #: only scalars are recorded. Device ids are short, non-secret identifiers.
+#:
+#: ``ignore_added_keys`` (ADR-0070) are the drift-tracking exclusions an
+#: approved accept added — canonical config keys or globs, one comma-separated
+#: string. Keys name config, never hold its values; at most 50 per card.
 OUTCOME_IDENTITY_KEYS = (
     "rule_id", "config_id", "removed_rule", "removed_config",
-    "removed_devices", "failed_devices",
+    "removed_devices", "failed_devices", "ignore_added_keys",
 )
 
 

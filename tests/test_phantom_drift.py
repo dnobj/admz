@@ -409,22 +409,27 @@ class TestClockSeeding:
     """Seeding asserts IDENTITY, not counts — a count assertion passes for the
     wrong rule."""
 
+    #: Where the clock rules were appended (#215). Later defaults go after them.
+    CLOCK_AT = 9
+
     def test_appended_defaults_seed_onto_an_existing_install(self, ignore_store):
         import admz.snapshot.ignore as ig
         # An install that already seeded everything BEFORE the clock rules.
-        ignore_store[ig.SEED_VERSION_KEY] = str(len(ig._SEED_DEFAULT_RULES) - 2)
+        ignore_store[ig.SEED_VERSION_KEY] = str(self.CLOCK_AT)
         new = ig.seed_default_rules()
-        assert [r["key"] for r in new] == [
+        assert [r["key"] for r in new[:2]] == [
             "root.Time.ServerDate", "root.Time.ServerTime"]
+        assert new == [dict(r) for r in ig._SEED_DEFAULT_RULES[self.CLOCK_AT:]]
         assert all(r["scope"] == "global" for r in new)
 
-    def test_clock_rules_are_appended_last(self):
+    def test_clock_rules_keep_their_place(self):
         """Append-only: ``seed_default_rules`` uses list LENGTH as a high-water
-        mark, so inserting mid-list would re-seed already-deleted rules."""
+        mark, so inserting mid-list would re-seed already-deleted rules. The
+        clock rules stay where they were appended, after NTP.Server."""
         import admz.snapshot.ignore as ig
-        assert [r["key"] for r in ig._SEED_DEFAULT_RULES[-2:]] == [
-            "root.Time.ServerDate", "root.Time.ServerTime"]
-        assert ig._SEED_DEFAULT_RULES[-3]["key"] == "root.Time.NTP.Server"
+        keys = [r["key"] for r in ig._SEED_DEFAULT_RULES]
+        assert keys[self.CLOCK_AT - 1:self.CLOCK_AT + 2] == [
+            "root.Time.NTP.Server", "root.Time.ServerDate", "root.Time.ServerTime"]
 
     def test_seed_is_idempotent_and_deletion_safe_for_the_clock(
         self, ignore_store
