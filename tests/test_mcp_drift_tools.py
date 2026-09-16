@@ -736,8 +736,12 @@ class TestAttentionSection:
         assert len(lines) == 4
         assert lines[-1] == "- …and 2 more"
 
-    def test_a_broken_registry_degrades_to_nothing(self):
+    def test_a_broken_registry_degrades_to_nothing(self, tmp_path, monkeypatch):
         from admz.chatbot.context import build_attention_section
+
+        # Open notices do not come from the registry (ADR-0071), so they are
+        # kept out of this one: a fresh database has none.
+        monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
 
         class _Broken:
             def list_devices(self):
@@ -810,7 +814,7 @@ class TestDriftReviewPromptSection:
                      "4. `accept_baseline` with the note"):
             assert step in section
         assert "accept nothing on\n   top of a failed revert" in section
-        assert "Mention it ONCE, in one\nline" in section
+        assert "Mention it ONCE, in one line, near the start of a\nconversation" in section
 
     def test_the_drift_bullets_name_three_moves(self):
         from admz.chatbot.system_prompt import build_system_prompt
