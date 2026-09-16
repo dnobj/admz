@@ -314,9 +314,34 @@ class DriftDetector:
         # re-processing — a second process_report sees "no change".
         try:
             import admz.snapshot.drift_alerts as _alerts_module
-            alert = _alerts_module.drift_alerts.process_report(report)
+            alerts_store = _alerts_module.drift_alerts
+            try:
+                first_seen = alerts_store.get_last_signature(device_id) is None
+            except Exception:  # noqa: BLE001 — a store that cannot say: not first
+                first_seen = False
+            alert = alerts_store.process_report(report)
             if alert is not None:
                 report.alert_transition = alert.transition
+            # ADR-0071 §2: every check hands its transition to the notices.
+            # The alert store records nothing for a device's FIRST observation,
+            # so drift found on it would otherwise never raise one.
+            transition = alert.transition if alert is not None else None
+            if transition is None and first_seen and (
+                report.real_fields or report.facets_absent
+            ):
+                transition = "appeared"
+            try:
+                from admz.notices.producers import drift_transition
+
+                drift_transition(transition, report,
+                                 registry=getattr(self.engine, "registry", None),
+                                 git_repo=self.git)
+            except Exception as exc:  # noqa: BLE001 — notices never mask a report
+                logger.warning(
+                    "DriftDetector: notice producer failed for %s: %s",
+                    device_id,
+                    exc,
+                )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(
                 "DriftDetector: alert store failed for %s: %s",

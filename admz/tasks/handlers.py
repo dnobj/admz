@@ -189,7 +189,16 @@ async def _run_drift_audit(task: Task, ctx: TaskContext) -> Dict[str, Any]:
     if ctx.drift_detector is None:
         return {"success": False, "error": "no drift_detector",
                 "summary": "error: drift_detector missing"}
-    reports = await ctx.drift_detector.check_fleet_drift(tag_filter=task.tag_filter)
+    from admz.notices.producers import SOURCE_DRIFT_AUDIT, notice_provenance
+
+    # ADR-0071 §2: notices this sweep raises name the audit and this task;
+    # `notify_console: false` keeps a quiet cadence from raising any.
+    notify_console = (task.action_params or {}).get("notify_console", True)
+    if isinstance(notify_console, str):
+        notify_console = notify_console.strip().lower() not in ("0", "false", "no", "off")
+    with notice_provenance(SOURCE_DRIFT_AUDIT, task_id=task.id,
+                           notify_console=bool(notify_console)):
+        reports = await ctx.drift_detector.check_fleet_drift(tag_filter=task.tag_filter)
     # KL-DRF-004 — count the alert transitions the detector recorded this sweep.
     new_alerts = [
         r.alert_transition for r in reports if getattr(r, "alert_transition", None)
@@ -305,11 +314,21 @@ async def _run_survey(task: Task, ctx: TaskContext) -> Dict[str, Any]:
 @register_task_handler("notify")
 async def _run_notify(task: Task, ctx: TaskContext) -> Dict[str, Any]:
     """A safe 'flag this happened' action for event-pattern detections (ADR-0041
-    layer 3). The durable record is the audit row the evaluator writes on every
-    firing; this just carries the operator's message (and is the seam for a future
-    webhook/email)."""
+    layer 3). It raises a Console notice (ADR-0071 §2), keyed per task and
+    device, so repeated firings bump one row; the audit row the evaluator
+    writes on every firing stays the durable record. A store failure is a
+    failure (#455), never a silent success."""
+    from admz.notices.producers import event_notice
+
     msg = (task.action_params or {}).get("message") or task.description or "event detected"
-    return {"success": True, "summary": f"notify: {msg}"}
+    try:
+        notice = event_notice(task, str(msg))
+    except Exception as exc:  # noqa: BLE001 — reported, not swallowed
+        logger.warning("notify: could not raise a notice for %s: %s", task.id, exc)
+        return {"success": False, "error": f"notice not raised: {exc}",
+                "summary": f"notify failed: {exc}"}
+    return {"success": True, "notice_id": notice.id,
+            "summary": f"notify: {msg} (notice #{notice.id})"}
 
 
 @register_task_handler("acs_action")

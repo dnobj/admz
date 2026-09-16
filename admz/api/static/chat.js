@@ -120,6 +120,7 @@
         messageEl.focus();  // composer was already cleared on send
         resolveAllPending(assistantBubble); // backstop if stream ended early
         removeTyping(assistantBubble);
+        loadNotices(false); // the turn's tools may have resolved one
       });
   });
 
@@ -1012,8 +1013,10 @@
     }
   }
 
+  // Returns its promise so a caller can sequence after the transcript is
+  // rendered (a notice review continues the conversation it just opened).
   function openConversation(id) {
-    fetch("/api/chat/conversations/" + encodeURIComponent(id), {
+    return fetch("/api/chat/conversations/" + encodeURIComponent(id), {
       headers: { Accept: "application/json" },
     })
       .then(function (r) { return r.ok ? r.json() : null; })
@@ -1216,23 +1219,236 @@
             sendBtn.classList.remove("disabled");
             resolveAllPending(assistantBubble);
             removeTyping(assistantBubble);
+            // The continuation's tools may have resolved a notice.
+            loadNotices(true);
           });
       })
       .catch(function () {});
+  }
+
+  // ── Needs attention (ADR-0071) ────────────────────────────────────────────
+  // Open notices are fleet-level: they live outside the transcript, so a
+  // conversation switch never clears them (resetTranscript() leaves this
+  // widget alone). "Review in chat" writes a console note server-side, and
+  // the continuation above answers it once, as the operator. Every string
+  // from the server is set with textContent — device names are data.
+  var noticesBox = document.getElementById("chat-notices");
+  var noticesList = document.getElementById("chat-notices-list");
+  var noticesMore = document.getElementById("chat-notices-more");
+  var noticesCount = document.getElementById("chat-notices-count");
+  var NOTICE_ROWS = 3;
+  var NOTICE_BATCH = 20;
+  var NOTICE_THROTTLE_MS = 15000;
+  var noticesLoadedAt = 0;
+  var noticesExpanded = false;
+  var openNotices = [];
+  var openNoticeTotal = 0;
+
+  function loadNotices(force) {
+    if (!noticesBox) return Promise.resolve();
+    var now = Date.now();
+    if (!force && now - noticesLoadedAt < NOTICE_THROTTLE_MS) return Promise.resolve();
+    noticesLoadedAt = now;
+    return fetch("/api/notices?status=open&limit=50", { headers: { Accept: "application/json" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data) return;
+        openNotices = data.notices || [];
+        openNoticeTotal = data.open_count || openNotices.length;
+        renderNotices();
+      })
+      .catch(function () {});
+  }
+
+  function noticeAge(epochSeconds) {
+    if (!epochSeconds) return "";
+    return relTime(new Date(epochSeconds * 1000).toISOString());
+  }
+
+  function renderNoticeRow(n) {
+    var row = document.createElement("div");
+    row.className = "pending-row notice-row";
+    row.dataset.noticeId = String(n.id);
+    var isDrift = n.kind === "drift";
+    var tone = n.severity === "high" ? "fg-red" : (n.severity === "low" ? "fg-blue" : "fg-amber");
+    row.innerHTML =
+      '<span class="pr-ico ' + tone + '">' + ico(isDrift ? "git-compare" : "bell-ring") + "</span>" +
+      '<div style="min-width:0"><div class="pr-op"></div><div class="pr-target"></div></div>' +
+      '<div class="pr-right">' +
+      '<button type="button" class="btn accent sm notice-review">' + ico("message-square-text") + "Review in chat</button>" +
+      '<button type="button" class="btn sm ghost notice-snooze" title="Hide for 4 hours">' + ico("alarm-clock") + "Snooze</button>" +
+      '<button type="button" class="icon-btn xs notice-dismiss" title="Dismiss" aria-label="Dismiss notice">' + ico("x") + "</button>" +
+      "</div>";
+    var summary = n.summary || {};
+    var op;
+    if (isDrift) {
+      var fields = Number(summary.fields || 0);
+      op = "Drift on " + n.device_id + " · " + fields + (fields === 1 ? " field" : " fields");
+    } else {
+      op = (n.title || "Event detected") + (n.occurrences > 1 ? " · ×" + n.occurrences : "");
+    }
+    row.querySelector(".pr-op").textContent = op;
+    var device = n.device || {};
+    var bits = [];
+    if (device.model) bits.push(device.model);
+    if (device.nickname) bits.push(device.nickname);
+    if (device.host) bits.push(device.host);
+    if (!isDrift && n.device_id) bits.push(n.device_id);
+    var age = noticeAge(n.created_at);
+    if (age) bits.push(age);
+    if (n.reviewed_at) bits.push("reviewed " + noticeAge(n.reviewed_at));
+    row.querySelector(".pr-target").textContent = bits.join(" · ");
+    row.querySelector(".notice-review").addEventListener("click", function () { reviewNotices([n.id]); });
+    row.querySelector(".notice-snooze").addEventListener("click", function () { snoozeNotice(n.id, 4); });
+    row.querySelector(".notice-dismiss").addEventListener("click", function () { dismissNotice(n.id); });
+    return row;
+  }
+
+  function renderNotices() {
+    if (!noticesBox || !noticesList) return;
+    noticesList.innerHTML = "";
+    if (!openNotices.length) {
+      noticesBox.style.display = "none";
+      return;
+    }
+    var shown = noticesExpanded ? openNotices : openNotices.slice(0, NOTICE_ROWS);
+    shown.forEach(function (n) { noticesList.appendChild(renderNoticeRow(n)); });
+    if (noticesCount) noticesCount.textContent = openNoticeTotal + " open";
+    if (noticesMore) {
+      noticesMore.innerHTML = "";
+      if (openNoticeTotal > NOTICE_ROWS) {
+        var label = document.createElement("div");
+        label.className = "pr-op";
+        var hidden = openNoticeTotal - shown.length;
+        label.textContent = hidden > 0 ? hidden + " more need attention" : "All open notices";
+        var right = document.createElement("div");
+        right.className = "pr-right";
+        var toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "btn sm ghost";
+        toggle.textContent = noticesExpanded ? "Show fewer" : "Show all";
+        toggle.addEventListener("click", function () {
+          noticesExpanded = !noticesExpanded;
+          renderNotices();
+        });
+        var all = document.createElement("button");
+        all.type = "button";
+        all.className = "btn accent sm";
+        all.textContent = "Review all";
+        all.addEventListener("click", function () {
+          reviewNotices(openNotices.slice(0, NOTICE_BATCH).map(function (n) { return n.id; }));
+        });
+        right.appendChild(toggle);
+        right.appendChild(all);
+        noticesMore.appendChild(label);
+        noticesMore.appendChild(right);
+        noticesMore.style.display = "";
+      } else {
+        noticesMore.style.display = "none";
+      }
+    }
+    noticesBox.style.display = "";
+    icons();
+  }
+
+  function noticeFlash(message) {
+    if (!noticesCount) return;
+    noticesCount.textContent = message;
+    setTimeout(function () { loadNotices(true); }, 4000);
+  }
+
+  function postNotice(url, body) {
+    return fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body || {}),
+    }).then(function (r) {
+      return r.json()
+        .catch(function () { return {}; })
+        .then(function (b) { return { ok: r.ok, status: r.status, body: b }; });
+    });
+  }
+
+  function reviewNotices(ids) {
+    if (!ids || !ids.length) return Promise.resolve();
+    // One reply at a time: a second stream into the transcript would interleave.
+    if (resumeInFlight || sendBtn.disabled) {
+      noticeFlash("Wait for the current reply to finish");
+      return Promise.resolve();
+    }
+    var url = ids.length === 1
+      ? "/api/notices/" + encodeURIComponent(ids[0]) + "/review"
+      : "/api/notices/review";
+    return postNotice(url, ids.length === 1 ? {} : { ids: ids })
+      .then(function (resp) {
+        if (!resp.ok) {
+          var why = (resp.body && resp.body.detail) || ("HTTP " + resp.status);
+          noticeFlash(why === "continuation_in_flight"
+            ? "A reply is still running — try again shortly"
+            : (why === "not_open" ? "Already handled" : "Could not open it"));
+          return;
+        }
+        var result = resp.body || {};
+        if (result.created) {
+          // A new conversation was made active: show it, then answer the note.
+          return Promise.resolve(openConversation(result.conversation_id))
+            .then(maybeResumeConversation);
+        }
+        if (emptyState) emptyState.style.display = "none";
+        replayMessage("event", result.note || "");
+        transcript.scrollIntoView(false);
+        return maybeResumeConversation();
+      })
+      .catch(function () {})
+      .finally(function () { loadNotices(true); });
+  }
+
+  function dismissNotice(id) {
+    return postNotice("/api/notices/" + encodeURIComponent(id) + "/dismiss", {})
+      .catch(function () {})
+      .finally(function () { loadNotices(true); });
+  }
+
+  function snoozeNotice(id, hours) {
+    return postNotice("/api/notices/" + encodeURIComponent(id) + "/snooze", { hours: hours })
+      .catch(function () {})
+      .finally(function () { loadNotices(true); });
+  }
+
+  // /chat?review_notice=<id> — the Tasks page's "Review in chat" link.
+  function reviewFromLink() {
+    var params;
+    try { params = new URLSearchParams(window.location.search); } catch (e) { return; }
+    var id = params.get("review_notice");
+    if (!id || !/^[0-9]+$/.test(id)) return;
+    params.delete("review_notice");
+    var rest = params.toString();
+    try {
+      window.history.replaceState(
+        null, "", window.location.pathname + (rest ? "?" + rest : "") + window.location.hash);
+    } catch (e) { /* the link still works; it just stays in the address bar */ }
+    return reviewNotices([Number(id)]);
   }
 
   // The capture form opens in a SECOND tab, so this chat tab may never reload
   // and would otherwise never learn the note landed. Refocus is the moment the
   // operator comes back to look.
   document.addEventListener("visibilitychange", function () {
-    if (document.visibilityState === "visible") maybeResumeConversation();
+    if (document.visibilityState === "visible") {
+      maybeResumeConversation();
+      loadNotices(false);
+    }
   });
 
   // Resume the active conversation on Console load (display-only).
   // CHAINED, not parallel: restoreActiveConversation() bails when the
   // transcript is already non-empty, so appending a continuation bubble first
   // would abort the history restore on exactly the load that matters. A fast
-  // localhost load hides this; a real one does not.
-  Promise.resolve(restoreActiveConversation()).then(maybeResumeConversation);
+  // localhost load hides this; a real one does not. A review deep link waits
+  // for both, for the same reason.
+  Promise.resolve(restoreActiveConversation())
+    .then(maybeResumeConversation)
+    .then(reviewFromLink);
   rehydratePendingActions();
+  loadNotices(true);
 })();

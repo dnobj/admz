@@ -2,7 +2,8 @@
    embedded (inside console_base.html, in the right-hand dock iframe).
    Preserves the element IDs that static/chat.js drives:
    chat-form, chat-transcript, chat-send, message, model,
-   chat-actions, chat-actions-list. #}
+   chat-actions, chat-actions-list,
+   chat-notices, chat-notices-list, chat-notices-more, chat-notices-count. #}
 <script>window.ADMZ_INITIALS = "{{ (nav.principal.initials if nav else 'EC')|e }}";</script>
 <div class="console {{ 'embed' if embed else '' }}">
 
@@ -88,6 +89,15 @@
 
   <div class="console-composer">
     <div class="console-col">
+
+      <!-- Needs attention (ADR-0071): open notices, fleet-level, so it survives a
+           conversation switch. Hidden when empty. -->
+      <div id="chat-notices" class="pending-widget notices-widget" style="display:none">
+        <div class="pw-head"><i data-lucide="bell-ring"></i><span class="t">Needs attention</span>
+          <span class="r" id="chat-notices-count"></span></div>
+        <div id="chat-notices-list"></div>
+        <div id="chat-notices-more" class="pending-row notices-more" style="display:none"></div>
+      </div>
 
       <!-- Pinned action widget (capture / confirm tokens). Hidden when empty. -->
       <div id="chat-actions" class="pending-widget" style="display:none">

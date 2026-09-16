@@ -83,6 +83,12 @@ admz/
 │       ├── image.py, network.py, time_config.py, stream_profiles.py
 │       ├── users.py, events.py
 │
+├── notices/               — the Console's attention queue (ADR-0071)
+│   ├── store.py           — `notices` table: one live row per subject
+│   ├── producers.py       — drift transitions, `notify`, accept, startup backfill
+│   ├── notes.py           — the metadata-only `[console]` review note
+│   └── views.py           — a notice with its device, for the strip and the chat
+│
 ├── fleet/                 — fleet-wide background services
 │   └── health.py          — background health monitor (get_fleet_health);
 │                            also self-populates device facts (model/serial/

@@ -13,6 +13,10 @@ and a revert comes before an accept, with a refreshed review between them.
 Accept blesses an observation that already exists, and a revert records none,
 so accepting straight after a revert would bless the values it just undid.
 
+``list_notices`` and ``dismiss_notice`` (ADR-0071 §6) give the chat the
+Console's attention queue: a read, and an audited, ungated dismissal that
+changes no device or baseline.
+
 Appended after ``device_removal`` in ``MIGRATED_TOOLS``, so the frozen tool
 order in ``tests/test_mcp_tool_order.py`` gains these names at its end.
 """
@@ -195,6 +199,52 @@ TOOLS: List[Tool] = [
                 },
             },
             "required": [],
+        },
+    ),
+    # ADR-0071 §6: the Console's attention queue, from the chat.
+    Tool(
+        name="list_notices",
+        description=(
+            "List the Console's notices — what ADMZ is asking the operator to "
+            "look at: a device whose config drifted from its blessed baseline "
+            "(kind drift), or an event detection that fired (kind event). "
+            "Each has an id, the device id, counts, when it was first and "
+            "last seen, and what raised it. A notice is attention, not an "
+            "action: nothing has changed because of it. For a drift notice, "
+            "review it with get_drift_review. Read-only."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["open", "snoozed", "handled", "expired", "live", "all"],
+                    "description": "Default open. 'live' is open or snoozed.",
+                },
+                "kind": {"type": "string", "enum": ["drift", "event"]},
+                "device_id": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50,
+                          "description": "Default 20."},
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="dismiss_notice",
+        description=(
+            "Dismiss a Console notice the user has decided not to act on. "
+            "Only when the user says so. It changes nothing on any device or "
+            "baseline, and the next drift change raises the notice again; to "
+            "act on the drift, use the review tools instead."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "notice_id": {"type": "integer", "minimum": 1},
+                "note": {"type": "string", "maxLength": 200,
+                         "description": "Why — kept in the audit log."},
+            },
+            "required": ["notice_id"],
         },
     ),
 ]

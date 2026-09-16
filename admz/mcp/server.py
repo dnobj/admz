@@ -4223,6 +4223,79 @@ class ADMZMCPServer:
             out["more"] = len(rules) - 200
         return out
 
+    async def _list_notices(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """The Console's attention queue (ADR-0071 §6). Read-only."""
+        from admz.notices.store import KINDS, STATUSES, notices_store
+        from admz.notices.views import notice_view
+        from admz.validators import validate_identifier
+
+        def invalid(message: str) -> Dict[str, Any]:
+            return {"success": False, "error": "InvalidInput", "message": message}
+
+        status = arguments.get("status") or "open"
+        if status not in (*STATUSES, "live", "all"):
+            return invalid(f"status must be one of {', '.join((*STATUSES, 'live', 'all'))}")
+        kind = arguments.get("kind")
+        if kind is not None and kind not in KINDS:
+            return invalid(f"kind must be one of {', '.join(KINDS)}")
+        device_id = arguments.get("device_id")
+        if device_id is not None:
+            try:
+                validate_identifier(device_id, "device_id")
+            except ValueError as e:
+                return invalid(str(e))
+        limit = arguments.get("limit", 20)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+            return invalid("limit must be an integer from 1 to 50")
+        rows = notices_store.list(status=None if status == "all" else status,
+                                  kind=kind, device_id=device_id, limit=limit)
+        return {
+            "success": True,
+            "count": len(rows),
+            "open_count": notices_store.count_open(),
+            "notices": [notice_view(n, self.registry) for n in rows],
+        }
+
+    async def _dismiss_notice(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Dismiss one notice, audited and ungated (ADR-0071 §6): it changes no
+        device or registry state, and the next transition raises it again."""
+        from admz.audit import record_event
+        from admz.auth import principal_name
+        from admz.notices.store import notices_store
+        from admz.validators import sanitize_display_text
+
+        notice_id = arguments.get("notice_id")
+        if isinstance(notice_id, bool) or not isinstance(notice_id, int) or notice_id < 1:
+            return {"success": False, "error": "InvalidInput",
+                    "message": "notice_id must be a positive integer"}
+        note = arguments.get("note")
+        if note is not None and (not isinstance(note, str) or len(note) > 200):
+            return {"success": False, "error": "InvalidInput",
+                    "message": "note must be a string of at most 200 characters"}
+        notice = notices_store.get(notice_id)
+        if notice is None:
+            return {"success": False, "error": "NoticeNotFound",
+                    "message": f"No notice #{notice_id}."}
+        closed = notices_store.handle(notice_id, "dismissed",
+                                      by=principal_name(self.principal))
+        if closed is None:
+            return {"success": False, "error": "NoticeNotOpen",
+                    "message": f"Notice #{notice_id} is already {notice.status}."}
+        details: Dict[str, Any] = {"kind": notice.kind, "device_id": notice.device_id,
+                                   "via": "mcp"}
+        if note and note.strip():
+            details["note"] = sanitize_display_text(note, max_length=200)
+        record_event(self.principal, "notice.dismiss",
+                     resource=f"notice:{notice_id}", details=details)
+        return {
+            "success": True,
+            "notice_id": notice_id,
+            "message": (
+                f"Notice #{notice_id} dismissed. Nothing on the device or its "
+                "baseline changed; a new drift change raises it again."
+            ),
+        }
+
     async def _diff_device(
         self, device_id: str, ref_a: str, ref_b: str
     ) -> Dict[str, Any]:

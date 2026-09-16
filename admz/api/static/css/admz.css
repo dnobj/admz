@@ -567,6 +567,15 @@ label { font-size: 12.5px; color: var(--text-muted); }
 .pending-row .pr-target { font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); }
 .pending-row .pr-right { margin-left: auto; display: flex; align-items: center; gap: 9px; }
 
+/* ── Needs attention (ADR-0071) — the notices strip above pending actions ── */
+.notices-widget { border-color: var(--amber-bd); background: var(--amber-bg); }
+.notices-widget .pw-head { border-bottom-color: var(--amber-bd); }
+.notices-widget .pw-head svg, .notices-widget .pw-head .t { color: var(--amber-fg); }
+.notice-row .pr-target { font-family: inherit; }
+.notice-row .pr-right { flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.notices-more { background: var(--panel2); }
+.notices-more .pr-op { font-weight: 500; color: var(--text-muted); }
+
 /* ── Config diff ──────────────────────────────────────────────────────── */
 .config-diff { display: flex; flex-direction: column; gap: 10px; }
 .facet { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--panel); }

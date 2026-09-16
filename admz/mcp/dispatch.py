@@ -428,6 +428,15 @@ async def _list_config_ignore_rules(ctx, a):
     return await ctx.server._list_config_ignore_rules(a)
 
 
+# --- Notices (ADR-0071) -------------------------------------------------------
+async def _list_notices(ctx, a):
+    return await ctx.server._list_notices(a)
+
+
+async def _dismiss_notice(ctx, a):
+    return await ctx.server._dismiss_notice(a)
+
+
 # Name → handler. Keys MUST equal the list_tools() name set (snapshot-tested).
 TOOL_HANDLERS: Dict[str, ToolHandler] = {
     "list_devices": _list_devices,
@@ -511,4 +520,6 @@ TOOL_HANDLERS: Dict[str, ToolHandler] = {
     "revert_drift": _revert_drift,
     "ignore_config_keys": _ignore_config_keys,
     "list_config_ignore_rules": _list_config_ignore_rules,
+    "list_notices": _list_notices,
+    "dismiss_notice": _dismiss_notice,
 }

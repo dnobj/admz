@@ -42,6 +42,16 @@
   </table>
 </div>
 
+<!-- Notices (ADR-0071) — what drift checks and notify actions raised for the Console -->
+<div id="notices-section" class="hidden" style="margin-top:24px">
+  <h2 class="page-title" style="font-size:15px;margin:0 0 2px">Notices</h2>
+  <p class="page-sub" style="margin:0 0 10px">Raised by drift checks and <strong>notify</strong> actions. Each stays in the Console's <em>Needs attention</em> strip until it is resolved, dismissed or snoozed.</p>
+  <table class="data-table" id="notices-table">
+    <thead><tr><th>Notice</th><th>Device</th><th>Raised by</th><th>First seen</th><th>Status</th><th></th></tr></thead>
+    <tbody id="notices-body"></tbody>
+  </table>
+</div>
+
 <!-- Event detections — recurring rules that fire an action when a live device event matches -->
 <div id="detections-section" style="margin-top:28px">
   <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:2px">
@@ -195,7 +205,7 @@
       </div>
       <div class="fld hidden" id="d-notify-wrap">
         <label for="d-notify-msg">Message</label>
-        <input type="text" id="d-notify-msg" placeholder="Flag text recorded in the audit log" autocomplete="off">
+        <input type="text" id="d-notify-msg" placeholder="Shown on the Console notice and in the audit log" autocomplete="off">
       </div>
       <div id="d-acs-wrap" class="hidden">
         <div class="fld">
@@ -266,7 +276,8 @@
 <script>
 const JOB_LABELS = {
   snapshot:    { label: 'Snapshot config (commit to git)', hint: 'Reads each device’s config and commits a versioned snapshot. Sets/advances baselines.', icon: 'camera' },
-  drift_audit: { label: 'Check drift', hint: 'Re-reads live config and records drift vs. the blessed baseline. Read-only.', icon: 'radar' },
+  drift_audit: { label: 'Check drift', hint: 'Re-reads live config and records drift vs. the blessed baseline, raising a Console notice when drift appears. Read-only on devices.', icon: 'radar' },
+  notify:      { label: 'Notify (raise a Console notice)', hint: 'Raises a notice in the Console’s Needs attention strip.', icon: 'bell-ring' },
   survey:      { label: 'Survey (contribute to the API atlas)', hint: 'Bundles anonymized capability data for the axis-api-atlas project.', icon: 'upload-cloud' },
   reprovision: { label: 'Re-provision', hint: 'Creates the admin with a generated password when the device returns factory-defaulted.', icon: 'wrench' },
 };
@@ -520,7 +531,7 @@ loadTasks();
 // Event detections (ADR-0041 layer 3) — rules over the live event stream
 // ══════════════════════════════════════════════════════════════════════════
 const ACTION_LABELS = {
-  notify:      { label: 'Notify / flag', hint: 'Records a flagged audit row. Always safe.', icon: 'flag', service: false },
+  notify:      { label: 'Notify / flag', hint: 'Raises a notice in the Console’s Needs attention strip and records an audit row. Always safe.', icon: 'flag', service: false },
   snapshot:    { label: 'Snapshot config', hint: 'Commits a versioned config snapshot of the matched device.', icon: 'camera', service: false },
   drift_audit: { label: 'Check drift', hint: 'Re-reads live config and records drift vs. baseline. Read-only.', icon: 'radar', service: false },
   acs_action:  { label: 'ACS record / bookmark', hint: 'Fires an ACS Pro recording action. Service-affecting — fires without an approval prompt.', icon: 'video', service: true },
@@ -793,5 +804,55 @@ document.getElementById('det-create').addEventListener('click', async () => {
 
 loadDetections();
 loadWatchedForPicker();
+
+// ── Notices (ADR-0071) ──
+async function loadNoticesSection() {
+  let rows = [];
+  try {
+    const r = await fetch('/api/notices?status=live&limit=50');
+    if (r.ok) { const d = await r.json(); rows = d.notices || []; }
+  } catch (e) {}
+  const sec = document.getElementById('notices-section');
+  if (!rows.length) { sec.classList.add('hidden'); return; }
+  sec.classList.remove('hidden');
+  document.getElementById('notices-body').innerHTML = rows.map(renderNoticeTr).join('');
+  if (window.lucide) lucide.createIcons();
+}
+
+function renderNoticeTr(n) {
+  const isDrift = n.kind === 'drift';
+  const s = n.summary || {};
+  const what = isDrift
+    ? 'Drift · ' + Number(s.fields || 0) + ' field(s)'
+    : (n.title || 'Event') + (n.occurrences > 1 ? ' · ×' + n.occurrences : '');
+  const dev = n.device || {};
+  const device = n.device_id
+    ? esc(dev.model || '') + ' <span class="mono">' + esc(n.device_id) + '</span>'
+      + (dev.nickname ? '<div class="sub">' + esc(dev.nickname) + '</div>' : '')
+    : '<span class="page-sub">fleet</span>';
+  const status = n.status === 'snoozed'
+    ? 'snoozed until ' + esc(fmtUnix(n.snoozed_until))
+    : 'open' + (n.reviewed_at ? '<div class="sub">reviewed ' + esc(fmtUnix(n.reviewed_at)) + '</div>' : '');
+  return '<tr><td><div class="device-name-cell"><span class="type-tile"><i data-lucide="' + (isDrift ? 'git-compare' : 'bell-ring') + '"></i></span>'
+    + '<div><div class="nm" style="font-family:var(--sans);font-weight:600">#' + Number(n.id) + ' ' + esc(what) + '</div>'
+    + (isDrift ? '<div class="sub">' + esc(n.severity) + ' importance</div>' : '') + '</div></div></td>'
+    + '<td>' + device + '</td>'
+    + '<td>' + esc(n.source_label || n.source) + (n.task_id ? '<div class="sub mono">' + esc(n.task_id) + '</div>' : '') + '</td>'
+    + '<td>' + esc(fmtUnix(n.created_at)) + '</td>'
+    + '<td>' + status + '</td>'
+    + '<td style="text-align:right;white-space:nowrap">'
+    + '<a class="btn sm" href="/chat?review_notice=' + Number(n.id) + '"><i data-lucide="message-square-text"></i> Review in chat</a> '
+    + '<button class="btn ghost sm" type="button" onclick="dismissNoticeTr(' + Number(n.id) + ')" title="Dismiss"><i data-lucide="x"></i></button></td></tr>';
+}
+
+async function dismissNoticeTr(id) {
+  try {
+    const r = await fetch('/api/notices/' + encodeURIComponent(id) + '/dismiss', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' });
+    if (r.ok) loadNoticesSection(); else { const d = await r.json().catch(() => ({})); alert('Failed: ' + (d.detail || r.status)); }
+  } catch (e) { alert('Request failed.'); }
+}
+
+loadNoticesSection();
 </script>
 {% endblock %}

@@ -1,6 +1,6 @@
 # ADR-0071 — A task raises a notice; the console delivers it, and the operator reviews it in chat with one gated continuation
 
-**Status:** Accepted — 2026-09-16 (#504 plan) · **Shipped:** —
+**Status:** Accepted — 2026-09-16 (#504 plan) · **Shipped:** #510 (ADR-0070's PR 3 — the store, the producers, `notify` delivery, the review/dismiss/snooze routes, the Console strip, the Tasks page section, and `list_notices` / `dismiss_notice`)
 **Closes when shipped:** the implementation issue filed from [the plan](../plans/drift-review-in-chat.md)
 **Relates to:** [ADR-0037](0037-unified-tasks.md) (tasks are triggers + actions; a notice is neither) · [ADR-0041](0041-activity-observability-module.md) (event-pattern detections whose `notify` action finally delivers) · [ADR-0038](0038-chat-conversation-history.md) (the conversation a note lands in) · [ADR-0049](0049-drift-diff-cache.md) (the cached diff a review reads) · [ADR-0066](0066-an-out-of-band-resolution-resumes-the-promised-turn.md) (the delivery primitive this reuses: an event row, one gated turn, browser-driven) · [ADR-0070](0070-drift-is-reviewed-in-the-console-chat.md) (what the model does once the review starts)
 
@@ -48,7 +48,17 @@ The accept path resolves the notice as `accepted` rather than `cleared`: `refres
 
 A startup backfill raises a notice for every device the signature cache already says is drifted, because `process_report` emits nothing for an unchanged signature (`drift_alerts.py:409-413`) — without it, drift that predates the feature would never surface.
 
+_As built:_
+- **First observation.** `process_report` also emits nothing for a device's *first* observation, so `check_drift` treats a first observation that is already drifted as `appeared`.
+- **Backfill.** It skips a device that has any notice row in any status. Otherwise a notice the operator dismissed would come back on every restart.
+- **Summary.** A drift notice takes its severity from the review's highest importance. Its summary carries only the triage class names and counts, never a value.
+- **Accept.** The accept path does not reach the producer: `refresh_drift_after_accept` writes its in-sync report straight to the alert store. So resolving the notice explicitly, before that report, is what makes it read `accepted`.
+
 ### 3. Delivery is browser-driven, per ADR-0066
+
+_As built:_
+- **What counts as a live claim.** The check is an unexpired claim on a note that is still unanswered. A claim outlives its turn by the lease, so a claim on a note that has since been answered does not block the next review.
+- **JSON bodies.** Every notice POST takes a JSON body, which keeps a cross-site form from reaching it.
 
 `POST /api/notices/{id}/review` writes the `[console]` row into the caller's **active** conversation, or creates one titled from the notice and makes it active when there is none. Making a new conversation active is a deliberate deviation from ADR-0066 §3: there the resolution arrived out of band; here the operator clicked the button in this console, so moving their pointer is their own action. `resume_due` is true by construction (the trailing row is the event), and the page's existing `maybeResumeConversation()` fires the one gated turn. A live resume claim on the conversation (`chat_resume_claims` within its lease) refuses the review with 409 so two continuations can never stream into one conversation. A batch variant writes one row for up to twenty notices.
 

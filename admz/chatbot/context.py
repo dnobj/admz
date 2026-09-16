@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from admz.validators import sanitize_display_text
 
@@ -407,30 +407,72 @@ def build_inference_section() -> str:
 
 
 #: Bound the attention section like the roster (ADR-0070 §6, FR-CB-020).
+_MAX_ATTENTION_NOTICES = 10
 _MAX_ATTENTION_DEVICES = 20
 
 
-def build_attention_section(registry: Optional[Any] = None) -> str:
-    """What needs the operator's attention, for the system prompt, or "".
-
-    ADR-0070 §6 / FR-CB-020: the devices the drift cache says are drifted —
-    a cache read, never a probe. The drift-review guidance rides on this
-    block, so returning "" switches the whole section off and the prompt is
-    byte-identical to one built without it.
-
-    Model and nickname are device- or operator-written, so they are sanitized
-    here and fenced by the prompt builder. Degrades to "" on any failure.
-    """
+def _registry_info(registry: Any, device_id: str) -> Dict[str, Any]:
+    if registry is None:
+        return {}
     try:
-        registry = registry or _resolve_registry()
-        if registry is None:
-            return ""
+        return registry.get_device_info(device_id) or {}
+    except Exception:  # noqa: BLE001 - a removed device keeps its notice
+        return {}
+
+
+def _open_notice_lines(registry: Any) -> List[str]:
+    """Open notices (ADR-0071 §5): ids, kinds, counts, ages and sources, with
+    the device's model and nickname and an event's title as data."""
+    try:
+        from admz.notices.producers import SOURCE_LABELS
+        from admz.notices.store import KIND_DRIFT, notices_store
+
+        rows = notices_store.list(status="open", limit=_MAX_ATTENTION_NOTICES)
+        total = notices_store.count_open() if rows else 0
+    except Exception:  # noqa: BLE001 - never let context-building break chat
+        logger.debug("[chat] open notices unavailable", exc_info=True)
+        return []
+    if not rows:
+        return []
+    lines: List[str] = [
+        f"{total} open notice(s) in the Console's Needs attention strip:"
+    ]
+    for n in rows:
+        parts = [f"#{n.id} {n.kind}"]
+        if n.device_id:
+            info = _registry_info(registry, n.device_id)
+            model = sanitize_display_text(info.get("model") or "?", max_length=_MAX_FIELD_LEN)
+            device = f"{model} ({sanitize_display_text(n.device_id, max_length=_MAX_FIELD_LEN)})"
+            nick = sanitize_display_text(info.get("nickname"), max_length=_MAX_FIELD_LEN)
+            parts.append(f'{device} "{nick}"' if nick else device)
+        if n.kind == KIND_DRIFT:
+            fields = int(n.summary.get("fields") or 0)
+            parts.append(f"{fields} field{'s' if fields != 1 else ''}")
+            parts.append(f"{n.severity} importance")
+        else:
+            parts.append(f'"{sanitize_display_text(n.title, max_length=_MAX_FIELD_LEN)}"')
+            parts.append(f"fired {n.occurrences} time(s)")
+        age = _age(n.created_at)
+        if age:
+            parts.append(f"first seen {age}")
+        parts.append(f"raised by {SOURCE_LABELS.get(n.source, n.source or 'ADMZ')}")
+        lines.append("- " + " · ".join(parts))
+    if total > len(rows):
+        lines.append(f"- …and {total - len(rows)} more")
+    return lines
+
+
+def _drifted_device_lines(registry: Any) -> List[str]:
+    """Drifted devices from the drift cache (ADR-0070 §6) — never a probe."""
+    if registry is None:
+        return []
+    try:
         devices = registry.list_devices()
         from admz.snapshot.drift_alerts import drift_alerts as _store
         from admz.snapshot.drift_status import DRIFTED, drift_status_for
     except Exception:  # noqa: BLE001 - never let context-building break chat
-        logger.debug("[chat] attention section unavailable", exc_info=True)
-        return ""
+        logger.debug("[chat] drifted devices unavailable", exc_info=True)
+        return []
 
     drifted = []
     for d in devices or []:
@@ -442,7 +484,7 @@ def build_attention_section(registry: Optional[Any] = None) -> str:
         if status.get("state") == DRIFTED:
             drifted.append((d, status))
     if not drifted:
-        return ""
+        return []
     drifted.sort(key=lambda pair: -(pair[1].get("checked_at") or 0))
 
     lines: List[str] = [
@@ -464,7 +506,32 @@ def build_attention_section(registry: Optional[Any] = None) -> str:
         lines.append("- " + " · ".join(parts))
     if len(drifted) > _MAX_ATTENTION_DEVICES:
         lines.append(f"- …and {len(drifted) - _MAX_ATTENTION_DEVICES} more")
-    return "\n".join(lines)
+    return lines
+
+
+def build_attention_section(registry: Optional[Any] = None) -> str:
+    """What needs the operator's attention, for the system prompt, or "".
+
+    FR-CB-020: the open notices (ADR-0071 §5), then the devices the drift
+    cache says are drifted (ADR-0070 §6) — cache reads, never a probe. The
+    drift-review guidance rides on this block, so returning "" switches the
+    whole section off and the prompt is byte-identical to one built without
+    it.
+
+    Model, nickname and an event notice's title are device- or
+    operator-written, so they are sanitized here and fenced by the prompt
+    builder. Degrades to "" on any failure.
+    """
+    try:
+        registry = registry or _resolve_registry()
+    except Exception:  # noqa: BLE001 - never let context-building break chat
+        registry = None
+    blocks = [
+        "\n".join(lines)
+        for lines in (_open_notice_lines(registry), _drifted_device_lines(registry))
+        if lines
+    ]
+    return "\n\n".join(blocks)
 
 
 #: Per-capability narration notes — what an ACTIVE capability changes about

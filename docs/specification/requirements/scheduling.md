@@ -158,7 +158,7 @@ work uniformly across all job types (the snapshot-specific MCP/REST
 names generalize). A web-UI schedules dashboard (cadence, last outcome,
 drill-in) is the operator-facing view — currently there is none.
 
-### FR-SCH-015 — `notify` is a real delivery channel 📋
+### FR-SCH-015 — `notify` is a real delivery channel ✅
 The `notify` task action (`admz/tasks/handlers.py`), today a stub that returns its message, raises a
 `kind='event'` notice (`admz/notices/store.py`) keyed on the task and device, so repeat firings of one
 detection rule bump one row's `occurrences` rather than flooding; it returns the `notice_id`, reports a
@@ -167,6 +167,10 @@ carries provenance (`source`, `task_id`): a `drift_audit` schedule stamps its ow
 its sweep raises (FR-DRF-018), with `action_params.notify_console` to run a quiet cadence. The Tasks
 page labels the action and shows a Notices section. See
 [ADR-0071](../decisions/0071-a-task-raises-a-notice-the-console-delivers-it.md).
+
+_As built:_ the notice title is the operator's message, sanitized. An event-pattern detection's
+`detection.fired` audit row and the health sweep's `deferred_action_fired` row both carry
+`notice_id`. `notify_console` accepts a boolean or `"false"`/`"0"`/`"no"`/`"off"`.
 
 ## Non-functional requirements
 

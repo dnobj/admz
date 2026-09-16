@@ -627,6 +627,7 @@ def tombstone_device(device_id: str, git_repo: Any, *, removed_by: str = "") -> 
 
 def refresh_drift_after_accept(
     device_id: str, accepted_sha: Any, latest_observed_sha: Any,
+    accepted_by: str = "",
 ) -> None:
     """Reconcile the drift cache right after a baseline is blessed, so the
     UI shows the new state immediately instead of lingering on the stale
@@ -638,7 +639,20 @@ def refresh_drift_after_accept(
     older/specific commit is accepted we can't claim in-sync, so the cached
     signature is dropped and the next check recomputes. Best-effort: a cache
     hiccup must never fail the accept itself.
+
+    The device's drift notice (ADR-0071) is resolved as ``accepted``, naming
+    ``accepted_by``, FIRST — on both branches, and before the in-sync report
+    below records its ``cleared`` transition.
     """
+    try:
+        from admz.notices.producers import resolve_drift_accepted
+
+        resolve_drift_accepted(device_id, accepted_by)
+    except Exception:  # pragma: no cover — a notice never fails an accept
+        logger.warning(
+            "drift notice resolution after accept failed for %s",
+            device_id, exc_info=True,
+        )
     try:
         from admz.snapshot import drift_alerts as _da
         if latest_observed_sha and accepted_sha == latest_observed_sha:
@@ -739,7 +753,8 @@ def _action_accept_baseline(
         latest = registry.get_device_info(device_id).get("latest_observed_sha")
     except Exception:
         latest = None
-    refresh_drift_after_accept(device_id, target, latest)
+    refresh_drift_after_accept(device_id, target, latest,
+                               accepted_by=str(action.get("accepted_by") or ""))
     outcome: Dict[str, Any] = {
         "success": True,
         "action": "accept_baseline",

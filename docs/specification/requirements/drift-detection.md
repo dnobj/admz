@@ -264,7 +264,7 @@ its card names only the keys it adds; a card that is not scoped to one device is
 literal `fleet`, and its `[console]` note reads "fleet-wide" or "for tagged devices" — the tag itself
 is ungated text and is not repeated there.
 
-### FR-DRF-018 — Drift transitions raise and resolve a per-device notice 📋
+### FR-DRF-018 — Drift transitions raise and resolve a per-device notice ✅
 Every `check_drift` hands its transition to `admz/notices/producers.py`: `appeared` opens a notice keyed
 `drift:<device_id>`, `changed` updates the same live notice in place (occurrences bumped, `created_at`
 kept, a snooze woken), `cleared` resolves it. Accept resolves it as `accepted` with the principal. The
@@ -273,6 +273,14 @@ fleet flag `drift_notices_enabled` (default on) and a `drift_audit` task's `acti
 already knows, because an unchanged signature emits no transition. The notice row carries identifiers,
 counts and timestamps only — never a parameter value or a device-written name. See
 [ADR-0071](../decisions/0071-a-task-raises-a-notice-the-console-delivers-it.md).
+
+_As built:_ the alert store records nothing for a device's first observation, so a first check that
+already finds drift raises the notice as `appeared` itself. The row's summary carries the field
+count, the absent-facet count, the triage classes with their counts, the highest importance (which
+also sets the notice's severity) and whether the firmware moved; it never carries the versions.
+The startup backfill skips any device that already has a notice row in any status, so a dismissed
+notice is not raised again on restart. A notice closed by a transition names its source
+(`check_drift`, `drift_audit`) as `handled_by`; an accept names the person.
 
 ### FR-DRF-019 — Bulk accept from chat 📋
 `accept_baselines(device_ids, note, ignore_keys?)` — a sibling tool in the ADR-0069 shape, not
@@ -360,7 +368,7 @@ the DB.
 A true push-based notifier (webhook, chat alert, Slack) is the
 next layer up — not in Phase 8.
 
-> 2026-09-16: the chat-alert layer is planned as FR-DRF-018 / ADR-0071 — a console **notice** the
+> 2026-09-16: the chat-alert layer is FR-DRF-018 / ADR-0071 (built) — a console **notice** the
 > operator reviews in chat, not a push. The chat also could not see which rows were revertable at all
 > (the MCP path skipped the annotation); FR-DRF-015 gives every surface the same flag and a
 > `read_only` triage class.

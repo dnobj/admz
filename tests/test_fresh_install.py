@@ -55,6 +55,7 @@ IMPORTS_THAT_MUST_SURVIVE = [
     "admz.api.confirm_store",
     "admz.chatbot.sessions",
     "admz.fleet_settings",
+    "admz.notices.store",     # ADR-0071: new since the list was written
     # A few of the twelve that already created it, as a regression guard.
     "admz.events.store",
     "admz.audit",

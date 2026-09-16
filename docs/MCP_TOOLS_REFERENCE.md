@@ -1,6 +1,6 @@
 # ADMZ MCP Tools Reference
 
-Reference for the **81 tools** the ADMZ MCP server exposes (plus whatever an
+Reference for the **83 tools** the ADMZ MCP server exposes (plus whatever an
 enabled platform module appends — ACS Pro contributes its own once connected).
 The frozen wire order lives in `tests/test_mcp_tool_order.py`.
 
@@ -678,6 +678,30 @@ and every rule an operator added. Read-only.
 - **Args:** `scope` (optional — only rules with exactly this scope)
 - **Returns:** `{success, count, rules: [{key, scope}], more?}` — at most 200
   rules, with `more` counting the rest.
+
+### `list_notices`
+The Console's attention queue (ADR-0071): devices whose config drifted
+(`kind: drift`) and event detections whose `notify` action fired
+(`kind: event`). A notice is attention, not an action. Read-only.
+- **Args:** `status` (`open` by default, `snoozed`, `handled`, `expired`,
+  `live` for open or snoozed, `all`), `kind` (`drift` | `event`),
+  `device_id`, `limit` (1–50, default 20)
+- **Returns:** `{success, count, open_count, notices: [...]}`. Each notice is
+  `{id, kind, subject_key, severity, title, summary, device_id, status,
+  source, source_label, task_id, occurrences, created_at, updated_at,
+  snoozed_until, handled_at, handled_by, resolution, review_conversation_id,
+  reviewed_at, device: {model, nickname, host}}`. A drift notice's `summary`
+  holds counts and triage class names only; `device` is registry text,
+  sanitized.
+
+### `dismiss_notice`
+Close a notice the user decided not to act on — only when they say so.
+Ungated and audited (`notice.dismiss`): it changes no device or baseline, and
+the next drift change raises the notice again.
+- **Args:** `notice_id` (integer), `note` (optional, ≤200 characters, kept in
+  the audit row)
+- **Returns:** `{success, notice_id, message}`; `NoticeNotFound` for an unknown
+  id, `NoticeNotOpen` for one already closed.
 
 ---
 

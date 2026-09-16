@@ -2060,7 +2060,9 @@ async def probe_device(
 #: Keys a task handler may surface into the `deferred_action_fired` audit row.
 #: An allow-list, not a filter: a handler that starts returning something
 #: sensitive must not have it copied into an audit row by default (GH #326).
-_AUDITABLE_OUTCOME_KEYS = ("password_source",)
+#: ``notice_id`` (ADR-0071): the notice a ``notify`` action raised — an
+#: integer id, so the audit row links to the Console queue.
+_AUDITABLE_OUTCOME_KEYS = ("password_source", "notice_id")
 
 
 class HealthMonitor:
