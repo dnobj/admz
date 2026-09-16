@@ -156,6 +156,10 @@ CONVERTED: dict[str, StoreSpec] = {
     "admz.device_capabilities": StoreSpec(
         cls="DeviceCapabilityStore",
         exercise="s.record('probe-device', 'sip', 'absent', firmware='1.0')"),
+    # Store #21, added by #507 (ADR-0071). The Console's attention queue:
+    # drift checks and notify actions raise into it. Built to the call-time
+    # contract from the start.
+    "admz.notices.store": StoreSpec(cls="NoticeStore", exercise="s.count_open()"),
 }
 
 #: Modules whose *import* provably creates nothing.
@@ -249,10 +253,11 @@ class TestInventory:
         discovered = _discover_store_modules()
         assert discovered == set(CONVERTED)
         # 17 at the end of #258; 18 since #314 made temp credentials
-        # persistent. Updated deliberately, which is what this assertion is
-        # for — it fired on the new store before any human looked at the diff.
-        assert len(discovered) == 20, (
-            f"expected 20 stores, found {len(discovered)} — if a store was "
+        # persistent; 21 since #507 added the notices store. Updated
+        # deliberately, which is what this assertion is for — it fired on the
+        # new store before any human looked at the diff.
+        assert len(discovered) == 21, (
+            f"expected 21 stores, found {len(discovered)} — if a store was "
             "added or removed, update this number deliberately"
         )
 

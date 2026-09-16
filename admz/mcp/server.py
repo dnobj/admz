@@ -4285,7 +4285,8 @@ class ADMZMCPServer:
                                    "via": "mcp"}
         if note and note.strip():
             details["note"] = sanitize_display_text(note, max_length=200)
-        record_event(self.principal, "notice.dismiss",
+        principal = self.principal
+        record_event(principal, "notice.dismiss",
                      resource=f"notice:{notice_id}", details=details)
         return {
             "success": True,
