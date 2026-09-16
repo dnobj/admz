@@ -1,6 +1,6 @@
 # ADR-0070 — Drift is reviewed in the console chat: deterministic triage, gated tools, one card per decision
 
-**Status:** Proposed — 2026-09-16 · **Shipped:** —
+**Status:** Accepted — 2026-09-16 (#504 plan) · **Shipped:** —
 **Closes when shipped:** the implementation issues filed from [the plan](../plans/drift-review-in-chat.md)
 **Relates to:** [ADR-0031](0031-live-observation-baseline.md) (baseline vs observation — what accept blesses) · [ADR-0034](0034-uniform-widget-gating.md) (every write behind one gate; nothing here softens it) · [ADR-0047](0047-demo-config-fragments.md) (attribution buckets; the accept guard this record makes universal) · [ADR-0055](0055-order-insensitive-drift-comparison.md) (what counts as drift — triage never changes that) · [ADR-0056](0056-drift-attribution-annotates-never-suppresses.md) (the annotate-only contract triage adopts) · [ADR-0062](0062-approve-an-envelope-not-a-step-list.md) (where a true one-card composite belongs) · [ADR-0066](0066-an-out-of-band-resolution-resumes-the-promised-turn.md) (the continuation that carries a review from card to card) · [ADR-0069](0069-removing-several-devices-takes-one-approval.md) (one approval for a batch of record operations) · [ADR-0071](0071-a-task-raises-a-notice-the-console-delivers-it.md) (the notice that starts a review)
 

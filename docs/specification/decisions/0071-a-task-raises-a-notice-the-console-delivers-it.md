@@ -1,6 +1,6 @@
 # ADR-0071 — A task raises a notice; the console delivers it, and the operator reviews it in chat with one gated continuation
 
-**Status:** Proposed — 2026-09-16 · **Shipped:** —
+**Status:** Accepted — 2026-09-16 (#504 plan) · **Shipped:** —
 **Closes when shipped:** the implementation issue filed from [the plan](../plans/drift-review-in-chat.md)
 **Relates to:** [ADR-0037](0037-unified-tasks.md) (tasks are triggers + actions; a notice is neither) · [ADR-0041](0041-activity-observability-module.md) (event-pattern detections whose `notify` action finally delivers) · [ADR-0038](0038-chat-conversation-history.md) (the conversation a note lands in) · [ADR-0049](0049-drift-diff-cache.md) (the cached diff a review reads) · [ADR-0066](0066-an-out-of-band-resolution-resumes-the-promised-turn.md) (the delivery primitive this reuses: an event row, one gated turn, browser-driven) · [ADR-0070](0070-drift-is-reviewed-in-the-console-chat.md) (what the model does once the review starts)
 
