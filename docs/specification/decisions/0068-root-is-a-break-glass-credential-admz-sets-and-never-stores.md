@@ -1,6 +1,6 @@
 # ADR-0068 — Root is a break-glass credential ADMZ sets and never stores: every device carries two accounts, and only ADMZ's own is kept
 
-**Status:** **Accepted** — 2026-09-14 · **Shipped in full:** S0 (#487, the plan), S1 the core flow (#488), S2 the MCP collapse (#489), and S3 the operator prompt (2026-09-15). **Not verified against hardware** — see Verification.
+**Status:** **Accepted** — 2026-09-14 · **Shipped in full:** S0 (#487, the plan), S1 the core flow (#488), S2 the MCP collapse (#489), and S3 the operator prompt (2026-09-15). **Amended** 2026-09-16: the fleet root password is tried first, and operators see it by that name. **Not verified against hardware** — see Verification.
 **Closes when shipped:** the remainder of #411 (FR-CRED-011/012 — ADMZ's own account, in practice) · tracked as #486
 **Amends:** [ADR-0061](0061-entry-credentials-and-the-admz-account.md) decision 3 (*"The entry credential is never deleted or rotated by ADMZ"* — narrowed) · [ADR-0064](0064-a-device-admz-cannot-authenticate-to-is-never-online.md) — reverses slice E's password ordering for `root`, moots decision 9, narrows §2 rule 3, and makes the S3/S4 state rows unreachable
 **Relates to:** [ADR-0059](0059-gate-provisioning-at-the-decision-point.md) (account creation is the decision point — this adds one named exemption) · [ADR-0009](0009-oob-credential-capture.md) (the prompt this re-shapes) · [ADR-0034](0034-uniform-widget-gating.md) (one gate, no flat refusals) · [ADR-0010](0010-fernet-encryption.md) (what makes a stored fleet password safe at rest) · FR-CRED-003/007/011/012/013 and a new FR-CRED-014 · #185 / #326 / #199 (the exposure this knowingly reinstates) · #296 (shared vs per-device as first-class modes) · #165 (`add-user` is ungated)
@@ -124,6 +124,26 @@ Provenance is an explicit boolean on the stored account, written by ADMZ's own p
 
 Two things follow and are deliberately recorded rather than left implicit: **ADR-0064 §2 rule 3** (*"Every S1 exit that writes an account passes ADR-0059's gate"*) gains a named exception, and the button's wording becomes load-bearing and gets its own test.
 
+### Amendment 2026-09-16 — the fleet root password is tried first, and operators see it by that name
+
+**Tried first, not last.** S1 made this password a synthetic attempt at the *end* of every onboarding pass, so that it never displaced an operator's entry credential. The owner reversed that on 2026-09-16. It is the one password ADMZ knows is on every device it provisioned, and the one an operator is most likely to have set by hand as well, so the commonest re-onboard now gets in on the first attempt instead of after every entry credential has been refused.
+
+It still displaces nothing: it sits beside the three-entry bound, not inside it, and an entry holding the same pair is not asked a second time. Nor does the order widen what a hostile device can collect, because a device that refuses everything is sent every attempt either way. What does change is that a device an entry credential would have opened first refuses one root attempt; the 2026-09-09 lockout measurement (FR-CRED-013) makes that affordable.
+
+The Settings page says so (`describe()["fleet_root_first"]` replaces `break_glass_last`). When this password is the one that got in, the approval card, the result (`via_fleet_root`) and the chat message name it, rather than calling it an entry credential.
+
+**Operators read "fleet root password".** #499 renamed the Settings row, but these still said "break-glass":
+
+- the flash beneath the row;
+- the device page's notes;
+- the approval cards;
+- a log line;
+- the assistant's tool text.
+
+The owner found it on the live page. "Break-glass" remains this decision's name for the idea, here and in code comments, but every string an operator can read now uses the row's name. `tests/test_fleet_root_password_wording.py` scans for the term itself rather than for a list of known sentences.
+
+**A correction carried with it.** S1 added this attempt without updating FR-CRED-013's per-pass bound. A pass is at most **10 operations / 20 sends**, not 8 / 16.
+
 ## What this reinstates, stated honestly
 
 **ADR-0064 slice E removed exactly this, and the argument it removed it for is still true.** `provisioning.py:196-226` says a factory-defaulted peer — whose `needsetup=yes` claim is unauthenticated and whose identity is unverified — is the *least* appropriate place to prefer a shared secret, because *"a spoofed peer — a reassigned DHCP lease, ARP spoofing, the port a decommissioned camera vacated — walks away with a credential valid on every other device ADMZ manages"* (#185, #326, #199, #171/#292).
@@ -178,7 +198,7 @@ Serial — `provisioning.py` is shared by S1/S2 and `onboarding.py` by S1/S3, so
 
 **S0 — this document**, plus `INDEX.md`, FR-CRED-003/007/011/012/013 amendments, a new FR-CRED-014, and FR-SEC-007a's encrypted-settings list.
 
-**S1 — the core flow.** `setting_policy.py` (two one-line additions), `provisioning.py` (`FLEET_ROOT_PASSWORD_KEY`, `write_root_account`, `provision_factory_default` recomposed, `allow_fleet_default` removed), `onboarding.py` (the `:490` fallback and `RECOVERY_ACCOUNT_ID` retired, rotation on provenance, gate copy), `entry_credentials.py` (the break-glass value as a synthetic last attempt, so a partial failure is retryable), `tasks/handlers.py` (the deferred handler does not write it).
+**S1 — the core flow.** `setting_policy.py` (two one-line additions), `provisioning.py` (`FLEET_ROOT_PASSWORD_KEY`, `write_root_account`, `provision_factory_default` recomposed, `allow_fleet_default` removed), `onboarding.py` (the `:490` fallback and `RECOVERY_ACCOUNT_ID` retired, rotation on provenance, gate copy), `entry_credentials.py` (the break-glass value as a synthetic last attempt, so a partial failure is retryable — first since the 2026-09-16 amendment), `tasks/handlers.py` (the deferred handler does not write it).
 
 **S2 — collapse the MCP duplicate.** `mcp/server.py::_provision_device` routes through `_onboard_device` exactly as `_register_device` already does (`:3977-3982`), inheriting the gate, the `read_systemready` detector and the statuses in one edit; `force_change` retires.
 

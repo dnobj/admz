@@ -519,22 +519,92 @@ def test_nothing_is_marked_tried_under_prompt_always(isolated_settings):
     assert ec.describe()["stored_tried"] == [False]
 
 
-# ── ADMZ's break-glass attempt ──────────────────────────────────────────────
+# ── ADMZ's fleet root password attempt ──────────────────────────────────────
 
-def test_the_break_glass_attempt_is_root_whatever_default_username_says(isolated_settings):
-    """Provisioning writes the break-glass value to `root`. `default_username`
+FLEET_ROOT = "FleetRoot-ec-1"
+
+
+def _pairs(creds):
+    return [(c.username, c.password) for c in creds]
+
+
+def test_the_fleet_root_password_is_tried_FIRST(isolated_settings):
+    """The owner's call (2026-09-16): it is on every device ADMZ provisioned,
+    so the commonest re-onboard gets in on the first attempt instead of after
+    every entry credential has failed. Ahead of the legacy pair too."""
+    isolated_settings.set(ec.LEGACY_PASS_KEY, "legacy")
+    ec.add_entry_credential("u1", "p1")
+    isolated_settings.set("fleet_root_password", FLEET_ROOT)
+    assert _pairs(ec.attempt_order()) == [
+        ("root", FLEET_ROOT), ("root", "legacy"), ("u1", "p1")]
+
+
+def test_the_fleet_root_attempt_is_root_whatever_default_username_says(isolated_settings):
+    """Provisioning writes the fleet root password to `root`. `default_username`
     belongs to an unrelated legacy entry credential — `operator` on the fleet
     ADR-0061 measured — and paired with it the attempt could never log in."""
     isolated_settings.set(ec.LEGACY_USER_KEY, "operator")
-    isolated_settings.set("fleet_root_password", "BreakGlass-ec-1")
-    last = ec.attempt_order()[-1]
-    assert (last.username, last.password) == ("root", "BreakGlass-ec-1")
+    isolated_settings.set(ec.LEGACY_PASS_KEY, "legacy")
+    isolated_settings.set("fleet_root_password", FLEET_ROOT)
+    first = ec.attempt_order()[0]
+    assert (first.username, first.password) == ("root", FLEET_ROOT)
 
 
-def test_describe_reports_the_break_glass_attempt_apart(isolated_settings):
-    ec.add_entry_credential("u0", "p0")
-    assert ec.describe()["break_glass_last"] is False
-    isolated_settings.set("fleet_root_password", "BreakGlass-ec-2")
+def test_only_the_fleet_root_attempt_is_marked_as_one(isolated_settings):
+    """Onboarding words its approval card from the flag, so an entry an
+    operator happened to label "fleet root password" must not carry it."""
+    ec.add_entry_credential("root", "p1", label=ec.FLEET_ROOT_LABEL)
+    isolated_settings.set("fleet_root_password", FLEET_ROOT)
+    first, entry = ec.attempt_order()
+    assert first.fleet_root is True and first.label == ec.FLEET_ROOT_LABEL
+    assert entry.fleet_root is False and entry.label == ec.FLEET_ROOT_LABEL
+
+
+def test_the_fleet_root_attempt_takes_no_entry_credentials_place(isolated_settings):
+    """Beside the bound, not inside it: a full list still has every entry
+    tried, and a list stored over the bound cannot crowd the attempt out."""
+    isolated_settings.set(ec.SETTING_KEY, json.dumps([
+        {"username": f"u{i}", "password": f"p{i}"} for i in range(5)]))
+    isolated_settings.set("fleet_root_password", FLEET_ROOT)
+    order = ec.attempt_order()
+    assert _pairs(order) == [("root", FLEET_ROOT)] + [
+        (f"u{i}", f"p{i}") for i in range(ec.MAX_ATTEMPTS_PER_PASS)]
+
+
+def test_an_entry_holding_the_same_pair_is_not_asked_again(isolated_settings):
+    """The first attempt already put that exact question to the device. The
+    entry still counts as tried — its pair is asked — and dropping it only
+    shortens the pass: the entry stored past the bound stays out."""
+    isolated_settings.set(ec.SETTING_KEY, json.dumps([
+        {"username": "u0", "password": "p0"},
+        {"username": "root", "password": FLEET_ROOT},
+        {"username": "u2", "password": "p2"},
+        {"username": "u3", "password": "p3"},
+    ]))
+    isolated_settings.set("fleet_root_password", FLEET_ROOT)
+    assert _pairs(ec.attempt_order(warn=False)) == [
+        ("root", FLEET_ROOT), ("u0", "p0"), ("u2", "p2")]
     d = ec.describe()
-    assert d["break_glass_last"] is True
+    assert d["stored_tried"] == [True, True, True, False]
+    assert len(d["in_use"]) == 3
+
+
+def test_prompt_always_does_not_suppress_the_fleet_root_attempt(isolated_settings):
+    """That posture is about storing entry credentials; suppressing ADMZ's own
+    value would lock it out of a device it had just provisioned."""
+    ec.add_entry_credential("u0", "p0")
+    isolated_settings.set(ec.PROMPT_ALWAYS_KEY, "true")
+    isolated_settings.set("fleet_root_password", FLEET_ROOT)
+    assert _pairs(ec.attempt_order()) == [("root", FLEET_ROOT)]
+    assert ec.describe()["stored_tried"] == [False]
+
+
+def test_describe_reports_the_fleet_root_attempt_apart(isolated_settings):
+    ec.add_entry_credential("u0", "p0")
+    assert ec.describe()["fleet_root_first"] is False
+    isolated_settings.set("fleet_root_password", FLEET_ROOT)
+    d = ec.describe()
+    assert d["fleet_root_first"] is True
+    assert d["in_use"][0] == {"username": "root", "label": ec.FLEET_ROOT_LABEL}
     assert len(d["in_use"]) == 2, "in_use still reports every attempt"
+    assert FLEET_ROOT not in json.dumps(d)

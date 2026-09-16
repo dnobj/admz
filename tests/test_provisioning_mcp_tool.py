@@ -59,7 +59,7 @@ class _Srv:
                 "username": "admz", "root_username": "root",
                 "root_password_source": "fleet_root",
                 "password_source": "generated",
-                "message": "ADMZ set root from the break-glass password."}
+                "message": "ADMZ set root from the fleet root password."}
 
     @staticmethod
     def _serial_to_mac(serial):
@@ -262,7 +262,7 @@ def test_the_tool_description_says_what_it_now_does():
     schema = getattr(tool, "inputSchema", None) or tool.input_schema
 
     # the two-account model, and the invariant
-    assert "break-glass" in tool.description
+    assert "'root' set to the fleet root password" in tool.description
     assert "never stored per device" in tool.description
     assert "gated" in tool.description
     # the retired arguments are gone from the schema, not merely undocumented

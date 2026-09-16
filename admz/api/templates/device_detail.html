@@ -338,7 +338,7 @@ const HEALTH = {
   const status = new URLSearchParams(window.location.search).get('onboarding');
   if (!status) return;
   const NOTES = {
-    provisioned: ['success', 'Device was factory-defaulted — ADMZ set root to the fleet break-glass password and created its own admz account. Only the admz password is stored.'],
+    provisioned: ['success', 'Device was factory-defaulted — ADMZ set root to the fleet root password and created its own admz account. Only the admz password is stored.'],
     already_credentialed: ['success', 'Stored credentials verified — device is ready.'],
     provision_failed: ['error', 'Automatic provisioning failed — see the health status below.'],
     error: ['error', 'Credential onboarding could not run — set credentials from the Accounts section.'],
@@ -349,8 +349,8 @@ const HEALTH = {
     // ADR-0068: fleet_credentials_saved is retired — nothing stores a borrowed
     // credential any more. These two replace it, and both mean the device has
     // NO usable stored credential, so each has to say how to get back in.
-    admz_account_failed: ['error', 'A credential worked but ADMZ could not create its own account, so nothing was stored — this device still has no credential. If it was factory-defaulted, root is set to the fleet break-glass password and you can sign in by hand.'],
-    root_password_not_configured: ['error', 'This device is factory-defaulted and no fleet root password is set, so ADMZ wrote nothing rather than leave it with a credential nobody knows. Set fleet_root_password in Fleet Settings, then run onboarding again.'],
+    admz_account_failed: ['error', 'A credential worked but ADMZ could not create its own account, so nothing was stored — this device still has no credential. If it was factory-defaulted, or the fleet root password is what worked, root has the fleet root password and you can sign in by hand.'],
+    root_password_not_configured: ['error', 'This device is factory-defaulted and no fleet root password is set, so ADMZ wrote nothing rather than leave it with a credential nobody knows. Set the fleet root password under Settings → Provisioning credentials, then run onboarding again.'],
   };
   const note = NOTES[status];
   if (!note) return;

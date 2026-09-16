@@ -695,11 +695,12 @@ class ADMZMCPServer:
                         "(or whose stored credentials stopped working) — all "
                         "server-side, no password enters this conversation. "
                         "Order: verify stored credentials; if the device is "
-                        "factory-defaulted, set 'root' to the fleet break-glass "
-                        "root password and then create ADMZ's own 'admz' account "
+                        "factory-defaulted, set 'root' to the fleet root password "
+                        "and then create ADMZ's own 'admz' account "
                         "(only the admz password is stored — a root credential is "
-                        "never stored per device, ADR-0068); else try each ENTRY "
-                        "credential and, on the first that logs in, create ADMZ's "
+                        "never stored per device, ADR-0068); else try the fleet "
+                        "root password as 'root' FIRST, then each ENTRY "
+                        "credential, and on the first that logs in create ADMZ's "
                         "own 'admz' admin account and use that (ADR-0061). Only "
                         "when none of those work does it open a credential-capture "
                         "session (shown to the user as a secure form card in the "
@@ -724,7 +725,7 @@ class ADMZMCPServer:
                                     "account on the device and switch to that "
                                     "(ADR-0061). A credential a human supplied is "
                                     "left untouched; one ADMZ generated itself is "
-                                    "reset to the fleet break-glass root password, "
+                                    "reset to the fleet root password, "
                                     "so it exists somewhere a person knows "
                                     "(ADR-0068). Gated — returns an approval card. "
                                     "Without this, an already-credentialed device is "
@@ -2317,8 +2318,8 @@ class ADMZMCPServer:
                 if result.get("root_rotated_to_break_glass") is True:
                     result["message"] += (
                         " That device's previous password was one ADMZ generated, "
-                        "so its account was reset to the fleet break-glass root "
-                        "password — a value the operator knows."
+                        "so its account was reset to the fleet root password — a "
+                        "value the operator knows."
                     )
                 else:
                     result["message"] += (
@@ -2327,13 +2328,15 @@ class ADMZMCPServer:
             else:
                 result["message"] = (
                     "ADMZ created its own 'admz' admin account on the device using "
-                    "an entry credential, and now uses it."
+                    + ("the fleet root password" if result.get("via_fleet_root")
+                       else "an entry credential")
+                    + ", and now uses it."
                 )
         elif status == PROVISIONED:
             result["message"] = (
                 "Device was factory-defaulted; ADMZ set "
-                f"'{result.get('root_username', 'root')}' to the fleet break-glass "
-                "root password and then created its own 'admz' account with a "
+                f"'{result.get('root_username', 'root')}' to the fleet root "
+                "password and then created its own 'admz' account with a "
                 "generated password. Only the 'admz' password is stored "
                 f"(root source: {result.get('root_password_source')}); neither is "
                 "available here."
@@ -2343,9 +2346,9 @@ class ADMZMCPServer:
                 "A credential authenticated, but ADMZ could not create its own "
                 f"'admz' account: {result.get('admz_account_error', 'unknown')}. "
                 "Nothing was stored for this device (ADR-0068), so it still has no "
-                "usable credential. If it was factory-defaulted, root is now set "
-                "to the fleet break-glass password and an operator can get in by "
-                "hand."
+                "usable credential. If it was factory-defaulted, or if the fleet "
+                "root password is what logged in, root has the fleet root "
+                "password and an operator can get in by hand."
             )
         elif status == NO_ROOT_PASSWORD_CONFIGURED:
             result["message"] = (
@@ -4743,7 +4746,7 @@ class ADMZMCPServer:
         cannot be forwarded — ``onboard_device_credentials`` takes none of them —
         and silently ignoring a caller's explicit password would be worse than
         refusing it. Under ADR-0068 none of them has a meaning left: root's
-        password is the fleet break-glass value, ``admz``'s is generated and must
+        password is the fleet root password, ``admz``'s is generated and must
         stay unknown to be worth storing, and a password supplied *to an MCP
         tool* is a password that came from chat, which is the whole thing
         ADR-0009's out-of-band capture exists to prevent.
@@ -4758,7 +4761,7 @@ class ADMZMCPServer:
                     "error": (
                         f"'{retired}' is no longer accepted by provision_device "
                         "(ADR-0068). A factory-defaulted device gets 'root' from "
-                        "the fleet break-glass root password and then ADMZ's own "
+                        "the fleet root password and then ADMZ's own "
                         "'admz' account with a generated one; neither is a value "
                         "a caller chooses. To change a password on a device that "
                         "already works, use capture_credentials — a password must "

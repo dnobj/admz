@@ -1,8 +1,8 @@
 """Credential onboarding (admz/onboarding.py) — resolution order + secrecy.
 
-Order: stored creds verify → keep; needsetup → provision with a generated
-password (FR-CRED-007); an entry credential authenticates → adopt; else
-credentials_needed.
+Order: stored creds verify → keep; needsetup → provision root from the fleet
+root password and ADMZ's own account (ADR-0068); the fleet root password, then
+an entry credential, authenticates → adopt; else credentials_needed.
 No outcome dict may ever carry a password.
 """
 
@@ -915,3 +915,108 @@ class TestTheSamePairIsNotAskedTwice:
 
         assert out["status"] == "credentials_needed"
         assert len(patch_probes["confirm_calls"]) == 2, "both entries asked; step 1 never ran"
+
+
+class TestTheFleetRootPasswordIsAskedFirst:
+    """ADR-0068, as amended by the owner on 2026-09-16: step 3 asks the fleet
+    root password before any entry credential — it is on every device ADMZ
+    provisioned — and says so when it is the one that got in."""
+
+    FLEET_ROOT = "FleetRoot-onboarding-first-3c"
+
+    @pytest.fixture
+    def fleet_root(self):
+        from admz.fleet_settings import fleet_settings
+
+        key = "fleet_root_password"
+        previous = fleet_settings.get(key)
+        fleet_settings.set(key, self.FLEET_ROOT)
+        yield self.FLEET_ROOT
+        if previous:
+            fleet_settings.set(key, previous)
+        else:
+            fleet_settings.delete(key)
+
+    def test_it_is_asked_before_any_entry_credential(self, patch_probes, fleet_root):
+        cleanup = _seed_entry_list([("u0", "p0"), ("u1", "p1")])
+        try:
+            patch_probes["confirm"] = [(False, {})] * 3
+            out = _run(registry=_Registry())
+        finally:
+            cleanup()
+
+        assert out["status"] == "credentials_needed"
+        assert out["reason"] == ("the fleet root password and every entry "
+                                 "credential were rejected by the device")
+        assert patch_probes["confirm_calls"] == [
+            {"username": "root", "password": fleet_root},
+            {"username": "u0", "password": "p0"},
+            {"username": "u1", "password": "p1"},
+        ]
+
+    def test_when_it_works_no_entry_credential_is_asked(self, patch_probes, fleet_root):
+        from admz.approval_context import approved
+
+        cleanup = _seed_entry_list([("u0", "p0")])
+        try:
+            patch_probes["confirm"] = [(True, {}), (True, {})]
+            with approved("register_discovered_device", "tok-test"):
+                out = _run(registry=_Registry())
+        finally:
+            cleanup()
+
+        assert out["status"] == "admz_account_created", out
+        assert out["via_fleet_root"] is True
+        assert out["entry_username"] == "root"
+        assert patch_probes["adopt_called"] == {"username": "root", "password": fleet_root}
+        assert len(patch_probes["confirm_calls"]) == 1, "the entry list was never needed"
+        assert fleet_root not in repr(out)
+
+    def test_the_approval_card_names_it(self, patch_probes, fleet_root):
+        """The card says which credential got in. "An entry credential" would
+        be wrong, and the operator knows this password by its name."""
+        cleanup = _seed_entry_list([("u0", "p0")])
+        try:
+            patch_probes["confirm"] = [(True, {})]
+            out = _run(registry=_Registry())  # no approval in context
+        finally:
+            cleanup()
+
+        assert out["status"] == "approval_required"
+        assert "accepted the fleet root password (as 'root')" in out["reason"]
+        assert "entry credential" not in out["reason"]
+        assert fleet_root not in repr(out)
+
+    def test_an_entry_credential_after_it_is_still_reported_as_one(
+            self, patch_probes, fleet_root):
+        from admz.approval_context import approved
+
+        cleanup = _seed_entry_list([("u0", "p0")])
+        try:
+            patch_probes["confirm"] = [(False, {}), (True, {})]
+            gated = _run(registry=_Registry())
+            patch_probes["confirm"] = [(False, {}), (True, {})]
+            with approved("register_discovered_device", "tok-test"):
+                out = _run(registry=_Registry())
+        finally:
+            cleanup()
+
+        assert "accepted an entry credential (u0)" in gated["reason"]
+        assert out["status"] == "admz_account_created", out
+        assert out["via_fleet_root"] is False
+        assert patch_probes["adopt_called"] == {"username": "u0", "password": "p0"}
+
+    def test_with_no_entry_list_it_is_the_whole_pass(self, patch_probes, fleet_root):
+        """An install with no entry credentials still gets back into what it
+        provisioned, and the reason does not blame a list it does not have."""
+        cleanup = _seed_entry_list([])
+        try:
+            patch_probes["confirm"] = [(False, {}), (True, {})]
+            out = _run(registry=_Registry())
+        finally:
+            cleanup()
+
+        assert out["status"] == "credentials_needed"
+        assert out["reason"] == "the fleet root password was rejected by the device"
+        assert len(patch_probes["confirm_calls"]) == 1
+        assert len(patch_probes["confirm"]) == 1, "nothing else was asked"

@@ -117,10 +117,11 @@ def survey_reason(subnet: Any, register_new: bool) -> str:
     # which is the failure #411's review caught in the first draft.
     tail = ("register unknown devices it finds and, on each, create an admin "
             "account for ADMZ — on a factory-defaulted device TWO accounts: "
-            "'root' set to the fleet break-glass root password, then ADMZ's own "
+            "'root' set to the fleet root password, then ADMZ's own "
             "'admz' account (only 'admz' is stored); or on a device that is "
-            "already set up, just ADMZ's own 'admz' account if an entry "
-            "credential can log in (the entry credential is left in place)"
+            "already set up, just ADMZ's own 'admz' account if the fleet root "
+            "password or an entry credential can log in (that credential is "
+            "left in place)"
             if register_new else "register unknown devices it finds")
     return (f"Deep survey: scan {where}, then {tail}. This writes to devices "
             f"ADMZ has never seen.")

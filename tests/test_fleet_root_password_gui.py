@@ -1,4 +1,4 @@
-"""The break-glass root password can be set from the Fleet Settings page.
+"""The fleet root password can be set from the Settings page.
 
 FR-CRED-014 / ADR-0068. Until this route existed the only way to set
 ``fleet_root_password`` was ``python -m admz settings set``, which takes the
@@ -163,7 +163,9 @@ class TestTheGate:
         _as(_outsider())
         r = _post(client)
         assert r.status_code == 403
-        assert "Break-glass root password" not in r.text
+        # Neither the success flash nor the Settings page it would sit on.
+        assert "Fleet root password set" not in r.text
+        assert 'id="provisioning-credentials"' not in r.text
 
     def test_a_refused_attempt_is_audited_without_the_value(self, client):
         _as(_outsider())
@@ -417,6 +419,48 @@ class TestTheValue:
 
 
 # --- what the operator is told -------------------------------------------
+
+
+class TestTheFlashesNameItAsTheRowDoes:
+    """The owner found the success flash still saying "Break-glass root
+    password" on 2026-09-16, after #499 had renamed the row "Fleet root
+    password". Every sentence this route shows uses the row's name;
+    tests/test_fleet_root_password_wording.py holds the rest of ADMZ to it."""
+
+    def test_setting_it(self, client):
+        _as(_admin())
+        page = " ".join(_post(client).text.split())
+        assert ("Fleet root password set. ADMZ writes it to factory-defaulted "
+                "devices it provisions from now on.") in page
+
+    def test_replacing_it(self, client):
+        _as(_admin())
+        _post(client)
+        page = " ".join(_post(client).text.split())
+        assert "Fleet root password replaced." in page
+
+    def test_the_empty_refusal(self, client):
+        _as(_admin())
+        page = " ".join(_post(client, data={"root_password": "",
+                                            "confirm_root_password": ""}).text.split())
+        assert "without a fleet root password ADMZ will not provision" in page
+
+    def test_the_short_password_warning(self, client):
+        _as(_admin())
+        page = " ".join(_short(client).text.split())
+        assert "A short fleet root password is easier to guess" in page
+
+    def test_the_form_reopens_under_its_new_id_after_a_refusal(self, client):
+        """The internal id was renamed with the copy. A refused write must
+        still re-render with the form open, or the error sits above nothing."""
+        _as(_admin())
+        r = _post(client, data={"root_password": SECRET,
+                                "confirm_root_password": SECRET + "x"})
+        form = re.search(r'<div[^>]*id="fleet-root-form"[^>]*>', r.text).group(0)
+        assert "hidden" not in form
+        closed = re.search(r'<div[^>]*id="fleet-root-form"[^>]*>',
+                           client.get("/settings").text).group(0)
+        assert "hidden" in closed
 
 
 class TestThePageSaysWhatMatters:

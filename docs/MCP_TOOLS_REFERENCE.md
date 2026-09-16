@@ -61,10 +61,11 @@ Add a new device, then resolve its credentials automatically (see
 Resolve credentials for a registered device server-side — no password
 enters the conversation. Order (ADR-0061, ADR-0068): verify stored credentials
 (`already_credentialed`) → a factory-defaulted device gets **two** accounts:
-`root` set to the fleet break-glass root password, then ADMZ's own `admz`
-account with a generated one (`provisioned`, gated) → each **entry credential**
-is tried and, on the first that logs in, ADMZ creates its own `admz` admin
-account and uses that (`admz_account_created`, gated) → otherwise a capture
+`root` set to the fleet root password, then ADMZ's own `admz`
+account with a generated one (`provisioned`, gated) → the **fleet root
+password** is tried as `root` first, then each **entry credential**, and on the
+first that logs in ADMZ creates its own `admz` admin account and uses that
+(`admz_account_created`, gated; `via_fleet_root` says which) → otherwise a capture
 session is opened (`credentials_needed` + `capture_url`; the chat console
 renders it as a secure form card). Gated steps return `approval_required` with
 the standard blocked envelope. `register_device` runs this for new devices.
@@ -72,8 +73,9 @@ the standard blocked envelope. `register_device` runs this for new devices.
 **Only the `admz` password is ever stored.** A root credential is never stored
 per device (ADR-0068), so two outcomes mean the device is left with no usable
 credential and say so: `admz_account_failed` (a credential worked but the
-account write did not — nothing stored; if the device was factory-defaulted,
-root now holds the break-glass password an operator knows) and
+account write did not — nothing stored; if the device was factory-defaulted, or
+the fleet root password is what logged in, root holds the fleet root password
+an operator knows) and
 `root_password_not_configured` (no `fleet_root_password` is set, so ADMZ wrote
 nothing at all rather than leave a device whose only credential nobody knows).
 `fleet_credentials_saved` is **retired** — ADMZ no longer stores a borrowed
@@ -83,7 +85,7 @@ With **`adopt: true`**, a device whose stored credential already works is moved
 onto ADMZ's own `admz` account: the stored credential is used to create it
 (gated, same approval). What happens to that credential afterwards depends on
 where it came from — one a human supplied is left untouched, while one ADMZ
-generated itself is reset to the fleet break-glass root password, so it exists
+generated itself is reset to the fleet root password, so it exists
 somewhere a person knows instead of only in ADMZ's database. The per-device
 `recovery` account is retired. `admz_account_created` with
 `adopted_in_place: true` on success (plus `root_rotated_to_break_glass`);
@@ -339,7 +341,7 @@ except for correcting the stored `host`; never registers new devices.
 Register the device if only a `host` was given, then run the **same**
 credential resolution as [`onboard_device`](#onboard_device) — same
 detector, same write, same gate, same statuses. A factory-defaulted device
-gets `root` from the fleet break-glass root password and then ADMZ's own
+gets `root` from the fleet root password and then ADMZ's own
 `admz` account with a generated one; **only the `admz` password is stored**
 and it is **never returned** in the response. For human login you mint a
 short-lived account with `create_temp_credentials`.

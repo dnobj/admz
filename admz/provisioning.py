@@ -315,8 +315,8 @@ async def provision_factory_default(
     if not attended:
         return {"success": False, "status": "unattended_not_permitted",
                 "device_id": device_id,
-                "error": ("provisioning writes the fleet break-glass root "
-                          "password and may only run attended (ADR-0068); "
+                "error": ("provisioning writes the fleet root password and "
+                          "may only run attended (ADR-0068); "
                           "this device needs an operator-driven onboard")}
 
     root_password = password or fleet_settings.get(FLEET_ROOT_PASSWORD_KEY)

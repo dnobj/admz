@@ -900,7 +900,7 @@ async def configuration_redirect(request: Request):
     return RedirectResponse(url=target, status_code=307)
 
 
-#: Below this length the Fleet Settings form WARNS about the break-glass root
+#: Below this length the Settings page's form WARNS about the fleet root
 #: password, and saves it only once the operator has said they accept the risk.
 #:
 #: A warning, not a floor, by the owner's decision (2026-09-14): a short root
@@ -932,7 +932,7 @@ def _settings_page_context(
     One builder for ``GET /settings`` and for the three credential POSTs that
     used to render the standalone ``/fleet-settings`` page: a refused write then
     re-renders the page the operator was already on, with the flash row at the
-    top and ``open_form`` keeping the form they submitted open ("break-glass" or
+    top and ``open_form`` keeping the form they submitted open ("fleet-root" or
     "entry"). A successful write leaves both collapsed.
 
     Sensitive values (``is_sensitive_setting_key`` — the same predicate the
@@ -946,7 +946,7 @@ def _settings_page_context(
     (``gemini_api_key``, ``acs_webhook_token``), so those rendered in
     plaintext directly in the HTML response with no gate at all.
 
-    The break-glass root password follows the same rule: the context carries
+    The fleet root password follows the same rule: the context carries
     whether it is SET, never the value.
     """
     from admz import entry_credentials
@@ -1073,7 +1073,7 @@ async def set_fleet_root_password(
     confirm_root_password: str = Form(""),
     accept_short_password: str = Form(""),
 ):
-    """Set or replace the break-glass root password (FR-CRED-014, ADR-0068).
+    """Set or replace the fleet root password (FR-CRED-014, ADR-0068).
 
     The web counterpart to ``python -m admz settings set fleet_root_password``,
     which takes the value as a command-line argument — so it lands in shell
@@ -1096,9 +1096,9 @@ async def set_fleet_root_password(
     - **An empty submission is refused, never treated as "remove".**
       ``/confirm-settings`` clears its password on an empty submit. Here that
       would quietly turn off provisioning for the entire fleet, because an
-      unset break-glass password makes ``provision_factory_default`` refuse.
+      unset fleet root password makes ``provision_factory_default`` refuse.
     - **A refused attempt is audited**, as the reveal endpoint audits its
-      denials. Someone trying to set the fleet's break-glass password without
+      denials. Someone trying to set the fleet root password without
       permission is worth a row.
 
     The value is never echoed, never logged, and never in an audit row.
@@ -1110,8 +1110,8 @@ async def set_fleet_root_password(
     else: an empty, mismatched or space-padded submission is refused either way.
     **Nothing recorded says the password is short** — not its length, not the
     acceptance, not the unaccepted attempt before it. The audit log is readable
-    by any signed-in user (``GET /api/audit``), and "the fleet's break-glass
-    password is under eight characters" is a fact about the secret, so the save
+    by any signed-in user (``GET /api/audit``), and "the fleet root password
+    is under eight characters" is a fact about the secret, so the save
     is recorded exactly as any other.
 
     ``accept_short_password`` is a string parsed after the gate: as a ``bool``
@@ -1132,7 +1132,7 @@ async def set_fleet_root_password(
     if not root_password:
         problem = ("empty",
                    "Enter a password. An empty value is not accepted here: "
-                   "without a break-glass root password ADMZ will not provision "
+                   "without a fleet root password ADMZ will not provision "
                    "factory-defaulted devices at all.")
     elif root_password != confirm_root_password:
         problem = ("mismatch", "The two passwords do not match.")
@@ -1156,7 +1156,7 @@ async def set_fleet_root_password(
             request, "settings.html",
             # The form reopens with the message above it: the operator was
             # mid-edit, and a collapsed form would hide what they must correct.
-            _settings_page_context(request, error=sentence, open_form="break-glass"),
+            _settings_page_context(request, error=sentence, open_form="fleet-root"),
         )
 
     short = len(root_password) < _ROOT_PASSWORD_RECOMMENDED_LENGTH
@@ -1170,7 +1170,7 @@ async def set_fleet_root_password(
                 warning=(
                     "Nothing was saved yet: that password is shorter than "
                     f"{_ROOT_PASSWORD_RECOMMENDED_LENGTH} characters. A short "
-                    "break-glass password is easier to guess, and it logs in to "
+                    "fleet root password is easier to guess, and it logs in to "
                     "every device ADMZ provisions. To use it anyway, enter it "
                     "twice again and tick the box to accept the risk."
                 ),
@@ -1193,7 +1193,7 @@ async def set_fleet_root_password(
         _settings_page_context(
             request,
             success=(
-                "Break-glass root password "
+                "Fleet root password "
                 + ("replaced" if replaced else "set")
                 + ". ADMZ writes it to factory-defaulted devices it provisions "
                 "from now on. Devices it has already provisioned keep the root "
@@ -1280,7 +1280,7 @@ async def add_fleet_entry_credential(
     devices ADMZ has not adopted yet.
 
     **It widens what ADMZ tries against every device it adopts**, so it carries
-    the break-glass form's protections: :func:`_authorize_credential_write`
+    the fleet root password form's protections: :func:`_authorize_credential_write`
     (same-origin first, then reveal-group membership — which matters doubly
     here, because a duplicate is reported and so answers "is this password
     already on the list"), the password typed twice and never echoed, and every
@@ -1290,7 +1290,7 @@ async def add_fleet_entry_credential(
 
     The username is trimmed, because it is shown back on the page where a
     change is visible; a password with surrounding spaces is refused instead,
-    for the reason the break-glass form gives.
+    for the reason the fleet root password form gives.
     """
     from admz import entry_credentials
     from admz.audit import record_event
@@ -1344,7 +1344,7 @@ async def add_fleet_entry_credential(
             ),
         )
 
-    # After the write, as for the break-glass password: an audit row must never
+    # After the write, as for the fleet root password: an audit row must never
     # claim a change that did not land.
     record_event(
         principal, "entry_credential.added",
@@ -1434,14 +1434,15 @@ def _entry_credentials_view(desc: dict) -> dict:
     out from the credentials themselves — matching redacted usernames and
     labels here could mark the dead one of two identical entries tried and the
     live one "never tried". ``entries_tried`` counts the entry credentials a
-    pass tries, leaving out ADMZ's break-glass attempt when ``in_use`` ends with
-    one (``break_glass_last``), so the page names it after the count rather than
-    reporting "4 (at most 3)". Redacted dicts in, redacted dicts out.
+    pass tries, leaving out ADMZ's fleet root password attempt when ``in_use``
+    starts with one (``fleet_root_first``), so the page names it apart from the
+    count rather than reporting "4 (at most 3)". Redacted dicts in, redacted
+    dicts out.
     """
     flags = desc.get("stored_tried") or []
     rows = [{**c, "tried": bool(flags[i]) if i < len(flags) else False}
             for i, c in enumerate(desc.get("stored", []))]
-    entries_tried = len(desc.get("in_use", [])) - (1 if desc.get("break_glass_last") else 0)
+    entries_tried = len(desc.get("in_use", [])) - (1 if desc.get("fleet_root_first") else 0)
     return {**desc, "rows": rows, "entries_tried": max(entries_tried, 0)}
 
 
