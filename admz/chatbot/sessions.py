@@ -913,6 +913,39 @@ class ChatSessionStore:
             conn.close()
         return True
 
+    def has_live_resume_claim(
+        self,
+        principal: str,
+        conversation_id: str,
+        lease_seconds: Optional[float] = None,
+    ) -> bool:
+        """True while a continuation is answering this conversation.
+
+        That is: its trailing console note is still unanswered AND a browser
+        holds an unexpired claim on exactly that note. A claim on a note that
+        has since been answered does not count — the continuation finished —
+        so a completed turn never blocks the next review (ADR-0071 §3).
+        """
+        history_id = self.resume_due(principal, conversation_id)
+        if history_id is None:
+            return False
+        lease = (
+            self._RESUME_CLAIM_LEASE_SECONDS
+            if lease_seconds is None
+            else lease_seconds
+        )
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM chat_resume_claims "
+                "WHERE history_id=? AND principal=? AND conversation_id=? "
+                "AND claimed_at >= ?",
+                (history_id, principal, conversation_id, time.time() - lease),
+            ).fetchone()
+        finally:
+            conn.close()
+        return row is not None
+
     def get_history(
         self,
         principal: str,

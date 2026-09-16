@@ -284,9 +284,9 @@ is drifted or a notice is open (FR-CB-020); otherwise the prompt is byte-identic
 never a verdict: every row is still drift and the user decides. See
 [ADR-0070](../decisions/0070-drift-is-reviewed-in-the-console-chat.md).
 
-_As built:_ a review starts from a user's question, or from the one-line mention of a drifted device the
-guidance asks for. The notice that starts one, and the `[console]` semantics clause for "opened a notice
-for review (nothing has changed yet)", arrive with FR-CB-019.
+_As built:_ a review starts from a user's question, from the one-line mention the guidance asks for, or
+from a notice opened in the Console (FR-CB-019). The `[console]` semantics bullet names that last case:
+the user opened a notice for review, nothing has changed yet, and the assistant leads the review.
 
 ### FR-CB-018 — A chat accept writes the changelog with a note and the principal ✅
 `accept_baseline` from the chat records `note` (≤500 characters) and `accepted_by` in the device's
@@ -296,7 +296,7 @@ now write the name too. The card quotes the note, so the operator approves the c
 get. The tool description asks for a short, cause-based note ("fw 12.9.57→12.11.77 upgrade; MQTT prefix
 case normalised").
 
-### FR-CB-019 — Fleet notices are reviewable in the Console 📋
+### FR-CB-019 — Fleet notices are reviewable in the Console ✅
 A "Needs attention" strip above the composer lists open notices (FR-DRF-018, FR-SCH-015) with
 **Review in chat**, **Snooze** and dismiss. Review writes a metadata-only `[console]` note — notice id,
 device id, counts, ages, source; never a nickname, host or value — into the operator's active
@@ -305,17 +305,29 @@ snooze are audited and ungated: they change no device or registry state. Anonymo
 dismiss, on the FR-CB-016 reasoning. The chat gets `list_notices` and `dismiss_notice`. See
 [ADR-0071](../decisions/0071-a-task-raises-a-notice-the-console-delivers-it.md).
 
-### FR-CB-020 — Open notices and drifted devices are preloaded into the prompt, fenced 🚧
+_As built:_ `GET /api/notices` lists them; `POST /api/notices/{id}/review`,
+`POST /api/notices/review` (1–20 ids), `…/{id}/dismiss` and `…/{id}/snooze` (1–720 hours) act on them.
+Every POST takes a JSON body, so a cross-site form cannot reach it. A review is refused with 409 when
+the notice is closed (`not_open`), or when a continuation is still answering the conversation
+(`continuation_in_flight`: an unexpired claim on a note that is still unanswered). A batch review skips
+closed or unknown ids and lists them. The strip shows three rows, then "N more need attention" with
+**Show all** and **Review all**; snooze hides a notice for four hours. It reloads on page load, on tab
+focus (at most every 15 s), and after every turn and continuation. `/chat?review_notice=<id>` opens a
+review from the Tasks page. An event notice's review note names the detection's task id, never its
+title.
+
+### FR-CB-020 — Open notices and drifted devices are preloaded into the prompt, fenced ✅
 `admz/chatbot/context.py::build_attention_section` renders at most ten open notices and twenty drifted
 devices (from the drift cache, never a probe) inside an `ATTENTION DATA` fence, registered in the fencing
 completeness test; empty means the section — and the FR-CB-017 guidance that rides on it — is absent. The
 assistant mentions open notices once, in one line, at the start of a conversation, and answers "anything
 need my attention?" any time.
 
-**Built:** the drifted devices — most recently checked first, model and nickname sanitized, drift that
-only an active demo accounts for left out — wired into the text chat and voice prompts, fenced and
-registered, with the prompt byte-identical when nothing is drifted. **Not yet:** the open notices
-(FR-CB-019, ADR-0071).
+_As built:_ open notices come first — id, kind, device id with model and nickname, field count and
+importance (or an event notice's title and firing count), first seen and source — then the drifted
+devices, most recently checked first. Model, nickname and title are sanitized. Drift that only an active
+demo accounts for is left out. The section is wired into the text chat and voice prompts, and the prompt
+is byte-identical when nothing is open or drifted.
 
 ## Non-functional requirements
 

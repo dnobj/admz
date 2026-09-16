@@ -139,6 +139,20 @@ def _demo_count() -> Optional[int]:
         return None
 
 
+def _open_notice_count() -> Optional[int]:
+    """How many notices are open — the Tasks nav badge (ADR-0071 §8).
+
+    One indexed count; None hides the badge, and so does any failure: the nav
+    must render on a backend whose notices table does not exist yet.
+    """
+    try:
+        from admz.notices.store import notices_store
+
+        return notices_store.count_open() or None
+    except Exception:
+        return None
+
+
 def _advanced_chip() -> Optional[Dict[str, Any]]:
     """The topbar advanced-capability chip, or None when there is nothing to say.
 
@@ -387,7 +401,8 @@ def _assemble_nav_sections(nav: Dict[str, Any]) -> List[Dict[str, Any]]:
              "icon": "presentation", "badge": _demo_count()},
             {"key": "fleet", "label": "Devices", "href": "/devices",
              "icon": "layout-grid", "badge": site_count, "children": device_children},
-            {"key": "tasks", "label": "Tasks", "href": "/tasks", "icon": "list-checks", "badge": None},
+            {"key": "tasks", "label": "Tasks", "href": "/tasks", "icon": "list-checks",
+             "badge": _open_notice_count()},
             {"key": "activity", "label": "Activity", "href": "/activity", "icon": "activity", "badge": None},
             {"key": "auditlog", "label": "Audit log", "href": "/audit-log", "icon": "shield", "badge": None},
             {"key": "settings", "label": "Settings", "href": "/settings", "icon": "settings", "badge": None},

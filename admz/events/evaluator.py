@@ -138,7 +138,10 @@ class DetectionEvaluator:
                 resource=f"device:{did}", success=ok, error_message=err,
                 details={"rule": rule.id, "name": rule.name, "action": rule.action_type,
                          "topic": rec.get("type"), "event_id": rec.get("id"),
-                         "summary": result.get("summary")},
+                         "summary": result.get("summary"),
+                         # ADR-0071: the notice a `notify` action raised.
+                         **({"notice_id": result["notice_id"]}
+                            if result.get("notice_id") is not None else {})},
             )
         except Exception as exc:  # noqa: BLE001
             self.store.record_fire(rule.id, now_ms, str(exc)[:200])

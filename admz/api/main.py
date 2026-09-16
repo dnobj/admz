@@ -40,6 +40,7 @@ from admz.api.routes import (
     drift as drift_route,
     events as events_route,
     health as health_route,
+    notices as notices_route,
     plans,
     rule_capture as rule_capture_route,
     schedules,
@@ -296,6 +297,21 @@ async def lifespan(app: FastAPI):
             import logging
             logging.getLogger(__name__).warning("ignore-rule seeding failed", exc_info=True)
 
+        # ADR-0071 §2: drift the signature cache already knows emits no new
+        # transition, so it would never raise a notice on its own. Idempotent:
+        # a device with any notice row is left to its transitions.
+        try:
+            from admz.notices.producers import backfill_drift_notices
+            raised = backfill_drift_notices(registry)
+            if raised:
+                import logging
+                logging.getLogger(__name__).info(
+                    "drift notices: raised %d for drift found at startup", raised)
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning(
+                "drift notice backfill failed", exc_info=True)
+
         # GH #307: eagerly convert any STORE_ENCRYPTED_SETTING_KEYS row still at
         # legacy plaintext. fleet_settings.get() only migrates a key when
         # something reads it, so a cold secret — the ACS webhook token is read
@@ -533,6 +549,8 @@ app.include_router(tasks_route.router, prefix="/api", tags=["tasks"])
 app.include_router(api_keys_route.router, prefix="/api", tags=["api-keys"])
 app.include_router(audit_route.router, prefix="/api", tags=["audit"])
 app.include_router(drift_route.router, prefix="/api", tags=["drift"])
+# ADR-0071: the Console's attention queue.
+app.include_router(notices_route.router, prefix="/api", tags=["notices"])
 app.include_router(events_route.router, tags=["events"])
 app.include_router(detections_route.router, tags=["detections"])
 app.include_router(watched_events_route.router, tags=["watched-events"])

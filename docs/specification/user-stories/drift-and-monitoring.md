@@ -132,7 +132,7 @@ Once the chatbot exists:
 
 **As an** operator who is happy with the drift panel in the web UI but lives in the console, **I want** ADMZ to tell me when a device drifts and let me settle it in the conversation — accept the noise with a note, revert what matters, stop tracking what will keep re-drifting — with the assistant saying which is which.
 
-**Acceptance criteria:** 📋 (planned — [ADR-0070](../decisions/0070-drift-is-reviewed-in-the-console-chat.md), [ADR-0071](../decisions/0071-a-task-raises-a-notice-the-console-delivers-it.md))
+**Acceptance criteria:** (built in #508, #509 and #510 — [ADR-0070](../decisions/0070-drift-is-reviewed-in-the-console-chat.md), [ADR-0071](../decisions/0071-a-task-raises-a-notice-the-console-delivers-it.md); bulk accept, FR-DRF-019, is still planned)
 1. A scheduled `drift_audit` (or a manual check) that finds new drift raises a **notice**; the console shows it in a "Needs attention" strip with **Review in chat**, **Snooze** and dismiss. One notice per device; it updates in place as the drift changes and closes itself when the drift clears or is accepted.
 2. **Review in chat** starts the conversation: a `[console]` note lands and the assistant speaks first, without a typed prompt — no server-side actor, the same one-gated-turn mechanism as US-CB-005's continuations.
 3. The assistant walks the important rows first, with values — an account or network change, a broken demo — and collapses the noise into one line ("3 firmware-managed/added keys and 1 case-only change; the firmware moved 12.9.57 → 12.11.77 since the baseline"). It asks before proposing to revert a security-sensitive row and never proposes to accept one silently.

@@ -110,6 +110,9 @@ EXPECTED_TOOL_ORDER = [
     "revert_drift",
     "ignore_config_keys",
     "list_config_ignore_rules",
+    # ADR-0071 — the Console's attention queue, after the review tools.
+    "list_notices",
+    "dismiss_notice",
 ]
 
 

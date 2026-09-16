@@ -1237,7 +1237,9 @@ class TestDeferredActionAuditRecordsPasswordSource:
         secret."""
         from admz.fleet.health import _AUDITABLE_OUTCOME_KEYS
 
-        assert _AUDITABLE_OUTCOME_KEYS == ("password_source",)
+        # `notice_id` (ADR-0071) is the integer id of the notice a `notify`
+        # action raised — a link to the Console queue, not a copy of anything.
+        assert _AUDITABLE_OUTCOME_KEYS == ("password_source", "notice_id")
         # Substring matching is the wrong test here and my first attempt used
         # it: "password" is a substring of "password_source", so it failed on
         # a key that is perfectly safe. The real property is that no key IS a

@@ -163,6 +163,9 @@ KNOWN_SETTING_KEYS: FrozenSet[str] = frozenset({
     "config_ignore_patterns",
     "config_ignore_rules",
     "config_ignore_seed_version",
+    # ADR-0071: drift raises Console notices unless this is falsey. Not
+    # LLM-writable: switching it off hides drift from the operator.
+    "drift_notices_enabled",
     # --- snapshot GC (admz/snapshot/maintenance.py) -----------------------
     # Inert today: setters and readers both have zero production callers
     # (docs/specification/review-2026-06-10.md:221). Listed so they cannot
