@@ -1,6 +1,7 @@
 # Plan: fold Fleet Settings into Settings (provisioning credentials)
 
-**Status:** shipped 2026-09-16 (this PR). Source: the owner's design handoff
+**Status:** shipped 2026-09-16 in two PRs — the credentials card (#499), then
+the summary rows below. Source: the owner's design handoff
 `design_handoff_fleet_settings` (`Settings (redesigned).dc.html`), recreated as
 Jinja on the classes already in `admz/api/static/css/admz.css`.
 
@@ -44,11 +45,25 @@ clause, and a note when nothing stored is tried. The flags are still computed in
 `_entry_credentials_view` and still pinned, on the view model
 (`tests/test_entry_promotion.py`) and in `tests/test_entry_credentials.py`.
 
-## Deferred (owner's choice, this PR's scope)
+## Follow-up: the summary rows (shipped 2026-09-16)
 
-The handoff also folds **Configuration tracking** and **GitHub config backup**
-into summary rows inside the Configuration repository card, and reduces
-**Modules** to a summary row plus a Configure button. Those only restyle cards
-whose editors must keep working (the ignore-list textarea, the GitHub connect
-flow, the ACS form), so they are a follow-up rather than part of the credential
-consolidation.
+The owner first scoped #499 to the credentials, then asked for the rest:
+
+- **Card order** now matches the handoff: Safety policy, Provisioning
+  credentials, Health monitoring, Configuration repository, Modules, Advanced.
+  The **Network discovery** card is gone — it is not in the design, and its only
+  control linked to the API docs; discovery runs from Devices and the console.
+- **Configuration repository** carries two summary rows. *Configuration
+  tracking* counts built-in ignores, scoped rules and custom patterns, and its
+  full editor (scoped-rule removal, the pattern textarea) opens in place. It is
+  open after a save and when the page is reached at `#config-tracking`, the
+  anchor the save redirect and drift pages use. *GitHub config backup* is the
+  row itself: status badge, then Connect, Finish/Cancel or Test/Disconnect, with
+  the connect flow's flashes on the row it redirects to (`#github-backup`).
+- **Modules** is one row per module; ACS Pro's form opens in place behind
+  Configure, with every element id its script uses unchanged.
+- **Health monitoring** now shows what the monitor runs with
+  (`fleet.health.effective_settings`). #499 re-derived defaults in the template
+  and got two wrong: an unset interval read "300s" while the monitor ran every
+  60s — production has no interval key — and an unset verify flag hid
+  "verifying credentials", whose default is on.

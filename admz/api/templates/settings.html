@@ -220,19 +220,36 @@
     </div>
   </div>
 
-  <!-- Network discovery -->
+  <!-- Health monitoring -->
   <div class="card">
-    <div class="card-header"><i data-lucide="radar"></i><span class="title">Network discovery</span></div>
+    <div class="card-header"><i data-lucide="activity"></i><span class="title">Health monitoring</span></div>
     <div class="card-body flush">
+      {# The monitor's own resolved values (fleet.health.effective_settings), not
+         defaults guessed here: an unset interval is 60s, and an unset verify
+         flag is on. No button — the page this used to link to is retired and
+         the poller has no live toggle. #}
+      <div class="setting-row" id="health-poller">
+        <div class="sr-text"><div class="sr-label">Background health poller</div>
+          <div class="sr-desc">Probes reachability every <span class="mono text">{{ '%g'|format(health.interval) }}s</span>, timeout <span class="mono text">{{ '%g'|format(health.timeout) }}s</span>{% if health.verify_credentials %}, verifying credentials{% endif %}. Surfaced as health dots across the fleet.</div></div>
+        <div class="sr-control"><span class="badge {{ 'green' if health.enabled else 'grey' }}" data-health-poller="{{ 'on' if health.enabled else 'off' }}"><span class="dot"></span>{{ 'on' if health.enabled else 'off' }}</span></div>
+      </div>
       <div class="setting-row">
-        <div class="sr-text"><div class="sr-label">Discovery protocols</div>
-          <div class="sr-desc">7-protocol scan: ARP, mDNS, ONVIF, SSDP, SNMP, HTTP, ping.</div></div>
-        <div class="sr-control"><a href="/api/docs" class="btn ghost sm">Run discovery</a></div>
+        <div class="sr-text"><div class="sr-label">Chat / model configuration</div>
+          <div class="sr-desc">Gemini API key and selectable models for the Console.</div></div>
+        <div class="sr-control"><a href="/settings/chat" class="btn ghost sm">Chat settings</a></div>
+      </div>
+      <div class="setting-row">
+        <div class="sr-text"><div class="sr-label">Survey / contributor mode</div>
+          <div class="sr-desc">Share new device API discoveries upstream (redacted, off by default).</div></div>
+        <div class="sr-control"><a href="/settings/survey" class="btn ghost sm">Survey settings</a></div>
       </div>
     </div>
   </div>
 
-  <!-- Configuration repository -->
+  {# Configuration repository — snapshots, the ignore list and the GitHub
+     mirror as summary rows. Each full editor stays one click away, and the two
+     anchors the server redirects to (#config-tracking after a save,
+     #github-backup from the GitHub connect flow) still land here. #}
   <div class="card">
     <div class="card-header"><i data-lucide="git-branch"></i><span class="title">Configuration repository</span></div>
     <div class="card-body flush">
@@ -247,160 +264,114 @@
           <div class="sr-desc mono">{{ all_settings.get('config_repo_remote') }}</div></div>
       </div>
       {% endif %}
-    </div>
-  </div>
 
-  <!-- Configuration tracking — ignore list -->
-  <div class="card" id="config-tracking">
-    <div class="card-header"><i data-lucide="filter"></i><span class="title">Configuration tracking</span></div>
-    <div class="card-body">
-      <p class="page-sub" style="margin:0 0 4px">
-        Fields to <strong>exclude</strong> from snapshots and drift. Matching params are dropped at
-        capture — they never enter a baseline, a drift report, or the git config repo. Use this for
-        noisy keys, or config an app stores badly (e.g. a credential a custom ACAP writes into
-        <span class="mono">param.cgi</span>). Changes apply on the next snapshot / drift check.
-      </p>
-      <p class="page-sub" style="margin:0 0 10px">
-        One pattern per line, matched against the full <span class="mono">root.*</span> key
-        (case-insensitive). <span class="mono">*</span>/<span class="mono">?</span> are globs
-        (<span class="mono">*</span> crosses dots); a plain entry matches that exact key or a whole
-        group. Examples: <span class="mono">root.Antitailgate.AlarmActionPass</span>,
-        <span class="mono">root.MyApp.*</span>, <span class="mono">*.DebugCounter</span>.
-      </p>
-      {% if ignore_saved %}
-      <div class="alert-box green" style="padding:8px 12px;border-radius:6px;margin-bottom:10px;background:var(--green-bg);border:1px solid var(--green-bd);color:var(--green-fg);font-size:13px">
-        <i data-lucide="check-circle" style="width:14px;height:14px;vertical-align:middle"></i> Ignore list saved.
-      </div>
-      {% endif %}
-      {% if ignore_globals %}
-      <div class="setting-row" style="padding-left:0;padding-right:0">
-        <div class="sr-text"><div class="sr-label">Built-in (global) ignores</div>
-          <div class="sr-desc">Shipped defaults, always on:
-            {% for g in ignore_globals %}<span class="mono">{{ g }}</span>{{ ", " if not loop.last }}{% endfor %}</div></div>
-      </div>
-      {% endif %}
-
-      <!-- Scoped rules (added from a device's drift diff) -->
-      <div class="setting-row" style="padding-left:0;padding-right:0;flex-direction:column;align-items:stretch;gap:8px">
-        <div class="sr-label">Scoped rules <span class="page-sub" style="margin:0;font-weight:400">— added via ⊘ / "Exclude selected" on a device's drift diff</span></div>
-        {% if ignore_rules %}
-        <table style="width:100%;border-collapse:collapse;font-size:12.5px">
-          <tbody>
-          {% for r in ignore_rules %}
-          <tr style="border-bottom:1px solid var(--border-subtle,var(--border))">
-            <td style="padding:6px 8px 6px 0;font-family:var(--mono);word-break:break-all">{{ r.key }}</td>
-            <td style="padding:6px 8px;white-space:nowrap"><span class="badge {{ 'grey' if r.scope == 'global' else 'blue' }} mono">{{ r.scope }}</span></td>
-            <td style="padding:6px 0;text-align:right;white-space:nowrap">
-              <button type="button" class="btn ghost sm" onclick="removeIgnoreRule(this, '{{ r.key|e }}', '{{ r.scope|e }}')"><i data-lucide="trash-2"></i> Remove</button>
-            </td>
-          </tr>
-          {% endfor %}
-          </tbody>
-        </table>
-        {% else %}
-        <div class="page-sub" style="margin:0">No scoped rules yet. Add them from a device's drift diff (the ⊘ on a row, or "Exclude selected").</div>
-        {% endif %}
-      </div>
-
-      <form method="POST" action="/settings/ignored-fields" style="margin-top:6px">
-        <label class="sr-label" for="ignore-patterns" style="display:block;margin-bottom:6px">Your custom ignore patterns</label>
-        <textarea id="ignore-patterns" name="patterns" rows="6" spellcheck="false"
-          placeholder="root.MyApp.SecretField&#10;root.SomeApp.*"
-          style="width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text);font-family:var(--mono);font-size:12.5px;line-height:1.6;resize:vertical">{{ ignore_patterns_text }}</textarea>
-        <div style="margin-top:10px;display:flex;justify-content:flex-end">
-          <button type="submit" class="btn primary sm"><i data-lucide="save"></i> Save ignore list</button>
+      {% set custom_patterns = ignore_patterns_text.splitlines()|map('trim')|select|list %}
+      <div class="setting-row" id="config-tracking" style="align-items:flex-start">
+        <div class="sr-text">
+          <div class="sr-label">Configuration tracking</div>
+          <div class="sr-desc" data-ignore-summary>{% if ignore_globals %}{{ ignore_globals|length }} built-in ignore{{ '' if ignore_globals|length == 1 else 's' }} · {% endif %}{{ ignore_rules|length }} scoped rule{{ '' if ignore_rules|length == 1 else 's' }} · {{ custom_patterns|length }} custom pattern{{ '' if custom_patterns|length == 1 else 's' }}</div>
+          {% if ignore_saved %}
+          <div class="result-row green" style="margin-top:10px"><i data-lucide="check-circle-2"></i><span>Ignore list saved.</span></div>
+          {% endif %}
+          {# Open after a save, and when linked to by its anchor (the script
+             below), so a device's drift page lands on the editor itself. #}
+          <div id="ignore-editor" style="margin-top:12px;padding:14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--panel2)"{% if not ignore_saved %} hidden{% endif %}>
+            <div class="sr-desc" style="margin:0 0 10px">Fields excluded from snapshots and drift — dropped at capture, so they never reach a baseline, a drift report or the git repo. One pattern per line against the full <span class="mono">root.*</span> key; <span class="mono">*</span> and <span class="mono">?</span> are globs (<span class="mono">*</span> crosses dots), e.g. <span class="mono">root.MyApp.*</span>.</div>
+            {% if ignore_globals %}
+            <div class="sr-desc" style="margin:0 0 10px">Built-in, always on:
+              {% for g in ignore_globals %}<span class="mono">{{ g }}</span>{{ ", " if not loop.last }}{% endfor %}</div>
+            {% endif %}
+            <div class="sr-label" style="margin-bottom:6px">Scoped rules <span class="sr-desc" style="font-weight:400">— added from a device's drift diff</span></div>
+            {% if ignore_rules %}
+            <table style="width:100%;border-collapse:collapse;font-size:12.5px;margin-bottom:10px">
+              <tbody>
+              {% for r in ignore_rules %}
+              <tr style="border-bottom:1px solid var(--border-subtle,var(--border))">
+                <td style="padding:6px 8px 6px 0;font-family:var(--mono);word-break:break-all">{{ r.key }}</td>
+                <td style="padding:6px 8px;white-space:nowrap"><span class="badge {{ 'grey' if r.scope == 'global' else 'blue' }} mono">{{ r.scope }}</span></td>
+                <td style="padding:6px 0;text-align:right;white-space:nowrap">
+                  <button type="button" class="btn ghost sm" onclick="removeIgnoreRule(this, '{{ r.key|e }}', '{{ r.scope|e }}')"><i data-lucide="trash-2"></i> Remove</button>
+                </td>
+              </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+            {% else %}
+            <div class="sr-desc" style="margin:0 0 10px">None yet. Add them with ⊘ or “Exclude selected” on a device's drift diff.</div>
+            {% endif %}
+            <form method="POST" action="/settings/ignored-fields">
+              <label class="sr-label" for="ignore-patterns" style="display:block;margin-bottom:6px">Your custom patterns</label>
+              <textarea id="ignore-patterns" name="patterns" rows="6" spellcheck="false"
+                placeholder="root.MyApp.SecretField&#10;root.SomeApp.*"
+                style="width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--text);font-family:var(--mono);font-size:12.5px;line-height:1.6;resize:vertical">{{ ignore_patterns_text }}</textarea>
+              <div style="margin-top:10px;display:flex;justify-content:flex-end;gap:8px">
+                <button type="button" class="btn ghost sm" data-toggle="ignore-editor">Close</button>
+                <button type="submit" class="btn primary sm"><i data-lucide="save"></i> Save ignore list</button>
+              </div>
+            </form>
+          </div>
         </div>
-      </form>
+        <div class="sr-control"><button type="button" class="btn ghost sm" id="edit-ignore-list" data-toggle="ignore-editor"><i data-lucide="filter"></i> Edit ignore list</button></div>
+      </div>
+
+      {# GitHub config backup (ADR-0045): a GitHub App mirrors the config repo
+         with short-lived, auto-rotated tokens. The row IS the control. #}
+      <div class="setting-row" id="github-backup" style="align-items:flex-start">
+        <div class="sr-text">
+          <div class="sr-label">GitHub config backup
+            <span id="gh-status" class="badge {{ 'green' if github.connected else 'grey' }}" style="margin-left:6px"><span class="dot"></span>{{ 'Connected' if github.connected else ('Finish install' if github.app_registered else 'Not connected') }}</span></div>
+          <div class="sr-desc">Mirror config history to a private GitHub repo via a GitHub App — no password or key to paste.{% if github.connected %} App <span class="mono">{{ github.slug }}</span> → <span class="mono">{{ github.config_repo or '(repo pending)' }}</span>.{% elif github.app_registered %} App <span class="mono">{{ github.slug }}</span> is created — install it on GitHub, then Finish.{% endif %}</div>
+          {% if github_connected_flash %}<div class="result-row green" style="margin-top:10px"><i data-lucide="check-circle-2"></i><span>Connected to GitHub.</span></div>{% endif %}
+          {% if github_error_flash %}<div class="result-row red" style="margin-top:10px"><i data-lucide="alert-triangle"></i><span>Connect failed ({{ github_error_flash }}). Please try again.</span></div>{% endif %}
+          <div id="gh-msg" class="sr-desc" aria-live="polite" style="margin-top:6px"></div>
+        </div>
+        <div class="sr-control" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+          {% if github.connected %}
+          <button class="btn ghost sm" id="gh-test" type="button"><i data-lucide="plug"></i> Test</button>
+          <button class="btn ghost sm" id="gh-disconnect" type="button">Disconnect</button>
+          {% elif github.app_registered %}
+          <button class="btn primary sm" id="gh-finish" type="button"><i data-lucide="check"></i> Finish connecting</button>
+          <button class="btn ghost sm" id="gh-disconnect" type="button">Cancel</button>
+          {% else %}
+          <a class="btn primary sm" id="gh-connect" href="/api/github/connect"><i data-lucide="github"></i> Connect GitHub</a>
+          {% endif %}
+        </div>
+      </div>
     </div>
   </div>
 
-  <!-- Health monitoring -->
-  <div class="card">
-    <div class="card-header"><i data-lucide="activity"></i><span class="title">Health monitoring</span></div>
-    <div class="card-body flush">
-      {# No button: the page this used to link to is retired, and the poller has
-         no live toggle. The values it actually runs with say more than a link. #}
-      <div class="setting-row">
-        <div class="sr-text"><div class="sr-label">Background health poller</div>
-          <div class="sr-desc">Probes reachability every <span class="mono text">{{ all_settings.get('health_check_interval_seconds', '300') }}s</span>, timeout <span class="mono text">{{ all_settings.get('health_check_timeout_seconds', '5') }}s</span>{% if all_settings.get('health_verify_credentials') in ('true', True, '1') %}, verifying credentials{% endif %}. Surfaced as health dots across the fleet.</div></div>
-        <div class="sr-control"><span class="badge {{ 'green' if all_settings.get('health_monitor_enabled') in ('true', True, '1') else 'grey' }}"><span class="dot"></span>{{ 'on' if all_settings.get('health_monitor_enabled') in ('true', True, '1') else 'off' }}</span></div>
-      </div>
-      <div class="setting-row">
-        <div class="sr-text"><div class="sr-label">Chat / model configuration</div>
-          <div class="sr-desc">Gemini API key and selectable models for the Console.</div></div>
-        <div class="sr-control"><a href="/settings/chat" class="btn ghost sm">Chat settings</a></div>
-      </div>
-      <div class="setting-row">
-        <div class="sr-text"><div class="sr-label">Survey / contributor mode</div>
-          <div class="sr-desc">Opt in to share new device API discoveries upstream (read-only, redacted, off by default).</div></div>
-        <div class="sr-control"><a href="/settings/survey" class="btn ghost sm">Survey settings</a></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Modules (ADR-0040) — connect pluggable modules. They add no sidebar /
-       chatbot surface until enabled here. -->
+  {# Modules (ADR-0040) — a pluggable module adds no sidebar or chatbot surface
+     until it is enabled here. One summary row per module; its settings open in
+     place. #}
   <div class="card" id="modules">
     <div class="card-header"><i data-lucide="blocks"></i><span class="title">Modules</span></div>
-    <div class="card-body">
-      <div class="sr">
+    <div class="card-body flush">
+      <div class="setting-row" style="align-items:flex-start">
         <div class="sr-text">
           <div class="sr-label">Axis Camera Station Pro <span id="acs-status" class="badge {{ 'green' if acs.enabled else 'grey' }}" style="margin-left:6px"><span class="dot"></span>{{ 'Connected' if acs.enabled else 'Not connected' }}</span></div>
-          <div class="sr-desc">Read-only: list ACS cameras and correlate them to your ADMZ devices by MAC. Authenticates as this server's own Windows identity (Negotiate) — <strong>no password is stored</strong>. Enabling it adds a “Cameras” item to the sidebar and ACS tools to the chatbot.</div>
-        </div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 120px;gap:10px;margin-top:6px;max-width:520px">
-        <label class="page-sub" style="display:block">Server address
-          <input id="acs-host" value="{{ acs.server_url }}" placeholder="acs-server.example.com"
-            style="width:100%;box-sizing:border-box;margin-top:4px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text)"></label>
-        <label class="page-sub" style="display:block">Port
-          <input id="acs-port" type="number" value="{{ acs.port }}"
-            style="width:100%;box-sizing:border-box;margin-top:4px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text)"></label>
-      </div>
-      <label class="page-sub" style="display:block;margin-top:10px;max-width:520px">Smart Client machine name <span style="opacity:.7">(optional — for live-view / playback control; defaults to this server's hostname)</span>
-        <input id="acs-client" value="{{ acs.client_machine_name }}" placeholder="this server's hostname (default)"
-          style="width:100%;box-sizing:border-box;margin-top:4px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text)"></label>
-      <label class="page-sub" style="display:block;margin-top:10px"><input id="acs-verify" type="checkbox" {{ 'checked' if acs.verify_tls }}> Verify TLS certificate (ACS ships a self-signed cert by default — leave off unless you've installed a trusted one)</label>
-      <label class="page-sub" style="display:block;margin-top:6px"><input id="acs-enabled" type="checkbox" {{ 'checked' if acs.enabled }}> Enable — show ACS Pro in the sidebar and chatbot</label>
-      <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
-        <button class="btn" id="acs-test" type="button"><i data-lucide="plug"></i> Test connection</button>
-        <button class="btn primary" id="acs-save" type="button">Save</button>
-        <span id="acs-msg" class="page-sub" aria-live="polite"></span>
-      </div>
-    </div>
-  </div>
-
-  <!-- GitHub config backup (ADR-0045) — mirror the config-repo to a private
-       GitHub repo via a GitHub App. "Connect" creates + installs the app; ADMZ
-       then pushes with short-lived, auto-rotated installation tokens. -->
-  <div class="card" id="github-backup">
-    <div class="card-header"><i data-lucide="github"></i><span class="title">GitHub config backup</span></div>
-    <div class="card-body">
-      <div class="sr">
-        <div class="sr-text">
-          <div class="sr-label">Config-repo mirror
-            <span id="gh-status" class="badge {{ 'green' if github.connected else 'grey' }}" style="margin-left:6px"><span class="dot"></span>{{ 'Connected' if github.connected else ('Finish install' if github.app_registered else 'Not connected') }}</span>
-          </div>
-          <div class="sr-desc">
-            Back up this server's device-config history to a private GitHub repo. Click <strong>Connect GitHub</strong> to create &amp; install a GitHub App — ADMZ then pushes with short-lived, auto-rotated tokens (<strong>no password or key to paste</strong>). Revoke anytime by uninstalling the app on GitHub.
-            {% if github.connected %}<br><span class="page-sub">App <code>{{ github.slug }}</code> → <code>{{ github.config_repo or '(repo pending)' }}</code></span>{% endif %}
+          <div class="sr-desc">Read-only: list ACS cameras and correlate them to ADMZ devices by MAC. Authenticates as this server's Windows identity — no password is stored.</div>
+          <div id="acs-config" style="margin-top:12px;padding:14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--panel2)" hidden>
+            <div style="display:grid;grid-template-columns:1fr 120px;gap:10px">
+              <label style="display:flex;flex-direction:column;gap:4px">Server address
+                <input type="text" id="acs-host" value="{{ acs.server_url }}" placeholder="acs-server.example.com"></label>
+              <label style="display:flex;flex-direction:column;gap:4px">Port
+                <input id="acs-port" type="number" value="{{ acs.port }}"></label>
+            </div>
+            <label style="display:flex;flex-direction:column;gap:4px;margin-top:10px">Smart Client machine name <span style="color:var(--text-faint)">(optional — for live view and playback; defaults to this server's hostname)</span>
+              <input type="text" id="acs-client" value="{{ acs.client_machine_name }}" placeholder="this server's hostname (default)"></label>
+            <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12.5px">
+              <input id="acs-verify" type="checkbox" {{ 'checked' if acs.verify_tls }}> Verify TLS certificate (ACS ships a self-signed one — leave off unless you installed a trusted certificate)</label>
+            <label style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12.5px">
+              <input id="acs-enabled" type="checkbox" {{ 'checked' if acs.enabled }}> Enable — show ACS Pro in the sidebar and chatbot</label>
+            <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+              <span id="acs-msg" class="sr-desc" aria-live="polite" style="margin:0 auto 0 0"></span>
+              <button class="btn ghost sm" type="button" data-toggle="acs-config">Close</button>
+              <button class="btn ghost sm" id="acs-test" type="button"><i data-lucide="plug"></i> Test connection</button>
+              <button class="btn primary sm" id="acs-save" type="button"><i data-lucide="save"></i> Save</button>
+            </div>
           </div>
         </div>
-      </div>
-      {% if github_connected_flash %}<div class="page-sub" style="color:var(--good,#3a7);margin-top:6px">✓ Connected to GitHub.</div>{% endif %}
-      {% if github_error_flash %}<div class="page-sub" style="color:var(--bad,#c44);margin-top:6px">✗ Connect failed ({{ github_error_flash }}). Please try again.</div>{% endif %}
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px">
-        {% if github.connected %}
-          <button class="btn" id="gh-test" type="button"><i data-lucide="plug"></i> Test push access</button>
-          <button class="btn" id="gh-disconnect" type="button">Disconnect</button>
-        {% elif github.app_registered %}
-          <button class="btn primary" id="gh-finish" type="button"><i data-lucide="check"></i> Finish connecting</button>
-          <button class="btn" id="gh-disconnect" type="button">Cancel</button>
-          <span class="page-sub">App <code>{{ github.slug }}</code> created — install it on GitHub (if you haven't), then click Finish.</span>
-        {% else %}
-          <a class="btn primary" href="/api/github/connect"><i data-lucide="github"></i> Connect GitHub</a>
-        {% endif %}
-        <span id="gh-msg" class="page-sub" aria-live="polite"></span>
+        <div class="sr-control"><button class="btn ghost sm" type="button" id="acs-configure" data-toggle="acs-config"><i data-lucide="plug"></i> Configure</button></div>
       </div>
     </div>
   </div>
@@ -467,6 +438,13 @@ document.querySelectorAll('[data-toggle]').forEach(function (btn) {
     if (first) first.focus();
   });
 });
+
+// A link to the ignore-list anchor — a device's drift page, or the redirect
+// after a save — lands with the editor open rather than on its summary row.
+if (location.hash === '#config-tracking') {
+  const editor = document.getElementById('ignore-editor');
+  if (editor) editor.hidden = false;
+}
 
 // The short-password warning, as the operator types (FR-CRED-014). While the
 // password is short the acceptance box is required, so the browser asks for it
