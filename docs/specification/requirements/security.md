@@ -50,7 +50,8 @@ anonymous callers are always denied reveal.
 
 ### FR-SEC-007 — Password values masked when listing fleet settings ✅
 `get_fleet_settings` (MCP), `GET /api/fleet/settings` (REST), **and the
-`/fleet-settings` HTML page** all mask secret-shaped settings — displayed
+Settings page's raw fleet-settings table** (`/settings`, collapsed; it was the
+`/fleet-settings` page until 2026-09-16) all mask secret-shaped settings — displayed
 as `****** (N chars)` (JSON) or a placeholder revealed on demand through
 the gated `GET /api/fleet/settings/{key}/reveal` fetch (HTML), never
 plaintext. Shared predicate `admz/redact.py::is_sensitive_key` (via

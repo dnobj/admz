@@ -733,3 +733,14 @@ label { font-size: 12.5px; color: var(--text-muted); }
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: .001ms !important; animation-iteration-count: 1 !important; }
 }
+
+/* Collapsed cards (<details class="card">): the disclosure marker is ours,
+   not the browser default, and the chevron turns when the card opens. */
+details > summary { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+details[open] .chev-d { transform: rotate(90deg); }
+
+/* `hidden` must win. A class that sets display (.note-band is display:flex)
+   outranks the browser's [hidden] rule, which left the short-password warning
+   on screen with the attribute set — found by looking at the page, 2026-09-16. */
+[hidden] { display: none !important; }

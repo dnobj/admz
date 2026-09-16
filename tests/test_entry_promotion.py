@@ -190,13 +190,12 @@ class TestTheOperatorCanSeeTheList:
         fleet_settings.set(ec.LEGACY_PASS_KEY, "legacy-pw")
         fleet_settings.set(ec.LEGACY_USER_KEY, "operator")
         ec.add_entry_credential("batch-a", "batch-pw", "batch A")
-        page = client.get("/fleet-settings")
+        page = client.get("/settings")
         assert page.status_code == 200
         # within the entry-list section: the generic settings table also
         # renders `default_username`, so the page as a whole proves nothing
-        section = page.text.split('id="entry-credentials"')[1].split("</table>")[0]
+        section = page.text.split('id="entry-credentials"')[1].split("<!-- /entry-credentials -->")[0]
         assert "operator" in section and "batch-a" in section and "batch A" in section
-        assert section.count('data-entry="tried"') == 2
         assert "legacy-pw" not in page.text and "batch-pw" not in page.text
         assert f"2 of {ec.MAX_STORED}" in page.text
 
@@ -204,7 +203,7 @@ class TestTheOperatorCanSeeTheList:
         from admz.fleet_settings import fleet_settings
 
         fleet_settings.set(ec.PROMPT_ALWAYS_KEY, "true")
-        page = client.get("/fleet-settings")
+        page = client.get("/settings")
         assert "Prompt-always posture is on" in page.text
 
 
@@ -325,15 +324,18 @@ class TestTheSessionColumnMigrates:
 
 
 class TestTheOperatorSeesWhatIsTried:
-    def test_fleet_settings_distinguishes_tried_from_stored_never_tried(self, client):
+    def test_the_settings_page_states_the_posture_once_not_per_row(self, client):
+        """The per-row pills are gone (the settings redesign, 2026-09-16): with
+        MAX_STORED == MAX_ATTEMPTS_PER_PASS a pill per row read as a per-device
+        claim. The page shows the stored count and the fallback instead, and the
+        flags stay pinned on the view model below."""
         from admz.fleet_settings import fleet_settings
 
         fleet_settings.set(ec.SETTING_KEY, json.dumps(
             [{"username": f"u{i}", "password": f"zz-secret-{i}", "label": f"batch {i}"} for i in range(5)]))
-        page = client.get("/fleet-settings").text
-        assert page.count('data-entry="tried"') == ec.MAX_ATTEMPTS_PER_PASS
-        assert page.count('data-entry="never-tried"') == 5 - ec.MAX_ATTEMPTS_PER_PASS
-        assert f"(at most {ec.MAX_ATTEMPTS_PER_PASS})" in page
+        page = client.get("/settings").text
+        assert 'data-entry="' not in page
+        assert f"5 of {ec.MAX_STORED}" in page
         assert "zz-secret" not in page
 
     def test_fleet_settings_shows_the_posture_leaving_everything_untried(self, client):
@@ -341,16 +343,16 @@ class TestTheOperatorSeesWhatIsTried:
 
         ec.add_entry_credential("batch-a", "batch-pw", "batch A")
         fleet_settings.set(ec.PROMPT_ALWAYS_KEY, "true")
-        page = client.get("/fleet-settings").text
+        page = client.get("/settings").text
         assert "Prompt-always posture is on" in page
-        assert page.count('data-entry="never-tried"') == 1 and 'data-entry="tried"' not in page
+        assert 'data-entry="' not in page
 
     def test_fleet_settings_survives_the_list_being_unreadable(self, client, monkeypatch):
         def boom():
             raise RuntimeError("fernet said no")
 
         monkeypatch.setattr("admz.entry_credentials.describe", boom)
-        page = client.get("/fleet-settings")
+        page = client.get("/settings")
         assert page.status_code == 200
         assert "Entry list unavailable" in page.text and "fernet said no" not in page.text
 
@@ -358,8 +360,13 @@ class TestTheOperatorSeesWhatIsTried:
 class TestTheEdgesOfTheView:
     def test_two_entries_with_the_same_name_and_label_are_told_apart(self, client):
         """The tried/never-tried match is a multiset: a second entry with the
-        same username and label that sits past the bound is never tried, and
-        the page says so rather than counting it as the first one."""
+        same username and label that sits past the bound is never tried, and is
+        not counted as the first one.
+
+        Pinned on the view model rather than the page: the redesign drops the
+        per-row pills, but the flags are still computed and a later card may
+        show them, so the matching itself must not rot."""
+        from admz.api.routes.web import _entry_credentials_view
         from admz.fleet_settings import fleet_settings
 
         entries = [{"username": "dup", "password": "zz-a", "label": "L"},
@@ -368,9 +375,10 @@ class TestTheEdgesOfTheView:
                    {"username": "u3", "password": "zz-d", "label": "b3"},
                    {"username": "dup", "password": "zz-e", "label": "L"}]
         fleet_settings.set(ec.SETTING_KEY, json.dumps(entries))
-        page = client.get("/fleet-settings").text
-        assert page.count('data-entry="tried"') == ec.MAX_ATTEMPTS_PER_PASS
-        assert page.count('data-entry="never-tried"') == len(entries) - ec.MAX_ATTEMPTS_PER_PASS
+        flags = [r["tried"] for r in _entry_credentials_view(ec.describe())["rows"]]
+        assert flags.count(True) == ec.MAX_ATTEMPTS_PER_PASS
+        assert flags.count(False) == len(entries) - ec.MAX_ATTEMPTS_PER_PASS
+        assert flags[0] is True and flags[-1] is False
 
 
 class TestTheMigrationOnlySwallowsDuplicates:
