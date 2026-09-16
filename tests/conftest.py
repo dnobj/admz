@@ -162,6 +162,26 @@ def repoint_fleet_settings(monkeypatch):
     return _repoint
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _fleet_settings_holders_imported():
+    """Import every holder before the first test, so none is first imported
+    under a test's patch.
+
+    A full-suite run never met that case: collection imports every holder
+    before any test runs. A single file, or a handful, could — and then the
+    holder kept the test's temporary store and the tripwire below failed the
+    test, correctly, but for a leak only a partial run creates.
+    ``tests/test_acs_webhook_token_exposure.py`` failed that way when run on its
+    own (found on #502), as did a subset of the settings suites. Importing them
+    here makes every run, whole or partial, start where the full suite does.
+    Session scope sets this up before any test's own fixtures.
+    """
+    import importlib
+
+    for name in _FLEET_SETTINGS_HOLDERS:
+        importlib.import_module(name)
+
+
 @pytest.fixture(autouse=True)
 def _fleet_settings_references_restored():
     """Fail the test that leaves a fleet-settings reference repointed.
