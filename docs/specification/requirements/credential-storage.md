@@ -261,10 +261,13 @@ most **3 entries × 2 ops = 6 credentialed operations** — a wrong entry costs
 two, the primary auth-required op and its corroborator (#149/#150) — and at the
 wire **up to 12 credentialed sends**, because the executor re-sends an op once
 when the 401 challenge names a different auth method than the device profile;
-each Digest op also costs one unauthenticated challenge round-trip. The loop is
-not the whole pass: onboarding first checks a *stored* credential, and a stale
-one is corroborated the same way, so one pass is at most **8 operations /
-16 sends**.
+each Digest op also costs one unauthenticated challenge round-trip. ADR-0068
+adds ADMZ's own fleet root password as one more attempt beside the bound (it
+takes no entry's place), so the loop is at most **(1 + 3) × 2 = 8 operations /
+16 sends**. The loop is not the whole pass: onboarding first checks a *stored*
+credential, and a stale one is corroborated the same way, so one pass is at most
+**10 operations / 20 sends**. (Corrected 2026-09-16: from ADR-0068 S1, which
+added the attempt, until then, the pass read 8 / 16 and the loop left it out.)
 
 ✅ **(ADR-0065 decision 4, #475 — shipped 2026-09-07.)** A pair the
 stored-credential check saw **refused** is skipped when the loop reaches it:
@@ -359,16 +362,30 @@ precisely what it is choosing.
 fails partway leaves a device whose root password ADMZ *holds* but
 `attempt_order()` does not know — so a retry would fail even though a working
 credential is configured. The break-glass value therefore becomes a **synthetic
-attempt, tried last**, and `describe()` reports it, so the settings page cannot
+attempt**, and `describe()` reports it, so the settings page cannot
 understate what ADMZ puts to a device. The attempt is made as **`root`**, the
 account provisioning writes the value to — never under `default_username`, which
 names an unrelated legacy entry credential (corrected 2026-09-14: paired with a
 `default_username` such as `operator`, the attempt could never have logged in).
-The page counts it apart from the entry credentials — *3 (at most 3), then
-ADMZ's break-glass root password* — rather than as a fourth entry
-(`describe()["break_glass_last"]`). The measured lockout floor below makes
+The measured lockout floor below makes
 the extra attempt free: ADMZ runs some 400× under the only protection that
 exists on the device tested.
+
+**It is tried first (✅ 2026-09-16, owner decision; [ADR-0068's
+amendment](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md#amendment-2026-09-16--the-fleet-root-password-is-tried-first-and-operators-see-it-by-that-name)).**
+S1 put it last. It is the one password ADMZ knows is on every device it
+provisioned, so the commonest re-onboard now gets in on the first attempt. It
+sits beside the three-entry bound rather than inside it: every entry is still
+tried. An entry holding the same pair is not asked a second time, and the order
+widens nothing a hostile device can collect, because a device that refuses
+everything is sent every attempt either way.
+
+- **Settings page.** The page places it apart from the count, as *tried top to
+  bottom, after the fleet root password*, rather than as a fourth entry
+  (`describe()["fleet_root_first"]`).
+- **When it gets in.** The approval card and the outcome name it — `"accepted
+  the fleet root password"`, `via_fleet_root` — instead of calling it an entry
+  credential.
 
 And *"Nothing requires a stored fleet password"* stops being true. Under ADR-0068
 provisioning a factory-defaulted device **requires** `fleet_root_password` and
@@ -410,7 +427,7 @@ and remove entries directly, for the case promotion cannot cover: a password
 known to have been set by hand on devices ADMZ has not adopted yet.
 `POST /fleet-settings/entry-credentials` adds a pair and
 `POST /fleet-settings/entry-credentials/remove` removes one, with the
-break-glass form's protections (FR-CRED-014): same-origin first, then
+fleet root password form's protections (FR-CRED-014): same-origin first, then
 **reveal-group membership** — whoever adds a credential knows it, and a
 duplicate is reported, which answers "is this password already on the list" —
 the password typed twice and never echoed, and every refusal audited. The rows
@@ -457,6 +474,18 @@ credential**. See
   ADMZ's database. It is not LLM-writable — FR-SEC-012's allow-set is unchanged —
   and the name carries `password`, so masking, reveal-gating and the MCP refusal
   follow from the name-shape predicate (FR-SEC-007) with no new special case.
+- **Operators see it as the "fleet root password"** (✅ 2026-09-16). "Break-glass"
+  is the design's name for the idea, used here, in ADR-0068 and in code comments.
+  What an operator reads uses the Settings row's name:
+  - page text and flashes;
+  - the device page's notes;
+  - approval-card reasons;
+  - log lines;
+  - the assistant's tool descriptions and results.
+
+  `tests/test_fleet_root_password_wording.py` checks every non-docstring string
+  literal and every template outside its comments. ADMZ also **tries it first**
+  on a device it has no working password for (FR-CRED-011).
 - **It is set from the Settings page** (`POST /fleet-settings/root-password` —
   the form moved to `/settings` on 2026-09-16, the endpoint kept its URL),
   which is the recommended path. `python -m admz settings set` still works, but it

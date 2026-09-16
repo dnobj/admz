@@ -78,12 +78,12 @@
             <span class="badge amber" data-root-password="unset">not set</span>
             {% endif %}
           </div>
-          <div class="sr-desc">Set as <span class="mono text">root</span> on every factory-default device ADMZ provisions — your way in by hand if ADMZ's database is lost. Also the final fallback when the entries below fail.{% if not root_password_configured %} Until one is set, factory-defaulted devices will <strong>not</strong> be provisioned.{% endif %}</div>
+          <div class="sr-desc">Set as <span class="mono text">root</span> on every factory-default device ADMZ provisions — your way in by hand if ADMZ's database is lost. Also the first password ADMZ tries on a device it has no working password for, before the entries below.{% if not root_password_configured %} Until one is set, factory-defaulted devices will <strong>not</strong> be provisioned.{% endif %}</div>
 
           {# Open when the server is asking the operator to accept a short
              password, or when their last attempt was refused — the message is
              above, and the form they were filling in must still be here. #}
-          <div id="break-glass-form" style="margin-top:12px;padding:14px;border:1px solid var(--accent-bd);border-radius:var(--radius);background:var(--panel)"{% if not short_password_pending and open_form != 'break-glass' %} hidden{% endif %}>
+          <div id="fleet-root-form" style="margin-top:12px;padding:14px;border:1px solid var(--accent-bd);border-radius:var(--radius);background:var(--panel)"{% if not short_password_pending and open_form != 'fleet-root' %} hidden{% endif %}>
             <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:12px;font-size:12.5px;color:var(--text-muted)">
               <i data-lucide="info" style="width:14px;height:14px;flex:0 0 auto;margin-top:2px;color:var(--accent-ink)"></i>
               <span>One value for the whole fleet — keep it where a person can find it. Devices already provisioned keep their current root password.</span>
@@ -110,7 +110,7 @@
                   Shorter than {{ root_password_recommended_length }} characters — use it anyway, I accept the risk</label>
               </div>
               <div style="grid-column:1 / -1;display:flex;gap:8px;justify-content:flex-end">
-                <button type="button" class="btn ghost sm" data-toggle="break-glass-form">Cancel</button>
+                <button type="button" class="btn ghost sm" data-toggle="fleet-root-form">Cancel</button>
                 <button type="submit" class="btn primary sm" id="set-root-password"><i data-lucide="save"></i>
                   {% if root_password_configured %}Replace root password{% else %}Set root password{% endif %}</button>
               </div>
@@ -118,7 +118,7 @@
           </div>
         </div>
         <div class="sr-control">
-          <button class="btn ghost sm" type="button" data-toggle="break-glass-form" data-toggle-other="entry-form">
+          <button class="btn ghost sm" type="button" data-toggle="fleet-root-form" data-toggle-other="entry-form">
             <i data-lucide="pencil"></i> {{ 'Replace' if root_password_configured else 'Set' }}</button>
         </div>
       </div>
@@ -131,7 +131,7 @@
             {% endif %}
             <span class="icon-btn xs" style="cursor:help" title="A working entry is used once, to create the admz account. It is never stored as that device's credential."><i data-lucide="circle-help"></i></span>
           </div>
-          <div class="sr-desc">Only used to get into a device that already has a root password, so ADMZ can create its own <span class="mono text">admz</span> account. Tried top to bottom{% if entry_credentials.break_glass_last %}, then the fleet root password{% endif %}.</div>
+          <div class="sr-desc">Only used to get into a device that already has a root password, so ADMZ can create its own <span class="mono text">admz</span> account. Tried top to bottom{% if entry_credentials.fleet_root_first %}, after the fleet root password{% endif %}.</div>
 
           {% if entry_credentials.error %}
           <div class="note-band" style="margin-top:10px"><i data-lucide="triangle-alert"></i>
@@ -206,7 +206,7 @@
           <button class="btn ghost sm" type="button" disabled
                   title="{% if entry_credentials.prompt_always %}The prompt-always posture is on{% elif entry_credentials.unreadable %}The stored list cannot be read in full{% elif entry_credentials.error %}The entry list is unavailable{% else %}The list is full{% endif %}"><i data-lucide="plus"></i> Add credential</button>
           {% else %}
-          <button class="btn ghost sm" type="button" id="add-entry-btn" data-toggle="entry-form" data-toggle-other="break-glass-form"><i data-lucide="plus"></i> Add credential</button>
+          <button class="btn ghost sm" type="button" id="add-entry-btn" data-toggle="entry-form" data-toggle-other="fleet-root-form"><i data-lucide="plus"></i> Add credential</button>
           {% endif %}
         </div>
       </div>

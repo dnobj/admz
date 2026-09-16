@@ -33,7 +33,11 @@ a Settings page that already had a card + setting-row system.
   multi-paragraph explanations. The Health-monitoring row that linked to the
   retired page now states the poller's actual interval, timeout and state.
 - **Copy:** "Break-glass root password" → "Fleet root password" in the UI. The
-  setting key, the audit rows and the MCP text are unchanged.
+  setting key and the audit rows are unchanged. This first pass renamed the row
+  only. The owner found the old name still in the flash beneath it, and the
+  follow-up on 2026-09-16 renamed it in everything an operator reads, the MCP
+  text included (FR-CRED-014). That follow-up also moved the fleet root
+  password to the front of the sign-in order (ADR-0068's amendment).
 
 ## The per-row "tried" pills are gone, deliberately
 

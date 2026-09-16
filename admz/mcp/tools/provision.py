@@ -14,7 +14,7 @@ TOOLS: List[Tool] = [
             "resolution onboard_device does, so the outcome and the statuses are "
             "identical to that tool. "
             "A factory-defaulted device gets TWO accounts: 'root' set to the fleet "
-            "break-glass root password, then ADMZ's own 'admz' account with a "
+            "root password, then ADMZ's own 'admz' account with a "
             "generated password — and ONLY the admz password is stored. A root "
             "credential is never stored per device (ADR-0068). If no fleet root "
             "password is configured it writes nothing and says so. "

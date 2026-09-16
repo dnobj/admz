@@ -26,7 +26,7 @@ sensitive.
 The legacy ``default_username``/``default_password`` pair is **read as entry #1**
 rather than migrated away. Since ADR-0064 slice E it is no longer written to a
 factory-defaulted device (FR-CRED-007; under ADR-0068 ``root`` gets the fleet
-break-glass password instead), so it is purely an entry credential; retiring it
+root password instead), so it is purely an entry credential; retiring it
 into the list is still a separate decision with its own blast radius — every
 install's effective list is its legacy pair — and this module only stops it
 being the *whole* answer.
@@ -56,6 +56,9 @@ LEGACY_USER_KEY = "default_username"
 LEGACY_PASS_KEY = "default_password"
 #: The label the legacy pair is listed and tried under.
 LEGACY_LABEL = "fleet default"
+#: The label ADMZ's own attempt with the fleet root password is listed under —
+#: the name an operator sets it by on the Settings page (FR-CRED-014).
+FLEET_ROOT_LABEL = "fleet root password"
 
 #: Ceiling on how many entry credentials may be STORED through the writer API.
 #:
@@ -76,13 +79,15 @@ MAX_STORED = 3
 #: page honest, while this bounds the device-facing loop — the CLI writer
 #: (``admz settings set entry_credentials``) bypasses the cap because
 #: :func:`_parse` never truncates, so without this one command could make a
-#: pass unbounded. Each wrong entry costs two credentialed operations (the
-#: primary auth op and its corroborator, GH #149/#150): the loop is at most
-#: 3 x 2 = 6 operations, up to 12 sends at the wire when the executor re-sends
-#: on a method-relearn. A pass is the loop plus the stored-credential check
-#: that precedes it (``onboarding.py`` step 1), and a stale stored credential
-#: is corroborated the same way — so one pass is at most 8 operations /
-#: 16 sends. A pair the stored-credential check saw REFUSED is skipped when
+#: pass unbounded. Each wrong attempt costs two credentialed operations (the
+#: primary auth op and its corroborator, GH #149/#150). The fleet root
+#: password is one more attempt, beside the bound rather than inside it
+#: (ADR-0068, :func:`_attempts`): the loop is at most (1 + 3) x 2 = 8
+#: operations, up to 16 sends at the wire when the executor re-sends on a
+#: method-relearn. A pass is the loop plus the stored-credential check that
+#: precedes it (``onboarding.py`` step 1), and a stale stored credential is
+#: corroborated the same way — so one pass is at most 10 operations /
+#: 20 sends. A pair the stored-credential check saw REFUSED is skipped when
 #: the loop reaches it, so no pair is put to a device to authenticate twice
 #: in one pass (#475, ADR-0065).
 MAX_ATTEMPTS_PER_PASS = MAX_STORED
@@ -148,6 +153,11 @@ class EntryCredential:
     password: str = field(repr=False)
     #: Free-text note — which batch or era this came from. Never a secret.
     label: str = ""
+    #: True only on ADMZ's own attempt with the fleet root password
+    #: (:func:`_fleet_root_attempt`). A stored entry never carries it, whatever
+    #: its label says, so a caller tells the two apart without reading text an
+    #: operator can type.
+    fleet_root: bool = False
 
     def redacted(self) -> dict:
         """Safe for a log, an API response or an LLM context."""
@@ -285,20 +295,27 @@ def list_entry_credentials() -> List[EntryCredential]:
     return creds
 
 
-def _break_glass_attempt(already: List[EntryCredential]) -> List[EntryCredential]:
-    """ADMZ's own break-glass root password, as a synthetic attempt (ADR-0068).
+def _fleet_root_attempt() -> List[EntryCredential]:
+    """ADMZ's own attempt with the fleet root password (ADR-0068), or nothing
+    when none is configured.
 
-    Not an entry credential — nobody stored it here, and it is not in the list.
-    It is the value ADMZ itself wrote to ``root`` when it provisioned the
-    device, and without it a pass that failed partway is unretryable: root
-    holds a password ADMZ *has* and ``attempt_order`` would not offer it.
+    Not an entry credential — nobody stored it in the list. It is the value
+    ADMZ itself writes to ``root`` on every device it provisions, and without
+    it a pass that failed partway would be unretryable: root would hold a
+    password ADMZ *has* and :func:`attempt_order` would not offer it.
 
-    Tried **last**, so it never displaces a credential an operator configured,
-    and reported by :func:`describe` so the settings page cannot understate
-    what ADMZ puts to a device. The extra attempt is affordable on measured
-    evidence, not assumption: the lockout measurement (FR-CRED-013, 2026-09-09)
-    found no cumulative lockout at all on the device tested, only a 20/s rate
-    throttle ADMZ runs some 400x under.
+    **Tried first** — the owner's call on 2026-09-16; ADR-0068 had put it last.
+    It is the one password ADMZ knows is on every device it provisioned, and
+    the one an operator is most likely to have set by hand as well, so the
+    commonest re-onboard gets in on the first attempt rather than after every
+    entry credential has failed. It takes no entry credential's place: the
+    list is bounded separately (:func:`_attempts`). Nor does the order widen
+    what a hostile device can collect — one that refuses everything is sent
+    every attempt either way. What it changes is that a device an entry
+    credential would have opened first refuses one root attempt, which the
+    lockout measurement (FR-CRED-013, 2026-09-09) makes affordable: no
+    cumulative lockout on the device tested, only a 20/s rate throttle ADMZ
+    runs some 400x under.
 
     **Under ``root``, never ``default_username``.** Provisioning writes this
     value to the ``root`` account, while ``default_username`` names an
@@ -312,24 +329,21 @@ def _break_glass_attempt(already: List[EntryCredential]) -> List[EntryCredential
     """
     from admz.provisioning import FLEET_ROOT_PASSWORD_KEY
 
-    break_glass = fleet_settings.get(FLEET_ROOT_PASSWORD_KEY)
-    if not break_glass:
+    password = fleet_settings.get(FLEET_ROOT_PASSWORD_KEY)
+    if not password:
         return []
-    username = "root"
-    if any((c.username, c.password) == (username, break_glass) for c in already):
-        return []
-    return [EntryCredential(username, break_glass, "ADMZ break-glass root")]
+    return [EntryCredential("root", password, FLEET_ROOT_LABEL, fleet_root=True)]
 
 
 def _attempts(*, warn: bool) -> Tuple[List[EntryCredential], List[EntryCredential]]:
-    """One pass's attempts: the bounded entry credentials, then ADMZ's
-    break-glass attempt (empty when none is configured).
+    """One pass's parts: ADMZ's fleet root attempt (empty when none is
+    configured), and the bounded entry credentials.
 
-    The one place a pass is composed. :func:`attempt_order` joins the two and
-    :func:`describe` reports them, so what is tried and what the settings page
-    says is tried cannot drift; they are returned apart only so the page can
-    say "three entry credentials, then the break-glass password" rather than
-    "4 (at most 3)".
+    The one place a pass is composed. :func:`attempt_order` joins the two with
+    :func:`_in_order` and :func:`describe` reports them, so what is tried and
+    what the settings page says is tried cannot drift; they are returned apart
+    so the page can say "after the fleet root password, top to bottom" rather
+    than "4 (at most 3)".
     """
     creds = list_entry_credentials()
     if len(creds) > MAX_ATTEMPTS_PER_PASS:
@@ -340,33 +354,47 @@ def _attempts(*, warn: bool) -> Tuple[List[EntryCredential], List[EntryCredentia
                 len(creds), MAX_ATTEMPTS_PER_PASS,
             )
         creds = creds[:MAX_ATTEMPTS_PER_PASS]
-    # After the slice, deliberately: the break-glass value is ADMZ's own way
-    # back into a device it provisioned, and a full entry list must not be able
-    # to crowd it out.
-    return creds, _break_glass_attempt(creds)
+    # Beside the slice, not inside it: the fleet root password is ADMZ's own
+    # way back into a device it provisioned, so a full entry list must not be
+    # able to crowd it out — and it takes no entry's place either.
+    return _fleet_root_attempt(), creds
+
+
+def _in_order(fleet_root: List[EntryCredential],
+              entries: List[EntryCredential]) -> List[EntryCredential]:
+    """The pass as it is asked: the fleet root attempt, then each entry.
+
+    An entry holding the fleet root pair is left out — the first attempt has
+    already put that exact question to the device. The slice happened before
+    this, so leaving one out only shortens a pass; it never pulls an entry
+    stored past the bound into it.
+    """
+    if not fleet_root:
+        return list(entries)
+    same = (fleet_root[0].username, fleet_root[0].password)
+    return fleet_root + [c for c in entries if (c.username, c.password) != same]
 
 
 def attempt_order(*, warn: bool = True) -> List[EntryCredential]:
-    """What one onboarding pass should try — at most :data:`MAX_ATTEMPTS_PER_PASS`
-    entry credentials, **plus** ADMZ's break-glass root password when one is
-    configured (ADR-0068; appended last by :func:`_break_glass_attempt`).
+    """What one onboarding pass should try: ADMZ's fleet root password first,
+    when one is configured (ADR-0068, :func:`_fleet_root_attempt`), then at
+    most :data:`MAX_ATTEMPTS_PER_PASS` entry credentials.
 
     Composed in one place (:func:`_attempts`): the onboarding loop iterates
     this and :func:`describe` reports the same attempts as ``in_use``, so what
-    is tried and what the settings page says is tried cannot drift. The order
-    is the stored order (the legacy pair first). Reordering
-    most-recently-successful-first is ADR-0064 slice F — not yet built; the
-    lockout measurement that gated it was made on 2026-09-09 — and it must sort
-    *before* the slice, or success history could never pull a tail entry into
-    the tried set.
+    is tried and what the settings page says is tried cannot drift. The entry
+    credentials keep their stored order (the legacy pair first). Reordering
+    them most-recently-successful-first is ADR-0064 slice F — not yet built;
+    the lockout measurement that gated it was made on 2026-09-09 — and it must
+    sort *before* the slice, or success history could never pull a tail entry
+    into the tried set.
 
     ``warn=False`` is for readers (:func:`describe`, the settings page): the
     WARNING about a list stored over the bound belongs to the pass that
     truncates it, not to every page view. The message carries counts only,
     never a credential.
     """
-    entries, break_glass = _attempts(warn=warn)
-    return entries + break_glass
+    return _in_order(*_attempts(warn=warn))
 
 
 def add_entry_credential(username: str, password: str, label: str = "") -> bool:
@@ -486,10 +514,14 @@ def describe() -> dict:
     identical-looking rows only the first is live, and matching on username and
     label would mark the wrong one tried and invite removing the live one.
 
-    ``in_use`` ends with ADMZ's break-glass root password when one is
-    configured (ADR-0068), and ``break_glass_last`` says so — letting a page
-    count the entry credentials apart from it, rather than report four tried
-    "at most three". ``unreadable`` says a stored list exists that cannot be
+    ``stored_tried`` is about the entries within the bound: an entry holding
+    the fleet root pair counts as tried, because that pair is put to the device
+    (first), and under :func:`prompt_always` nothing stored counts, even then.
+
+    ``in_use`` starts with ADMZ's fleet root password when one is configured
+    (ADR-0068), and ``fleet_root_first`` says so — letting a page count the
+    entry credentials apart from it, rather than report four tried "at most
+    three". ``unreadable`` says a stored list exists that cannot be
     read in full; it reads as (partly) empty, and without the flag a page would
     say "none stored" about a list that exists. ``revision`` is
     :func:`list_revision`, for a page's Remove buttons.
@@ -500,7 +532,7 @@ def describe() -> dict:
     if legacy_pass:
         stored.insert(0, EntryCredential(
             fleet_settings.get(LEGACY_USER_KEY) or "root", legacy_pass, LEGACY_LABEL))
-    entries, break_glass = _attempts(warn=False)
+    fleet_root, entries = _attempts(warn=False)
     tried = {(c.username, c.password) for c in entries}
     seen = set()
     stored_tried = []
@@ -514,8 +546,8 @@ def describe() -> dict:
         "max_attempts_per_pass": MAX_ATTEMPTS_PER_PASS,
         "stored": [c.redacted() for c in stored],
         "stored_tried": stored_tried,
-        "in_use": [c.redacted() for c in entries + break_glass],
-        "break_glass_last": bool(break_glass),
+        "in_use": [c.redacted() for c in _in_order(fleet_root, entries)],
+        "fleet_root_first": bool(fleet_root),
         "unreadable": _unreadable(raw),
         # Last, after every read above: a read can migrate a legacy plaintext
         # secret to ciphertext, and the token has to describe the state a

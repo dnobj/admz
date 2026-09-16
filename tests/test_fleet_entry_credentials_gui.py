@@ -521,7 +521,8 @@ class TestThePageSaysWhatIsTried:
     ``MAX_STORED == MAX_ATTEMPTS_PER_PASS`` every stored entry is tried unless
     the prompt-always posture is on, so a pill per row read as a per-device
     claim ADMZ cannot make. The page states the posture once instead — the
-    stored count, the fallback, and a note when nothing stored is tried. The
+    stored count, where the fleet root password goes, and a note when nothing
+    stored is tried. The
     flags are still computed and still pinned, on the view model
     (tests/test_entry_promotion.py) and in tests/test_entry_credentials.py.
     """
@@ -540,15 +541,18 @@ class TestThePageSaysWhatIsTried:
         section = _section(client.get("/settings").text)
         assert f"{ec.MAX_STORED} of {ec.MAX_STORED}" in section
 
-    def test_the_break_glass_fallback_is_named_when_one_is_set(self, client):
-        """ADR-0068 appends ADMZ's fleet root password to every pass, so the
-        operator is told the order does not end with the list."""
+    def test_the_fleet_root_password_is_named_first_when_one_is_set(self, client):
+        """ADMZ asks the fleet root password before the list (ADR-0068, as
+        amended 2026-09-16), so the operator is told the list is not first."""
         ec.add_entry_credential("u0", "zz-pw-0")
-        client.fs.set("fleet_root_password", "BreakGlass-entry-gui-1")
+        client.fs.set("fleet_root_password", "FleetRoot-entry-gui-1")
         page = " ".join(client.get("/settings").text.split())
-        assert "Tried top to bottom, then the fleet root password" in page
+        assert "Tried top to bottom, after the fleet root password" in page
+        assert "first password ADMZ tries on a device" in page
+        assert "final fallback" not in page
 
-    def test_without_a_break_glass_password_the_fallback_is_not_mentioned(self, client):
+    def test_without_a_fleet_root_password_it_is_not_mentioned(self, client):
         ec.add_entry_credential("u0", "zz-pw-0")
         page = " ".join(client.get("/settings").text.split())
-        assert "then the fleet root password" not in page
+        assert "Tried top to bottom." in page
+        assert "after the fleet root password" not in page

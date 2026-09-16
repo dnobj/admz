@@ -640,9 +640,12 @@ async def _submit_root_adopt(
             request, outcome="orphaned",
             heading="ADMZ could not finish safely",
             device_label=device_label, entry_username=username,
+            # The way back in is the password just typed — ADMZ never changes
+            # it — not the fleet root password, which this device may not have.
             reason=("ADMZ may have created its account on the device but could "
-                    "not keep the password. Nothing was stored. Recover with "
-                    "the fleet break-glass root password and re-onboard."),
+                    "not keep the password. Nothing was stored. The password "
+                    "you entered still signs in: use it to remove any 'admz' "
+                    "account on the device, then onboard it again."),
             status_code=500)
 
     # --- outcomes that never touched the device: the token stays LIVE --------
