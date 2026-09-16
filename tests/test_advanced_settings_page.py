@@ -66,7 +66,7 @@ def _admin() -> Principal:
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
+def client(tmp_path, monkeypatch, repoint_fleet_settings):
     monkeypatch.setenv("ADMZ_HOME", str(tmp_path))
     monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
     monkeypatch.setenv("ADMZ_KEY_PATH", str(tmp_path / "admz.key"))
@@ -78,13 +78,20 @@ def client(tmp_path, monkeypatch):
 
     from admz import fleet_settings as fs_module
 
-    fresh = fs_module.FleetSettings(str(tmp_path / "admz.db"))
-    monkeypatch.setattr(fs_module, "fleet_settings", fresh)
+    # `from admz.fleet_settings import fleet_settings` binds at IMPORT, so
+    # patching only the module attribute left every route reading this test's
+    # temp store for the rest of the session — which is how
+    # tests/test_api_routes.py::TestFleetSettingsMasking came to 404 on a key it
+    # had just written, one file later. The helper imports every holder first
+    # and repoints them together; the conftest tripwire fails the test that
+    # leaves one behind.
+    fresh = repoint_fleet_settings(
+        fs_module.FleetSettings(str(tmp_path / "admz.db")))
+
+    from admz.api.main import app
 
     backend = StubBackend(_anon())
     set_active_backend(backend)
-
-    from admz.api.main import app
 
     app.state._stub_backend = backend
     try:
