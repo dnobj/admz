@@ -91,6 +91,7 @@ from admz.snapshot.drift import DriftDetector
 from admz.snapshot.scheduler import SnapshotScheduler, SnapshotSchedule, parse_interval
 from admz.discovery import discover_devices as run_network_discovery
 from admz.mcp.tools import MIGRATED_TOOLS
+from admz.mcp.tools.drift_review import ORDER_RULE as _DRIFT_ORDER_RULE
 from admz.mcp.dispatch import ToolCtx, TOOL_HANDLERS
 from admz.exceptions import (
     ADMZError,
@@ -1424,9 +1425,9 @@ class ADMZMCPServer:
                         "no card, while an active demo owns config on the "
                         "device. Returns blocked:true with a confirm_token — "
                         "the re-pointing executes only after the user "
-                        "approves the on-screen confirmation card. The "
-                        "opposite action (reject the drift) is "
-                        "restore_device with ref omitted."
+                        "approves the on-screen confirmation card. To undo "
+                        "chosen fields instead, use revert_drift. "
+                        + _DRIFT_ORDER_RULE
                     ),
                     inputSchema={
                         "type": "object",
@@ -1510,7 +1511,9 @@ class ADMZMCPServer:
                     description=(
                         "Compare a device's live configuration against what's "
                         "stored in git. Reports any fields that differ. "
-                        "Useful for detecting manual changes made outside ADMZ."
+                        "Useful for detecting manual changes made outside ADMZ. "
+                        "To review drift with the user — accept, revert or "
+                        "exclude fields — use get_drift_review instead."
                     ),
                     inputSchema={
                         "type": "object",
@@ -3933,6 +3936,292 @@ class ADMZMCPServer:
         env = operations.blocked_envelope(session)
         env["success"] = False
         return env
+
+    # ------------------------------------------------------------------
+    # Drift review (ADR-0070 §3)
+    # ------------------------------------------------------------------
+
+    def _device_label(self, device_id: str) -> str:
+        info = self.registry.get_device_info(device_id) or {}
+        return str(info.get("nickname") or info.get("model") or device_id)
+
+    async def _get_drift_review(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """The drift of one device as a review: annotated, ordered, compact.
+
+        Reads the cached diff — what the operator was shown and what accept
+        and revert act on — unless ``refresh`` asks for a live check, which
+        records a fresh observation. Falls back to a live check when nothing
+        is cached. Exactly the annotations the web UI reads (``review``).
+        """
+        import time as _time
+
+        from admz.mcp.tools.drift_review import TRIAGE_CLASSES
+        from admz.snapshot import review
+
+        device_id = arguments.get("device_id")
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+        classes = arguments.get("classes")
+        if classes is not None and (
+            not isinstance(classes, list)
+            or not all(isinstance(c, str) and c in TRIAGE_CLASSES for c in classes)
+        ):
+            return {"success": False, "error": "InvalidInput",
+                    "message": "classes must be a list of triage class names: "
+                               + ", ".join(TRIAGE_CLASSES)}
+        limit = arguments.get("limit", 40)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            return {"success": False, "error": "InvalidInput",
+                    "message": "limit must be an integer from 1 to 100"}
+
+        cached = None
+        if not arguments.get("refresh"):
+            cached = review.cached_drift_report(self.registry, device_id)
+        if cached is not None:
+            summary = cached["report"]
+            computed_at = cached.get("computed_at")
+        else:
+            report = await self.drift_detector.check_drift(device_id)
+            summary = report.to_summary()
+            computed_at = _time.time()
+        review.annotate_review(
+            summary, registry=self.registry, git_repo=self.git_repo,
+            device_id=device_id,
+        )
+        out = review.compact_review(
+            summary, classes=classes,
+            include_fields=arguments.get("include_fields", True) is not False,
+            limit=limit,
+        )
+        return {
+            "success": True,
+            "cached": cached is not None,
+            "computed_at": computed_at,
+            **out,
+        }
+
+    async def _revert_drift(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Revert chosen drifted fields on one device — one gated plan card.
+
+        The same selection and the same builder as the web UI's "Revert N
+        fields": the cached diff (``review.revert_fields_for``), the facet's
+        own revertable predicate, and ``build_targeted_revert_plan``, whose
+        steps are all service-affecting, so ``execute_gated_plan`` returns the
+        blocked envelope. The plan's steps travel in the confirm session, so
+        the card approves in the web process that did not build the plan.
+        """
+        from admz import operations
+        from admz.auth import principal_name
+        from admz.snapshot import review
+        from admz.validators import sanitize_display_text, validate_identifier
+
+        device_id = arguments.get("device_id")
+        if not self.registry.device_exists(device_id):
+            raise DeviceNotFoundError(f"Device not found: {device_id}")
+
+        def invalid(message: str) -> Dict[str, Any]:
+            return {"success": False, "error": "InvalidInput", "message": message}
+
+        selected = None
+        raw_fields = arguments.get("fields")
+        if raw_fields is not None:
+            if not isinstance(raw_fields, list) or not raw_fields:
+                return invalid("fields must be a non-empty list of {facet, path}; "
+                               "omit it to revert every revertable field")
+            if len(raw_fields) > 200:
+                return invalid("at most 200 fields may be reverted at once")
+            selected = []
+            for item in raw_fields:
+                facet = item.get("facet") if isinstance(item, dict) else None
+                path = item.get("path") if isinstance(item, dict) else None
+                if (not isinstance(facet, str) or not isinstance(path, str)
+                        or not path.strip() or "\n" in path or len(path) > 512):
+                    return invalid("each field needs a facet and a single-line path, "
+                                   "as get_drift_review lists them")
+                try:
+                    validate_identifier(facet, "facet_name")
+                except ValueError as e:
+                    return invalid(str(e))
+                selected.append((facet, path))
+        note = arguments.get("note")
+        if note is not None and not isinstance(note, str):
+            return invalid("note must be a string")
+        note = (note or "").strip()
+        if len(note) > 500:
+            return invalid("note must be at most 500 characters")
+
+        fields, not_found = await review.revert_fields_for(
+            self.registry, self.drift_detector, device_id, selected=selected)
+        # Which of them a targeted revert can write — the predicate the UI's
+        # per-row checkbox uses, so chat and UI agree about every row.
+        rows = [{"facet": f.facet, "path": f.path, "expected": f.expected,
+                 "actual": f.actual, "canonical_key": f.canonical_key,
+                 "bucket": f.bucket} for f in fields]
+        review.annotate_revertable(
+            {"drifted_fields": rows}, registry=self.registry, device_id=device_id)
+        chosen = [(f, r) for f, r in zip(fields, rows) if r["revertable"]]
+        revert = [f for f, _ in chosen]
+        skipped = [{"facet": r["facet"], "path": r["path"],
+                    "key": r["canonical_key"],
+                    "reason": r.get("revert_skip_reason", "read-only")}
+                   for r in rows if not r["revertable"]]
+        if selected is not None:
+            in_plan = {(f.facet, f.path) for f in fields}
+            missing = set(not_found)
+            for facet, path in dict.fromkeys(selected):
+                if (facet, path) not in in_plan and (facet, path) not in missing:
+                    # In the diff but not returned: an active demo owns it.
+                    skipped.append({"facet": facet, "path": path,
+                                    "reason": "demo-owned"})
+        base = {
+            "device_id": device_id,
+            "skipped": skipped,
+            "not_found": [{"facet": f, "path": p} for f, p in not_found],
+        }
+
+        spec = self.restore_builder.build_targeted_revert_plan(device_id, revert)
+        base["warnings"] = spec.get("warnings", [])
+        if not spec["steps"]:
+            return {
+                "success": False,
+                "error": "NothingToRevert",
+                "message": (
+                    "Nothing to revert: no chosen field is one ADMZ can write "
+                    "back. The skipped list says why for each."
+                ),
+                **base,
+            }
+
+        count = len(revert)
+        description = (
+            f"Revert {count} drifted field{'s' if count != 1 else ''} on "
+            f"{self._device_label(device_id)} ({device_id}) to baseline"
+        )
+        if note:
+            description += f" — {note}"
+        try:
+            plan = self.plan_engine.create_plan(
+                description=description, steps=spec["steps"], on_failure="stop",
+                created_by=principal_name(self.principal),
+            )
+        except ValueError as e:
+            return {"success": False, "error": str(e), **base}
+        env = await operations.execute_gated_plan(self.plan_engine, plan.plan_id)
+        env.update(base)
+        env["plan_id"] = plan.plan_id
+        # The annotated row's key: a cached row may not carry one of its own.
+        env["reverting"] = [
+            {"facet": f.facet, "path": f.path, "key": r["canonical_key"],
+             "to": sanitize_display_text(f.expected, max_length=80)}
+            for f, r in chosen
+        ]
+        return env
+
+    async def _ignore_config_keys(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """The eye-slash, behind a card (ADR-0070 §3).
+
+        A global rule silently re-labels future drift on every device, the
+        consequence class ``assign_demo_fragment`` is gated for, and the
+        console's interactive exemption never applies to a model. So the
+        action rides the default risk class pinned to ``url_only`` — not
+        operator-configurable, so no fleet override softens it — and the card
+        names every key and the scope.
+        """
+        from admz import operations
+        from admz.auth import principal_name
+        from admz.snapshot import ignore as ignore_rules
+        from admz.validators import validate_identifier
+
+        def invalid(message: str) -> Dict[str, Any]:
+            return {"success": False, "error": "InvalidInput", "message": message}
+
+        try:
+            keys = ignore_rules.normalize_rule_keys(arguments.get("keys"))
+        except ValueError as e:
+            return invalid(f"keys: {e}")
+        if not keys:
+            return invalid("keys must name at least one key")
+        try:
+            scope = ignore_rules.normalize_rule_scope(arguments.get("scope"))
+        except ValueError as e:
+            return invalid(f"scope: {e}")
+        reason = arguments.get("reason")
+        if reason is not None and not isinstance(reason, str):
+            return invalid("reason must be a string")
+        reason = " ".join((reason or "").split())
+        if len(reason) > 200:
+            return invalid("reason must be at most 200 characters")
+
+        if scope.startswith("device:"):
+            target = scope[len("device:"):]
+            try:
+                validate_identifier(target, "device_id")
+            except ValueError as e:
+                return invalid(f"scope: {e}")
+            if not self.registry.device_exists(target):
+                raise DeviceNotFoundError(f"Device not found: {target}")
+            where = f"on {self._device_label(target)} ({target})"
+        elif scope.startswith("tag:"):
+            target = "fleet"
+            where = f"on every device tagged '{scope[len('tag:'):]}'"
+        else:
+            target = "fleet"
+            where = "on EVERY device (fleet-wide)"
+
+        existing = {(r["key"], r["scope"]) for r in ignore_rules.get_rules()}
+        new = [k for k in keys if (k, scope) not in existing]
+        already = [k for k in keys if (k, scope) in existing]
+        if not new:
+            return {
+                "success": True,
+                "already_present": already,
+                "scope": scope,
+                "message": "Already excluded in that scope — nothing to approve.",
+            }
+
+        card = (
+            f"Exclude {len(new)} key{'s' if len(new) != 1 else ''} from drift "
+            f"tracking {where}: {', '.join(new)}. ADMZ stops reporting changes "
+            "to them — real ones included — until the rule is removed in "
+            "Settings."
+        )
+        if reason:
+            card += f' Reason: "{reason}".'
+        payload: Dict[str, Any] = {
+            "rules": [{"key": k, "scope": scope} for k in new],
+            "scope": scope,
+            "requested_by": principal_name(self.principal),
+        }
+        if reason:
+            payload["reason"] = reason
+        session = operations.create_action_session(
+            action="add_ignore_rules", device_id=target, payload=payload,
+            reason=card,
+        )
+        env = operations.blocked_envelope(session)
+        env["success"] = False
+        if already:
+            env["already_present"] = already
+        return env
+
+    async def _list_config_ignore_rules(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Every rule that excludes keys from drift tracking. Read-only."""
+        from admz.snapshot import ignore as ignore_rules
+
+        rules = ignore_rules.get_rules()
+        scope = arguments.get("scope")
+        if scope:
+            try:
+                scope = ignore_rules.normalize_rule_scope(scope)
+            except ValueError as e:
+                return {"success": False, "error": "InvalidInput",
+                        "message": f"scope: {e}"}
+            rules = [r for r in rules if r["scope"] == scope]
+        out: Dict[str, Any] = {"success": True, "count": len(rules),
+                               "rules": rules[:200]}
+        if len(rules) > 200:
+            out["more"] = len(rules) - 200
+        return out
 
     async def _diff_device(
         self, device_id: str, ref_a: str, ref_b: str

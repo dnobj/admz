@@ -230,7 +230,7 @@ could never fire. Every label also carries the `rule` id that produced it.
 `admz/snapshot/review.py::annotate_review` runs the revertable annotation (moved from the REST module,
 it needs only the registry), the #230 attribution and FR-DRF-014's triage, and adds the ignore rules
 applicable to the device (at most 20, with `ignore_rule_count`). `GET /api/snapshot/drift` and the MCP
-`check_drift` tool call it on the cached and the live path alike, and so will `get_drift_review` and
+`check_drift` and `get_drift_review` tools call it on the cached and the live path alike, and so will
 ADR-0071's notice producer, so every surface shows the same `revertable`, `attribution` and `triage`
 keys. Before this, the MCP path applied attribution only and never `revertable`.
 
@@ -242,13 +242,7 @@ from the MCP `accept_baseline` handler **before a card is minted**, and from the
 still cannot be baked into a baseline. Before this, only the REST route ran it and the chat path bypassed
 it entirely. A refusal on either chat path carries `refused: "active_demo" | "guard_unavailable"`.
 
-### FR-DRF-017 — Targeted revert and ignore rules are reachable from chat behind the standard gates 🚧
-**Built (PR 1):** `accept_baseline` takes `note`, `ignore_keys` (≤50, validated like the REST rule model)
-and `ignore_scope`; the exclusions ride the same card and are written only on approval, before the
-pointer moves; an approved accept reports them as `ignore_added_keys` on its audit row. The seed list
-gains `root.Properties.FirmwareManagement.*` (ADR-0070 §7). **Not yet (PR 2):** `revert_drift`,
-`ignore_config_keys`, `list_config_ignore_rules`.
-
+### FR-DRF-017 — Targeted revert and ignore rules are reachable from chat behind the standard gates ✅
 Three MCP tools give the chat the UI's per-field moves: `revert_drift(device_id, fields)` builds one
 targeted plan from the reviewed diff (`RestoreBuilder.build_targeted_revert_plan`; `demo_set` rows never
 included; non-revertable rows skipped with a reason) and returns one `url_only` card;
@@ -258,6 +252,17 @@ git changelog entry, as the UI) and `ignore_keys` so "exclude X, accept the rest
 rule**, stated in the prompt and in the tool descriptions: a revert precedes an accept, with
 `get_drift_review(refresh=true)` — a fresh observation — between them, because accept blesses an
 existing commit and a revert records none. `list_config_ignore_rules` is the read side.
+
+_As built:_ `accept_baseline` takes `note`, `ignore_keys` (≤50, validated like the REST rule model) and
+`ignore_scope`; the exclusions are written only on approval, before the pointer moves, and an approved
+accept reports them as `ignore_added_keys` on its audit row (#508). The seed list gains
+`root.Properties.FirmwareManagement.*` (ADR-0070 §7). `revert_drift` reports `skipped` rows with their
+reason (`read-only`, `added`, `demo-owned`), `not_found` for pairs outside the diff, and `reverting` —
+each key and the value it returns to; when nothing chosen is writable it returns `NothingToRevert` and
+opens no card. `ignore_config_keys` opens no card when every key is already excluded in that scope, and
+its card names only the keys it adds; a card that is not scoped to one device is held against the
+literal `fleet`, and its `[console]` note reads "fleet-wide" or "for tagged devices" — the tag itself
+is ungated text and is not repeated there.
 
 ### FR-DRF-018 — Drift transitions raise and resolve a per-device notice 📋
 Every `check_drift` hands its transition to `admz/notices/producers.py`: `appeared` opens a notice keyed

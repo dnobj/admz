@@ -411,6 +411,23 @@ async def _cleanup_temp_credentials(ctx, a):
     return await ctx.server._cleanup_temp_credentials(a)
 
 
+# --- Drift review (ADR-0070) --------------------------------------------------
+async def _get_drift_review(ctx, a):
+    return await ctx.server._get_drift_review(a)
+
+
+async def _revert_drift(ctx, a):
+    return await ctx.server._revert_drift(a)
+
+
+async def _ignore_config_keys(ctx, a):
+    return await ctx.server._ignore_config_keys(a)
+
+
+async def _list_config_ignore_rules(ctx, a):
+    return await ctx.server._list_config_ignore_rules(a)
+
+
 # Name → handler. Keys MUST equal the list_tools() name set (snapshot-tested).
 TOOL_HANDLERS: Dict[str, ToolHandler] = {
     "list_devices": _list_devices,
@@ -490,4 +507,8 @@ TOOL_HANDLERS: Dict[str, ToolHandler] = {
     "cleanup_temp_credentials": _cleanup_temp_credentials,
     "get_advanced_capabilities": _get_advanced_capabilities,
     "delete_devices": _delete_devices,
+    "get_drift_review": _get_drift_review,
+    "revert_drift": _revert_drift,
+    "ignore_config_keys": _ignore_config_keys,
+    "list_config_ignore_rules": _list_config_ignore_rules,
 }

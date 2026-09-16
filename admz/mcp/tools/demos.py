@@ -119,8 +119,8 @@ TOOLS: List[Tool] = [
         name="assign_demo_fragment",
         description=(
             "Assign currently-DRIFTED fields to a demo's owned config fragment "
-            "(capture). Run check_drift on the device first and pick fields from "
-            "that diff — the server re-checks and records the actual live "
+            "(capture). Read the device's drift with get_drift_review first and "
+            "pick fields from it — the server re-checks and records the actual live "
             "values. Returns an APPROVAL CARD (blocked + confirm_url): present "
             "it to the user; the assignment happens only after they approve. "
             "Never claim it ran before approval."
@@ -337,7 +337,7 @@ TOOLS: List[Tool] = [
             "fragments: the "
             "demo owns nothing yet, so it changes no drift verdict; the "
             "suggested keys stay evidence until captured the normal way "
-            "(check_drift + assign_demo_fragment). Touches no device. ONLY call "
+            "(get_drift_review + assign_demo_fragment). Touches no device. ONLY call "
             "after the user has seen the proposal's evidence and said yes."
         ),
         inputSchema={

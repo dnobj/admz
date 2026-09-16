@@ -104,6 +104,12 @@ EXPECTED_TOOL_ORDER = [
     # ADR-0069 — batch registry removal: several devices behind one approval.
     # Appended after the capabilities tool, so the frozen prefix is untouched.
     "delete_devices",
+    # ADR-0070 — drift review in the console chat. Appended after the batch
+    # removal tool, so the frozen prefix is untouched.
+    "get_drift_review",
+    "revert_drift",
+    "ignore_config_keys",
+    "list_config_ignore_rules",
 ]
 
 

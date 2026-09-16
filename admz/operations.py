@@ -760,6 +760,48 @@ def _action_accept_baseline(
     return outcome
 
 
+def _action_add_ignore_rules(
+    action: Mapping[str, Any], registry: Any, git_repo: Any = None,
+) -> Dict[str, Any]:
+    """Write the drift-tracking exclusions an approved card named (ADR-0070).
+
+    The rules are validated again here — the payload came through the store,
+    and a rule is a fleet-wide behaviour change — and only the rules that were
+    not already present are reported as added.
+    """
+    from admz.snapshot import ignore
+
+    rules = []
+    for rule in action.get("rules") or []:
+        try:
+            rules.append({
+                "key": ignore.normalize_rule_key(rule.get("key")),
+                "scope": ignore.normalize_rule_scope(rule.get("scope")),
+            })
+        except (AttributeError, ValueError) as e:
+            return {"success": False, "action": "add_ignore_rules",
+                    "error": f"invalid rule in the approved card: {e}"}
+    if not rules:
+        return {"success": False, "action": "add_ignore_rules",
+                "error": "the approved card named no rules"}
+    before = {(r["key"], r["scope"]) for r in ignore._scoped_rules()}
+    after = ignore.add_rules(rules)
+    added = [r["key"] for r in after if (r["key"], r["scope"]) not in before]
+    outcome: Dict[str, Any] = {
+        "success": True,
+        "action": "add_ignore_rules",
+        "scope": rules[0]["scope"],
+        "message": (
+            ("Excluded from drift tracking: " + ", ".join(added) + ". "
+             "The next drift check leaves them out.")
+            if added else "Those keys were already excluded; nothing changed."
+        ),
+    }
+    if added:
+        outcome["ignore_added_keys"] = ", ".join(added)
+    return outcome
+
+
 def _action_delete_device(
     action: Mapping[str, Any], registry: Any, git_repo: Any = None,
 ) -> Dict[str, Any]:
@@ -1430,6 +1472,9 @@ async def _action_provision_device_credentials(action, registry, git_repo=None):
 
 _ACTION_EXECUTORS = {
     "accept_baseline": _action_accept_baseline,
+    # ADR-0070: the chat's eye-slash. A global rule re-labels future drift on
+    # every device, so a model's request holds for the widget.
+    "add_ignore_rules": _action_add_ignore_rules,
     "delete_device": _action_delete_device,
     # ADR-0069: several devices behind one approval, each removed by the
     # single-device executor above.

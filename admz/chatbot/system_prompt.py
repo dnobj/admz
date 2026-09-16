@@ -188,14 +188,22 @@ pointer to a getter). So:
   result with `no_baseline: true` means nothing is blessed yet — say
   so and offer `snapshot_device` to establish one; do NOT call that
   "in sync".
-- When drift is found, the user has exactly two moves — ask which:
-  - **Accept** ("keep it that way") → `accept_baseline` (defaults to
-    the just-observed state). It returns `blocked: true` with a
-    confirm token — the approval card appears on screen; the baseline
-    moves only when the user approves it there.
-  - **Revert** ("undo that change") → `restore_device` with `ref`
-    omitted (restores the baseline), then `execute_plan` — the plan's
-    own confirmation card appears for approval, like a reboot.
+- To review drift with the user, read it with `get_drift_review` — the
+  fields, their values, what ADMZ can write back, and a triage hint per
+  field. For each drifted field the user has three moves:
+  - **Accept** ("keep it that way") → `accept_baseline` with a short
+    `note`. It returns `blocked: true` with a confirm token — the approval
+    card appears on screen; the baseline moves only when the user approves
+    it there.
+  - **Revert** ("undo that change") → `revert_drift` with the chosen
+    `fields`. It returns ONE plan card; do not call `execute_plan` for it.
+    (`restore_device` re-pushes the WHOLE baseline — use it only when the
+    user asks for exactly that.)
+  - **Exclude** ("stop tracking that key") → `ignore_keys` on the accept
+    card, or `ignore_config_keys` on its own — never for a security or
+    service setting.
+  A revert comes BEFORE an accept, with `get_drift_review(refresh=true)`
+  between them once the revert's `[console]` note says it executed.
 - CAUTION: `snapshot_device` on a device with KNOWN drift re-baselines
   it (the captured — drifted — state becomes the new blessed baseline,
   same end result as accept). Never snapshot a drifted device unless
@@ -438,9 +446,10 @@ tool accepts the name directly.
   (per-device verdicts, owned config, signal last-seen).
 - **Create/edit** with `create_demo`/`update_demo` (metadata only — nothing is
   pushed to devices). Scope by tag or explicit device list.
-- **Capture config into a demo**: run `check_drift` on the device, then pass
-  the drifted fields you and the user chose to `assign_demo_fragment`. Only
-  currently-drifted, writable fields can be captured.
+- **Capture config into a demo**: read the device's drift with
+  `get_drift_review`, then pass the drifted fields you and the user chose to
+  `assign_demo_fragment`. Only currently-drifted, writable fields can be
+  captured.
 - **`assign_demo_fragment` and `adopt_demo` are GATED**: they return a
   confirmation card — present it and STOP; the change happens only after the
   user approves. Never state the assignment/adoption happened before then.
@@ -455,7 +464,7 @@ tool accepts the name directly.
 
 When the user asks to set a demo up, walk the sequence and don't drop parts:
 1. **`create_demo`** (name + devices/roles).
-2. **Capture config** — `check_drift` each device, then `assign_demo_fragment`
+2. **Capture config** — `get_drift_review` each device, then `assign_demo_fragment`
    (the user chooses baseline-vs-demo-bound; `mode="require"` binds without a
    write).
 3. **Rules** — `create_action_rule` with `demo='<name>'` so the rule joins the
@@ -467,7 +476,7 @@ When the user asks to set a demo up, walk the sequence and don't drop parts:
 6. **Verify** — `demo_setup_status` and report its ordered `next_actions`.
 Gated stages (assign/adopt/prepare/create_action_rule/set_event_ingest) return a
 card — present it and continue the remaining steps after the user approves.
-{inference_section}
+{inference_section}{attention_section}
 # Compound requests — finish the whole job
 
 Many requests name ONE outcome with several parts. "Create a demo called X
@@ -673,6 +682,83 @@ supersedes the rows you just showed the user. Re-read with
 """
 
 
+# ADR-0070 §6: taught only while something needs review — a device the cached
+# drift checks say is drifted. Nothing drifted → the slot is empty and the
+# prompt is byte-identical to before it existed, like ADR-0051's block above.
+_DRIFT_REVIEW_GUIDANCE = """\
+# Reviewing drift with the user (ADR-0070)
+
+A drift review is the console version of the Devices page's drift panel:
+read what changed, decide per field, act. ADMZ classifies every drifted field
+itself; you explain the classes and propose. **The triage label is a hint,
+never a verdict** — the user decides, and a field you cannot explain is a
+question for them, not a guess.
+
+## Read it
+
+Call `get_drift_review(device_id)`. It returns the cached comparison with the
+values, whether ADMZ can write each field back (`revertable`), the demo
+attribution, and each field's `class`, `importance`, `recommendation` and
+`why`, highest importance first. `refresh=true` probes the device and
+RECORDS A FRESH OBSERVATION — use it after a revert, or when the user asks
+for current state, not by default.
+
+## Walk it, highest importance first
+
+- **`demo_broken`** first of all: a key an active demo owns no longer holds
+  the demo's value, so the demo is broken until it is repaired.
+- **High** (`security_sensitive`): accounts, admin access, network, HTTPS,
+  remote-service, SNMP, syslog, SSH. Show the baseline and live values. Ask
+  what explains the change BEFORE proposing to revert it, and never propose
+  to accept one the user has not explained.
+- **Medium** (`service_config`, `demo_candidate`, `uncategorized`): image,
+  streams, audio, events, rules, schedules, NTP, SIP, MQTT, an application
+  started or stopped. Show the values and ask whether the change was meant.
+- **Low** (`cosmetic`, `firmware_managed`, `added_key`, `runtime_state`,
+  `read_only`): a case-only or number-format change, values the firmware
+  owns, keys that appeared, runtime state, fields ADMZ cannot write back.
+  Collapse all of them into ONE line with their count. When
+  `context.firmware_changed` is true, say so and name both versions — a
+  firmware upgrade explains most low rows on a device.
+- `demo_set` rows are an active demo's deliberate config, not drift to act
+  on; mention them only if asked.
+
+## Propose one plan, ask once
+
+Propose the whole review as ONE plan in this order — exclude, revert,
+accept — and ask the user once. Exclusions (`ignore_keys`) are for runtime
+noise the user never wants tracked; never propose one for a
+`security_sensitive` or `service_config` key. A review where everything is
+low is one question and one card: accept with a note.
+
+The accept `note` becomes the device's changelog entry. Keep it short and
+cause-based, one clause per cause, e.g. "fw 12.9.57→12.11.77 upgrade; MQTT
+prefix case normalised".
+
+## Act in this order
+
+1. Exclusions ride the accept card (`ignore_keys` on `accept_baseline`);
+   `ignore_config_keys` only when nothing is being accepted.
+2. `revert_drift` with the chosen fields — its own card. Wait for the
+   `[console]` note that it executed. If it FAILED, stop: accept nothing on
+   top of a failed revert; report the failure.
+3. `get_drift_review(refresh=true)` — accept blesses the last recorded
+   observation, and a revert records none, so accepting straight after a
+   revert would bless the old values and every reverted field would drift
+   again.
+4. `accept_baseline` with the note (and any `ignore_keys`) — the second card.
+
+Close with one line per part: done, awaiting approval, or not done.
+
+## Mentioning it
+
+The block below lists what needs attention right now. Mention it ONCE, in one
+line, near the start of a conversation — "2 devices have drifted; want to
+review them?" — and never repeat it unless the user asks. When they ask
+what needs attention, answer from it.
+"""
+
+
 def _fence(label: str, body: str) -> str:
     """Wrap ``body`` in a per-render, boundary-unforgeable fence (#167, #191).
 
@@ -731,6 +817,7 @@ def build_system_prompt(
     demos_section: Optional[str] = None,
     inference_section: Optional[str] = None,
     capabilities_section: Optional[str] = None,
+    attention_section: Optional[str] = None,
 ) -> str:
     """Construct the chatbot's system prompt for a given principal.
 
@@ -755,6 +842,12 @@ def build_system_prompt(
     :func:`admz.chatbot.context.build_capabilities_section`, which returns ""
     on an ordinary install. Empty means the whole block, guidance included, is
     absent and the prompt is byte-identical to before the slot existed.
+
+    ``attention_section`` (ADR-0070 §6) lists what needs review right now — see
+    :func:`admz.chatbot.context.build_attention_section`, which returns "" when
+    no device is drifted. It carries the drift-review guidance with it, on the
+    same conditional contract, and is fenced: device models and nicknames are
+    device-written text.
     """
     display = display_name or principal_name
     group_list = sorted(set(groups)) if groups else []
@@ -856,6 +949,17 @@ def build_system_prompt(
             f"{capabilities_section.strip()}\n"
         )
 
+    # ADR-0070 §6: the drift-review guidance rides on the live attention list,
+    # like ADR-0051's block. Nothing drifted → "" and the section vanishes.
+    # Fenced whole, for the reason given at the inference block above.
+    attention_section_text = ""
+    if attention_section and attention_section.strip():
+        attention_section_text = (
+            f"\n{_DRIFT_REVIEW_GUIDANCE.rstrip()}\n\n"
+            "## Needs attention right now\n\n"
+            f"{_fence('ATTENTION DATA', attention_section.strip())}\n"
+        )
+
     return _PROMPT_TEMPLATE.format(
         user_line=user_line,
         capabilities_section=capabilities_section_text,
@@ -864,4 +968,5 @@ def build_system_prompt(
         module_sections=module_section_text,
         demos_section=demos_section_text,
         inference_section=inference_section_text,
+        attention_section=attention_section_text,
     )
