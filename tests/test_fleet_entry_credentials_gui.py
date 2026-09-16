@@ -143,7 +143,7 @@ def _listed():
 def _section(page: str) -> str:
     """The entry list's own table — the settings table above it also renders
     ``default_username``, so the page as a whole proves nothing."""
-    return page.split('id="entry-credentials"')[1].split("</table>")[0]
+    return page.split('id="entry-credentials"')[1].split("<!-- /entry-credentials -->")[0]
 
 
 def _three():
@@ -221,7 +221,7 @@ class TestAdding:
         section = _section(r.text)
         assert "root" in section and "batch A" in section
         assert PW not in r.text
-        assert PW not in client.get("/fleet-settings").text
+        assert PW not in client.get("/settings").text
 
     def test_the_audit_row_names_the_username_and_label_never_the_password(self, client):
         _as(_admin())
@@ -313,7 +313,7 @@ class TestAdding:
         client.fs.set(ec.LEGACY_PASS_KEY, "zz-legacy-pw")
         for i in range(ec.MAX_STORED - 1):
             ec.add_entry_credential(f"u{i}", f"zz-pw-{i}")
-        page = client.get("/fleet-settings").text
+        page = client.get("/settings").text
         assert 'data-entry-add="full"' in page
 
     def test_the_prompt_always_posture_refuses_and_the_form_is_withdrawn(self, client):
@@ -344,7 +344,7 @@ class TestAdding:
                 [{"username": "u0", "password": "zz-pw-0"}, {"username": "half"}]))
         before = client.fs._raw_get(ec.SETTING_KEY)
         _as(_admin())
-        page = client.get("/fleet-settings").text
+        page = client.get("/settings").text
         assert 'data-entry-list="unreadable"' in page
         assert 'data-entry-add="unreadable"' in page
         r = _add(client)
@@ -355,7 +355,7 @@ class TestAdding:
     def test_the_fields_do_not_invite_browser_autofill(self, client):
         """Browsers ignore `autocomplete="off"` on password fields and would
         fill in the operator's own saved login."""
-        page = client.get("/fleet-settings").text
+        page = client.get("/settings").text
         form = page.split('id="entry-credential-form"')[1].split("</form>")[0]
         fields = re.findall(r'<input[^>]*type="password"[^>]*>', form)
         assert len(fields) == 2
@@ -476,7 +476,7 @@ class TestRemoving:
 
     def test_each_row_carries_its_position_and_the_revision_and_no_password(self, client):
         _three()
-        page = client.get("/fleet-settings").text
+        page = client.get("/settings").text
         forms = re.findall(REMOVE_FORM, page, flags=re.S)
         assert len(forms) == 3
         revision = ec.list_revision()
@@ -489,7 +489,7 @@ class TestRemoving:
         """End to end: the token the page renders is the one the route checks."""
         _three()
         _as(_admin())
-        second = re.findall(REMOVE_FORM, client.get("/fleet-settings").text, flags=re.S)[1]
+        second = re.findall(REMOVE_FORM, client.get("/settings").text, flags=re.S)[1]
         position = re.search(r'name="position" value="([^"]*)"', second).group(1)
         revision = re.search(r'name="revision" value="([^"]*)"', second).group(1)
         assert _remove(client, position, revision).status_code == 200
@@ -502,7 +502,7 @@ class TestRemoving:
         ec.add_entry_credential("u0", "zz-pw-0", "batch 0")
         client.fs._raw_set(ec.LEGACY_PASS_KEY, "zz-legacy-plain")
         _as(_admin())
-        page = client.get("/fleet-settings").text
+        page = client.get("/settings").text
         assert client.fs._raw_get(ec.LEGACY_PASS_KEY) != "zz-legacy-plain", \
             "CONTROL: the render migrated the legacy value"
         revision = re.search(r'name="revision" value="([^"]*)"', page).group(1)
@@ -513,34 +513,42 @@ class TestRemoving:
 # --- what the page marks and counts --------------------------------------------
 
 
-class TestThePageMarksWhatIsActuallyTried:
-    def test_of_two_identical_credentials_only_the_first_is_marked_tried(self, client):
-        """An exact duplicate is tried once. Matched on username and label, the
-        page marked the first two rows tried and the third — the only other
-        credential actually put to a device — "never tried", inviting its
-        removal."""
+class TestThePageSaysWhatIsTried:
+    """The per-row "tried / stored, never tried" pills are gone (the settings
+    redesign, 2026-09-16).
+
+    ``stored_tried`` is a posture flag, not a per-device status: with
+    ``MAX_STORED == MAX_ATTEMPTS_PER_PASS`` every stored entry is tried unless
+    the prompt-always posture is on, so a pill per row read as a per-device
+    claim ADMZ cannot make. The page states the posture once instead — the
+    stored count, the fallback, and a note when nothing stored is tried. The
+    flags are still computed and still pinned, on the view model
+    (tests/test_entry_promotion.py) and in tests/test_entry_credentials.py.
+    """
+
+    def test_no_row_claims_a_per_device_status(self, client):
         client.fs.set(ec.SETTING_KEY, json.dumps([
             {"username": "root", "password": "zz-pw-1"},
             {"username": "root", "password": "zz-pw-1"},
             {"username": "root", "password": "zz-pw-2"},
         ]))
-        page = client.get("/fleet-settings").text
-        assert re.findall(r'data-entry="(tried|never-tried)"', page) == [
-            "tried", "never-tried", "tried"]
+        assert 'data-entry="' not in client.get("/settings").text
 
-    def test_the_break_glass_attempt_is_named_not_counted_as_an_entry(self, client):
-        """ADR-0068 appends ADMZ's break-glass root password to every pass.
-        Counted as an entry, the page said "4 (at most 3)" beside a full list."""
+    def test_the_stored_count_is_shown_once(self, client):
         for i in range(ec.MAX_STORED):
             ec.add_entry_credential(f"u{i}", f"zz-pw-{i}")
-        client.fs.set("fleet_root_password", "BreakGlass-entry-gui-1")
-        page = " ".join(client.get("/fleet-settings").text.split())
-        assert (f"{ec.MAX_STORED} (at most {ec.MAX_ATTEMPTS_PER_PASS}), "
-                "then ADMZ's break-glass root password") in page
-        assert page.count('data-entry="tried"') == ec.MAX_STORED
+        section = _section(client.get("/settings").text)
+        assert f"{ec.MAX_STORED} of {ec.MAX_STORED}" in section
 
-    def test_without_a_break_glass_password_it_is_not_mentioned(self, client):
+    def test_the_break_glass_fallback_is_named_when_one_is_set(self, client):
+        """ADR-0068 appends ADMZ's fleet root password to every pass, so the
+        operator is told the order does not end with the list."""
         ec.add_entry_credential("u0", "zz-pw-0")
-        page = " ".join(client.get("/fleet-settings").text.split())
-        assert f"1 (at most {ec.MAX_ATTEMPTS_PER_PASS})" in page
-        assert "then ADMZ's break-glass root password" not in page
+        client.fs.set("fleet_root_password", "BreakGlass-entry-gui-1")
+        page = " ".join(client.get("/settings").text.split())
+        assert "Tried top to bottom, then the fleet root password" in page
+
+    def test_without_a_break_glass_password_the_fallback_is_not_mentioned(self, client):
+        ec.add_entry_credential("u0", "zz-pw-0")
+        page = " ".join(client.get("/settings").text.split())
+        assert "then the fleet root password" not in page

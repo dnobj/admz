@@ -42,8 +42,14 @@ by MCP can be consumed by the web form.
   the session complete, the LLM polls and proceeds.
 
 ### FR-UI-005 — Fleet settings management ✅
-- `/fleet-settings` — read-only display of all fleet settings.
-  Password-shaped values are masked.
+- `/settings` — the **Provisioning credentials** card (the fleet root password
+  and the entry list, FR-CRED-011/012/014) and a collapsed **Advanced · raw
+  fleet settings** table of every key. Password-shaped values are masked and
+  revealed only through the gated reveal endpoint (FR-SEC-007).
+- `/fleet-settings` — **retired 2026-09-16**; redirects to
+  `/settings#provisioning-credentials`. Its own page is gone (its markup used a
+  stylesheet `base.html` never linked, so it rendered unstyled), but its three
+  POST endpoints keep their URLs and their gates and now re-render `/settings`.
 
 ### FR-UI-006 — Confirm-settings (protected keys) ✅
 - `/confirm-settings` — the **only** UI for the protected keys:

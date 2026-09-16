@@ -403,7 +403,9 @@ happened. The Fleet Settings page renders the list's `describe()` (usernames,
 labels, posture, cap; every stored entry marked *tried* or *stored, never tried* against slice C's bound; the page renders without the list if reading it fails) — the first operator view of it. A failure inside the promotion itself (anything but the cap or the posture) is logged and reported as a refusal, never a 500 — the capture has already succeeded and consumed its token; audit rows carry the signed-in principal when there is one. The flag reaching the
 store requires the form submission, never the tool argument.
 
-**Edited from the Fleet Settings page (2026-09-14).** An operator can also add
+**Edited from the Settings page (2026-09-14; moved there from the retired
+Fleet Settings page on 2026-09-16 — the endpoints kept their URLs).** An
+operator can also add
 and remove entries directly, for the case promotion cannot cover: a password
 known to have been set by hand on devices ADMZ has not adopted yet.
 `POST /fleet-settings/entry-credentials` adds a pair and
@@ -455,7 +457,8 @@ credential**. See
   ADMZ's database. It is not LLM-writable — FR-SEC-012's allow-set is unchanged —
   and the name carries `password`, so masking, reveal-gating and the MCP refusal
   follow from the name-shape predicate (FR-SEC-007) with no new special case.
-- **It is set from the Fleet Settings page** (`POST /fleet-settings/root-password`),
+- **It is set from the Settings page** (`POST /fleet-settings/root-password` —
+  the form moved to `/settings` on 2026-09-16, the endpoint kept its URL),
   which is the recommended path. `python -m admz settings set` still works, but it
   takes the value as a command-line argument, which lands in shell history and the
   process list; a form typed in the browser has neither exposure. The form is gated

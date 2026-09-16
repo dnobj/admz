@@ -736,44 +736,16 @@ async def search_devices(
 
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_overview(request: Request):
-    """Unified Settings screen — safety policy + fleet config (Axis Signal).
+    """Unified Settings screen — safety policy, fleet config, and the
+    provisioning credentials the retired ``/fleet-settings`` page used to own.
 
-    Surfaces the real fleet/confirm settings as the design's stacked cards.
-    The two confirmation gates are shown as enforced; the toggles that map
-    to real settings link to the existing forms that persist them.
+    The two confirmation gates are shown as enforced; the toggles that map to
+    real settings link to the existing forms that persist them. Everything the
+    page renders is built by :func:`_settings_page_context`, which the three
+    credential POSTs share so a refused write re-renders this same page.
     """
-    levels = {
-        r: get_confirmation_level(r) for r in _DEFAULT_CONFIRMATION_LEVELS
-    }
-    has_password = bool(fleet_settings.get("confirm_password_hash"))
-    from admz.snapshot.ignore import (
-        USER_SETTING_KEY, _GLOBAL_IGNORE_PATTERNS, _scoped_rules,
-    )
-    from admz.modules.acs_pro.config import acs_config
-    try:
-        from admz.github_app import secrets as _gh_secrets
-        github_status = _gh_secrets.status()
-    except Exception:  # noqa: BLE001 - the card just shows "not connected"
-        github_status = {"connected": False}
     return templates.TemplateResponse(
-        request,
-        "settings.html",
-        {
-            "request": request,
-            "title": "Settings",
-            "levels": levels,
-            "has_password": has_password,
-            "acs": acs_config(),
-            "github": github_status,
-            "github_connected_flash": request.query_params.get("github_connected") == "1",
-            "github_error_flash": request.query_params.get("github_error"),
-            "all_settings": fleet_settings.list_all(),
-            "ignore_patterns_text": fleet_settings.get(USER_SETTING_KEY) or "",
-            "ignore_globals": list(_GLOBAL_IGNORE_PATTERNS),
-            # Scoped rules only (the legacy textarea covers the global flat list).
-            "ignore_rules": _scoped_rules(),
-            "ignore_saved": request.query_params.get("ignore_saved") == "1",
-        },
+        request, "settings.html", _settings_page_context(request),
     )
 
 
@@ -946,15 +918,22 @@ _ENTRY_LABEL_MAX_LENGTH = 80
 _ENTRY_CREDENTIALS_RESOURCE = "fleet_settings:entry_credentials"
 
 
-def _build_fleet_settings_context(
+def _settings_page_context(
     request: Request,
     *,
     success: Optional[str] = None,
     error: Optional[str] = None,
     warning: Optional[str] = None,
     short_password_pending: bool = False,
+    open_form: str = "",
 ) -> dict:
-    """Everything ``fleet_settings.html`` renders, shared by GET and the POSTs.
+    """Everything ``settings.html`` renders, shared by GET and the POSTs.
+
+    One builder for ``GET /settings`` and for the three credential POSTs that
+    used to render the standalone ``/fleet-settings`` page: a refused write then
+    re-renders the page the operator was already on, with the flash row at the
+    top and ``open_form`` keeping the form they submitted open ("break-glass" or
+    "entry"). A successful write leaves both collapsed.
 
     Sensitive values (``is_sensitive_setting_key`` — the same predicate the
     JSON API and the MCP tool use, admz/redact.py's D-2 consolidation) are
@@ -971,7 +950,11 @@ def _build_fleet_settings_context(
     whether it is SET, never the value.
     """
     from admz import entry_credentials
+    from admz.modules.acs_pro.config import acs_config
     from admz.provisioning import FLEET_ROOT_PASSWORD_KEY
+    from admz.snapshot.ignore import (
+        USER_SETTING_KEY, _GLOBAL_IGNORE_PATTERNS, _scoped_rules,
+    )
 
     settings = fleet_settings.list_all()
     display = {}
@@ -988,10 +971,32 @@ def _build_fleet_settings_context(
             "entry credentials unavailable on the settings page", exc_info=True)
         entry_view = {"error": type(exc).__name__}
 
+    try:
+        from admz.github_app import secrets as _gh_secrets
+        github_status = _gh_secrets.status()
+    except Exception:  # noqa: BLE001 - the card just shows "not connected"
+        github_status = {"connected": False}
+
     return {
         "request": request,
         "settings": display,
-        "title": "Fleet Settings",
+        "title": "Settings",
+        # Safety policy card.
+        "levels": {r: get_confirmation_level(r) for r in _DEFAULT_CONFIRMATION_LEVELS},
+        "has_password": bool(fleet_settings.get("confirm_password_hash")),
+        # Modules, GitHub backup and config-tracking cards.
+        "acs": acs_config(),
+        "github": github_status,
+        "github_connected_flash": request.query_params.get("github_connected") == "1",
+        "github_error_flash": request.query_params.get("github_error"),
+        "all_settings": settings,
+        "ignore_patterns_text": settings.get(USER_SETTING_KEY) or "",
+        "ignore_globals": list(_GLOBAL_IGNORE_PATTERNS),
+        # Scoped rules only (the legacy textarea covers the global flat list).
+        "ignore_rules": _scoped_rules(),
+        "ignore_saved": request.query_params.get("ignore_saved") == "1",
+        # Which credential form renders open — see the docstring.
+        "open_form": open_form,
         # FR-CRED-012 / ADR-0064 slice D: the first operator view of the
         # entry list — redacted (usernames and labels; never a password),
         # every stored entry marked tried or stored-never-tried.
@@ -1010,12 +1015,16 @@ def _build_fleet_settings_context(
     }
 
 
-@router.get("/fleet-settings", response_class=HTMLResponse)
+@router.get("/fleet-settings", response_class=RedirectResponse)
 async def fleet_settings_page(request: Request):
-    """Fleet settings page — view fleet-wide configuration."""
-    return templates.TemplateResponse(
-        request, "fleet_settings.html", _build_fleet_settings_context(request),
-    )
+    """Retired page — its three controls now live on ``/settings``.
+
+    Kept as a redirect rather than deleted: the POST endpoints below still carry
+    the ``/fleet-settings`` prefix (the forms that submit to them moved, their
+    URLs did not), operators have this URL in their history, and the old page's
+    own links are still in older docs.
+    """
+    return RedirectResponse(url="/settings#provisioning-credentials", status_code=302)
 
 
 async def _authorize_credential_write(request: Request, *, action: str, resource: str):
@@ -1139,8 +1148,10 @@ async def set_fleet_root_password(
             success=False, error_message=tag,
         )
         return templates.TemplateResponse(
-            request, "fleet_settings.html",
-            _build_fleet_settings_context(request, error=sentence),
+            request, "settings.html",
+            # The form reopens with the message above it: the operator was
+            # mid-edit, and a collapsed form would hide what they must correct.
+            _settings_page_context(request, error=sentence, open_form="break-glass"),
         )
 
     short = len(root_password) < _ROOT_PASSWORD_RECOMMENDED_LENGTH
@@ -1148,8 +1159,8 @@ async def set_fleet_root_password(
         # A confirmation step, not a refusal, so it writes no audit row: a row
         # saying "short" would describe the password about to be saved.
         return templates.TemplateResponse(
-            request, "fleet_settings.html",
-            _build_fleet_settings_context(
+            request, "settings.html",
+            _settings_page_context(
                 request,
                 warning=(
                     "Nothing was saved yet: that password is shorter than "
@@ -1173,8 +1184,8 @@ async def set_fleet_root_password(
         details={"op": "replace" if replaced else "set", "granted_by": reason},
     )
     return templates.TemplateResponse(
-        request, "fleet_settings.html",
-        _build_fleet_settings_context(
+        request, "settings.html",
+        _settings_page_context(
             request,
             success=(
                 "Break-glass root password "
@@ -1236,8 +1247,13 @@ def _entry_write_refused(request: Request, principal, *, action: str, tag: str,
         details=details, success=False, error_message=tag,
     )
     return templates.TemplateResponse(
-        request, "fleet_settings.html",
-        _build_fleet_settings_context(request, error=sentence),
+        request, "settings.html",
+        # A refused ADD reopens the add form, with the message above it — the
+        # operator was mid-edit. A refused removal has no form to reopen.
+        _settings_page_context(
+            request, error=sentence,
+            open_form="entry" if action.endswith("add_refused") else "",
+        ),
     )
 
 
@@ -1314,11 +1330,12 @@ async def add_fleet_entry_credential(
     if not added:
         # Nothing changed, so nothing is audited — as for a duplicate promotion.
         return templates.TemplateResponse(
-            request, "fleet_settings.html",
-            _build_fleet_settings_context(
+            request, "settings.html",
+            _settings_page_context(
                 request,
                 warning=(f"That password for {username} is already on the entry "
                          "list, so nothing was added."),
+                open_form="entry",
             ),
         )
 
@@ -1330,8 +1347,8 @@ async def add_fleet_entry_credential(
         details={**details, "granted_by": reason},
     )
     return templates.TemplateResponse(
-        request, "fleet_settings.html",
-        _build_fleet_settings_context(
+        request, "settings.html",
+        _settings_page_context(
             request,
             success=(f"Added {username} to the entry list. ADMZ tries it on "
                      "devices it does not yet manage, from the next onboarding "
@@ -1400,8 +1417,8 @@ async def remove_fleet_entry_credential(
         sentence += (" It was the fleet default pair, so the default_username "
                      "and default_password settings were deleted.")
     return templates.TemplateResponse(
-        request, "fleet_settings.html",
-        _build_fleet_settings_context(request, success=sentence),
+        request, "settings.html",
+        _settings_page_context(request, success=sentence),
     )
 
 

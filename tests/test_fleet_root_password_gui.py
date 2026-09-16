@@ -343,13 +343,13 @@ class TestAShortPasswordIsAWarningNotABlock:
     def test_the_browser_is_not_told_to_block_it(self, client):
         """A `minlength` attribute is a block no one can accept past: the
         browser refuses to submit the form at all."""
-        page = client.get("/fleet-settings").text
+        page = client.get("/settings").text
         fields = re.findall(r'<input[^>]*name="(?:confirm_)?root_password"[^>]*>', page)
         assert len(fields) == 2
         assert all("minlength" not in f for f in fields)
 
     def test_the_acceptance_box_starts_hidden_and_is_never_pre_checked(self, client):
-        page = client.get("/fleet-settings").text
+        page = client.get("/settings").text
         box = re.search(r'<div[^>]*id="root-password-short"[^>]*>', page).group(0)
         assert "hidden" in box
         tick = re.search(r'<input[^>]*name="accept_short_password"[^>]*>', page).group(0)
@@ -360,7 +360,7 @@ class TestAShortPasswordIsAWarningNotABlock:
         characters would read as long enough in the page and short on the
         server — and with script on it could never be accepted. There is no
         JavaScript test tooling here, so the counting expression is pinned."""
-        page = client.get("/fleet-settings").text
+        page = client.get("/settings").text
         assert "[...input.value].length" in page
 
 
@@ -392,10 +392,10 @@ class TestTheValue:
 
     def test_the_page_shows_set_or_unset_but_never_the_value(self, client):
         _as(_admin())
-        before = client.get("/fleet-settings").text
+        before = client.get("/settings").text
         assert 'data-root-password="unset"' in before
         _post(client)
-        after = client.get("/fleet-settings").text
+        after = client.get("/settings").text
         assert 'data-root-password="set"' in after
         assert SECRET not in after
 
@@ -421,19 +421,20 @@ class TestTheValue:
 
 class TestThePageSaysWhatMatters:
     def test_it_says_changing_it_does_not_touch_provisioned_devices(self, client):
-        """The operationally surprising fact: rotating the break-glass password
-        leaves every already-provisioned device on the OLD value."""
-        page = " ".join(client.get("/fleet-settings").text.split())
-        assert "does not change devices ADMZ has already provisioned" in page
+        """The operationally surprising fact: rotating the fleet root password
+        leaves every already-provisioned device on the OLD value. (The settings
+        redesign shortened the wording; the fact still has to be on the page.)"""
+        page = " ".join(client.get("/settings").text.split())
+        assert "Devices already provisioned keep their current root password" in page
 
     def test_the_unset_state_says_provisioning_will_not_happen(self, client):
-        page = " ".join(client.get("/fleet-settings").text.split())
+        page = " ".join(client.get("/settings").text.split())
         assert "will not be provisioned" in page.replace("<strong>", "").replace("</strong>", "")
 
     def test_the_fields_do_not_invite_browser_autofill(self, client):
         """`autocomplete="off"` is ignored on password fields by browsers; an
         autofilled saved login would silently set the wrong break-glass value."""
-        page = client.get("/fleet-settings").text
+        page = client.get("/settings").text
         fields = re.findall(r"<input[^>]*type=\"password\"[^>]*>", page)
         root_fields = [f for f in fields if "root_password" in f]
         assert len(root_fields) == 2

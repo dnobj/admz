@@ -11,6 +11,14 @@
   </div>
 </div>
 
+{# Flashes from the three credential POSTs, which render this page (they used to
+   render the retired /fleet-settings). The `.result-row` pattern, not the old
+   page-scoped `.message` styles that lived in a stylesheet base.html never
+   linked. #}
+{% if success %}<div class="result-row green" data-flash="success" style="max-width:880px;margin-bottom:12px"><i data-lucide="check-circle-2"></i><span>{{ success }}</span></div>{% endif %}
+{% if warning %}<div class="result-row amber" data-flash="warning" style="max-width:880px;margin-bottom:12px"><i data-lucide="triangle-alert"></i><span>{{ warning }}</span></div>{% endif %}
+{% if error %}<div class="result-row red" data-flash="error" style="max-width:880px;margin-bottom:12px"><i data-lucide="alert-triangle"></i><span>{{ error }}</span></div>{% endif %}
+
 <div class="stack" style="max-width:880px">
 
   <!-- Safety policy -->
@@ -49,24 +57,165 @@
     </div>
   </div>
 
-  <!-- Credentials & secrets -->
-  <div class="card">
-    <div class="card-header"><i data-lucide="key"></i><span class="title">Credentials & secrets</span></div>
+  {# Provisioning credentials — the fleet root password (FR-CRED-014) and the
+     entry list (FR-CRED-011/012), in the order ADMZ tries them. This card
+     replaces the retired /fleet-settings page; its three POST handlers render
+     this page. The card carries whether the root password is SET, never its
+     value, and no entry password is ever rendered. #}
+  <div class="card" id="provisioning-credentials">
+    <div class="card-header"><i data-lucide="key-round"></i><span class="title">Provisioning credentials</span>
+      <span class="ml-auto" style="font-size:12px;color:var(--text-faint)">Never shown to the AI</span></div>
     <div class="card-body flush">
-      <div class="setting-row">
-        <div class="sr-text"><div class="sr-label">Credentials never passed to AI context</div>
-          <div class="sr-desc">Passwords are read from the secrets backend only at execution time — never shown to the model.</div></div>
-        <div class="sr-control"><span class="locked-pill"><i data-lucide="lock"></i> enforced</span></div>
+
+      <div class="setting-row" id="fleet-root-password" style="align-items:flex-start;background:var(--accent-soft);border-bottom:1px solid var(--accent-bd)">
+        <div class="sr-text">
+          <div class="sr-label" style="display:flex;align-items:center;gap:8px">
+            <i data-lucide="key-round" style="width:15px;height:15px;color:var(--accent-ink)"></i>
+            Fleet root password
+            {% if root_password_configured %}
+            <span class="badge green" data-root-password="set"><span class="dot sem-green"></span> set</span>
+            {% else %}
+            <span class="badge amber" data-root-password="unset">not set</span>
+            {% endif %}
+          </div>
+          <div class="sr-desc">Set as <span class="mono text">root</span> on every factory-default device ADMZ provisions — your way in by hand if ADMZ's database is lost. Also the final fallback when the entries below fail.{% if not root_password_configured %} Until one is set, factory-defaulted devices will <strong>not</strong> be provisioned.{% endif %}</div>
+
+          {# Open when the server is asking the operator to accept a short
+             password, or when their last attempt was refused — the message is
+             above, and the form they were filling in must still be here. #}
+          <div id="break-glass-form" style="margin-top:12px;padding:14px;border:1px solid var(--accent-bd);border-radius:var(--radius);background:var(--panel)"{% if not short_password_pending and open_form != 'break-glass' %} hidden{% endif %}>
+            <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:12px;font-size:12.5px;color:var(--text-muted)">
+              <i data-lucide="info" style="width:14px;height:14px;flex:0 0 auto;margin-top:2px;color:var(--accent-ink)"></i>
+              <span>One value for the whole fleet — keep it where a person can find it. Devices already provisioned keep their current root password.</span>
+            </div>
+            <form method="POST" action="/fleet-settings/root-password" autocomplete="off" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end">
+              {# autocomplete="new-password", not "off": browsers ignore "off" on
+                 password fields and would autofill the operator's own saved
+                 login, silently setting the WRONG root password. No minlength —
+                 a short password is warned about, never blocked. #}
+              <label style="display:flex;flex-direction:column;gap:4px">{% if root_password_configured %}New root password{% else %}Root password{% endif %}
+                <input type="password" id="root_password" name="root_password" required
+                       autocomplete="new-password"
+                       data-recommended-length="{{ root_password_recommended_length }}"></label>
+              <label style="display:flex;flex-direction:column;gap:4px">Type it again
+                <input type="password" id="confirm_root_password" name="confirm_root_password"
+                       required autocomplete="new-password"></label>
+              {# The script below reveals this as they type; the server reveals it
+                 when a short password arrives unticked, so the no-script path can
+                 accept too. Never pre-checked. #}
+              <div class="note-band" id="root-password-short" style="grid-column:1 / -1"{% if not short_password_pending %} hidden{% endif %}>
+                <i data-lucide="triangle-alert"></i>
+                <label style="color:inherit;display:flex;align-items:center;gap:8px;font-size:12.5px">
+                  <input type="checkbox" id="accept_short_password" name="accept_short_password" value="yes"{% if short_password_pending %} required{% endif %}>
+                  Shorter than {{ root_password_recommended_length }} characters — use it anyway, I accept the risk</label>
+              </div>
+              <div style="grid-column:1 / -1;display:flex;gap:8px;justify-content:flex-end">
+                <button type="button" class="btn ghost sm" data-toggle="break-glass-form">Cancel</button>
+                <button type="submit" class="btn primary sm" id="set-root-password"><i data-lucide="save"></i>
+                  {% if root_password_configured %}Replace root password{% else %}Set root password{% endif %}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <div class="sr-control">
+          <button class="btn ghost sm" type="button" data-toggle="break-glass-form" data-toggle-other="entry-form">
+            <i data-lucide="pencil"></i> {{ 'Replace' if root_password_configured else 'Set' }}</button>
+        </div>
       </div>
-      <div class="setting-row">
-        <div class="sr-text"><div class="sr-label">Device passwords never displayed</div>
-          <div class="sr-desc">Device-account passwords are never shown in the web UI or via REST — only used at execution time to reach the device.</div></div>
-        <div class="sr-control"><span class="locked-pill"><i data-lucide="lock"></i> enforced</span></div>
+
+      <div class="setting-row" id="entry-credentials" style="align-items:flex-start">
+        <div class="sr-text">
+          <div class="sr-label" style="display:flex;align-items:center;gap:8px">Entry credentials
+            {% if not entry_credentials.error %}
+            <span class="badge grey mono">{{ entry_credentials.stored|length }} of {{ entry_credentials.max_stored }}</span>
+            {% endif %}
+            <span class="icon-btn xs" style="cursor:help" title="A working entry is used once, to create the admz account. It is never stored as that device's credential."><i data-lucide="circle-help"></i></span>
+          </div>
+          <div class="sr-desc">Only used to get into a device that already has a root password, so ADMZ can create its own <span class="mono text">admz</span> account. Tried top to bottom{% if entry_credentials.break_glass_last %}, then the fleet root password{% endif %}.</div>
+
+          {% if entry_credentials.error %}
+          <div class="note-band" style="margin-top:10px"><i data-lucide="triangle-alert"></i>
+            <span>Entry list unavailable ({{ entry_credentials.error }}); see the server log.</span></div>
+          {% else %}
+
+          {% if entry_credentials.prompt_always %}
+          <div class="note-band" style="margin-top:10px"><i data-lucide="triangle-alert"></i>
+            <span>Prompt-always posture is on: nothing stored is tried; every adoption asks a human.</span></div>
+          {% endif %}
+          {% if entry_credentials.unreadable %}
+          <div class="note-band" style="margin-top:10px" data-entry-list="unreadable"><i data-lucide="triangle-alert"></i>
+            <span>The stored list cannot be read in full, so it cannot be changed here without losing part of it. Restore the key file it was written with, or correct it with <span class="mono">python -m admz settings set entry_credentials</span>.</span></div>
+          {% endif %}
+
+          <div class="stack-sm" style="margin-top:12px">
+            {% for c in entry_credentials.rows %}
+            <div style="display:flex;align-items:center;gap:12px;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--panel2)">
+              <span class="mono" style="color:var(--text-faint);font-size:11px;width:14px">{{ loop.index }}</span>
+              <span class="type-tile" style="width:28px;height:28px"><i data-lucide="user"></i></span>
+              <span style="flex:1;min-width:0">
+                <span class="mono text" style="font-weight:600;font-size:13px">{{ c.get('username', '?') }}</span>
+                <span style="display:block;font-size:11.5px;color:var(--text-faint)">{{ c.get('label') or '—' }}</span>
+              </span>
+              {# The form carries the list's revision as rendered, so a removal
+                 applies only to the list this page showed: a stale tab, or this
+                 form resubmitted by a reload, removes nothing. #}
+              <form method="POST" action="/fleet-settings/entry-credentials/remove" style="margin:0"
+                    onsubmit="return confirm('Remove this credential from the entry list? ADMZ never shows the password, so only someone who knows it can add it back.');">
+                <input type="hidden" name="position" value="{{ loop.index0 }}">
+                <input type="hidden" name="revision" value="{{ entry_credentials.revision }}">
+                <button type="submit" class="icon-btn sm" title="Remove from entry list" data-remove-entry="{{ loop.index0 }}"><i data-lucide="trash-2"></i></button>
+              </form>
+            </div>
+            {% endfor %}
+            {% if not entry_credentials.rows %}
+            <div style="font-size:12.5px;color:var(--text-faint)">None stored.</div>
+            {% endif %}
+          </div>
+
+          {% if entry_credentials.prompt_always %}
+          <div class="sr-desc" style="margin-top:10px" data-entry-add="posture">Adding is off while the prompt-always posture is on.</div>
+          {% elif entry_credentials.unreadable %}
+          <div class="sr-desc" style="margin-top:10px" data-entry-add="unreadable">Adding is off until the stored list can be read in full.</div>
+          {% elif entry_credentials.stored|length >= entry_credentials.max_stored %}
+          <div class="sr-desc" style="margin-top:10px" data-entry-add="full">The list is full. Remove one before adding another — each credential is another failed login against every device ADMZ adopts.</div>
+          {% else %}
+          <div id="entry-form" style="margin-top:10px;padding:14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--panel2)"{% if open_form != 'entry' %} hidden{% endif %}>
+            <form method="POST" action="/fleet-settings/entry-credentials" autocomplete="off" id="entry-credential-form"
+                  style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end">
+              <label style="display:flex;flex-direction:column;gap:4px">Username
+                <input type="text" id="entry_username" name="entry_username" value="root" required autocomplete="off"></label>
+              <label style="display:flex;flex-direction:column;gap:4px">Label <span style="color:var(--text-faint)">(optional, never a secret)</span>
+                <input type="text" id="entry_label" name="entry_label" placeholder="Which batch or site"
+                       maxlength="{{ entry_label_max_length }}" autocomplete="off"></label>
+              <label style="display:flex;flex-direction:column;gap:4px">Password
+                <input type="password" id="entry_password" name="entry_password" required autocomplete="new-password"></label>
+              <label style="display:flex;flex-direction:column;gap:4px">Type it again
+                <input type="password" id="confirm_entry_password" name="confirm_entry_password" required autocomplete="new-password"></label>
+              <div style="grid-column:1 / -1;display:flex;gap:8px;justify-content:flex-end">
+                <button type="button" class="btn ghost sm" data-toggle="entry-form">Cancel</button>
+                <button type="submit" class="btn primary sm" id="add-entry-credential"><i data-lucide="plus"></i> Add to entry list</button>
+              </div>
+            </form>
+          </div>
+          {% endif %}
+          {% endif %}
+        </div>
+        <div class="sr-control">
+          {% if entry_credentials.error or entry_credentials.prompt_always or entry_credentials.unreadable
+                or entry_credentials.stored|length >= entry_credentials.max_stored %}
+          <button class="btn ghost sm" type="button" disabled
+                  title="{% if entry_credentials.prompt_always %}The prompt-always posture is on{% elif entry_credentials.unreadable %}The stored list cannot be read in full{% elif entry_credentials.error %}The entry list is unavailable{% else %}The list is full{% endif %}"><i data-lucide="plus"></i> Add credential</button>
+          {% else %}
+          <button class="btn ghost sm" type="button" id="add-entry-btn" data-toggle="entry-form" data-toggle-other="break-glass-form"><i data-lucide="plus"></i> Add credential</button>
+          {% endif %}
+        </div>
       </div>
-      <div class="setting-row">
-        <div class="sr-text"><div class="sr-label">Out-of-band credential capture</div>
-          <div class="sr-desc">New credentials are captured via a single-use link, never typed into chat.</div></div>
-        <div class="sr-control"><span class="locked-pill"><i data-lucide="lock"></i> enforced</span></div>
+
+      <!-- /entry-credentials -->
+
+      <div class="setting-row" style="padding-top:10px;padding-bottom:10px;background:var(--panel2)">
+        <div class="sr-text"><div class="sr-desc" style="margin:0;display:flex;align-items:center;gap:6px">
+          <i data-lucide="lock" style="width:12px;height:12px"></i> Changes require reveal-group membership · passwords never displayed</div></div>
       </div>
     </div>
   </div>
@@ -169,10 +318,12 @@
   <div class="card">
     <div class="card-header"><i data-lucide="activity"></i><span class="title">Health monitoring</span></div>
     <div class="card-body flush">
+      {# No button: the page this used to link to is retired, and the poller has
+         no live toggle. The values it actually runs with say more than a link. #}
       <div class="setting-row">
         <div class="sr-text"><div class="sr-label">Background health poller</div>
-          <div class="sr-desc">Periodically probes device reachability; surfaced as health dots across the fleet.</div></div>
-        <div class="sr-control"><a href="/fleet-settings" class="btn ghost sm">Fleet settings</a></div>
+          <div class="sr-desc">Probes reachability every <span class="mono text">{{ all_settings.get('health_check_interval_seconds', '300') }}s</span>, timeout <span class="mono text">{{ all_settings.get('health_check_timeout_seconds', '5') }}s</span>{% if all_settings.get('health_verify_credentials') in ('true', True, '1') %}, verifying credentials{% endif %}. Surfaced as health dots across the fleet.</div></div>
+        <div class="sr-control"><span class="badge {{ 'green' if all_settings.get('health_monitor_enabled') in ('true', True, '1') else 'grey' }}"><span class="dot"></span>{{ 'on' if all_settings.get('health_monitor_enabled') in ('true', True, '1') else 'off' }}</span></div>
       </div>
       <div class="setting-row">
         <div class="sr-text"><div class="sr-label">Chat / model configuration</div>
@@ -254,11 +405,154 @@
     </div>
   </div>
 
+  {# Every fleet setting, raw — collapsed, because it is a debugging view, not a
+     control. Sensitive values are never in this HTML: the placeholder renders
+     and the page fetches the value from the already-gated reveal endpoint. #}
+  <details class="card" id="raw-fleet-settings">
+    <summary class="card-header" style="cursor:pointer;user-select:none">
+      <i data-lucide="chevron-right" class="chev-d" style="transition:transform .15s;color:var(--text-faint)"></i>
+      <i data-lucide="terminal"></i><span class="title">Advanced · raw fleet settings</span>
+      <span class="ml-auto mono" style="font-size:11px;color:var(--text-faint)">{{ settings|length }} keys</span>
+    </summary>
+    <div class="card-body flush">
+      {% if settings %}
+      <table style="width:100%;border-collapse:collapse;font-size:12.5px">
+        <tbody>
+        {% for key, row in settings.items() %}
+        <tr style="border-bottom:1px solid var(--border-subtle)">
+          <td class="mono" style="padding:9px 16px;width:44%">{{ key }}</td>
+          <td style="padding:9px 16px">
+            {% if row.sensitive %}
+            <span style="display:flex;align-items:center;gap:8px">
+              <span class="mono text" id="pw-{{ loop.index }}">••••••••</span>
+              <button class="btn subtle sm" type="button" id="btn-{{ loop.index }}"
+                      onclick="toggleFleetPassword('{{ key }}', {{ loop.index }})"><i data-lucide="eye"></i> Reveal</button>
+              <button class="btn subtle sm" type="button" id="copy-{{ loop.index }}"
+                      onclick="copyFleetPassword({{ loop.index }})" style="display:none">Copy</button>
+            </span>
+            {% else %}
+            <span class="mono text">{{ row.value }}</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="setting-row"><div class="sr-text"><div class="sr-desc" style="margin:0">No fleet settings configured.</div></div></div>
+      {% endif %}
+    </div>
+  </details>
+
 </div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
+// ── Provisioning credentials ───────────────────────────────────────────────
+// The two credential forms stay collapsed until asked for, and opening one
+// closes the other: they write different fleet-wide credentials, and an open
+// pair invites typing a root password into the entry list.
+document.querySelectorAll('[data-toggle]').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    const el = document.getElementById(btn.dataset.toggle);
+    if (!el) return;
+    const opening = el.hidden;
+    el.hidden = !opening;
+    if (!opening) return;
+    const other = btn.dataset.toggleOther
+      ? document.getElementById(btn.dataset.toggleOther) : null;
+    if (other) other.hidden = true;
+    const first = el.querySelector('input:not([type=checkbox])');
+    if (first) first.focus();
+  });
+});
+
+// The short-password warning, as the operator types (FR-CRED-014). While the
+// password is short the acceptance box is required, so the browser asks for it
+// instead of refusing the password; once it is long enough the box is hidden
+// and cleared, so a stale tick never rides along.
+(function () {
+  const input = document.getElementById('root_password');
+  const warning = document.getElementById('root-password-short');
+  const accept = document.getElementById('accept_short_password');
+  if (!input || !warning || !accept) return;
+  const recommended = parseInt(input.dataset.recommendedLength, 10) || 8;
+  input.addEventListener('input', function () {
+    // Code points, as the server's len() counts them. value.length counts
+    // UTF-16 units, which would call a password holding astral characters long
+    // enough here and short on the server — unacceptable either way.
+    const length = [...input.value].length;
+    const short = length > 0 && length < recommended;
+    warning.hidden = !short;
+    accept.required = short;
+    if (!short) accept.checked = false;
+  });
+})();
+
+// ── Advanced · raw fleet settings: reveal one value at a time ──────────────
+const fleetSettingCache = {};
+
+async function toggleFleetPassword(key, idx) {
+  const el = document.getElementById('pw-' + idx);
+  const btn = document.getElementById('btn-' + idx);
+  const copyBtn = document.getElementById('copy-' + idx);
+
+  if (el.dataset.revealed === 'true') {
+    el.textContent = '••••••••';
+    el.dataset.revealed = 'false';
+    btn.innerHTML = '<i data-lucide="eye"></i> Reveal';
+    copyBtn.style.display = 'none';
+    if (window.lucide) window.lucide.createIcons();
+    return;
+  }
+  if (fleetSettingCache[key]) {
+    el.textContent = fleetSettingCache[key];
+    el.dataset.revealed = 'true';
+    btn.textContent = 'Hide';
+    copyBtn.style.display = '';
+    return;
+  }
+  btn.textContent = 'Loading…';
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/fleet/settings/' + encodeURIComponent(key) + '/reveal');
+    if (!resp.ok) {
+      // Surface the actual API error: a 403 names either the missing
+      // reveal-group membership or (for anonymous callers) the need to
+      // configure ADMZ_AUTH_BACKEND.
+      let detail = 'HTTP ' + resp.status;
+      try {
+        const errBody = await resp.json();
+        if (errBody && errBody.detail) detail = errBody.detail;
+      } catch (_) { /* fall through with the HTTP code */ }
+      el.textContent = resp.status === 403 ? detail : 'Error: ' + detail;
+      btn.textContent = 'Retry';
+      btn.disabled = false;
+      return;
+    }
+    const data = await resp.json();
+    fleetSettingCache[key] = data.value || '(empty)';
+    el.textContent = fleetSettingCache[key];
+    el.dataset.revealed = 'true';
+    btn.textContent = 'Hide';
+    copyBtn.style.display = '';
+  } catch (err) {
+    el.textContent = 'Error: ' + err.message;
+    btn.textContent = 'Retry';
+  }
+  btn.disabled = false;
+}
+
+async function copyFleetPassword(idx) {
+  const el = document.getElementById('pw-' + idx);
+  if (el.dataset.revealed !== 'true') return;
+  await navigator.clipboard.writeText(el.textContent);
+  const btn = document.getElementById('copy-' + idx);
+  btn.textContent = 'Copied!';
+  setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+}
+
 async function removeIgnoreRule(btn, key, scope) {
   btn.disabled = true;
   try {
