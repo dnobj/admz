@@ -114,6 +114,87 @@ os.environ.setdefault("ADMZ_DISABLE_ONBOARDING_PROBES", "1")
 os.environ.setdefault("ADMZ_DISABLE_GITHUB_APP_PUSH", "1")
 
 
+#: Modules that bind the fleet-settings singleton with
+#: ``from admz.fleet_settings import fleet_settings`` — that is, at IMPORT. A
+#: test that repoints the module attribute and *then* imports the app for the
+#: first time leaves every one of these holding ITS temporary store, for the
+#: rest of the session. Modules that import it inside a function rebind on every
+#: call and cannot leak, so they are deliberately not listed.
+_FLEET_SETTINGS_HOLDERS = (
+    "admz.api.routes.capture",
+    "admz.api.routes.confirm",
+    "admz.api.routes.devices",
+    "admz.api.routes.survey",
+    "admz.api.routes.web",
+    "admz.entry_credentials",
+    "admz.github_app.secrets",
+    "admz.mcp.server",
+    "admz.onboarding",
+    "admz.provisioning",
+    "admz.survey.secrets",
+)
+
+
+@pytest.fixture
+def repoint_fleet_settings(monkeypatch):
+    """Point every module-level fleet-settings reference at one store.
+
+    Returns a callable so a fixture can write
+    ``fresh = repoint_fleet_settings(FleetSettings(path))``.
+
+    It **imports the holders first**, which is the whole point: a module
+    imported for the first time *under* the patch binds the temporary store
+    permanently, and monkeypatch cannot undo that — it only restores attributes
+    it set. `admz.provisioning` is imported lazily while `/settings` renders,
+    which is exactly how the leak reappeared after the obvious one was fixed.
+    """
+    import importlib
+
+    def _repoint(store):
+        import admz.fleet_settings as fs_module
+
+        for name in _FLEET_SETTINGS_HOLDERS:
+            monkeypatch.setattr(
+                importlib.import_module(name), "fleet_settings", store)
+        monkeypatch.setattr(fs_module, "fleet_settings", store)
+        return store
+
+    return _repoint
+
+
+@pytest.fixture(autouse=True)
+def _fleet_settings_references_restored():
+    """Fail the test that leaves a fleet-settings reference repointed.
+
+    Without this the *innocent* test fails instead, one file later and with
+    nothing to point at: a suite that patched the store and then imported the
+    app first left ``api/routes/devices.py`` reading a deleted temp database, so
+    ``tests/test_api_routes.py::TestFleetSettingsMasking`` got a 404 for a key it
+    had just written — but only when the two files shared a session, which is
+    why it never failed alone or in CI's full-suite order.
+
+    Repoint every module-level reference together and restore them all; the
+    ``client`` fixture in tests/test_settings_write_authz.py is the pattern.
+    """
+    yield
+    import sys
+
+    import admz.fleet_settings as fs_module
+
+    current = fs_module.fleet_settings
+    leaked = [
+        name for name in _FLEET_SETTINGS_HOLDERS
+        if (module := sys.modules.get(name)) is not None
+        and getattr(module, "fleet_settings", current) is not current
+    ]
+    assert not leaked, (
+        "these modules still point at a different fleet-settings store than "
+        f"admz.fleet_settings.fleet_settings: {leaked}. Repoint every "
+        "module-level reference together and restore them all in the fixture's "
+        "teardown, or a later test reads a store this one never wrote to."
+    )
+
+
 @pytest.fixture(autouse=True)
 def _reset_shared_inmemory_state():
     """Reset process-wide rate-limit + lockout state before each test."""
