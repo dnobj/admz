@@ -689,10 +689,12 @@ The Console's attention queue (ADR-0071): devices whose config drifted
 - **Returns:** `{success, count, open_count, notices: [...]}`. Each notice is
   `{id, kind, subject_key, severity, title, summary, device_id, status,
   source, source_label, task_id, occurrences, created_at, updated_at,
-  snoozed_until, handled_at, handled_by, resolution, review_conversation_id,
-  reviewed_at, device: {model, nickname, host}}`. A drift notice's `summary`
-  holds counts and triage class names only; `device` is registry text,
-  sanitized.
+  confirmed_at, snoozed_until, handled_at, handled_by, resolution,
+  review_conversation_id, reviewed_at, device: {model, nickname, host}}`.
+  `created_at` is first seen, `updated_at` the last change, and `confirmed_at`
+  the last check that found it (`source` names that check). A drift notice's
+  `summary` holds counts and triage class names only; `device` is registry
+  text, sanitized.
 
 ### `dismiss_notice`
 Close a notice the user decided not to act on — only when they say so.

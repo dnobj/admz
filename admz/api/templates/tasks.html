@@ -47,7 +47,7 @@
   <h2 class="page-title" style="font-size:15px;margin:0 0 2px">Notices</h2>
   <p class="page-sub" style="margin:0 0 10px">Raised by drift checks and <strong>notify</strong> actions. Each stays in the Console's <em>Needs attention</em> strip until it is resolved, dismissed or snoozed.</p>
   <table class="data-table" id="notices-table">
-    <thead><tr><th>Notice</th><th>Device</th><th>Raised by</th><th>First seen</th><th>Status</th><th></th></tr></thead>
+    <thead><tr><th>Notice</th><th>Device</th><th>Last seen by</th><th>First seen</th><th>Status</th><th></th></tr></thead>
     <tbody id="notices-body"></tbody>
   </table>
 </div>
@@ -837,7 +837,9 @@ function renderNoticeTr(n) {
     + '<div><div class="nm" style="font-family:var(--sans);font-weight:600">#' + Number(n.id) + ' ' + esc(what) + '</div>'
     + (isDrift ? '<div class="sub">' + esc(n.severity) + ' importance</div>' : '') + '</div></div></td>'
     + '<td>' + device + '</td>'
-    + '<td>' + esc(n.source_label || n.source) + (n.task_id ? '<div class="sub mono">' + esc(n.task_id) + '</div>' : '') + '</td>'
+    + '<td>' + esc(n.source_label || n.source)
+    + '<div class="sub">' + esc(fmtUnix(n.confirmed_at || n.updated_at)) + '</div>'
+    + (n.task_id ? '<div class="sub mono">' + esc(n.task_id) + '</div>' : '') + '</td>'
     + '<td>' + esc(fmtUnix(n.created_at)) + '</td>'
     + '<td>' + status + '</td>'
     + '<td style="text-align:right;white-space:nowrap">'

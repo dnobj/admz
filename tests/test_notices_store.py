@@ -34,7 +34,7 @@ class TestRaise:
         n = _drift(store)
         assert n.id >= 1
         assert (n.status, n.occurrences) == ("open", 1)
-        assert n.created_at == n.updated_at == T0
+        assert n.created_at == n.updated_at == n.confirmed_at == T0
         assert n.summary == {"fields": 4}
         assert (n.source, n.task_id, n.severity) == ("drift_audit", "sched-1", "low")
 
@@ -47,7 +47,7 @@ class TestRaise:
         assert again.id == first.id
         assert again.occurrences == 2
         assert again.created_at == T0          # first seen stays true
-        assert again.updated_at == T0 + 60
+        assert again.updated_at == again.confirmed_at == T0 + 60
         assert again.summary == {"fields": 7}
         assert (again.severity, again.source) == ("high", "check_drift")
         assert len(store.list(status=None)) == 1
@@ -93,6 +93,39 @@ class TestRaise:
         args = {"kind": "drift", "subject_key": "drift:x", "severity": "low", **kw}
         with pytest.raises(ValueError):
             store.raise_notice(**args)
+
+
+class TestTouch:
+    """The same subject seen again: confirmed, not changed."""
+
+    def test_it_confirms_and_changes_nothing_else(self, store):
+        n = _drift(store)
+        assert store.touch("drift:cam-1", source="check_drift", task_id="",
+                           now=T0 + 30) is True
+        got = store.get(n.id)
+        assert got.confirmed_at == T0 + 30
+        assert (got.updated_at, got.created_at, got.occurrences) == (T0, T0, 1)
+        assert (got.source, got.task_id, got.status) == ("check_drift", "", "open")
+        assert got.summary == {"fields": 4}
+
+    def test_a_snooze_stays_asleep(self, store):
+        n = _drift(store)
+        store.snooze(n.id, until=T0 + 3600)
+        store.touch("drift:cam-1", source="drift_audit", now=T0 + 30)
+        got = store.get(n.id)
+        assert (got.status, got.snoozed_until) == ("snoozed", T0 + 3600)
+        assert got.confirmed_at == T0 + 30
+
+    def test_a_closed_notice_is_not_revived(self, store):
+        n = _drift(store)
+        store.handle(n.id, "dismissed")
+        assert store.touch("drift:cam-1", source="drift_audit", now=T0 + 30) is False
+        assert store.get(n.id).status == "handled"
+        assert store.get_live("drift:cam-1") is None
+
+    def test_nothing_to_touch(self, store):
+        assert store.touch("drift:nobody", source="drift_audit") is False
+        assert store.list(status=None) == []
 
 
 class TestClose:
@@ -151,6 +184,16 @@ class TestSweep:
         assert (got.status, got.resolution) == ("expired", "expired")
         # An expired subject raises afresh.
         assert _drift(store, now=T0 + EXPIRE_OPEN_AFTER_SECONDS + 2).id != n.id
+
+    def test_a_confirmed_notice_does_not_expire(self, store):
+        """Expiry counts from the last check that saw the subject, so an
+        unreviewed notice lives as long as its drift is still being found."""
+        n = _drift(store)
+        confirmed = T0 + EXPIRE_OPEN_AFTER_SECONDS - 10
+        store.touch("drift:cam-1", source="drift_audit", now=confirmed)
+        assert store.sweep(now=T0 + EXPIRE_OPEN_AFTER_SECONDS + 1)["expired"] == 0
+        assert store.get(n.id).status == "open"
+        assert store.sweep(now=confirmed + EXPIRE_OPEN_AFTER_SECONDS + 1)["expired"] == 1
 
     def test_closed_rows_are_purged_after_ninety_days(self, store):
         n = _drift(store)

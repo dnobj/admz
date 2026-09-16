@@ -455,7 +455,16 @@ def _open_notice_lines(registry: Any) -> List[str]:
         age = _age(n.created_at)
         if age:
             parts.append(f"first seen {age}")
-        parts.append(f"raised by {SOURCE_LABELS.get(n.source, n.source or 'ADMZ')}")
+        source = SOURCE_LABELS.get(n.source, n.source or "ADMZ")
+        if n.kind == KIND_DRIFT:
+            if n.occurrences > 1:
+                parts.append(f"changed {n.occurrences - 1} time(s) since, "
+                             f"last {_age(n.updated_at) or 'recently'}")
+            confirmed = _age(n.confirmed_at or n.updated_at)
+            parts.append(f"last confirmed {confirmed or 'recently'} by {source}")
+        else:
+            fired = _age(n.updated_at)
+            parts.append(f"last fired {fired or 'recently'}")
         lines.append("- " + " · ".join(parts))
     if total > len(rows):
         lines.append(f"- …and {total - len(rows)} more")

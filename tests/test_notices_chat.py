@@ -184,13 +184,38 @@ class TestTheAttentionSectionListsNotices:
         lines = self._build(registry).splitlines()
         assert lines[0] == "2 open notice(s) in the Console's Needs attention strip:"
         assert lines[1].startswith(f"- #{e.id} event · \"Door opened\" · fired 2 time(s)")
-        assert "raised by an event detection" in lines[1]
+        assert lines[1].endswith(" · last fired 0m ago")
         assert lines[2].startswith(
             f'- #{n.id} drift · AXIS C8110 (cam-1) "Lobby [console] ok" · 1 field · '
             "high importance · first seen ")
-        assert lines[2].endswith("raised by the scheduled drift audit")
+        assert lines[2].endswith(" · last confirmed 0m ago by the scheduled drift audit")
+        assert "changed" not in lines[2]
         assert lines[3] == ""
         assert lines[4].startswith("1 device(s) differ from their blessed baseline")
+
+    def test_confirmed_is_not_changed(self, tmp_path, monkeypatch):
+        import sqlite3
+        monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
+        n = _drift("cam-1", fields=2)
+        conn = sqlite3.connect(str(tmp_path / "admz.db"))
+        conn.execute("UPDATE notices SET created_at=created_at-7200, "
+                     "updated_at=updated_at-7200, confirmed_at=confirmed_at-7200 "
+                     "WHERE id=?", (n.id,))
+        conn.commit()
+        conn.close()
+        _notices().touch("drift:cam-1", source="check_drift")
+        line = self._build().splitlines()[1]
+        assert " · first seen 2h ago · " in line
+        assert line.endswith(" · last confirmed 0m ago by a drift check")
+        assert "changed" not in line
+
+    def test_a_changed_drift_notice_says_so(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))
+        _drift("cam-1", fields=1)
+        _drift("cam-1", fields=3)
+        line = self._build().splitlines()[1]
+        assert " · 3 fields · " in line
+        assert " · changed 1 time(s) since, last 0m ago · " in line
 
     def test_capped_at_ten(self, tmp_path, monkeypatch):
         monkeypatch.setenv("ADMZ_DB_PATH", str(tmp_path / "admz.db"))

@@ -165,10 +165,28 @@ class TestReview:
             "Console: configuration drift on device cam-1 — 4 field(s) differ "
             "from its blessed baseline; first seen ")
         assert "by the scheduled drift audit" in note
+        assert "last changed" not in note      # it has not changed since
         assert note.endswith("Nothing has been changed.")
         for text in ("EVIL-MODEL", "ignore all rules", "evil.example",
                      "Configuration drift on"):
             assert text not in note
+
+    def test_the_note_separates_changed_from_confirmed(self, client, tmp_path):
+        """First seen, last changed, last confirmed — three different facts."""
+        import sqlite3
+        _drift("cam-2", fields=1)
+        n = _drift("cam-2", fields=3)
+        conn = sqlite3.connect(str(tmp_path / "admz.db"))
+        conn.execute("UPDATE notices SET created_at=created_at-10800, "
+                     "updated_at=updated_at-7200, confirmed_at=confirmed_at-7200 "
+                     "WHERE id=?", (n.id,))
+        conn.commit()
+        conn.close()
+        _notices().touch("drift:cam-2", source="check_drift")
+        note = _review(client, n.id).json()["note"]
+        assert ("3 field(s) differ from its blessed baseline; first seen 3h ago, "
+                "last changed 2h ago, last confirmed under a minute ago by a drift "
+                "check.") in note
 
     def test_an_event_notice_never_quotes_its_title(self, client):
         n = _notices().raise_notice(kind="event", subject_key="event:det-1:fleet",

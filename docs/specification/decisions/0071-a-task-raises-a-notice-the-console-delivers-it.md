@@ -53,6 +53,7 @@ _As built:_
 - **Backfill.** It skips a device that has any notice row in any status. Otherwise a notice the operator dismissed would come back on every restart.
 - **Summary.** A drift notice takes its severity from the review's highest importance. Its summary carries only the triage class names and counts, never a value.
 - **Accept.** The accept path does not reach the producer: `refresh_drift_after_accept` writes its in-sync report straight to the alert store. So resolving the notice explicitly, before that report, is what makes it read `accepted`.
+- **The same drift again.** A check with no transition that still finds drift *confirms* the live notice (`NoticeStore.touch`). It records the time in a third timestamp, `confirmed_at`, and names the confirming check as the source. It does not count an occurrence, move `updated_at`, or wake a snooze. So the review note's "last confirmed … by the scheduled drift audit" is literally true. The 30-day expiry counts from `confirmed_at`, so an unreviewed notice lives as long as checks keep finding its drift and expires only when nothing is checking any more. The queue stays ordered by `updated_at`, the last *change*. The note says "last changed" separately once the drift has changed.
 
 ### 3. Delivery is browser-driven, per ADR-0066
 

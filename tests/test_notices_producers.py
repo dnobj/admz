@@ -73,6 +73,20 @@ def _live(store):
     return store.get_live("drift:cam-01")
 
 
+def _age_row(tmp_path, notice_id, seconds):
+    """Move a notice's clocks into the past, so a later write is measurable."""
+    import sqlite3
+    conn = sqlite3.connect(str(tmp_path / "admz.db"))
+    try:
+        conn.execute(
+            "UPDATE notices SET created_at=created_at-?, updated_at=updated_at-?, "
+            "confirmed_at=confirmed_at-? WHERE id=?",
+            (seconds, seconds, seconds, notice_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 class TestDriftTransitions:
     @pytest.mark.asyncio
     async def test_appeared_changed_cleared_on_one_row(self, rig, notices):
@@ -127,6 +141,34 @@ class TestDriftTransitions:
         assert _live(notices) is None
         await rig.check(**{"root.Image.I0.Resolution": "800x600"})
         assert _live(notices).id != n.id
+
+    @pytest.mark.asyncio
+    async def test_the_same_drift_again_confirms_the_notice(self, rig, notices,
+                                                            tmp_path):
+        """No transition, still drifted: the notice is confirmed — later
+        `confirmed_at`, the confirming check named — and nothing else moves."""
+        await rig.check()
+        await rig.check(**{"root.Image.I0.Resolution": "1280x720"})
+        n = _live(notices)
+        _age_row(tmp_path, n.id, seconds=1000)
+        before = notices.get(n.id)
+        with producers.notice_provenance("drift_audit", "sched-5"):
+            await rig.check(**{"root.Image.I0.Resolution": "1280x720"})
+        after = notices.get(n.id)
+        assert after.confirmed_at > before.confirmed_at + 900
+        assert (after.updated_at, after.created_at) == (before.updated_at, before.created_at)
+        assert after.occurrences == 1
+        assert (after.source, after.task_id) == ("drift_audit", "sched-5")
+        assert after.summary == before.summary
+
+    @pytest.mark.asyncio
+    async def test_the_same_drift_again_leaves_a_snooze_asleep(self, rig, notices):
+        await rig.check()
+        await rig.check(**{"root.Image.I0.Resolution": "1280x720"})
+        n = _live(notices)
+        notices.snooze(n.id, until=n.updated_at + 10 ** 6)
+        await rig.check(**{"root.Image.I0.Resolution": "1280x720"})
+        assert notices.get(n.id).status == "snoozed"
 
     @pytest.mark.asyncio
     async def test_a_change_wakes_a_snooze(self, rig, notices):

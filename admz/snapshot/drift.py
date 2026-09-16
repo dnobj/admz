@@ -322,7 +322,8 @@ class DriftDetector:
             alert = alerts_store.process_report(report)
             if alert is not None:
                 report.alert_transition = alert.transition
-            # ADR-0071 §2: every check hands its transition to the notices.
+            # ADR-0071 §2: every check hands its result to the notices — a
+            # transition raises or resolves, the same drift again confirms.
             # The alert store records nothing for a device's FIRST observation,
             # so drift found on it would otherwise never raise one.
             transition = alert.transition if alert is not None else None

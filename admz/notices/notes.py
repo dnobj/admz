@@ -64,10 +64,13 @@ def describe(notice: Notice, now: Optional[float] = None) -> str:
             parts.append(f"{fields} field(s) differ from its blessed baseline")
         if absent:
             parts.append(f"{absent} baselined facet(s) are no longer present")
+        seen = f"first seen {_ago(notice.created_at, now)}"
+        if notice.occurrences > 1:
+            seen += f", last changed {_ago(notice.updated_at, now)}"
+        confirmed = notice.confirmed_at or notice.updated_at
         return (
             f"configuration drift on device {device} — {' and '.join(parts)}; "
-            f"first seen {_ago(notice.created_at, now)}, last confirmed "
-            f"{_ago(notice.updated_at, now)} by {source}"
+            f"{seen}, last confirmed {_ago(confirmed, now)} by {source}"
         )
     where = f"on device {device}" if device else "fleet-wide"
     return (

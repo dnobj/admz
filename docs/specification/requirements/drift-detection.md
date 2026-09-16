@@ -279,7 +279,10 @@ already finds drift raises the notice as `appeared` itself. The row's summary ca
 count, the absent-facet count, the triage classes with their counts, the highest importance (which
 also sets the notice's severity) and whether the firmware moved; it never carries the versions.
 The startup backfill skips any device that already has a notice row in any status, so a dismissed
-notice is not raised again on restart. A notice closed by a transition names its source
+notice is not raised again on restart. A check that finds the same drift again confirms the live
+notice (`confirmed_at` and the confirming source) without counting an occurrence or waking a snooze;
+the 30-day expiry counts from that confirmation, so an unreviewed notice stays while checks keep
+finding its drift, and more drift updates the same row rather than adding one. A notice closed by a transition names its source
 (`check_drift`, `drift_audit`) as `handled_by`; an accept names the person.
 
 ### FR-DRF-019 — Bulk accept from chat 📋

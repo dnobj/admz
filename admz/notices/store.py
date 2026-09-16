@@ -7,6 +7,13 @@ producer that fires again therefore updates the row it already raised instead
 of stacking a second one, and ``created_at`` keeps saying when the subject was
 first seen.
 
+Three timestamps answer three questions. ``created_at``: first seen.
+``updated_at``: last changed — a raise or a refresh; the queue is ordered by
+it. ``confirmed_at``: last seen at all — a raise, a refresh, or a check that
+found the same thing again (:meth:`NoticeStore.touch`); "last confirmed" and
+the 30-day expiry read it, so an unreviewed notice lives as long as checks
+keep seeing its subject.
+
 What a row may hold is the other half of the contract: identifiers, counts,
 class names and timestamps — never a parameter value, and never a
 device-written name. A review note built from a row is a trusted ``[console]``
@@ -41,7 +48,7 @@ LIVE_STATUSES = (STATUS_OPEN, STATUS_SNOOZED)
 #: The triage importance names (ADR-0070 §1), reused as notice severities.
 SEVERITIES = ("low", "medium", "high")
 
-#: An open notice nobody touched for this long expires.
+#: An open notice no check has confirmed for this long expires.
 EXPIRE_OPEN_AFTER_SECONDS = 30 * 86400
 #: A closed notice is purged after this long; ``drift_alerts`` keeps the history.
 PURGE_CLOSED_AFTER_SECONDS = 90 * 86400
@@ -65,6 +72,7 @@ CREATE TABLE IF NOT EXISTS notices (
     occurrences             INTEGER NOT NULL DEFAULT 1,
     created_at              REAL NOT NULL,
     updated_at              REAL NOT NULL,
+    confirmed_at            REAL,
     snoozed_until           REAL,
     handled_at              REAL,
     handled_by              TEXT NOT NULL DEFAULT '',
@@ -81,7 +89,7 @@ CREATE INDEX IF NOT EXISTS idx_notices_status_updated
 _COLS = (
     "id", "kind", "subject_key", "severity", "title", "summary", "device_id",
     "status", "source", "task_id", "occurrences", "created_at", "updated_at",
-    "snoozed_until", "handled_at", "handled_by", "resolution",
+    "confirmed_at", "snoozed_until", "handled_at", "handled_by", "resolution",
     "review_conversation_id", "reviewed_at",
 )
 _SELECT = f"SELECT {', '.join(_COLS)} FROM notices"
@@ -109,6 +117,7 @@ class Notice:
     occurrences: int = 1
     created_at: float = 0.0
     updated_at: float = 0.0
+    confirmed_at: Optional[float] = None
     snoozed_until: Optional[float] = None
     handled_at: Optional[float] = None
     handled_by: str = ""
@@ -144,6 +153,7 @@ def _row_to_notice(row: tuple) -> Notice:
         occurrences=int(d["occurrences"] or 1),
         created_at=float(d["created_at"] or 0),
         updated_at=float(d["updated_at"] or 0),
+        confirmed_at=d["confirmed_at"],
         snoozed_until=d["snoozed_until"],
         handled_at=d["handled_at"],
         handled_by=d["handled_by"] or "",
@@ -209,7 +219,8 @@ class NoticeStore:
         """Open a notice, or refresh the live one for ``subject_key``.
 
         A refresh counts another occurrence, reopens a snoozed row (a new
-        transition is new information) and keeps ``created_at``.
+        transition is new information), moves ``updated_at`` and
+        ``confirmed_at``, and keeps ``created_at``.
         """
         if kind not in KINDS:
             raise ValueError(f"unknown notice kind: {kind!r}")
@@ -235,16 +246,16 @@ class NoticeStore:
                         "UPDATE notices SET kind=?, severity=?, title=?, summary=?, "
                         "device_id=?, source=?, task_id=?, status='open', "
                         "snoozed_until=NULL, occurrences=occurrences+1, "
-                        "updated_at=? WHERE id=?",
-                        (*values, now, notice_id),
+                        "updated_at=?, confirmed_at=? WHERE id=?",
+                        (*values, now, now, notice_id),
                     )
                 else:
                     cur = conn.execute(
                         "INSERT INTO notices (kind, severity, title, summary, "
                         "device_id, source, task_id, subject_key, status, "
-                        "occurrences, created_at, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, ?, ?)",
-                        (*values, subject_key, now, now),
+                        "occurrences, created_at, updated_at, confirmed_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, ?, ?, ?)",
+                        (*values, subject_key, now, now, now),
                     )
                     notice_id = int(cur.lastrowid)
                 conn.execute("COMMIT")
@@ -254,6 +265,27 @@ class NoticeStore:
         finally:
             conn.close()
         return self.get(notice_id)  # type: ignore[return-value]
+
+    def touch(self, subject_key: str, *, source: str = "", task_id: str = "",
+              now: Optional[float] = None) -> bool:
+        """Record that a check found the live notice's subject again, unchanged.
+
+        Moves ``confirmed_at`` and names the check (``source``, ``task_id``),
+        and nothing else: no occurrence, no new ``updated_at``, and a snoozed
+        row stays snoozed — the same thing again is not new information.
+        False when nothing is live for ``subject_key``.
+        """
+        now = time.time() if now is None else float(now)
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                f"UPDATE notices SET confirmed_at=?, source=?, task_id=? "
+                f"WHERE subject_key=? AND status IN {_LIVE_SQL}",
+                (now, source or "", task_id or "", subject_key),
+            )
+            return cur.rowcount > 0
+        finally:
+            conn.close()
 
     def _close_live(self, where: str, args: tuple, *, status: str,
                     resolution: str, by: str, now: Optional[float]) -> Optional[Notice]:
@@ -404,8 +436,8 @@ class NoticeStore:
 
     # ------------------------------------------------------------------- sweep
     def sweep(self, now: Optional[float] = None) -> Dict[str, int]:
-        """Wake past-due snoozes, expire open rows idle for 30 days, purge
-        closed rows after 90."""
+        """Wake past-due snoozes, expire open rows no check has confirmed for
+        30 days, purge closed rows after 90."""
         now = time.time() if now is None else float(now)
         conn = self._connect()
         try:
@@ -416,7 +448,8 @@ class NoticeStore:
             ).rowcount
             expired = conn.execute(
                 "UPDATE notices SET status='expired', handled_at=?, "
-                "resolution='expired' WHERE status='open' AND updated_at < ?",
+                "resolution='expired' WHERE status='open' "
+                "AND COALESCE(confirmed_at, updated_at) < ?",
                 (now, now - EXPIRE_OPEN_AFTER_SECONDS),
             ).rowcount
             purged = conn.execute(

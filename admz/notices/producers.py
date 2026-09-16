@@ -1,10 +1,11 @@
 """Who raises and resolves notices (ADR-0071 §2).
 
 Drift raises at one choke point: ``DriftDetector.check_drift`` hands every
-transition here, so the scheduled audit, the manual **Check drift** button and
-the MCP tool all produce the same notices. ``appeared`` and ``changed`` raise;
-``cleared`` always resolves, even while raising is switched off. Accepting a
-baseline resolves the notice as ``accepted`` with the person's name.
+check here, so the scheduled audit, the manual **Check drift** button and the
+MCP tool all produce the same notices. ``appeared`` and ``changed`` raise;
+``cleared`` always resolves, even while raising is switched off; a check that
+finds the same drift again confirms the live notice. Accepting a baseline
+resolves the notice as ``accepted`` with the person's name.
 
 Provenance rides a context variable: the ``drift_audit`` handler wraps its
 sweep in :func:`notice_provenance`, and anything else reads as a manual
@@ -136,12 +137,21 @@ def drift_transition(
     transition: Optional[str], report: Any, *,
     registry: Any = None, git_repo: Any = None,
 ) -> Optional[Notice]:
-    """Hand one drift check's transition to the attention queue."""
-    if not transition:
-        return None
+    """Hand one drift check's result to the attention queue.
+
+    No transition but still drifted — the same drift seen again — confirms
+    the live notice (:meth:`NoticeStore.touch`), so "last confirmed" stays
+    true and an unreviewed notice does not expire while checks keep finding
+    its drift. It never raises one: a dismissed notice stays dismissed until
+    the drift changes.
+    """
     device_id = report.device_id
     subject = drift_subject(device_id)
     prov = current_provenance()
+    if not transition:
+        if getattr(report, "real_fields", None) or getattr(report, "facets_absent", None):
+            _store().touch(subject, source=prov.source, task_id=prov.task_id)
+        return None
     if transition == "cleared":
         return _store().resolve(subject, "cleared", by=prov.source)
     if transition not in TRANSITIONS_THAT_RAISE:
