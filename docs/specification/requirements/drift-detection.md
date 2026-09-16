@@ -211,7 +211,7 @@ whole facet drifted, and the one where an absent facet vanished from the compare
 signature includes `facets_absent` only when non-empty, so existing signatures do not all change on
 deploy.
 
-### FR-DRF-014 — Every drifted field carries a deterministic triage annotation 📋
+### FR-DRF-014 — Every drifted field carries a deterministic triage annotation ✅
 `admz/snapshot/triage.py` classifies each `DriftField` into a class (`demo_set`, `demo_broken`,
 `demo_candidate`, `security_sensitive`, `cosmetic`, `firmware_managed`, `added_key`, `runtime_state`,
 `read_only`, `service_config`, `uncategorized`) with an importance (`none|low|medium|high`), a default
@@ -222,22 +222,33 @@ observation — read from `device.yaml` at both commits, not from memory), `summ
 `has_drift`, `revertable` are untouched; a case-only change is labelled `cosmetic` and is still drift
 (ADR-0055). See [ADR-0070](../decisions/0070-drift-is-reviewed-in-the-console-chat.md) §1.
 
-### FR-DRF-015 — One review annotator serves REST, MCP and notices 📋
+As built, two `service_config` triggers — an action rule, and an application started or stopped — are
+evaluated above `read_only`: both facets are read-only for restore by design, so below it those triggers
+could never fire. Every label also carries the `rule` id that produced it.
+
+### FR-DRF-015 — One review annotator serves REST, MCP and notices ✅
 `admz/snapshot/review.py::annotate_review` runs the revertable annotation (moved from the REST module,
 it needs only the registry), the #230 attribution and FR-DRF-014's triage, and adds the ignore rules
-applicable to the device. `GET /api/snapshot/drift`, the MCP `check_drift` / `get_drift_review` tools and
-ADR-0071's notice producer all call it, so every surface shows the same `revertable`, `attribution` and
-`triage` keys. Today the MCP path applies attribution only and never `revertable` (`server.py:3826-3854`).
+applicable to the device (at most 20, with `ignore_rule_count`). `GET /api/snapshot/drift` and the MCP
+`check_drift` tool call it on the cached and the live path alike, and so will `get_drift_review` and
+ADR-0071's notice producer, so every surface shows the same `revertable`, `attribution` and `triage`
+keys. Before this, the MCP path applied attribution only and never `revertable`.
 
-### FR-DRF-016 — The accept-baseline demo guard applies on every accept path 📋
+### FR-DRF-016 — The accept-baseline demo guard applies on every accept path ✅
 ADR-0047's refusal to accept while an active demo owns config on the device (409, or 503 when the guard
 cannot run) lives in `admz/snapshot/accept_guard.py::check_accept_allowed` and runs from the REST route,
 from the MCP `accept_baseline` handler **before a card is minted**, and from the approved-action executor
 **before the pointer moves** — fail-closed at execution, so a demo activated between minting and approval
-still cannot be baked into a baseline. Today only the REST route runs it (`snapshot.py:138-191`); the chat
-path bypasses it entirely.
+still cannot be baked into a baseline. Before this, only the REST route ran it and the chat path bypassed
+it entirely. A refusal on either chat path carries `refused: "active_demo" | "guard_unavailable"`.
 
-### FR-DRF-017 — Targeted revert and ignore rules are reachable from chat behind the standard gates 📋
+### FR-DRF-017 — Targeted revert and ignore rules are reachable from chat behind the standard gates 🚧
+**Built (PR 1):** `accept_baseline` takes `note`, `ignore_keys` (≤50, validated like the REST rule model)
+and `ignore_scope`; the exclusions ride the same card and are written only on approval, before the
+pointer moves; an approved accept reports them as `ignore_added_keys` on its audit row. The seed list
+gains `root.Properties.FirmwareManagement.*` (ADR-0070 §7). **Not yet (PR 2):** `revert_drift`,
+`ignore_config_keys`, `list_config_ignore_rules`.
+
 Three MCP tools give the chat the UI's per-field moves: `revert_drift(device_id, fields)` builds one
 targeted plan from the reviewed diff (`RestoreBuilder.build_targeted_revert_plan`; `demo_set` rows never
 included; non-revertable rows skipped with a reason) and returns one `url_only` card;

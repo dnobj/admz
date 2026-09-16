@@ -23,7 +23,7 @@ import contextlib
 import inspect
 import json
 import logging
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -656,12 +656,63 @@ def refresh_drift_after_accept(
         )
 
 
+def _guard_demo_store() -> Any:
+    """The demo store the accept guard reads: the app's, else the module's
+    (both resolve the same database at call time)."""
+    try:
+        from admz.api.context import get_context
+        return get_context().demo_store
+    except Exception:  # noqa: BLE001 — no app context (tests, CLI)
+        from admz.demos.store import get_store
+        return get_store()
+
+
+def _guard_git_repo(git_repo: Any) -> Any:
+    if git_repo is not None:
+        return git_repo
+    try:
+        from admz.api.context import get_context
+        return get_context().git_repo
+    except Exception:  # noqa: BLE001 — no app context
+        return None
+
+
 def _action_accept_baseline(
     action: Mapping[str, Any], registry: Any, git_repo: Any = None,
 ) -> Dict[str, Any]:
+    from admz.snapshot.accept_guard import AcceptRefused, check_accept_allowed
+
     device_id = action["device_id"]
     target = action["baseline_sha"]
     previous = action.get("previous_baseline_sha")
+    # ADR-0070 §4 — the ADR-0047 guard runs again at EXECUTION, before the
+    # pointer moves: a demo activated after the card was minted must still not
+    # be baked into the baseline. Fail-closed, like the REST route.
+    device_info = dict(registry.get_device_info(device_id) or {})
+    device_info["device_id"] = device_id
+    try:
+        check_accept_allowed(
+            git_repo=_guard_git_repo(git_repo), demo_store=_guard_demo_store(),
+            device_id=device_id, device_info=device_info,
+        )
+    except AcceptRefused as refused:
+        return {
+            "success": False,
+            "action": "accept_baseline",
+            "device_id": device_id,
+            "refused": refused.reason,
+            "error": refused.detail,
+        }
+    # The exclusions the same card approved, written before the pointer moves:
+    # if the settings write fails, nothing on this card has happened.
+    ignore_added: List[str] = []
+    rules = [dict(r) for r in (action.get("ignore_rules") or [])]
+    if rules:
+        from admz.snapshot import ignore
+        before = {(r["key"], r["scope"]) for r in ignore._scoped_rules()}
+        after = ignore.add_rules(rules)
+        ignore_added = [r["key"] for r in after
+                        if (r["key"], r["scope"]) not in before]
     registry.set_config_pointers(device_id, baseline_sha=target)
     note = (action.get("note") or "").strip()
     if git_repo and note:
@@ -689,7 +740,7 @@ def _action_accept_baseline(
     except Exception:
         latest = None
     refresh_drift_after_accept(device_id, target, latest)
-    return {
+    outcome: Dict[str, Any] = {
         "success": True,
         "action": "accept_baseline",
         "device_id": device_id,
@@ -700,6 +751,13 @@ def _action_accept_baseline(
             "measured against it; restore_device (ref omitted) replays it."
         ),
     }
+    if ignore_added:
+        # One comma-separated string: the audit row records scalars only.
+        outcome["ignore_added_keys"] = ", ".join(ignore_added)
+        outcome["message"] += (
+            " Excluded from drift tracking: " + ", ".join(ignore_added) + "."
+        )
+    return outcome
 
 
 def _action_delete_device(

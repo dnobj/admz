@@ -99,6 +99,19 @@ class Principal:
     """True for the synthetic principal returned by :class:`NoAuth`."""
 
 
+def principal_name(principal: object) -> str:
+    """The identity to *record* for ``principal`` — its ``name``.
+
+    ``Principal`` is a plain dataclass, so ``str(principal)`` is its whole
+    repr, group memberships included, not a name. A changelog entry written
+    into the config repo wants the name. A bare string passes through.
+    """
+    if principal is None:
+        return ""
+    name = getattr(principal, "name", None)
+    return str(name) if name is not None else str(principal)
+
+
 # Parse ``DOMAIN\\user``, ``DOMAIN/user``, or ``user@domain`` shapes that
 # Windows IWA / IIS commonly produces in ``REMOTE_USER``.
 _DOMAIN_BACKSLASH = re.compile(r"^(?P<domain>[^\\/@]+)[\\/](?P<user>[^\\/@]+)$")

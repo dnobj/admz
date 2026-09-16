@@ -1572,6 +1572,8 @@ class TestDriftNoteField:
         class _Reg:
             def __init__(self):
                 self._baseline = None
+            def get_device_info(self, did):
+                return {}  # read by the ADR-0070 accept guard
             def set_config_pointers(self, did, *, baseline_sha):
                 self._baseline = baseline_sha
 
@@ -1607,6 +1609,8 @@ class TestDriftNoteField:
         sha = tmp_repo.commit_snapshot(device_id, message=f"Audit: {device_id}", auto_push=False)
 
         class _Reg:
+            def get_device_info(self, did):
+                return {}  # read by the ADR-0070 accept guard
             def set_config_pointers(self, did, *, baseline_sha):
                 pass
 
@@ -1622,6 +1626,8 @@ class TestDriftNoteField:
         from admz.operations import _action_accept_baseline
 
         class _Reg:
+            def get_device_info(self, did):
+                return {}  # read by the ADR-0070 accept guard
             def set_config_pointers(self, did, *, baseline_sha):
                 pass
 

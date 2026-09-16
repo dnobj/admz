@@ -92,6 +92,11 @@ _SEED_DEFAULT_RULES: tuple = (
     # is exact-or-child, so a sibling like ServerDateFormat stays tracked too.
     {"key": "root.Time.ServerDate", "scope": "global"},
     {"key": "root.Time.ServerTime", "scope": "global"},
+    # The firmware's own package-manager state (ADR-0070 §7) — the same fact as
+    # the already-volatile root.Properties.Firmware.* one API deeper. It moves
+    # on an upgrade, never on an operator edit (observed: Version 1.8 → 1.10 on
+    # an AXIS C8110 at 12.11.77).
+    {"key": "root.Properties.FirmwareManagement.*", "scope": "global"},
 )
 
 
@@ -110,6 +115,49 @@ def _matches(key: str, pattern: str) -> bool:
 def matches_any(key: str, patterns: List[str]) -> bool:
     """True if ``key`` matches any of the pattern strings."""
     return any(_matches(key, p) for p in patterns)
+
+
+# --------------------------------------------------------------------------- #
+# Rule validation (one definition for the REST model and the chat tools)
+# --------------------------------------------------------------------------- #
+#: The most rule keys one chat request may add.
+MAX_RULE_KEYS = 50
+
+
+def normalize_rule_key(key: Any) -> str:
+    """A rule key, stripped; ``ValueError`` unless it is a non-empty
+    single-line pattern of at most 512 characters."""
+    v = (str(key) if key is not None else "").strip()
+    if not v or len(v) > 512 or "\n" in v:
+        raise ValueError("key must be a non-empty single-line pattern")
+    return v
+
+
+def normalize_rule_scope(scope: Any) -> str:
+    """A rule scope; blank means ``global``. ``ValueError`` for anything but
+    ``global``, ``tag:<tag>`` or ``device:<id>``."""
+    v = (str(scope) if scope is not None else "global").strip() or "global"
+    if v == "global" or v.startswith("tag:") or v.startswith("device:"):
+        return v
+    raise ValueError("scope must be 'global', 'tag:<tag>', or 'device:<id>'")
+
+
+def normalize_rule_keys(keys: Any, *, limit: int = MAX_RULE_KEYS) -> List[str]:
+    """Validate a list of rule keys and drop repeats, keeping first-seen
+    order. ``ValueError`` for a non-list, an invalid key, or more than
+    ``limit`` distinct keys."""
+    if not isinstance(keys, (list, tuple)):
+        raise ValueError("keys must be a list of strings")
+    out: List[str] = []
+    for key in keys:
+        if not isinstance(key, str):
+            raise ValueError("keys must be a list of strings")
+        k = normalize_rule_key(key)
+        if k not in out:
+            out.append(k)
+    if len(out) > limit:
+        raise ValueError(f"at most {limit} keys may be added at once")
+    return out
 
 
 # --------------------------------------------------------------------------- #

@@ -168,6 +168,10 @@ class TestInspectServesCache:
         assert len(body["drifted_fields"]) == 1
         assert "computed_at" in body
         assert calls == []  # served from cache — never probed the device
+        # ADR-0070: the cached path is reviewed exactly like the live one.
+        assert "triage" in body["drifted_fields"][0]
+        assert "revertable" in body["drifted_fields"][0]
+        assert "summary_by_class" in body
 
     def test_refresh_forces_live(self, client, monkeypatch):
         ctx = _seed(client, "cam-x")

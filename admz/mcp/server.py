@@ -88,7 +88,6 @@ from admz.snapshot.engine import SnapshotEngine
 from admz.snapshot.git_repo import GitRepo
 from admz.snapshot.restore import RestoreBuilder
 from admz.snapshot.drift import DriftDetector
-from admz.snapshot.attribution import annotate_attribution
 from admz.snapshot.scheduler import SnapshotScheduler, SnapshotSchedule, parse_interval
 from admz.discovery import discover_devices as run_network_discovery
 from admz.mcp.tools import MIGRATED_TOOLS
@@ -1414,13 +1413,20 @@ class ADMZMCPServer:
                         "Accept/promote an observed configuration as a "
                         "device's new blessed BASELINE (ADR-0031). Use after "
                         "check_drift reports drift the user wants to keep "
-                        "('yes, keep it that way'). Defaults to the device's "
-                        "latest recorded observation; pass commit_sha to "
-                        "bless a specific historical commit. Returns "
-                        "blocked:true with a confirm_token — the re-pointing "
-                        "executes only after the user approves the on-screen "
-                        "confirmation card. The opposite action (reject the "
-                        "drift) is restore_device with ref omitted."
+                        "('yes, keep it that way'). Defaults to the "
+                        "observation the cached drift review was computed "
+                        "against, else the latest recorded observation; pass "
+                        "commit_sha to bless a specific historical commit. "
+                        "Pass a short, cause-based note — it becomes the "
+                        "device's changelog entry. ignore_keys excludes keys "
+                        "from drift tracking on the SAME card; they are "
+                        "written only if the card is approved. Refused, with "
+                        "no card, while an active demo owns config on the "
+                        "device. Returns blocked:true with a confirm_token — "
+                        "the re-pointing executes only after the user "
+                        "approves the on-screen confirmation card. The "
+                        "opposite action (reject the drift) is "
+                        "restore_device with ref omitted."
                     ),
                     inputSchema={
                         "type": "object",
@@ -1433,8 +1439,37 @@ class ADMZMCPServer:
                                 "type": "string",
                                 "description": (
                                     "Git commit to bless as the baseline. "
-                                    "Omit to use the device's latest "
-                                    "recorded observation."
+                                    "Omit to accept what the drift review "
+                                    "showed (its observation), else the "
+                                    "latest recorded observation."
+                                ),
+                            },
+                            "note": {
+                                "type": "string",
+                                "maxLength": 500,
+                                "description": (
+                                    "Changelog entry for this accept, one "
+                                    "short clause per cause, e.g. 'fw "
+                                    "12.9.57→12.11.77 upgrade; MQTT prefix "
+                                    "case normalised'."
+                                ),
+                            },
+                            "ignore_keys": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "maxItems": 50,
+                                "description": (
+                                    "Canonical keys (or globs) to exclude "
+                                    "from drift tracking, added when the "
+                                    "card is approved."
+                                ),
+                            },
+                            "ignore_scope": {
+                                "type": "string",
+                                "description": (
+                                    "Scope for ignore_keys: 'global' "
+                                    "(default), 'tag:<tag>' or "
+                                    "'device:<device_id>'."
                                 ),
                             },
                         },
@@ -3753,20 +3788,73 @@ class ADMZMCPServer:
         }
 
     async def _accept_baseline(
-        self, device_id: str, commit_sha: Optional[str]
+        self,
+        device_id: str,
+        commit_sha: Optional[str],
+        note: Optional[str] = None,
+        ignore_keys: Optional[List[str]] = None,
+        ignore_scope: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Request blessing a commit as the device's baseline (ADR-0031/0034).
 
-        Defaults to the latest recorded observation. Validation happens here;
-        the re-pointing itself executes only after the user approves the
-        link/widget confirmation (a url_only ACTION session) — the same human
-        gate every other destructive step takes.
+        Validation happens here; the re-pointing itself executes only after
+        the user approves the link/widget confirmation (a url_only ACTION
+        session) — the same human gate every other destructive step takes.
+
+        ADR-0070 §3–§4:
+
+        * the ADR-0047 guard runs **before** a card is minted — an active demo
+          on the device means no card at all, just the reason;
+        * the default target is the observation the cached review was
+          computed against (what the operator was shown), else the latest
+          observation — the same order the REST route uses;
+        * ``note`` becomes the device's git changelog entry, attributed to the
+          principal; ``ignore_keys`` ride the same card and are written only
+          when it is approved.
         """
+        from admz import operations
+        from admz.auth import principal_name
+        from admz.snapshot import ignore as ignore_rules
+        from admz.snapshot import review
+        from admz.snapshot.accept_guard import AcceptRefused, check_accept_allowed
+
         if not self.registry.device_exists(device_id):
             raise DeviceNotFoundError(f"Device not found: {device_id}")
 
-        device_info = self.registry.get_device_info(device_id)
-        target = commit_sha or device_info.get("latest_observed_sha")
+        note = note.strip() if isinstance(note, str) else ""
+        if len(note) > 500:
+            return {"success": False, "error": "InvalidInput",
+                    "message": "note must be at most 500 characters"}
+        try:
+            keys = ignore_rules.normalize_rule_keys(ignore_keys or [])
+        except ValueError as e:
+            return {"success": False, "error": "InvalidInput",
+                    "message": f"ignore_keys: {e}"}
+        try:
+            scope = ignore_rules.normalize_rule_scope(ignore_scope)
+        except ValueError as e:
+            return {"success": False, "error": "InvalidInput",
+                    "message": f"ignore_scope: {e}"}
+
+        device_info = dict(self.registry.get_device_info(device_id) or {})
+        device_info["device_id"] = device_id
+        try:
+            check_accept_allowed(
+                git_repo=self.git_repo, demo_store=self.components.demo_store,
+                device_id=device_id, device_info=device_info,
+            )
+        except AcceptRefused as refused:
+            return {
+                "success": False,
+                "device_id": device_id,
+                "refused": refused.reason,
+                "error": refused.detail,
+            }
+
+        cached = review.cached_drift_report(self.registry, device_id)
+        cached_observed = (cached or {}).get("observed_sha")
+        latest = device_info.get("latest_observed_sha")
+        target = commit_sha or cached_observed or latest
         if not target:
             return {
                 "success": False,
@@ -3790,21 +3878,57 @@ class ADMZMCPServer:
                 ),
             }
 
+        # Only what the card would actually add: a rule already in force is
+        # not news, and naming it would overstate what approval changes.
+        existing = {(r["key"], r["scope"]) for r in ignore_rules.get_rules()}
+        new_rules = [{"key": k, "scope": scope} for k in keys
+                     if (k, scope) not in existing]
+
+        drifted_count = None
+        report = (cached or {}).get("report") or {}
+        if cached is not None and report.get("observed_sha") == target:
+            drifted_count = sum(
+                1 for f in report.get("drifted_fields", [])
+                if f.get("bucket") != "demo_set"
+            )
+
+        label = device_info.get("nickname") or device_info.get("model") or device_id
+        what = ("the current observed config" if target in (cached_observed, latest)
+                else f"the config recorded at commit {target[:12]}")
+        absorbed = (f"; {drifted_count} drifted field"
+                    f"{'s' if drifted_count != 1 else ''} absorbed"
+                    if drifted_count else "")
+        reason = (
+            f"Accept {what} of {label} ({device_id}) as its new baseline "
+            f"(commit {target[:12]}, {len(facets)} facet"
+            f"{'s' if len(facets) != 1 else ''}{absorbed})."
+        )
+        if note:
+            reason += f' Note: "{note}".'
+        if new_rules:
+            reason += (
+                f" Also exclude from drift tracking ({scope}): "
+                + ", ".join(r["key"] for r in new_rules) + "."
+            )
+
         previous = device_info.get("baseline_sha")
-        from admz import operations
+        payload: Dict[str, Any] = {
+            "device_id": device_id,
+            "baseline_sha": target,
+            "previous_baseline_sha": previous,
+            "accepted_by": principal_name(self.principal),
+        }
+        if note:
+            payload["note"] = note
+        if new_rules:
+            payload["ignore_rules"] = new_rules
+        if drifted_count is not None:
+            payload["drifted_count"] = drifted_count
         session = operations.create_action_session(
             action="accept_baseline",
             device_id=device_id,
-            payload={
-                "device_id": device_id,
-                "baseline_sha": target,
-                "previous_baseline_sha": previous,
-            },
-            reason=(
-                f"Re-point {device_id}'s blessed baseline to {target[:12]} "
-                f"({len(facets)} facet(s)). Drift will be measured against "
-                "it and restore will replay it."
-            ),
+            payload=payload,
+            reason=reason,
         )
         env = operations.blocked_envelope(session)
         env["success"] = False
@@ -3834,12 +3958,15 @@ class ADMZMCPServer:
         if device_id:
             if not self.registry.device_exists(device_id):
                 raise DeviceNotFoundError(f"Device not found: {device_id}")
+            from admz.snapshot import review
+
             report = await self.drift_detector.check_drift(device_id)
-            # #230 — attribution sits BELOW to_summary() so the chat surface
-            # gets it too; the operator most often meets a drift report here.
-            # Annotates only: never suppresses a row (see snapshot/attribution).
-            summary = annotate_attribution(
-                report.to_summary(), device_id=device_id
+            # ADR-0070 §2 — the same annotator as the REST route: revertable,
+            # attribution (#230) and triage, so the chat sees exactly what the
+            # UI sees. Annotates only: never suppresses a row.
+            summary = review.annotate_review(
+                report.to_summary(), registry=self.registry,
+                git_repo=self.git_repo, device_id=device_id,
             )
             return {
                 "success": True,

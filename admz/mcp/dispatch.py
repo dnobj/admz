@@ -185,7 +185,12 @@ async def _restore_device(ctx, a):
 
 
 async def _accept_baseline(ctx, a):
-    return await ctx.server._accept_baseline(a["device_id"], a.get("commit_sha"))
+    return await ctx.server._accept_baseline(
+        a["device_id"], a.get("commit_sha"),
+        note=a.get("note"),
+        ignore_keys=a.get("ignore_keys"),
+        ignore_scope=a.get("ignore_scope"),
+    )
 
 
 async def _diff_device(ctx, a):
