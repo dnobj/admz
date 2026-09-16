@@ -46,6 +46,13 @@ by MCP can be consumed by the web form.
   and the entry list, FR-CRED-011/012/014) and a collapsed **Advanced · raw
   fleet settings** table of every key. Password-shaped values are masked and
   revealed only through the gated reveal endpoint (FR-SEC-007).
+- The rest of `/settings` is summary rows whose editors open in place: the
+  config-tracking ignore list and the GitHub config mirror inside
+  **Configuration repository** (anchors `#config-tracking` and
+  `#github-backup` still land on them, the first with its editor open), and one
+  row per module under **Modules**. **Health monitoring** shows the values the
+  monitor actually resolves (`fleet.health.effective_settings`), never a
+  template default.
 - `/fleet-settings` — **retired 2026-09-16**; redirects to
   `/settings#provisioning-credentials`. Its own page is gone (its markup used a
   stylesheet `base.html` never linked, so it rendered unstyled), but its three

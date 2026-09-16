@@ -191,6 +191,23 @@ def _is_enabled() -> bool:
     return _fs().get("health_monitor_enabled") == "true"
 
 
+def effective_settings() -> dict:
+    """What the monitor actually runs with, each value resolved exactly as the
+    monitor resolves it — defaults and environment fallbacks included.
+
+    For display. The Settings page re-derived its own defaults in the template
+    and got two of them wrong: it showed an unset interval as 300s (the monitor
+    uses 60s) and hid "verifying credentials" when that key was unset (the
+    monitor's default is on). Asking the resolvers cannot drift from them.
+    """
+    return {
+        "enabled": _is_enabled(),
+        "interval": _resolve_interval_seconds(),
+        "timeout": _resolve_timeout_seconds(),
+        "verify_credentials": _verify_credentials_enabled(),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------

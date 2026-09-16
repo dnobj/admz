@@ -977,10 +977,15 @@ def _settings_page_context(
     except Exception:  # noqa: BLE001 - the card just shows "not connected"
         github_status = {"connected": False}
 
+    from admz.fleet import health as health_mod
+
     return {
         "request": request,
         "settings": display,
         "title": "Settings",
+        # Health monitoring card: the monitor's own resolved values, never
+        # defaults re-derived in the template.
+        "health": health_mod.effective_settings(),
         # Safety policy card.
         "levels": {r: get_confirmation_level(r) for r in _DEFAULT_CONFIRMATION_LEVELS},
         "has_password": bool(fleet_settings.get("confirm_password_hash")),
