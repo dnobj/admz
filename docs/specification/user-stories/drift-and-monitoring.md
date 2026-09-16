@@ -81,6 +81,11 @@ When implemented:
 2. **Revert:** `restore_device(device_id, ref="HEAD")` builds a plan to re-apply the snapshotted state. Plan is reviewed and executed normally (same two-gate model).
 3. Either decision is reversible — git history preserves both states.
 
+> 2026-09-16: since ADR-0031 the accept move is `accept_baseline` (FR-BAS-004), which blesses the
+> recorded observation without a capture; `snapshot_device` on a drifted device re-baselines it as a
+> side effect and the prompt forbids that. A per-field revert (chosen rows, not the whole baseline)
+> and the exclude-from-tracking move are planned for chat under ADR-0070 — see US-DM-008.
+
 **Related requirements:** [snapshot-restore](../requirements/snapshot-restore.md).
 
 ## US-DM-005 — Visualizing drift in chat
@@ -93,6 +98,11 @@ Once the chatbot exists:
 1. `check_drift` invocations from chat render as a table or per-facet sections.
 2. Per-field rows show expected (snapshot) → actual (live), with diffs highlighted.
 3. Each row has [Revert] / [Accept] inline buttons that map to the snapshot or restore calls.
+
+> 2026-09-16: the planned shape changed. Per-row buttons in the transcript would be a second widget
+> channel; ADR-0070 keeps the one that exists — the assistant proposes a plan and the decision is an
+> approval **card** (accept with note and exclusions, or a targeted revert of the chosen rows). See
+> US-DM-008.
 
 ## US-DM-006 — Drift attribution
 
@@ -117,6 +127,19 @@ Once the chatbot exists:
 5. This is the **just-in-time** counterpart to US-DM-003's scheduled audit: same `DriftDetector` engine, operator-initiated and LLM-mediated rather than timer-driven.
 
 **Related requirements:** [drift-detection](../requirements/drift-detection.md), [web-chatbot](../requirements/web-chatbot.md).
+
+## US-DM-008 — Drift is brought to me, and I settle it in chat
+
+**As an** operator who is happy with the drift panel in the web UI but lives in the console, **I want** ADMZ to tell me when a device drifts and let me settle it in the conversation — accept the noise with a note, revert what matters, stop tracking what will keep re-drifting — with the assistant saying which is which.
+
+**Acceptance criteria:** 📋 (planned — [ADR-0070](../decisions/0070-drift-is-reviewed-in-the-console-chat.md), [ADR-0071](../decisions/0071-a-task-raises-a-notice-the-console-delivers-it.md))
+1. A scheduled `drift_audit` (or a manual check) that finds new drift raises a **notice**; the console shows it in a "Needs attention" strip with **Review in chat**, **Snooze** and dismiss. One notice per device; it updates in place as the drift changes and closes itself when the drift clears or is accepted.
+2. **Review in chat** starts the conversation: a `[console]` note lands and the assistant speaks first, without a typed prompt — no server-side actor, the same one-gated-turn mechanism as US-CB-005's continuations.
+3. The assistant walks the important rows first, with values — an account or network change, a broken demo — and collapses the noise into one line ("3 firmware-managed/added keys and 1 case-only change; the firmware moved 12.9.57 → 12.11.77 since the baseline"). It asks before proposing to revert a security-sensitive row and never proposes to accept one silently.
+4. It proposes ONE plan and raises one card per decision: for the common all-noise case, a single accept card whose note becomes the git changelog entry and which can also exclude keys from tracking; when something is reverted, the revert card first, then a refreshed review, then the accept card.
+5. What it says is important or not comes from ADMZ's own deterministic classification, shown as a hint on every row across the UI and the chat — not from the model's memory. I can dismiss a notice, snooze it, or ask "anything need my attention?" any time.
+
+**Related requirements:** [drift-detection](../requirements/drift-detection.md) FR-DRF-014..019, [web-chatbot](../requirements/web-chatbot.md) FR-CB-017..020, [scheduling](../requirements/scheduling.md) FR-SCH-015.
 
 ## Known limitations
 

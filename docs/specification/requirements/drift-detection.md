@@ -211,6 +211,60 @@ whole facet drifted, and the one where an absent facet vanished from the compare
 signature includes `facets_absent` only when non-empty, so existing signatures do not all change on
 deploy.
 
+### FR-DRF-014 — Every drifted field carries a deterministic triage annotation 📋
+`admz/snapshot/triage.py` classifies each `DriftField` into a class (`demo_set`, `demo_broken`,
+`demo_candidate`, `security_sensitive`, `cosmetic`, `firmware_managed`, `added_key`, `runtime_state`,
+`read_only`, `service_config`, `uncategorized`) with an importance (`none|low|medium|high`), a default
+recommendation and a one-line `why`, from an ordered first-match rule table keyed on the canonical key.
+The report gains `triage_context` (whether the firmware changed between `baseline_sha` and the
+observation — read from `device.yaml` at both commits, not from memory), `summary_by_class` and
+`highest_importance`. **Annotate-only** (the ADR-0056 contract): no row is removed and `bucket`,
+`has_drift`, `revertable` are untouched; a case-only change is labelled `cosmetic` and is still drift
+(ADR-0055). See [ADR-0070](../decisions/0070-drift-is-reviewed-in-the-console-chat.md) §1.
+
+### FR-DRF-015 — One review annotator serves REST, MCP and notices 📋
+`admz/snapshot/review.py::annotate_review` runs the revertable annotation (moved from the REST module,
+it needs only the registry), the #230 attribution and FR-DRF-014's triage, and adds the ignore rules
+applicable to the device. `GET /api/snapshot/drift`, the MCP `check_drift` / `get_drift_review` tools and
+ADR-0071's notice producer all call it, so every surface shows the same `revertable`, `attribution` and
+`triage` keys. Today the MCP path applies attribution only and never `revertable` (`server.py:3826-3854`).
+
+### FR-DRF-016 — The accept-baseline demo guard applies on every accept path 📋
+ADR-0047's refusal to accept while an active demo owns config on the device (409, or 503 when the guard
+cannot run) lives in `admz/snapshot/accept_guard.py::check_accept_allowed` and runs from the REST route,
+from the MCP `accept_baseline` handler **before a card is minted**, and from the approved-action executor
+**before the pointer moves** — fail-closed at execution, so a demo activated between minting and approval
+still cannot be baked into a baseline. Today only the REST route runs it (`snapshot.py:138-191`); the chat
+path bypasses it entirely.
+
+### FR-DRF-017 — Targeted revert and ignore rules are reachable from chat behind the standard gates 📋
+Three MCP tools give the chat the UI's per-field moves: `revert_drift(device_id, fields)` builds one
+targeted plan from the reviewed diff (`RestoreBuilder.build_targeted_revert_plan`; `demo_set` rows never
+included; non-revertable rows skipped with a reason) and returns one `url_only` card;
+`ignore_config_keys(keys, scope)` is the eye-slash, gated as an `add_ignore_rules` action at the pinned
+level because a global rule silently hides future drift fleet-wide; `accept_baseline` gains `note` (the
+git changelog entry, as the UI) and `ignore_keys` so "exclude X, accept the rest" is one card. **Order
+rule**, stated in the prompt and in the tool descriptions: a revert precedes an accept, with
+`get_drift_review(refresh=true)` — a fresh observation — between them, because accept blesses an
+existing commit and a revert records none. `list_config_ignore_rules` is the read side.
+
+### FR-DRF-018 — Drift transitions raise and resolve a per-device notice 📋
+Every `check_drift` hands its transition to `admz/notices/producers.py`: `appeared` opens a notice keyed
+`drift:<device_id>`, `changed` updates the same live notice in place (occurrences bumped, `created_at`
+kept, a snooze woken), `cleared` resolves it. Accept resolves it as `accepted` with the principal. The
+fleet flag `drift_notices_enabled` (default on) and a `drift_audit` task's `action_params.notify_console`
+(default on) switch raising off, never resolving. A startup backfill raises for drift the signature cache
+already knows, because an unchanged signature emits no transition. The notice row carries identifiers,
+counts and timestamps only — never a parameter value or a device-written name. See
+[ADR-0071](../decisions/0071-a-task-raises-a-notice-the-console-delivers-it.md).
+
+### FR-DRF-019 — Bulk accept from chat 📋
+`accept_baselines(device_ids, note, ignore_keys?)` — a sibling tool in the ADR-0069 shape, not
+`device_ids` on the single-device tool — accepts many devices behind one card, for "everything drifted
+after a firmware rollout and it is all low". Every device is guard-checked (FR-DRF-016) and
+observation-checked before minting; one refusal rejects the whole request with per-device reasons.
+Phase 2 of ADR-0070; planned, not built.
+
 ## Non-functional requirements
 
 ### NFR-DRF-001 — No side effects on the device ✅
@@ -231,6 +285,9 @@ The diff treats every value as a string after flatten. Numeric
 fields like `image.fps = 30` vs `30.0` would surface as drift.
 None of the current facets emit ambiguous numerics, but this is a
 latent issue if a new facet does.
+
+> 2026-09-16: FR-DRF-014's triage labels a numerically-equal pair `cosmetic` — annotate-only, so
+> it is still drift per ADR-0055 — which at least names the case when it happens.
 
 ### KL-DRF-002 — No "accept current state" shortcut ✅
 Resolved by ADR-0031 slice 3: `accept_baseline` (FR-BAS-004) is the
@@ -287,6 +344,11 @@ the DB.
 A true push-based notifier (webhook, chat alert, Slack) is the
 next layer up — not in Phase 8.
 
+> 2026-09-16: the chat-alert layer is planned as FR-DRF-018 / ADR-0071 — a console **notice** the
+> operator reviews in chat, not a push. The chat also could not see which rows were revertable at all
+> (the MCP path skipped the annotation); FR-DRF-015 gives every surface the same flag and a
+> `read_only` triage class.
+
 ### KL-BAS-001 — Observation history is append-only ⚠️
 Audit observations accumulate in the config repo forever (ADR-0031
 slice 4 decision). Automated "thinning" of old observations was
@@ -303,7 +365,7 @@ never automatic.
 
 ## References
 
-- ADRs: [0012](../decisions/0012-snapshot-on-plans.md), [0014](../decisions/0014-config-in-git-creds-in-db.md), [0015](../decisions/0015-pluggable-facets.md), [0026](../decisions/0026-unified-job-scheduler.md)
+- ADRs: [0012](../decisions/0012-snapshot-on-plans.md), [0014](../decisions/0014-config-in-git-creds-in-db.md), [0015](../decisions/0015-pluggable-facets.md), [0026](../decisions/0026-unified-job-scheduler.md), [0070](../decisions/0070-drift-is-reviewed-in-the-console-chat.md), [0071](../decisions/0071-a-task-raises-a-notice-the-console-delivers-it.md)
 - User stories: [drift-and-monitoring](../user-stories/drift-and-monitoring.md), [scheduled-operations](../user-stories/scheduled-operations.md)
 - Cross-cutting: [observability.md](observability.md), [performance.md](performance.md)
 - Sibling: [snapshot-restore.md](snapshot-restore.md), [scheduling.md](scheduling.md)

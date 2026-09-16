@@ -271,6 +271,40 @@ assistant finishes the work it said it would. See
   the missing narration; captures — whose follow-on never ran — get it run. A
   denial is also an event row and is due too; the continuation acknowledges it.
 
+### FR-CB-017 — The chat runs a drift review: one plan, one card per decision 📋
+Started by a `[console]` note that the operator opened a drift notice (FR-CB-019) or by a user asking
+what changed on a device, the assistant reads `get_drift_review` (FR-DRF-014/015 annotations), walks
+the rows highest importance first **with their values**, collapses the low-importance rows into one
+line naming the firmware change when the context has one, proposes ONE plan in the order ignore →
+revert → accept, asks before proposing to revert a `security_sensitive` row and never auto-accepts one,
+and acts through the gated tools (FR-DRF-017): one `accept_baseline` card when nothing is reverted; a
+`revert_drift` card first, then — after its `[console]` note reports success — a refreshed review and
+the accept card. The guidance is a conditional, fenced prompt section that renders only while a device
+is drifted or a notice is open (FR-CB-020); otherwise the prompt is byte-identical. Triage is a hint,
+never a verdict: every row is still drift and the user decides. See
+[ADR-0070](../decisions/0070-drift-is-reviewed-in-the-console-chat.md).
+
+### FR-CB-018 — A chat accept writes the changelog with a note and the principal 📋
+`accept_baseline` from the chat records `note` and `accepted_by` in the device's `BASELINE.yaml` commit
+exactly as the web UI's Accept drift does today. The model is told to always pass a short, cause-based
+note ("fw 12.9.57→12.11.77 upgrade; MQTT prefix case normalised"). Today the MCP tool has no `note`.
+
+### FR-CB-019 — Fleet notices are reviewable in the Console 📋
+A "Needs attention" strip above the composer lists open notices (FR-DRF-018, FR-SCH-015) with
+**Review in chat**, **Snooze** and dismiss. Review writes a metadata-only `[console]` note — notice id,
+device id, counts, ages, source; never a nickname, host or value — into the operator's active
+conversation (or a new one, made active), and the FR-CB-016 continuation answers it once. Dismiss and
+snooze are audited and ungated: they change no device or registry state. Anonymous may list, review and
+dismiss, on the FR-CB-016 reasoning. The chat gets `list_notices` and `dismiss_notice`. See
+[ADR-0071](../decisions/0071-a-task-raises-a-notice-the-console-delivers-it.md).
+
+### FR-CB-020 — Open notices and drifted devices are preloaded into the prompt, fenced 📋
+`admz/chatbot/context.py::build_attention_section` renders at most ten open notices and twenty drifted
+devices (from the drift cache, never a probe) inside an `ATTENTION DATA` fence, registered in the fencing
+completeness test; empty means the section — and the FR-CB-017 guidance that rides on it — is absent. The
+assistant mentions open notices once, in one line, at the start of a conversation, and answers "anything
+need my attention?" any time.
+
 ## Non-functional requirements
 
 ### NFR-CB-001 — Gemini API key never in client code ✅

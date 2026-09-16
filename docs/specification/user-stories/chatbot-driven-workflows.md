@@ -154,6 +154,19 @@ in the way.
 2. The MCP server and REST API are entirely unaffected.
 3. No background LLM connections are attempted.
 
+## US-CB-009 — Review a fleet notice in chat
+
+**As an** operator with the console open, **I want** things that need my attention — a device that drifted, a detection rule that fired — to appear in the console and be settled in the conversation when I choose, **without** the assistant starting turns on its own.
+
+**Acceptance criteria:** 📋 (planned — [ADR-0071](../decisions/0071-a-task-raises-a-notice-the-console-delivers-it.md))
+1. A "Needs attention" strip above the composer lists open notices; more than three collapse into "N more — Review all". It survives switching conversations and works in the docked console.
+2. **Review in chat** writes a `[console]` note into my active conversation (or opens a new one) and the assistant leads — the same single gated continuation as an approval or capture resolution (US-CB-005), running as me, with every write still behind a card.
+3. The note names ids, counts and times only; the device's own nickname and model reach the assistant through the fenced context block, never through the trusted note.
+4. **Snooze** and dismiss take no card and are audited; the notice closes itself when the underlying condition clears or is accepted.
+5. In a new conversation the assistant mentions open notices once, in one line, and otherwise stays quiet until I click Review or ask.
+
+**Related requirements:** [web-chatbot](../requirements/web-chatbot.md) FR-CB-019, FR-CB-020; [drift-detection](../requirements/drift-detection.md) FR-DRF-018; [scheduling](../requirements/scheduling.md) FR-SCH-015.
+
 ## Known constraints (when this lands)
 
 - 🚧 **Streaming.** The current FastAPI app doesn't use Server-Sent
