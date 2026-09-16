@@ -270,3 +270,47 @@ def test_the_tool_description_says_what_it_now_does():
     # and no ordering may put the fleet entry credential before anything
     assert "never written to a device" in tool.description
     assert "Password priority" not in tool.description
+
+
+# --- onboard_device names the credential that got in -----------------------
+
+
+def _onboarded(monkeypatch, outcome):
+    """The handler's message for one onboarding outcome, no device involved."""
+    async def fake_onboard(**kwargs):
+        return dict(outcome)
+
+    monkeypatch.setattr("admz.onboarding.onboard_device_credentials", fake_onboard)
+    srv = SimpleNamespace(registry=None, catalog=None, executors={})
+    return ADMZMCPServer._onboard_device(srv, "cam-1")
+
+
+@pytest.mark.asyncio
+async def test_onboard_device_says_when_the_fleet_root_password_got_in(monkeypatch):
+    """Tried first since 2026-09-16 (ADR-0068's amendment), so it is often the
+    credential that works — and it is not an entry credential."""
+    out = await _onboarded(monkeypatch, {
+        "status": "admz_account_created", "device_id": "cam-1", "username": "admz",
+        "entry_username": "root", "via_fleet_root": True})
+    assert "using the fleet root password" in out["message"]
+    assert "entry credential" not in out["message"]
+
+
+@pytest.mark.asyncio
+async def test_onboard_device_still_says_when_an_entry_credential_got_in(monkeypatch):
+    out = await _onboarded(monkeypatch, {
+        "status": "admz_account_created", "device_id": "cam-1", "username": "admz",
+        "entry_username": "u0", "via_fleet_root": False})
+    assert "using an entry credential" in out["message"]
+
+
+def test_onboard_device_tells_the_model_the_order():
+    """The model explains onboarding to the operator from this description."""
+    import asyncio
+
+    from tests import mcp_harness
+
+    tool = asyncio.run(mcp_harness.find_tool(ADMZMCPServer(), "onboard_device"))
+    text = " ".join(tool.description.split())
+    assert ("try the fleet root password as 'root' FIRST, then each ENTRY "
+            "credential") in text
