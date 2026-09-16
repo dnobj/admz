@@ -136,6 +136,18 @@ every capability `setting_key` is a protected fleet-setting key, so
 `set_fleet_setting` refuses it too ([ADR-0020](../decisions/0020-protected-fleet-settings.md)).
 See [ADR-0052](../decisions/0052-advanced-capability-switches.md).
 
+### FR-MCP-016 — Drift-review tool descriptions state the safety semantics and the order rule 📋
+Extends FR-MCP-013 to the drift-review tools of
+[ADR-0070](../decisions/0070-drift-is-reviewed-in-the-console-chat.md): `get_drift_review` says its
+triage is a hint, never a verdict, and that `refresh=true` records a fresh observation; `revert_drift`
+says it returns one card and must not be followed by `execute_plan`; `accept_baseline` and
+`revert_drift` both state the order rule — revert, wait for the `[console]` note, refresh, then accept —
+because accept blesses an existing commit and a revert records none; `ignore_config_keys` says it is
+never for silencing a security or service key. The descriptions are the artefact the model selects on
+(the #366 / #438 lesson), so a test asserts the sentences are present. The four tools plus
+`list_config_ignore_rules`, `list_notices` and `dismiss_notice` are appended at the end of the frozen
+wire order.
+
 ## Non-functional requirements
 
 ### NFR-MCP-001 — Tool results are structured JSON, not free text ✅

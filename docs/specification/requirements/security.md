@@ -359,6 +359,15 @@ model. `admz/chatbot/client.py::_build_contents` now neutralizes the literal
 past output) before that flattening happens, so only a genuine server-written
 note can ever carry it.
 
+**A third `[console]` sender, same rule** (planned, ADR-0071): the notice-review
+route writes an event row when the operator clicks **Review in chat**. Because an
+`event` row is the trusted lane the forgery guard leaves untouched, that note
+carries **identifiers and numbers only** — notice id, device id, counts, ages, the
+producing task — and never a nickname, model, host, rule name or parameter value.
+Device-written text reaches the model only through the fenced
+`build_attention_section` block (`ATTENTION DATA`), which is registered in the
+fencing completeness test like the roster, demos and inference sections.
+
 **The demo-inference proposal-names section is fenced too** (#320): proposal
 names derive from device tags and rule names, so they're partially
 attacker-influenceable the same way — reached less directly than

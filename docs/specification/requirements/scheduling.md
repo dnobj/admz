@@ -158,6 +158,16 @@ work uniformly across all job types (the snapshot-specific MCP/REST
 names generalize). A web-UI schedules dashboard (cadence, last outcome,
 drill-in) is the operator-facing view — currently there is none.
 
+### FR-SCH-015 — `notify` is a real delivery channel 📋
+The `notify` task action (`admz/tasks/handlers.py`), today a stub that returns its message, raises a
+`kind='event'` notice (`admz/notices/store.py`) keyed on the task and device, so repeat firings of one
+detection rule bump one row's `occurrences` rather than flooding; it returns the `notice_id`, reports a
+store failure as failure, and the sweep's audit row links the notice. Every notice a task produces
+carries provenance (`source`, `task_id`): a `drift_audit` schedule stamps its own id on the drift notices
+its sweep raises (FR-DRF-018), with `action_params.notify_console` to run a quiet cadence. The Tasks
+page labels the action and shows a Notices section. See
+[ADR-0071](../decisions/0071-a-task-raises-a-notice-the-console-delivers-it.md).
+
 ## Non-functional requirements
 
 ### NFR-SCH-001 — Scheduler is process-local ✅
