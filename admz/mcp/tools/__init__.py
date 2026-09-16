@@ -38,6 +38,7 @@ from admz.mcp.tools import (
     capabilities,
     demos,
     device_removal,
+    drift_review,
     firmware,
     fleet,
     knowledge,
@@ -69,6 +70,8 @@ MIGRATED_TOOLS: List[Tool] = (
     + capabilities.TOOLS
     # ADR-0069: batch registry removal, appended after it for the same reason.
     + device_removal.TOOLS
+    # ADR-0070: the chat's drift review, appended last for the same reason.
+    + drift_review.TOOLS
 )
 
 __all__ = ["MIGRATED_TOOLS"]

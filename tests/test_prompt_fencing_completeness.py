@@ -56,6 +56,8 @@ FENCED_SECTIONS = {
     "build_device_roster": ("device_roster", "DEVICE ROSTER DATA"),
     "build_demos_section": ("demos_section", "DEMOS DATA"),
     "build_inference_section": ("inference_section", "INFERENCE PROPOSALS DATA"),
+    # ADR-0070 §6: device model and nickname are device-written text.
+    "build_attention_section": ("attention_section", "ATTENTION DATA"),
 }
 
 #: Section builders whose output is ADMZ's own computed narration or a

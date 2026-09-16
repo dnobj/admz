@@ -196,7 +196,7 @@ def confirm_proposal_core(ctx, proposal, principal, *,
                if missing else "")
             + ". No config was captured — the demo owns nothing yet. Its "
             "suggested keys are evidence only; capture them later with "
-            "check_drift + assign_demo_fragment once something has actually "
+            "get_drift_review + assign_demo_fragment once something has actually "
             "changed."),
     }
 

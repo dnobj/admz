@@ -136,7 +136,7 @@ every capability `setting_key` is a protected fleet-setting key, so
 `set_fleet_setting` refuses it too ([ADR-0020](../decisions/0020-protected-fleet-settings.md)).
 See [ADR-0052](../decisions/0052-advanced-capability-switches.md).
 
-### FR-MCP-016 — Drift-review tool descriptions state the safety semantics and the order rule 📋
+### FR-MCP-016 — Drift-review tool descriptions state the safety semantics and the order rule 🚧
 Extends FR-MCP-013 to the drift-review tools of
 [ADR-0070](../decisions/0070-drift-is-reviewed-in-the-console-chat.md): `get_drift_review` says its
 triage is a hint, never a verdict, and that `refresh=true` records a fresh observation; `revert_drift`
@@ -147,6 +147,11 @@ never for silencing a security or service key. The descriptions are the artefact
 (the #366 / #438 lesson), so a test asserts the sentences are present. The four tools plus
 `list_config_ignore_rules`, `list_notices` and `dismiss_notice` are appended at the end of the frozen
 wire order.
+
+**Built:** every sentence above, asserted in `tests/test_mcp_drift_tools.py`; `get_drift_review`,
+`revert_drift`, `ignore_config_keys` and `list_config_ignore_rules` follow `delete_devices` in the wire
+order. `check_drift` now points review work at `get_drift_review`. **Not yet:** `list_notices` and
+`dismiss_notice`, which ship with ADR-0071 and are appended after these four.
 
 ## Non-functional requirements
 

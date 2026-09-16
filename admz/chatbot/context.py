@@ -406,6 +406,67 @@ def build_inference_section() -> str:
     return "\n".join(lines)
 
 
+#: Bound the attention section like the roster (ADR-0070 §6, FR-CB-020).
+_MAX_ATTENTION_DEVICES = 20
+
+
+def build_attention_section(registry: Optional[Any] = None) -> str:
+    """What needs the operator's attention, for the system prompt, or "".
+
+    ADR-0070 §6 / FR-CB-020: the devices the drift cache says are drifted —
+    a cache read, never a probe. The drift-review guidance rides on this
+    block, so returning "" switches the whole section off and the prompt is
+    byte-identical to one built without it.
+
+    Model and nickname are device- or operator-written, so they are sanitized
+    here and fenced by the prompt builder. Degrades to "" on any failure.
+    """
+    try:
+        registry = registry or _resolve_registry()
+        if registry is None:
+            return ""
+        devices = registry.list_devices()
+        from admz.snapshot.drift_alerts import drift_alerts as _store
+        from admz.snapshot.drift_status import DRIFTED, drift_status_for
+    except Exception:  # noqa: BLE001 - never let context-building break chat
+        logger.debug("[chat] attention section unavailable", exc_info=True)
+        return ""
+
+    drifted = []
+    for d in devices or []:
+        try:
+            status = drift_status_for(
+                d, _store.get_last_signature(d.get("device_id", "")))
+        except Exception:  # noqa: BLE001
+            continue
+        if status.get("state") == DRIFTED:
+            drifted.append((d, status))
+    if not drifted:
+        return ""
+    drifted.sort(key=lambda pair: -(pair[1].get("checked_at") or 0))
+
+    lines: List[str] = [
+        f"{len(drifted)} device(s) differ from their blessed baseline, per the "
+        "cached drift checks. Read one with `get_drift_review`:"
+    ]
+    for d, status in drifted[:_MAX_ATTENTION_DEVICES]:
+        did = d.get("device_id") or "?"
+        model = sanitize_display_text(d.get("model") or "?", max_length=_MAX_FIELD_LEN)
+        parts = [f"{model} ({did})"]
+        nick = sanitize_display_text(d.get("nickname"), max_length=_MAX_FIELD_LEN)
+        if nick:
+            parts.append(f'"{nick}"')
+        count = status.get("count") or 0
+        parts.append(f"{count} field{'s' if count != 1 else ''} drifted")
+        age = _age(status.get("checked_at"))
+        if age:
+            parts.append(f"checked {age}")
+        lines.append("- " + " · ".join(parts))
+    if len(drifted) > _MAX_ATTENTION_DEVICES:
+        lines.append(f"- …and {len(drifted) - _MAX_ATTENTION_DEVICES} more")
+    return "\n".join(lines)
+
+
 #: Per-capability narration notes — what an ACTIVE capability changes about
 #: how the model should *talk*, not about what ADMZ does.
 #:

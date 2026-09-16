@@ -271,7 +271,7 @@ assistant finishes the work it said it would. See
   the missing narration; captures — whose follow-on never ran — get it run. A
   denial is also an event row and is due too; the continuation acknowledges it.
 
-### FR-CB-017 — The chat runs a drift review: one plan, one card per decision 📋
+### FR-CB-017 — The chat runs a drift review: one plan, one card per decision ✅
 Started by a `[console]` note that the operator opened a drift notice (FR-CB-019) or by a user asking
 what changed on a device, the assistant reads `get_drift_review` (FR-DRF-014/015 annotations), walks
 the rows highest importance first **with their values**, collapses the low-importance rows into one
@@ -283,6 +283,10 @@ the accept card. The guidance is a conditional, fenced prompt section that rende
 is drifted or a notice is open (FR-CB-020); otherwise the prompt is byte-identical. Triage is a hint,
 never a verdict: every row is still drift and the user decides. See
 [ADR-0070](../decisions/0070-drift-is-reviewed-in-the-console-chat.md).
+
+_As built:_ a review starts from a user's question, or from the one-line mention of a drifted device the
+guidance asks for. The notice that starts one, and the `[console]` semantics clause for "opened a notice
+for review (nothing has changed yet)", arrive with FR-CB-019.
 
 ### FR-CB-018 — A chat accept writes the changelog with a note and the principal ✅
 `accept_baseline` from the chat records `note` (≤500 characters) and `accepted_by` in the device's
@@ -301,12 +305,17 @@ snooze are audited and ungated: they change no device or registry state. Anonymo
 dismiss, on the FR-CB-016 reasoning. The chat gets `list_notices` and `dismiss_notice`. See
 [ADR-0071](../decisions/0071-a-task-raises-a-notice-the-console-delivers-it.md).
 
-### FR-CB-020 — Open notices and drifted devices are preloaded into the prompt, fenced 📋
+### FR-CB-020 — Open notices and drifted devices are preloaded into the prompt, fenced 🚧
 `admz/chatbot/context.py::build_attention_section` renders at most ten open notices and twenty drifted
 devices (from the drift cache, never a probe) inside an `ATTENTION DATA` fence, registered in the fencing
 completeness test; empty means the section — and the FR-CB-017 guidance that rides on it — is absent. The
 assistant mentions open notices once, in one line, at the start of a conversation, and answers "anything
 need my attention?" any time.
+
+**Built:** the drifted devices — most recently checked first, model and nickname sanitized, drift that
+only an active demo accounts for left out — wired into the text chat and voice prompts, fenced and
+registered, with the prompt byte-identical when nothing is drifted. **Not yet:** the open notices
+(FR-CB-019, ADR-0071).
 
 ## Non-functional requirements
 

@@ -379,11 +379,22 @@ def _note_target(session) -> str:
     the model nothing. The approval path hands the notes the session it read
     BEFORE completion, so the action payload is still present here even though
     #281 strips it from the stored row. Every other session names its device.
+
+    A session tied to no single device carries the literal ``"fleet"`` — a
+    fleet-wide task, a survey, a drift-tracking exclusion (ADR-0070) — and
+    reads "fleet-wide", not "on device fleet"; an exclusion scoped to a tag
+    reads "for tagged devices". The tag itself is not repeated: a tag can be
+    written through an ungated tool, and this note is a trusted row.
     """
     action = getattr(session, "action", None)
     batch = action.get("device_ids") if isinstance(action, dict) else None
     if isinstance(batch, list) and len(batch) > 1:
         return f"on {len(batch)} devices"
+    if session.device_id == "fleet":
+        scope = action.get("scope") if isinstance(action, dict) else None
+        if isinstance(scope, str) and scope.startswith("tag:"):
+            return "for tagged devices"
+        return "fleet-wide"
     return f"on device {session.device_id}"
 
 

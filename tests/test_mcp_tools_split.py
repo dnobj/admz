@@ -92,6 +92,14 @@ class TestPerDomainModules:
         names = {t.name for t in device_removal.TOOLS}
         assert names == {"delete_devices"}
 
+    def test_drift_review_module_has_the_four_review_tools(self):
+        """ADR-0070: the chat's drift review, in the order the wire carries it."""
+        from admz.mcp.tools import drift_review
+        assert [t.name for t in drift_review.TOOLS] == [
+            "get_drift_review", "revert_drift", "ignore_config_keys",
+            "list_config_ignore_rules",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # MIGRATED_TOOLS aggregate
@@ -110,8 +118,10 @@ class TestMigratedToolsAggregate:
         # + 1 (capabilities: get_advanced_capabilities, GH #132 slice 3)
         # + 1 (knowledge: list_device_capabilities, ADR-0063 S2 #452)
         # + 1 (device_removal: delete_devices, ADR-0069)
-        # = 42
-        assert len(MIGRATED_TOOLS) == 42
+        # + 4 (drift_review: get_drift_review, revert_drift,
+        # ignore_config_keys, list_config_ignore_rules, ADR-0070)
+        # = 46
+        assert len(MIGRATED_TOOLS) == 46
 
     def test_migrated_tools_all_named(self):
         from admz.mcp.tools import MIGRATED_TOOLS

@@ -147,6 +147,141 @@ async def revert_fields_for(
     return [f for f in fields if (f.facet, f.path) in chosen], not_found
 
 
+#: The model-facing size of a compact review, under the chat client's
+#: tool-result cap (``chatbot/client.py``, 6000 characters by default) so a
+#: review is never cut mid-row by the generic cap.
+REVIEW_BUDGET = 5400
+
+#: Longest value a compact review shows; the full value stays in the UI.
+MAX_REVIEW_VALUE = 80
+
+#: Tie-break inside an importance level: the order classes appear in the
+#: triage table, so e.g. demo_broken sorts before security_sensitive.
+_CLASS_ORDER = (
+    "demo_broken", "security_sensitive", "demo_candidate", "service_config",
+    "uncategorized", "cosmetic", "firmware_managed", "added_key",
+    "runtime_state", "read_only", "demo_set",
+)
+
+
+def _clip(value: Any, length: int = MAX_REVIEW_VALUE) -> str:
+    from admz.validators import sanitize_display_text
+    return sanitize_display_text(value, max_length=length)
+
+
+def _compact_row(fld: Dict[str, Any]) -> Dict[str, Any]:
+    label = fld.get("triage") or {}
+    row: Dict[str, Any] = {
+        "facet": fld.get("facet"),
+        "path": fld.get("path"),
+        "key": fld.get("canonical_key"),
+        "baseline": _clip(fld.get("expected")),
+        "live": _clip(fld.get("actual")),
+        "class": label.get("class"),
+        "importance": label.get("importance"),
+        "recommendation": label.get("recommendation"),
+        "why": label.get("why"),
+        "revertable": bool(fld.get("revertable")),
+    }
+    if not row["revertable"] and fld.get("revert_skip_reason"):
+        row["not_revertable_because"] = fld["revert_skip_reason"]
+    bucket = fld.get("bucket")
+    if bucket and bucket != "unclaimed":
+        row["bucket"] = bucket
+        if fld.get("owner_name"):
+            row["demo"] = _clip(fld["owner_name"])
+    attribution = fld.get("attribution")
+    if isinstance(attribution, dict) and attribution.get("label"):
+        row["attribution"] = _clip(attribution["label"], 160)
+    return row
+
+
+def compact_review(
+    summary: Dict[str, Any],
+    *,
+    classes: Optional[Iterable[str]] = None,
+    include_fields: bool = True,
+    limit: int = 40,
+    budget: int = REVIEW_BUDGET,
+) -> Dict[str, Any]:
+    """An annotated summary, shaped for the chat: most important rows first,
+    values clipped, and rows added only while the result stays within
+    ``budget`` characters. ``more`` says how many matching rows were left out.
+    Device-reported text is passed through the display sanitizer; ``facet``,
+    ``path`` and ``key`` stay exact, because a revert or an exclusion names
+    the field by them.
+    """
+    import json
+
+    from admz.snapshot.triage import IMPORTANCE_ORDER
+
+    fields = list(summary.get("drifted_fields") or [])
+    context = dict(summary.get("triage_context") or {})
+    for side in ("baseline_firmware", "live_firmware"):
+        if context.get(side):
+            context[side] = _clip(context[side])
+    last = context.get("last_accept")
+    if isinstance(last, dict):
+        context["last_accept"] = {
+            "accepted_at": last.get("accepted_at"),
+            "accepted_by": _clip(last.get("accepted_by")),
+            "note": _clip(last.get("note"), 200),
+        }
+    out: Dict[str, Any] = {
+        "device_id": summary.get("device_id"),
+        "has_drift": summary.get("has_drift"),
+        "no_baseline": summary.get("no_baseline", False),
+        "baseline_sha": summary.get("baseline_sha"),
+        "observed_sha": summary.get("observed_sha"),
+        "highest_importance": summary.get("highest_importance", "none"),
+        "summary_by_class": summary.get("summary_by_class", {}),
+        "context": context,
+        "counts": {
+            "fields": len(fields),
+            "revertable": sum(1 for f in fields if f.get("revertable")),
+            "demo_set": sum(1 for f in fields if f.get("bucket") == "demo_set"),
+        },
+        "applicable_ignore_rules": summary.get("applicable_ignore_rules", []),
+        "ignore_rule_count": summary.get("ignore_rule_count", 0),
+    }
+    if summary.get("unreadable"):
+        out["unreadable"] = True
+        out["unreadable_reason"] = summary.get("unreadable_reason", "")
+    for key in ("facets_absent", "facets_unverified"):
+        if summary.get(key):
+            out[key] = list(summary[key])
+    if not include_fields:
+        return out
+
+    wanted = set(classes) if classes is not None else None
+
+    def rank(fld: Dict[str, Any]):
+        label = fld.get("triage") or {}
+        importance = label.get("importance", "none")
+        cls = label.get("class", "")
+        return (
+            -(IMPORTANCE_ORDER.index(importance)
+              if importance in IMPORTANCE_ORDER else 0),
+            _CLASS_ORDER.index(cls) if cls in _CLASS_ORDER else len(_CLASS_ORDER),
+            str(fld.get("canonical_key") or fld.get("path") or ""),
+        )
+
+    chosen = [f for f in sorted(fields, key=rank)
+              if wanted is None or (f.get("triage") or {}).get("class") in wanted]
+    rows: List[Dict[str, Any]] = []
+    size = len(json.dumps(out, default=str)) + len('"fields": [], "more": 0000')
+    for fld in chosen[:max(0, int(limit))]:
+        row = _compact_row(fld)
+        cost = len(json.dumps(row, default=str)) + 2
+        if size + cost > budget:
+            break
+        rows.append(row)
+        size += cost
+    out["fields"] = rows
+    out["more"] = len(chosen) - len(rows)
+    return out
+
+
 def annotate_review(
     summary: Dict[str, Any],
     *,

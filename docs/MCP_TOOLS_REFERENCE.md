@@ -1,6 +1,6 @@
 # ADMZ MCP Tools Reference
 
-Reference for the **77 tools** the ADMZ MCP server exposes (plus whatever an
+Reference for the **81 tools** the ADMZ MCP server exposes (plus whatever an
 enabled platform module appends — ACS Pro contributes its own once connected).
 The frozen wire order lives in `tests/test_mcp_tool_order.py`.
 
@@ -541,8 +541,9 @@ Snapshot many devices in parallel into a single commit.
 
 ### `restore_device`
 Build a plan that restores a device to a previous configuration. **Omit
-`ref` to revert the device to its blessed baseline** (the usual "undo this
-drift" case, ADR-0031); pass a ref to restore another point in history.
+`ref` to re-push the device's WHOLE blessed baseline** (ADR-0031); pass a ref
+to restore another point in history. To undo chosen drifted fields, use
+`revert_drift` instead.
 - **Args:** `device_id`, `ref` (optional — default: the device's
   `baseline_sha`), `facets` (array, optional)
 - **Returns:** `{success, plan_id, steps, warnings, source_ref}`
@@ -550,8 +551,8 @@ drift" case, ADR-0031); pass a ref to restore another point in history.
 
 ### `accept_baseline`
 Accept/promote an observed configuration as a device's new blessed
-**baseline** (ADR-0031). Use after `check_drift` when the user confirms the
-drift is intentional. Metadata-only (no device traffic), but it re-points
+**baseline** (ADR-0031). Use after `get_drift_review` when the user confirms
+the drift is intentional. Metadata-only (no device traffic), but it re-points
 what drift means and what restore replays — so it executes only via the
 standard link/widget approval (ADR-0034).
 - **Args:** `device_id`, `commit_sha` (optional — default: the observation
@@ -573,6 +574,12 @@ standard link/widget approval (ADR-0034).
   (`refused: "active_demo"`), or when that check cannot run
   (`refused: "guard_unavailable"`) — ADR-0047's guard, which also runs again
   at approval, before the pointer moves (ADR-0070 §4).
+- **Order rule** (in the description): when a review both reverts and accepts,
+  `revert_drift` goes first; after its `[console]` note reports that it
+  executed, `get_drift_review` with `refresh=true` records a fresh
+  observation, and only then `accept_baseline`. Accept blesses an observation
+  that already exists and a revert records none. A failed revert stops the
+  review.
 
 ### `diff_device`
 Show config changes for a device between two refs.
@@ -590,8 +597,14 @@ never moves the baseline pointer.
 - **Returns:** single device: `{success, device_id, has_drift, no_baseline,
   observed_sha, facets_checked, facets_drifted, drifted_fields}`
   (`no_baseline=true` when the device has no blessed baseline yet — that is
-  *not* "in sync"; the observation is still recorded and promotable later)
+  *not* "in sync"; the observation is still recorded and promotable later).
+  Each drifted field carries `revertable`, `attribution` and `triage`, and the
+  report carries `triage_context`, `summary_by_class`, `highest_importance`
+  and the ignore rules that apply — the annotations the web UI reads
+  (ADR-0070 §2).
 - Returns fleet: `{success, count, drifted, reports: [...]}`
+- To review drift with the user, use `get_drift_review`: the same
+  annotations, cached, ordered and sized for the chat.
 
 ### `get_drift_alerts`
 Read the drift-alert history that `check_drift` writes as a side effect
@@ -600,6 +613,71 @@ no device traffic, no commits.
 - **Args:** `device_id` (optional — omit for all), `since` (optional
   timestamp lower bound), `limit` (optional)
 - **Returns:** `{success, count, alerts: [...]}`
+
+### `get_drift_review`
+One device's drift as a **review** (ADR-0070 §3): each drifted field with its
+baseline and live values, whether a targeted revert can write it back, its
+demo attribution, and ADMZ's triage — `class`, `importance`,
+`recommendation` and `why`. The triage is a hint, never a verdict: every row
+is still drift. Read-only by default.
+- **Args:** `device_id`; `refresh` (boolean — probe the device now and
+  **record a fresh observation**, instead of reading the cached review);
+  `classes` (array of triage classes to list); `include_fields` (boolean,
+  default true — false returns the summary only); `limit` (1–100, default 40)
+- **Returns:** `{success, cached, computed_at, device_id, has_drift,
+  no_baseline, baseline_sha, observed_sha, highest_importance,
+  summary_by_class, context, counts: {fields, revertable, demo_set},
+  applicable_ignore_rules, ignore_rule_count, fields: [...], more}` — `context`
+  says whether the firmware moved since the baseline (both versions) and
+  quotes the last accept note. Rows come most important first, each
+  `{facet, path, key, baseline, live, class, importance, recommendation, why,
+  revertable[, not_revertable_because, bucket, demo, attribution]}`; values
+  are clipped to 80 characters, and rows are added only while the result
+  stays under the chat's tool-result cap, with `more` counting what was left
+  out.
+- With nothing cached, it runs a live check (which records an observation).
+
+### `revert_drift`
+Revert chosen drifted fields on one device to their baseline values — one
+approval card (ADR-0070 §3).
+- **Args:** `device_id`; `fields` (array of `{facet, path}` as
+  `get_drift_review` lists them, ≤200 — omit to revert every revertable
+  drifted field); `note` (≤500 characters, shown on the plan)
+- **Returns:** the plan-level blocked envelope `{blocked, confirm_token,
+  confirm_url, ...}` plus `plan_id`, `reverting: [{facet, path, key, to}]`,
+  `skipped: [{facet, path, key?, reason}]` (`read-only`, `added`,
+  `demo-owned`), `not_found` and `warnings`. Built by the same selection and
+  builder as the web UI's **Revert N fields**; every step is
+  `service-affecting`, and the card approves in the web process even though
+  the chat's MCP subprocess built the plan. Do **not** call `execute_plan`
+  for it.
+- Nothing chosen is writable → `{success: false, error: "NothingToRevert",
+  skipped, ...}` and no card. Rows an active demo owns are never in the plan.
+
+### `ignore_config_keys`
+Exclude config keys from drift tracking — the chat's version of the web UI's
+eye-slash, behind a card (ADR-0070 §3). A global rule hides future changes to
+those keys on every device, real ones included, until it is removed in
+Settings, so the model is told to use it only for noise and never for a
+security or service key.
+- **Args:** `keys` (1–50 canonical keys or globs), `scope` (`global` by
+  default, `tag:<tag>`, `device:<device_id>`), `reason` (≤200 characters,
+  shown on the card)
+- **Returns:** a blocked envelope for the `add_ignore_rules` action, pinned
+  to `url_only` (a fleet override does not soften it); the card names every
+  new key and the scope. `already_present` lists keys already excluded in
+  that scope. When every key is, it returns `{success: true,
+  already_present, scope}` and opens no card.
+- On approval the outcome lists what was added as `ignore_added_keys`. A card
+  scoped to a tag or the whole fleet is held against the literal `fleet`, and
+  its `[console]` note reads "fleet-wide" or "for tagged devices".
+
+### `list_config_ignore_rules`
+Every rule that excludes keys from drift tracking — the defaults ADMZ seeds
+and every rule an operator added. Read-only.
+- **Args:** `scope` (optional — only rules with exactly this scope)
+- **Returns:** `{success, count, rules: [{key, scope}], more?}` — at most 200
+  rules, with `more` counting the rest.
 
 ---
 
@@ -758,7 +836,8 @@ change; `delete_demo` also removes the demo's fragments from the working tree
 ### `assign_demo_fragment`
 Capture currently-drifted fields into the demo's owned fragment (GATED —
 returns the approval card; values are re-read from the live diff at apply
-time). Run `check_drift` first and pick fields from that diff.
+time). Read the device's drift with `get_drift_review` first and pick fields
+from it.
 - **Args:** `demo`, `fields: [{device_id, facet, path}]`, `role?`
 - **Returns:** a blocked/`url_only` confirm envelope; on approval
   `{success, added, skipped, warnings, commit_sha}`.
