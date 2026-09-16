@@ -625,7 +625,7 @@
     icons();
 
     body.querySelector(".approve-btn").addEventListener("click", function () {
-      submitApproval(card, token, details.needs_password);
+      submitApproval(card, token, details);
     });
     body.querySelector(".deny-btn").addEventListener("click", function () {
       // Server-side denial: terminal (the token can never be consumed) and
@@ -640,7 +640,40 @@
     });
   }
 
-  function submitApproval(card, token, needsPassword) {
+  // The approval POST does not merely record the decision: it RUNS the
+  // operation and answers with the outcome (routes/confirm.py::_approve_session
+  // → operations.execute_approved_session). The request is therefore held for
+  // as long as the device takes — 31s for a firmware upload to a C8110 on
+  // 2026-09-15 — and a disabled button with no explanation reads as a hung
+  // page, which is exactly how that was reported. This line says what is
+  // running, counts the seconds, and names the slow case.
+  function startApprovalWait(body, operationId) {
+    var row = document.createElement("div");
+    row.className = "result-row grey approval-wait";
+    row.innerHTML = ico("clock") + "<span></span>";
+    body.appendChild(row);
+    icons();
+    var label = row.querySelector("span");
+    var started = Date.now();
+    var firmware = /firmware/i.test(operationId || "");
+    function tick() {
+      var secs = Math.round((Date.now() - started) / 1000);
+      label.textContent =
+        (firmware
+          ? "Uploading firmware to the device — this usually takes 30–60 seconds"
+          : "Running it on the device now") +
+        " · " + secs + "s. The card updates when the device answers.";
+    }
+    tick();
+    var timer = setInterval(tick, 1000);
+    return function stopApprovalWait() {
+      clearInterval(timer);
+      if (row.parentNode) row.parentNode.removeChild(row);
+    };
+  }
+
+  function submitApproval(card, token, details) {
+    var needsPassword = details && details.needs_password;
     var body = card.querySelector(".approval-body");
     var errorEl = body.querySelector(".approval-error");
     var approveBtn = body.querySelector(".approve-btn");
@@ -654,6 +687,7 @@
     approveBtn.disabled = true;
     approveBtn.textContent = "Approving…";
     errorEl.style.display = "none";
+    var stopWait = startApprovalWait(body, details && details.operation_id);
 
     fetch("/api/chat/confirm/" + encodeURIComponent(token), {
       method: "POST",
@@ -662,6 +696,7 @@
     })
       .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, status: r.status, body: b }; }); })
       .then(function (resp) {
+        stopWait();
         if (resp.ok && resp.body && resp.body.status === "completed") {
           removePinnedAction("confirm", token);
           // The op already ran synchronously on approval — the POST returned
@@ -687,6 +722,7 @@
         else { showApprovalError(errorEl, msg); approveBtn.disabled = false; approveBtn.innerHTML = ico("check") + "Approve"; icons(); }
       })
       .catch(function (err) {
+        stopWait();
         showApprovalError(errorEl, String(err));
         approveBtn.disabled = false; approveBtn.innerHTML = ico("check") + "Approve"; icons();
       });
