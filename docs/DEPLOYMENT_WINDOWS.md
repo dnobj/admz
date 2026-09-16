@@ -132,6 +132,11 @@ widening the bind. Note that `_check_bind_safety` (`admz/__main__.py`) refuses a
 non-loopback bind for the `windows` and `composite` backends but **not** for
 `windows-local` — so nothing stops you; the judgement is yours.
 
+**Putting TLS or a proxy in front? Read *2e. Timeouts — an approval holds the
+connection* in Part 2 first.** An approved operation runs *inside* the approval
+request, so a short gateway timeout turns a working firmware upload into an
+error page while the device upgrades anyway.
+
 `/grant:r` replaces the ACEs of the trustees it names and leaves any other
 explicit ACEs in place, so on a directory migrated from `~/.admz` check what
 survived: `icacls $dataDir`.
@@ -389,6 +394,28 @@ host:
 
 Without this step, the URL Rewrite rule above silently fails to
 forward — you'll get 404s from IIS instead of responses from uvicorn.
+
+### 2e. Timeouts — an approval holds the connection
+
+Approving a dangerous operation **runs** it inside that request: ADMZ performs
+the device call and only then answers the browser
+(`routes/confirm.py::_approve_session` → `operations.execute_approved_session`).
+On 2026-09-15 a firmware upload to a C8110 held the connection for **31
+seconds**; a larger image, or a slower device, holds it longer. ADMZ puts no
+deadline of its own on an approved operation.
+
+So every timeout in front of uvicorn has to exceed the slowest operation you
+intend to approve. Otherwise the operator gets a gateway error while the device
+upgrades anyway — the worst of both readings, and indistinguishable from a
+failure.
+
+- **ARR:** *Server Proxy Settings → Time-out (seconds)* defaults to **120**.
+  Raise it; 300 is a sensible floor. In `applicationHost.config` it is
+  `<applicationRequestRouting><proxy timeout="00:05:00" />`.
+- **The rewrite rule and anything else in the path:** `requestTimeout` on the
+  ARR rule if you set one, plus any load balancer or TLS terminator.
+
+Part 1 (no proxy, loopback bind) has nothing to configure here.
 
 ## Step 3 — Tell ADMZ about the proxy
 

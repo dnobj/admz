@@ -71,6 +71,13 @@ Implementation (Phase 5C):
 - "Dismiss" closes the card without consuming the token —
   matches the semantics of closing the browser tab on the HTML
   flow.
+- **The card says what it is waiting for** (2026-09-15). The approval POST does
+  not merely record the decision: it *runs* the operation and answers with the
+  outcome, so the request is held for as long as the device takes — 31 seconds
+  for a firmware upload to a C8110, which the operator read as the page having
+  hung. While it is in flight the card shows what is running and an elapsed
+  second count, and names the firmware case, which is the slow one
+  (`startApprovalWait`, `admz/api/static/chat.js`).
 - **An approval link the model writes itself never reaches the operator**
   (2026-09-15). A link is real only when a tool call issued its session. Links
   in the model's own earlier replies are redacted before history is sent back

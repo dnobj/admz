@@ -571,3 +571,43 @@ class TestApproveOutcomeIdentityAudit:
         # The lists themselves are not scalars and never cross.
         assert "removed" not in details
         assert "failed" not in details
+
+
+class TestTheApprovalCardSaysWhatItIsWaitingFor:
+    """2026-09-15: approving a firmware upgrade looked like a hung page.
+
+    The approval POST executes the operation before it answers — 31 seconds for
+    that upload — and the card showed nothing but a disabled button for the
+    whole wait. The JS is the artefact the operator reads, so it is pinned here
+    the way tests/test_chat_resume.py pins the continuation request.
+    """
+
+    def _submit_approval(self):
+        import re
+        from pathlib import Path
+
+        import admz.api as api_pkg
+        src = (Path(api_pkg.__file__).parent / "static" / "chat.js").read_text(
+            encoding="utf-8")
+        found = re.search(r"\n  function submitApproval\(.*?\n  \}\n", src, re.S)
+        assert found, "submitApproval moved — re-pin this test"
+        return src, found.group(0)
+
+    def test_the_wait_starts_with_the_request(self):
+        src, submit = self._submit_approval()
+        assert "function startApprovalWait" in src
+        assert "startApprovalWait(body, details && details.operation_id)" in submit
+
+    def test_every_exit_stops_it(self):
+        """A timer left running would keep counting on a card that has already
+        resolved, so the outcome path and the network-failure path both clear
+        it."""
+        src, submit = self._submit_approval()
+        assert submit.count("stopWait()") == 2
+        assert "clearInterval" in src
+
+    def test_it_names_the_slow_case(self):
+        """Generic "working…" would not have answered the operator's question,
+        which was what the wait was for."""
+        src, _ = self._submit_approval()
+        assert "Uploading firmware to the device" in src
