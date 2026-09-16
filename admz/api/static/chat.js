@@ -1239,10 +1239,13 @@
   var NOTICE_ROWS = 3;
   var NOTICE_BATCH = 20;
   var NOTICE_THROTTLE_MS = 15000;
+  var NOTICE_FLASH_MS = 4000;
   var noticesLoadedAt = 0;
   var noticesExpanded = false;
   var openNotices = [];
   var openNoticeTotal = 0;
+  var noticeFlashText = "";
+  var noticeFlashUntil = 0;
 
   function loadNotices(force) {
     if (!noticesBox) return Promise.resolve();
@@ -1313,14 +1316,19 @@
     }
     var shown = noticesExpanded ? openNotices : openNotices.slice(0, NOTICE_ROWS);
     shown.forEach(function (n) { noticesList.appendChild(renderNoticeRow(n)); });
-    if (noticesCount) noticesCount.textContent = openNoticeTotal + " open";
+    // A flash (a refused review, say) outlives the reload that follows it.
+    if (noticesCount) {
+      noticesCount.textContent = Date.now() < noticeFlashUntil
+        ? noticeFlashText : openNoticeTotal + " open";
+    }
     if (noticesMore) {
       noticesMore.innerHTML = "";
       if (openNoticeTotal > NOTICE_ROWS) {
         var label = document.createElement("div");
         label.className = "pr-op";
         var hidden = openNoticeTotal - shown.length;
-        label.textContent = hidden > 0 ? hidden + " more need attention" : "All open notices";
+        label.textContent = hidden > 1 ? hidden + " more need attention"
+          : (hidden === 1 ? "1 more needs attention" : "All open notices");
         var right = document.createElement("div");
         right.className = "pr-right";
         var toggle = document.createElement("button");
@@ -1352,9 +1360,10 @@
   }
 
   function noticeFlash(message) {
-    if (!noticesCount) return;
-    noticesCount.textContent = message;
-    setTimeout(function () { loadNotices(true); }, 4000);
+    noticeFlashText = message;
+    noticeFlashUntil = Date.now() + NOTICE_FLASH_MS;
+    renderNotices();
+    setTimeout(function () { loadNotices(true); }, NOTICE_FLASH_MS + 100);
   }
 
   function postNotice(url, body) {
