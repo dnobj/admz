@@ -228,7 +228,7 @@ Shipped as decided, in #514 after #512. Where the code settled a detail this doc
   - `admz/discovery/scan_store.py` (`discovery_scans`, store #22).
   - `admz/discovery/candidates.py`: identity, registration index, add blockers, counts and the batch, age and concurrency constants.
   - `admz/discovery/identity.py`: the unauthenticated serial read.
-  - `admz/discovery/gated.py`: `add_reason` / `add_consequence`, plus the survey wording moved into a shared constant; the survey card reads exactly as before.
+  - `admz/discovery/gated.py`: `add_reason` / `add_consequence`, plus the survey wording moved into a shared constant; the survey card read exactly as before until the 2026-09-17 change below.
 - **One consequence sentence.** The widget shows `add_consequence()` above the button before anything is ticked, and the session's `danger_description` is the device list followed by that same sentence.
 - **One approver decision.** `confirm.approval_decision` is what `_approve_session` enforces and what the scan GET reports as `may_approve`.
 - **One capture-form choice.** `api/capture.open_onboarding_capture` picks the account or root-adopt form by `reason_code`. The REST add/onboard routes and the executor both use it, so the REST behaviour is unchanged.
@@ -243,3 +243,8 @@ Shipped as decided, in #514 after #512. Where the code settled a detail this doc
 - **Audit.** Creating the session writes a `discovery.add_requested` row (count and device ids), beside the `confirm.approve` row the approval writes.
 - **Untrusted text in the executor's reasons.** A device's reported serial is quoted only when it has a serial's shape. Onboarding error text is flattened and bounded before it reaches the console note.
 - **Not yet verified against live devices.** The identity check assumes configured devices still report `SerialNumber` without credentials (the catalog says they return "a subset" of the unrestricted properties). If one does not, it is skipped with "could not confirm", which is the fail-closed direction; the owner's lab check decides whether that needs revisiting.
+
+### After the owner's first live use (2026-09-17)
+
+- **The consequence sentence was too long.** It is now about 60 words instead of about 100, and the survey card shares the shorter account sentence. It still names every write: registration, ADMZ's own `admz` account and `root` on a factory-defaulted device. It also says `admz` is the only password kept, that an already-configured device needs the fleet root password or an entry credential, and that the credential ADMZ logged in with is left in place.
+- **The table listed most Axis devices twice.** SSDP reports a serial number and a model but no MAC. The orchestrator filed that record under its IP, beside the mDNS/ARP record filed under the MAC, and nothing joined the two. Both rows then carried the same device id. This was a discovery merge bug rather than a widget one, so it is fixed in the orchestrator ([ADR-0016's amendment](0016-merge-discovery-by-mac.md#amendment-2026-09-17--a-record-without-a-mac-joins-its-device)), and every discovery caller benefits. The add route already collapsed duplicate ids, so no device could have been added twice. Replayed through the fix, the same scan lists 19 devices instead of 29. The PC running ADMZ, which SSDP labels "Axis", is now one non-Axis row, where before it was an untickable Axis row plus a non-Axis duplicate.

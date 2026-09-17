@@ -5,10 +5,12 @@ merges results by MAC address, and produces a unified device list.
 
 import asyncio
 import logging
+import re
 from typing import Dict, List, Optional
 
+from admz.device_registry import canonical_mac
 from admz.discovery.base import DiscoveryProtocolBase
-from admz.discovery.models import DiscoveredDevice, DiscoveryProtocol
+from admz.discovery.models import DiscoveredDevice, DiscoveryProtocol, is_axis_mac
 from admz.discovery.mdns_discovery import MDNSDiscovery
 from admz.discovery.ssdp_discovery import SSDPDiscovery
 from admz.discovery.onvif_discovery import ONVIFDiscovery
@@ -117,20 +119,110 @@ class DiscoveryOrchestrator:
         return devices
 
 
+_HEX12 = re.compile(r"^[0-9A-F]{12}$")
+
+
+def _mac_key(mac: Optional[str]) -> str:
+    """The key a record with a MAC is merged under: the canonical 12-hex MAC,
+    so ``aa:bb:…`` and ``AA-BB-…`` are one device. A value that is not a MAC
+    keeps its own text, as before."""
+    key = canonical_mac(mac)
+    return key if _HEX12.match(key) else (mac or "")
+
+
+def _serial_key(serial: Optional[str]) -> str:
+    """A serial number as a MAC, when it has that shape — an Axis serial IS
+    the device's MAC (``candidates.device_identity`` uses the same rule)."""
+    key = canonical_mac(serial)
+    return key if _HEX12.match(key) else ""
+
+
+def _conflicts(holder: DiscoveredDevice, dev: DiscoveredDevice) -> bool:
+    """True when ``dev``, which reports no MAC, cannot be the device
+    ``holder`` is, even though they share an IP: an Axis serial naming a
+    different MAC, or two different serial numbers, means two devices."""
+    serial_mac = _serial_key(dev.serial_number)
+    if (serial_mac and (dev.is_axis or holder.is_axis)
+            and serial_mac != _mac_key(holder.mac_address)):
+        return True
+    if dev.serial_number and holder.serial_number:
+        return canonical_mac(dev.serial_number) != canonical_mac(holder.serial_number)
+    return False
+
+
+def _join_by_address(holder: DiscoveredDevice, dev: DiscoveredDevice) -> None:
+    """Merge ``dev`` into ``holder``, which it shares only an IP with.
+
+    An Axis claim that arrives this way has no identity behind it — an Axis
+    serial would have matched the MAC — so it does not make another vendor's
+    MAC an Axis device. The case that forced this: an SSDP SERVER header
+    naming Axis software on the PC running ADMZ, which would otherwise have
+    been offered as an Axis device to add (2026-09-17). The rest of the
+    record (model, hostname, …) still merges.
+    """
+    if (dev.is_axis and not holder.is_axis and holder.mac_address
+            and not is_axis_mac(holder.mac_address)):
+        manufacturer, device_type = holder.manufacturer, holder.device_type
+        holder.merge(dev)
+        holder.is_axis, holder.device_type = False, device_type
+        if manufacturer is None and "axis" in (holder.manufacturer or "").lower():
+            holder.manufacturer = None
+        return
+    holder.merge(dev)
+
+
 def _merge_all(
     protocol_results: List[List[DiscoveredDevice]],
 ) -> Dict[str, DiscoveredDevice]:
-    """Merge device lists from multiple protocols, keyed by MAC or IP."""
+    """Merge device lists from multiple protocols into one record per device.
+
+    ADR-0016: keyed by MAC, with the IP as the fallback for a record whose
+    protocol reports no MAC. The fallback has to *join* the device's MAC
+    record rather than sit beside it: SSDP reports a serial number but never
+    a MAC, so a record keyed by its IP alone listed every Axis device twice
+    (the console's discovery widget, 2026-09-17). So every record with a MAC
+    is merged first, whatever the protocol order, and a record without one
+    then joins, in this order:
+
+    1. the record whose MAC is its serial number;
+    2. otherwise the one MAC record at its IP, unless :func:`_conflicts` —
+       and then without its Axis claim if that MAC is another vendor's
+       (:func:`_join_by_address`);
+    3. otherwise the record kept under its IP.
+
+    An IP held by two MAC records is ambiguous, so nothing is guessed into
+    either. A record with neither a MAC nor an IP is dropped, as before.
+    """
     merged: Dict[str, DiscoveredDevice] = {}
+    without_mac: List[DiscoveredDevice] = []
     for dev_list in protocol_results:
         for dev in dev_list:
-            key = dev.mac_address or dev.ip_address
-            if not key:
-                continue
-            if key in merged:
-                merged[key].merge(dev)
-            else:
-                merged[key] = dev
+            if dev.mac_address:
+                key = _mac_key(dev.mac_address)
+                if key in merged:
+                    merged[key].merge(dev)
+                else:
+                    merged[key] = dev
+            elif dev.ip_address:
+                without_mac.append(dev)
+
+    holders: Dict[str, List[DiscoveredDevice]] = {}
+    for dev in merged.values():
+        if dev.ip_address:
+            holders.setdefault(dev.ip_address, []).append(dev)
+
+    for dev in without_mac:
+        target = merged.get(_serial_key(dev.serial_number) or "")
+        if target is not None:
+            target.merge(dev)
+            continue
+        at_ip = holders.get(dev.ip_address, [])
+        if len(at_ip) == 1 and not _conflicts(at_ip[0], dev):
+            _join_by_address(at_ip[0], dev)
+        elif dev.ip_address in merged:
+            merged[dev.ip_address].merge(dev)
+        else:
+            merged[dev.ip_address] = dev
     return merged
 
 
@@ -149,7 +241,7 @@ def _merge_into(
                     matched = True
                     break
             if not matched:
-                new_key = dev.mac_address or dev.ip_address
+                new_key = _mac_key(dev.mac_address) or dev.ip_address
                 if new_key:
                     if new_key in merged:
                         merged[new_key].merge(dev)

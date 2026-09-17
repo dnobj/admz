@@ -33,9 +33,16 @@ See [ADR-0017](../decisions/0017-two-phase-discovery.md).
 
 ### FR-DISC-003 — Merge-by-MAC ✅
 Results from multiple protocols fuse into a single `DiscoveredDevice`
-keyed by MAC. IP fallback when MAC not yet known. Each field takes
-the first non-empty value. See
-[ADR-0016](../decisions/0016-merge-discovery-by-mac.md).
+keyed by the canonical MAC. Each field takes the first non-empty value.
+A record whose protocol reports no MAC (SSDP never does) joins its
+device: first the record whose MAC is its serial number (an Axis serial
+is the MAC), otherwise the one MAC record at its IP. An IP held by two
+MACs, or conflicting identities, are never merged; such a record keeps
+its own IP key. A record joined only by IP cannot make a non-Axis MAC
+an Axis device. See
+[ADR-0016](../decisions/0016-merge-discovery-by-mac.md) and its
+2026-09-17 amendment, which fixed every SSDP-visible Axis device being
+listed twice.
 
 ### FR-DISC-004 — Soft-fail per protocol ✅
 `DiscoveryProtocolBase.safe_discover()` wraps each protocol's
