@@ -1,6 +1,6 @@
 # ADR-0072 — Discovered devices are added from the chat in one click
 
-**Status:** Accepted — 2026-09-16 · **Shipped:** 2026-09-16 (#512 plan, implementation PR code — see [As built](#as-built))
+**Status:** Accepted — 2026-09-16 · **Shipped:** 2026-09-16 (#512 plan, #514 code — see [As built](#as-built))
 **Relates to:** [ADR-0059](0059-gate-provisioning-at-the-decision-point.md) (account creation is gated where it is decided; this keeps that gate and changes how many devices one approval covers) · [ADR-0069](0069-removing-several-devices-takes-one-approval.md) (one approval for a batch, for removal) · [ADR-0034](0034-uniform-widget-gating.md) (every destructive action goes through the approval widget) · [ADR-0066](0066-an-out-of-band-resolution-resumes-the-promised-turn.md) (the continuation that answers a `[console]` note) · [ADR-0016](0016-merge-discovery-by-mac.md) (a device is its MAC) · #404 (discovery reports; adding a new device is a manual, batched click)
 
 _Plan-first per `process.md`: this document merges before any code. File:line references are against master `eaeec9d`._
@@ -222,7 +222,7 @@ One implementation PR, after this merges:
 
 ## As built
 
-Shipped as decided, in one implementation PR after #512. Where the code settled a detail this document left open:
+Shipped as decided, in #514 after #512. Where the code settled a detail this document left open:
 
 - **Where things live.**
   - `admz/discovery/scan_store.py` (`discovery_scans`, store #22).
