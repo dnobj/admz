@@ -466,6 +466,44 @@ class TestAdvancedCapabilitiesSection:
         assert "{fleet_section}" not in prompt
 
 
+class TestConsoleDiscoveryGuidance:
+    """ADR-0072 §6. The console renders a scan as a table with an Add button,
+    so the model summarises instead of reprinting it — and only a turn the
+    console renders is told so."""
+
+    def test_absent_by_default_so_other_surfaces_are_unchanged(self):
+        prompt = build_system_prompt("alice")
+        assert "Discovery results in the console" not in prompt
+        assert "{console_section}" not in prompt
+        assert build_system_prompt("alice", console_widgets=False) == prompt
+
+    def test_the_console_is_told_not_to_reprint_the_list(self):
+        prompt = build_system_prompt("alice", console_widgets=True)
+        assert "# Discovery results in the console (ADR-0072)" in prompt
+        assert "Do NOT reprint the device list" in prompt
+        for field in ("axis_count", "new_axis_count", "factory_default_count"):
+            assert field in prompt
+        assert "{console_section}" not in prompt
+
+    def test_a_scan_is_never_a_reason_to_register(self):
+        prompt = build_system_prompt("alice", console_widgets=True)
+        assert "never a reason to register anything on your own initiative" in prompt
+        assert "Never write the `scan_url`" in prompt
+
+    def test_the_add_outcome_is_summarised_from_the_note(self):
+        prompt = build_system_prompt("alice", console_widgets=True)
+        assert "a `[console]` note reports the outcome" in prompt
+
+    def test_voice_does_not_get_it(self):
+        """Voice shares build_system_prompt and renders no widget."""
+        import inspect
+
+        from admz.chatbot import voice
+
+        src = inspect.getsource(voice)
+        assert "console_widgets" not in src
+
+
 class _EmptyStore:
     """A fleet-settings stand-in where nothing is set (keeps the byte-identity
     assertion off the developer's real database)."""

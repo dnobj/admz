@@ -1091,6 +1091,184 @@ async def _action_register_discovered_device(
     }
 
 
+#: Onboarding outcomes that leave ADMZ with working credentials — what an
+#: approved add has to reach for a device to count as added (ADR-0072 §4).
+_ADD_CREDENTIALED = frozenset({
+    "provisioned", "admz_account_created", "already_credentialed",
+})
+#: The subset that created an account on the device.
+_ADD_ACCOUNT_CREATED = frozenset({"provisioned", "admz_account_created"})
+
+
+async def _add_one_discovered_device(
+    device_id: str, entry: Mapping[str, Any], registry: Any, ctx: Any,
+) -> Dict[str, Any]:
+    """Confirm, register and onboard one device of an approved add.
+
+    The order is the safety property: identity is confirmed before anything is
+    written, and nothing that could carry a credential leaves before it is.
+    """
+    from admz.api.capture import open_onboarding_capture
+    from admz.discovery.candidates import registered_index
+    from admz.discovery.identity import confirm_identity
+    from admz.onboarding import CREDENTIALS_NEEDED, onboard_device_credentials
+    from admz.validators import sanitize_display_text
+
+    host = str(entry.get("host") or "")
+    row: Dict[str, Any] = {
+        "device_id": device_id, "host": host, "registered": False, "status": "",
+    }
+
+    def registered_as() -> str:
+        return registered_index(registry).get(device_id, "")
+
+    existing = registered_as()
+    if existing:
+        row.update(status="already_registered",
+                   error=f"already registered as {existing} since the scan")
+        return row
+
+    executor = (getattr(ctx, "executors", None) or {}).get("vapix")
+    ok, why = await confirm_identity(ctx.catalog, executor, host, device_id)
+    if not ok:
+        row.update(status="identity_unconfirmed", error=why)
+        return row
+
+    # Re-checked after the identity read's await, and no await sits between
+    # this check and the write, so two adds cannot both register the device.
+    existing = registered_as()
+    if existing:
+        row.update(status="already_registered",
+                   error=f"already registered as {existing} since the scan")
+        return row
+    try:
+        registry.add_device(device_id, dict(entry.get("registry_info") or {}))
+    except Exception as exc:  # noqa: BLE001 — one device must not stop the rest
+        row.update(status="register_failed",
+                   error=f"could not register: {type(exc).__name__}")
+        logger.warning("add_discovered_devices: registering %s failed",
+                       device_id, exc_info=True)
+        return row
+    row["registered"] = True
+
+    try:
+        onboarding = await onboard_device_credentials(
+            device_id=device_id, registry=registry,
+            catalog=ctx.catalog, executors=ctx.executors)
+    except Exception as exc:  # noqa: BLE001
+        row.update(status="onboarding_failed",
+                   error=f"registered, but onboarding raised {type(exc).__name__}")
+        logger.warning("add_discovered_devices: onboarding %s raised",
+                       device_id, exc_info=True)
+        return row
+
+    status = str(onboarding.get("status") or "")
+    row["status"] = status
+    if status == CREDENTIALS_NEEDED:
+        try:
+            session = open_onboarding_capture(
+                device_id, str(onboarding.get("reason_code") or ""))
+            row["capture_url"] = f"/capture/{session.token}"
+        except Exception:  # noqa: BLE001 — never turn a status into a crash
+            logger.exception("could not open a capture session for %s", device_id)
+    if status not in _ADD_CREDENTIALED:
+        # `reason` is ADMZ's own wording; `error` can quote a device's
+        # response, so it is flattened and bounded before it reaches the note.
+        detail = onboarding.get("reason") or onboarding.get("error") or ""
+        detail = sanitize_display_text(detail, max_length=160)
+        row["error"] = (f"registered, but no working credentials ({status}"
+                        + (f": {detail}" if detail else "") + ")")
+    return row
+
+
+async def _action_add_discovered_devices(
+    action: Mapping[str, Any], registry: Any, git_repo: Any = None,
+) -> Dict[str, Any]:
+    """Add the devices an operator ticked in the discovery widget (ADR-0072).
+
+    Runs inside the approved context (this action is in
+    :data:`_PROVISIONING_APPROVAL_ACTIONS`, and onboarding honours it through
+    ``onboarding._APPROVAL_ACTIONS``), so the one approval covers every device
+    and no per-device card is raised.
+
+    For each device, at most :data:`~admz.discovery.candidates.ADD_CONCURRENCY`
+    at a time: confirm its identity (fail-closed), register it unless something
+    registered it since the scan, onboard it. The coroutines are awaited through
+    ``gather`` — never detached — so the approval ends when this call does
+    (``approval_context``'s warning about spawned tasks).
+
+    Success means every listed device was registered and ended with working
+    credentials. Anything less names each device and what it lacks. There is
+    no cross-device atomicity.
+    """
+    import asyncio
+
+    from admz.api.context import get_context
+    from admz.discovery.candidates import ADD_CONCURRENCY
+
+    listed = [d for d in (action.get("device_ids") or [])
+              if isinstance(d, str) and d]
+    entries = {
+        str(e.get("device_id")): e for e in (action.get("devices") or [])
+        if isinstance(e, Mapping) and e.get("device_id")
+    }
+    # The add route writes both lists from the same scan rows. A session where
+    # they disagree was not written by it, and runs nothing.
+    if not listed or set(listed) != set(entries) or len(set(listed)) != len(listed):
+        return {"success": False, "action": "add_discovered_devices",
+                "error": "the approved batch is malformed; nothing was added"}
+
+    ctx = get_context()
+    gate = asyncio.Semaphore(ADD_CONCURRENCY)
+
+    async def bounded(device_id: str) -> Dict[str, Any]:
+        async with gate:
+            return await _add_one_discovered_device(
+                device_id, entries[device_id], registry, ctx)
+
+    outcomes = await asyncio.gather(
+        *(bounded(d) for d in listed), return_exceptions=True)
+    rows: List[Dict[str, Any]] = []
+    for device_id, outcome in zip(listed, outcomes):
+        if isinstance(outcome, BaseException):
+            rows.append({"device_id": device_id,
+                         "host": str(entries[device_id].get("host") or ""),
+                         "registered": False, "status": "error",
+                         "error": f"{type(outcome).__name__}"})
+        else:
+            rows.append(outcome)
+
+    added = [r["device_id"] for r in rows if r.get("registered")]
+    accounts = [r["device_id"] for r in rows
+                if r.get("status") in _ADD_ACCOUNT_CREATED]
+    failed = [{"device_id": r["device_id"], "error": str(r.get("error") or "")}
+              for r in rows if r.get("status") not in _ADD_CREDENTIALED]
+    credentialed = len(rows) - len(failed)
+    noun = "device" if len(rows) == 1 else "devices"
+    out: Dict[str, Any] = {
+        "success": not failed,
+        "action": "add_discovered_devices",
+        "devices": rows,
+        "added": added,
+        "failed": failed,
+        "message": (f"Added {len(added)} of {len(rows)} {noun}; "
+                    f"{credentialed} with working credentials."),
+    }
+    # Identity fields for the approval's audit row (audit.OUTCOME_IDENTITY_KEYS
+    # records scalars only, so each list is one comma-separated string).
+    if added:
+        out["added_devices"] = ",".join(added)
+    if accounts:
+        out["provisioned_devices"] = ",".join(accounts)
+    if failed:
+        out["failed_devices"] = ",".join(f["device_id"] for f in failed)
+        out["error"] = (
+            f"{credentialed} of {len(rows)} {noun} added with working "
+            "credentials; " + "; ".join(
+                f"{f['device_id']}: {f['error']}" for f in failed))
+    return out
+
+
 def _resolve_device_and_creds(registry: Any, device_id: str) -> Tuple[Dict[str, Any], Dict[str, str]]:
     """Device info dict (with ``device_id`` set) + credentials, mirroring
     ``run_execution_tail`` — empty creds if the device has no stored account."""
@@ -1520,6 +1698,9 @@ _ACTION_EXECUTORS = {
     "import_firmware": _action_import_firmware,
     # ADR-0059: the approved half of the onboarding gate.
     "provision_device_credentials": _action_provision_device_credentials,
+    # ADR-0072: the discovery widget's add — several devices, their
+    # registration and their accounts, behind one approval.
+    "add_discovered_devices": _action_add_discovered_devices,
 }
 
 
@@ -1531,17 +1712,26 @@ _ACTION_EXECUTORS = {
 #: * ``start_demo_survey`` — the operator approved a scan; it provisions every
 #:   factory-default device it finds, which is what they approved.
 #: * ``register_discovered_device`` — the approval executor for one device.
+#: * ``add_discovered_devices`` — the discovery widget's batch (ADR-0072). Its
+#:   card names every device and every account write, and its executor awaits
+#:   each onboarding through ``gather``; it spawns no detached task.
 #:
 #: An action absent from here gets no marker, so a downstream gate treats it as
 #: unapproved and raises the widget — the fail-closed direction. Adding an entry
 #: grants real authority: only do it for an approval whose card actually told
 #: the operator a root account might be created.
+#:
+#: **Keep ``onboarding._APPROVAL_ACTIONS`` equal to this set.** The marker is
+#: set here but honoured there; an action in only this list gets the marker and
+#: still raises a nested card per device. A test holds the two equal.
 _PROVISIONING_APPROVAL_ACTIONS = frozenset({
     "start_demo_survey",
     "register_discovered_device",
     # ADR-0059 slice 2: raised by the gate at onboarding's provisioning
     # decision point, for a device that is ALREADY registered.
     "provision_device_credentials",
+    # ADR-0072: several discovered devices under one approval.
+    "add_discovered_devices",
 })
 
 

@@ -142,8 +142,13 @@ APPROVAL_REQUIRED = "approval_required"
 #: The actions whose approval covers provisioning here. Named explicitly rather
 #: than asking "is anything approved?" — approval for X is not approval for Y,
 #: which is the finding that came out of slice 1's review.
+#:
+#: Held equal to ``operations._PROVISIONING_APPROVAL_ACTIONS`` by a test: that
+#: set decides which approvals carry the marker, this one which markers are
+#: honoured, and an action in only one of them raises a card per device inside
+#: an approval already given (ADR-0072).
 _APPROVAL_ACTIONS = ("start_demo_survey", "register_discovered_device",
-                     "provision_device_credentials")
+                     "provision_device_credentials", "add_discovered_devices")
 
 
 def _with_survey(result: Dict[str, Any]) -> Dict[str, Any]:

@@ -289,7 +289,14 @@ Scan the local network for Axis devices. Runs mDNS, SSDP, ONVIF, ARP,
 HTTP probe, SNMP in parallel and merges results by MAC.
 - **Args:** `timeout` (number, default 5.0), `axis_only` (bool, default false),
   `subnet` (string, optional), `enable_ping` (bool, default false)
-- **Returns:** `{success, count, devices: [...]}`
+- **Returns:** `{success, count, axis_count, new_axis_count,
+  factory_default_count, devices: [...], scan_id, scan_url}`. Each device
+  carries `registered_device_id`: the managed device it already is, or `null`.
+- **Console widget (ADR-0072):** the scan is recorded for a day
+  (`discovery_scans`) and the web console renders `scan_url` as an interactive
+  table whose Add button registers the selected devices under one approval.
+  `scan_id`/`scan_url` are absent for a standalone MCP client, which has no
+  console.
 - Devices are **not** auto-registered.
 
 ### `register_discovered_device`

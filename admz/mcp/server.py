@@ -1649,9 +1649,15 @@ class ADMZMCPServer:
                     description=(
                         "Scan the local network for Axis cameras and other devices "
                         "using mDNS, SSDP, ONVIF, ARP, HTTP/VAPIX, and SNMP. "
-                        "Returns discovered devices with metadata. "
-                        "Devices are NOT automatically registered — use "
-                        "register_discovered_device to add a specific one."
+                        "Returns discovered devices with metadata; each device's "
+                        "`registered_device_id` names the managed device it "
+                        "already is (null when it is new), and `axis_count`, "
+                        "`new_axis_count` and `factory_default_count` summarise "
+                        "the scan. In the web console the result is shown to the "
+                        "user as an interactive table (`scan_url`) whose Add "
+                        "button registers the devices they select under one "
+                        "approval. Devices are NOT automatically registered — "
+                        "use register_discovered_device to add a specific one."
                     ),
                     inputSchema={
                         "type": "object",
@@ -4529,34 +4535,55 @@ class ADMZMCPServer:
             validate_scan_subnet(arguments.get("subnet"))
         except ValueError as exc:
             return {"success": False, "error": str(exc)}
+        from admz.discovery import candidates
+
+        axis_only = bool(arguments.get("axis_only", False))
         devices = await run_network_discovery(
             timeout=arguments.get("timeout", 5.0),
-            axis_only=arguments.get("axis_only", False),
+            axis_only=axis_only,
             subnet=arguments.get("subnet"),
             enable_ping=arguments.get("enable_ping", False),
         )
-        return {
+        records = [candidates.scan_record(d) for d in devices]
+        views = candidates.annotate(
+            records, candidates.registered_index(self.registry))
+        result: Dict[str, Any] = {
             "success": True,
             "count": len(devices),
+            **candidates.summary_counts(views),
             "devices": [
-                {
-                    "ip_address": d.ip_address,
-                    "mac_address": d.mac_address,
-                    "hostname": d.hostname,
-                    "model": d.model,
-                    "serial_number": d.serial_number,
-                    "firmware_version": d.firmware_version,
-                    "manufacturer": d.manufacturer,
-                    "friendly_name": d.friendly_name,
-                    "device_type": d.device_type.value,
-                    "is_axis": d.is_axis,
-                    "vapix_available": d.vapix_available,
-                    "factory_default": d.factory_default,
-                    "discovered_by": [p.value for p in d.discovered_by],
-                }
-                for d in devices
+                {**candidates.display_view(v),
+                 "registered_device_id": v["registered_device_id"]}
+                for v in views
             ],
         }
+        # ADR-0072 §1: the console renders the scan from the stored copy — the
+        # browser's copy of this result stops at 50 devices, and the API
+        # process can only see what this subprocess found through the database.
+        # A standalone MCP client has no console to show it, so nothing is kept.
+        scan = self._save_discovery_scan(
+            records, subnet=arguments.get("subnet"), axis_only=axis_only)
+        if scan is not None:
+            result["scan_id"] = scan.scan_id
+            result["scan_url"] = f"/api/discovery/scans/{scan.scan_id}"
+        return result
+
+    def _save_discovery_scan(self, records, *, subnet, axis_only):
+        """Record a scan for the console's widget, or ``None``. Never raises:
+        a scan that cannot be stored is still a scan."""
+        principal = getattr(self, "principal", None)
+        name = getattr(principal, "name", "") or ""
+        if not name or name == "mcp-standalone":
+            return None
+        try:
+            from admz.discovery.scan_store import discovery_scans
+
+            return discovery_scans.save_scan(
+                principal=name, devices=records,
+                subnet=str(subnet or ""), axis_only=axis_only)
+        except Exception:  # noqa: BLE001
+            logger.warning("could not record the discovery scan", exc_info=True)
+            return None
 
     async def _register_discovered_device(
         self, arguments: Dict[str, Any]

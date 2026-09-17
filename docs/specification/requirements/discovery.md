@@ -82,7 +82,7 @@ discovery-side fix for the "device moved IP → ADMZ says unreachable" failure
 (the real-world I8016: `.207` → `.208`). Devices discovery didn't see are left
 untouched; nothing is auto-registered.
 
-### FR-DISC-010 — A scan is kept server-side and says what is already registered 📋
+### FR-DISC-010 — A scan is kept server-side and says what is already registered ✅
 `discover_network_devices` saves each scan (principal, subnet, `axis_only`, every device
 with its registry fields) to `discovery_scans` and keeps it for 24 hours. The result
 gains `scan_id`, `scan_url`, `axis_count`, `new_axis_count`, `factory_default_count`,
@@ -93,7 +93,7 @@ scan shows as registered. A scan run under the `mcp-standalone` principal is not
 A scan is a record of one run, not an accumulating cache (KL-DISC-002 stands). See
 [ADR-0072](../decisions/0072-discovered-devices-are-added-from-the-chat-in-one-click.md).
 
-### FR-DISC-011 — Selected discovered devices are added under one approval 📋
+### FR-DISC-011 — Selected discovered devices are added under one approval ✅
 `POST /api/discovery/scans/{scan_id}/add` takes the selected device ids and opens **one**
 `add_discovered_devices` action session. The request is refused before any side effect when
 it is cross-origin, and refused outright when the scan belongs to another principal or is

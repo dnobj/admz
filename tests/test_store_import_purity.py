@@ -160,6 +160,11 @@ CONVERTED: dict[str, StoreSpec] = {
     # drift checks and notify actions raise into it. Built to the call-time
     # contract from the start.
     "admz.notices.store": StoreSpec(cls="NoticeStore", exercise="s.count_open()"),
+    # Store #22, added by ADR-0072. Each discovery run, so the console's
+    # widget and its add route read what the MCP subprocess found. Built to the
+    # call-time contract from the start.
+    "admz.discovery.scan_store": StoreSpec(
+        cls="DiscoveryScanStore", exercise="s.count()"),
 }
 
 #: Modules whose *import* provably creates nothing.
@@ -253,11 +258,12 @@ class TestInventory:
         discovered = _discover_store_modules()
         assert discovered == set(CONVERTED)
         # 17 at the end of #258; 18 since #314 made temp credentials
-        # persistent; 21 since #507 added the notices store. Updated
-        # deliberately, which is what this assertion is for — it fired on the
-        # new store before any human looked at the diff.
-        assert len(discovered) == 21, (
-            f"expected 21 stores, found {len(discovered)} — if a store was "
+        # persistent; 21 since #507 added the notices store; 22 since ADR-0072
+        # added the discovery scan store. Updated deliberately, which is what
+        # this assertion is for — it fired on the new store before any human
+        # looked at the diff.
+        assert len(discovered) == 22, (
+            f"expected 22 stores, found {len(discovered)} — if a store was "
             "added or removed, update this number deliberately"
         )
 

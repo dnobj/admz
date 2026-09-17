@@ -214,13 +214,20 @@ class TestTheSurveyGateRemains:
         import pathlib
 
         callers = []
-        for path in ("admz/api/routes/demos.py", "admz/mcp/server.py"):
+        for path in ("admz/api/routes/demos.py", "admz/mcp/server.py",
+                     "admz/api/routes/discovery.py"):
             tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
             for n in ast.walk(tree):
                 if isinstance(n, ast.Call) and getattr(
                         n.func, "id", None) == "gate_scan_write":
                     callers.append(path)
-        assert sorted(callers) == ["admz/api/routes/demos.py"], (
+        # ADR-0072 added the second entry gate, with its justification in
+        # discovery/gated.py: the widget approves a batch of devices and their
+        # accounts, which the per-device chokepoint cannot express. The MCP
+        # entry gate stays retired.
+        assert sorted(callers) == [
+            "admz/api/routes/demos.py", "admz/api/routes/discovery.py",
+        ], (
             "the MCP entry gate was retired in ADR-0059 slice 3; a new "
             "gate_scan_write caller needs its own justification")
 

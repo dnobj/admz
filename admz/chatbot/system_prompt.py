@@ -478,7 +478,7 @@ When the user asks to set a demo up, walk the sequence and don't drop parts:
 6. **Verify** — `demo_setup_status` and report its ordered `next_actions`.
 Gated stages (assign/adopt/prepare/create_action_rule/set_event_ingest) return a
 card — present it and continue the remaining steps after the user approves.
-{inference_section}{attention_section}
+{inference_section}{attention_section}{console_section}
 # Compound requests — finish the whole job
 
 Many requests name ONE outcome with several parts. "Create a demo called X
@@ -684,6 +684,34 @@ supersedes the rows you just showed the user. Re-read with
 """
 
 
+# ADR-0072: taught only to a turn the web console renders, which shows a
+# discovery scan as an interactive table. Voice, the JSON endpoint and the no-JS
+# form render no widget, so for them the slot is empty and the prompt is
+# byte-identical to before it existed.
+_CONSOLE_DISCOVERY_GUIDANCE = """\
+# Discovery results in the console (ADR-0072)
+
+When `discover_network_devices` returns a `scan_url`, the console already shows
+the user the whole scan as an interactive table under your tool card: every
+device with its model, id, address and firmware, which ones are new and which
+are already registered, and an **Add** button that registers the devices they
+tick — under one approval, in the table itself.
+
+- **Do NOT reprint the device list** or build a markdown table of it.
+  Summarise in a few lines: how many Axis devices (`axis_count`), how many are
+  new (`new_axis_count`), how many are factory-defaulted
+  (`factory_default_count`), and anything worth the user's attention.
+- To add devices, point the user to the table: tick the ones they want and
+  press Add. Never write the `scan_url` and never offer a link instead.
+- **A scan is never a reason to register anything on your own initiative.**
+  Call `register_discovered_device` only when the user asks, in chat, for a
+  specific device to be added.
+- After an add, a `[console]` note reports the outcome. Summarise it: what was
+  added, what still needs credentials (its capture card is already on
+  screen), and what was skipped and why.
+"""
+
+
 # ADR-0070 §6: taught only while something needs review — a device the cached
 # drift checks say is drifted. Nothing drifted → the slot is empty and the
 # prompt is byte-identical to before it existed, like ADR-0051's block above.
@@ -833,6 +861,7 @@ def build_system_prompt(
     inference_section: Optional[str] = None,
     capabilities_section: Optional[str] = None,
     attention_section: Optional[str] = None,
+    console_widgets: bool = False,
 ) -> str:
     """Construct the chatbot's system prompt for a given principal.
 
@@ -863,6 +892,11 @@ def build_system_prompt(
     no device is drifted. It carries the drift-review guidance with it, on the
     same conditional contract, and is fenced: device models and nicknames are
     device-written text.
+
+    ``console_widgets`` (ADR-0072) says the turn renders in the web console,
+    which shows a discovery scan as an interactive table. False — voice, the
+    JSON endpoint, the no-JS form — leaves the prompt byte-identical to before
+    the slot existed.
     """
     display = display_name or principal_name
     group_list = sorted(set(groups)) if groups else []
@@ -975,8 +1009,13 @@ def build_system_prompt(
             f"{_fence('ATTENTION DATA', attention_section.strip())}\n"
         )
 
+    console_section_text = (
+        f"\n{_CONSOLE_DISCOVERY_GUIDANCE.rstrip()}\n" if console_widgets else ""
+    )
+
     return _PROMPT_TEMPLATE.format(
         user_line=user_line,
+        console_section=console_section_text,
         capabilities_section=capabilities_section_text,
         fleet_section=fleet_section,
         common_ops_section=common_ops_section,

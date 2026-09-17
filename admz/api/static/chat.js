@@ -120,6 +120,7 @@
         messageEl.focus();  // composer was already cleared on send
         resolveAllPending(assistantBubble); // backstop if stream ended early
         removeTyping(assistantBubble);
+        finishTurnWidgets(assistantBubble);
         loadNotices(false); // the turn's tools may have resolved one
       });
   });
@@ -153,6 +154,7 @@
               scanForTokens(s, CONFIRM_URL_RE, "confirm");
               scanForTokens(s, CAPTURE_URL_RE, "capture");
             } catch (_) {}
+            maybeRenderDiscoveryWidget(assistantBubble, parsed.data);
             break;
           case "done":
             renderUsageFooter(assistantBubble, parsed.data);
@@ -882,6 +884,438 @@
     icons();
   };
 
+  // ── Discovery widget (ADR-0072) ──────────────────────────────────────────
+  // A discover_network_devices result that names a stored scan renders as a
+  // table the operator can tick, and its Add button IS the approval: one
+  // click, two requests — create the session from the scan row, then approve
+  // it through the same /api/chat/confirm/{token} the approval card uses, so
+  // the approver check, password, lockout, audit row and console note are the
+  // gate's own. Built ONLY from the structured tool_result, like the approval
+  // card. Every device-supplied string is written as text: hostnames and
+  // friendly names are the device's own claims.
+  var SCAN_URL_RE = /^\/api\/discovery\/scans\/([A-Za-z0-9_-]{20,})$/;
+  var seenScans = new Set();
+
+  function maybeRenderDiscoveryWidget(bubble, data) {
+    if (!data || data.name !== "discover_network_devices") return;
+    var result = data.result;
+    if (!result || typeof result !== "object") return;
+    var m = SCAN_URL_RE.exec(String(result.scan_url || ""));
+    if (!m || seenScans.has(m[1])) return;
+    seenScans.add(m[1]);
+    renderDiscoveryWidget(bubble, m[1], data.call_id);
+  }
+
+  // Add stays disabled until the turn's response has CLOSED, not merely until
+  // its `done` event: the server binds the scan to the conversation after
+  // `done` is sent, and an add before that would write no console note.
+  function finishTurnWidgets(bubble) {
+    if (!bubble) return;
+    bubble._turnDone = true;
+    (bubble._widgets || []).forEach(function (w) { if (w._onTurnDone) w._onTurnDone(); });
+  }
+
+  function discoveryBadge(cls, label) {
+    var b = document.createElement("span");
+    b.className = "badge " + cls + " mono";
+    b.textContent = label;
+    return b;
+  }
+
+  function renderDiscoveryWidget(bubble, scanId, callId) {
+    var w = document.createElement("div");
+    w.className = "discovery-widget";
+    w.dataset.scanId = scanId;
+    w.innerHTML =
+      '<div class="dw-head">' + ico("radar") +
+      '<span class="ttl">Discovered devices</span><span class="dw-meta mono"></span>' +
+      '<span class="r"><span class="dw-seg" role="group" aria-label="Show">' +
+      '<button type="button" class="dw-seg-btn active" data-filter="axis">Axis <span class="n"></span></button>' +
+      '<button type="button" class="dw-seg-btn" data-filter="all">All <span class="n"></span></button>' +
+      "</span></span></div>" +
+      '<div class="dw-body"><div class="dw-summary">Loading…</div>' +
+      '<div class="dw-scroll"><table class="dw-table"><thead><tr>' +
+      '<th class="dw-check"><input type="checkbox" class="dw-all" aria-label="Select all new devices" title="Select all new devices"></th>' +
+      "<th>Device</th><th>Device ID</th><th>IP</th><th>Firmware</th><th>Status</th>" +
+      "</tr></thead><tbody></tbody></table></div>" +
+      '<div class="dw-empty" hidden>No devices to show.</div></div>' +
+      '<div class="dw-foot">' +
+      '<p class="ac-summary dw-consequence"></p>' +
+      '<div class="ac-password dw-password" hidden><div class="lbl">' + ico("lock") +
+      "Confirmation password</div>" +
+      '<input type="password" autocomplete="off" placeholder="Confirmation password"></div>' +
+      '<div class="ac-actions"><span class="dw-selcount"></span><span class="spacer"></span>' +
+      '<button type="button" class="btn primary sm dw-add" disabled>' + ico("plus") +
+      '<span class="lbl">Add selected</span></button></div>' +
+      '<div class="result-row grey dw-hint" hidden><span></span></div>' +
+      '<div class="result-row red dw-error" hidden><span></span></div>' +
+      '<div class="dw-outcome" hidden></div></div>';
+
+    var blocks = bubble ? bubble.querySelector(".at-blocks") : null;
+    var anchor = null;
+    if (blocks && callId != null) {
+      anchor = blocks.querySelector('.tool-card[data-call-id="' + String(callId) + '"]');
+    }
+    if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(w, anchor.nextSibling);
+    else (blocks || transcript).appendChild(w);
+    icons();
+
+    var state = {
+      scan: null, filter: "axis", selected: new Set(), outcomes: {},
+      fetchedAt: 0, busy: false, token: "", tokenKey: "", locked: false,
+      turnDone: !bubble || !!bubble._turnDone,
+    };
+    if (bubble) {
+      bubble._widgets = bubble._widgets || [];
+      bubble._widgets.push(w);
+    }
+    w._onTurnDone = function () { state.turnDone = true; refreshControls(); };
+
+    var tbody = w.querySelector("tbody");
+    var addBtn = w.querySelector(".dw-add");
+    var allBox = w.querySelector(".dw-all");
+    var pwBox = w.querySelector(".dw-password");
+    var pwInput = pwBox.querySelector("input");
+
+    function setRow(el, msg) {
+      if (!msg) { el.hidden = true; return; }
+      el.querySelector("span").textContent = msg;
+      el.hidden = false;
+    }
+
+    function ageSeconds() {
+      var p = state.scan && state.scan.add_policy;
+      if (!p) return 0;
+      return p.age_s + Math.round((Date.now() - state.fetchedAt) / 1000);
+    }
+
+    function isStale() {
+      var p = state.scan && state.scan.add_policy;
+      return !!p && ageSeconds() > p.max_age_s;
+    }
+
+    function visibleDevices() {
+      var list = (state.scan && state.scan.devices) || [];
+      if (state.filter === "all") return list;
+      return list.filter(function (d) { return d.is_axis; });
+    }
+
+    function addable(d) { return !d.add_blocker && !!d.device_id; }
+
+    function selectionKey() { return Array.from(state.selected).sort().join(","); }
+
+    function fetchScan() {
+      return fetch("/api/discovery/scans/" + encodeURIComponent(scanId),
+        { headers: { Accept: "application/json" } })
+        .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+        .then(function (resp) {
+          if (!resp.ok) {
+            w.querySelector(".dw-summary").textContent =
+              "This scan is no longer available — ask for a new scan.";
+            state.scan = null;
+            render();
+            return;
+          }
+          state.scan = resp.body;
+          state.fetchedAt = Date.now();
+          // Drop selections that can no longer be added (registered since).
+          state.selected.forEach(function (id) {
+            var d = (state.scan.devices || []).filter(function (x) { return x.device_id === id; })[0];
+            if (!d || !addable(d)) state.selected.delete(id);
+          });
+          if (state.scan.axis_only) state.filter = "all";
+          render();
+        })
+        .catch(function (err) {
+          w.querySelector(".dw-summary").textContent = "Could not load the scan: " + String(err);
+        });
+    }
+
+    function render() {
+      var scan = state.scan;
+      var devices = (scan && scan.devices) || [];
+      var axis = devices.filter(function (d) { return d.is_axis; });
+      w.querySelector(".dw-seg-btn[data-filter='axis'] .n").textContent = String(axis.length);
+      w.querySelector(".dw-seg-btn[data-filter='all'] .n").textContent = String(devices.length);
+      w.querySelectorAll(".dw-seg-btn").forEach(function (b) {
+        b.classList.toggle("active", b.dataset.filter === state.filter);
+        b.disabled = !!(scan && scan.axis_only);
+      });
+      if (scan) {
+        var meta = (scan.subnet || "auto-detected subnet") + " · " + ageText(ageSeconds());
+        w.querySelector(".dw-meta").textContent = meta;
+        var parts = [scan.axis_count + " Axis", scan.new_axis_count + " new"];
+        if (scan.factory_default_count) parts.push(scan.factory_default_count + " factory-defaulted");
+        if (!scan.axis_only && devices.length > axis.length) {
+          parts.push((devices.length - axis.length) + " other");
+        }
+        w.querySelector(".dw-summary").textContent = parts.join(" · ");
+        w.querySelector(".dw-consequence").textContent = scan.add_policy.consequence;
+        pwBox.hidden = !scan.add_policy.needs_password;
+      }
+
+      tbody.textContent = "";
+      var rows = visibleDevices();
+      rows.forEach(function (d) { tbody.appendChild(renderRow(d)); });
+      w.querySelector(".dw-empty").hidden = !scan || rows.length > 0;
+      icons();
+      refreshControls();
+    }
+
+    function ageText(secs) {
+      if (secs < 60) return "just now";
+      var mins = Math.round(secs / 60);
+      return mins < 60 ? mins + " min ago" : Math.round(mins / 60) + " h ago";
+    }
+
+    function renderRow(d) {
+      var tr = document.createElement("tr");
+      if (!addable(d)) tr.className = "dw-off";
+
+      var tdCheck = document.createElement("td");
+      tdCheck.className = "dw-check";
+      if (addable(d)) {
+        var cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = state.selected.has(d.device_id);
+        cb.disabled = state.busy;
+        cb.setAttribute("aria-label", "Select " + (d.device_id || "device"));
+        cb.addEventListener("change", function () {
+          if (cb.checked) state.selected.add(d.device_id);
+          else state.selected.delete(d.device_id);
+          refreshControls();
+        });
+        tdCheck.appendChild(cb);
+      } else {
+        tdCheck.textContent = "—";
+      }
+      tr.appendChild(tdCheck);
+
+      var tdName = document.createElement("td");
+      var name = document.createElement("div");
+      name.className = "dw-name";
+      name.textContent = d.friendly_name || d.model || d.hostname || "Unknown device";
+      tdName.appendChild(name);
+      var sub = [d.hostname, d.is_axis ? "" : d.manufacturer, d.device_type !== "unknown" ? d.device_type : ""]
+        .filter(function (x) { return x && x !== name.textContent; });
+      if (sub.length) {
+        var subEl = document.createElement("div");
+        subEl.className = "dw-sub";
+        subEl.textContent = sub.join(" · ");
+        tdName.appendChild(subEl);
+      }
+      tr.appendChild(tdName);
+
+      [d.device_id || d.mac_address || "—", d.ip_address || "—", d.firmware_version || "—"]
+        .forEach(function (v) {
+          var td = document.createElement("td");
+          td.className = "mono";
+          td.textContent = v;
+          tr.appendChild(td);
+        });
+
+      var cell = document.createElement("td");
+      var tdStatus = document.createElement("div");
+      tdStatus.className = "dw-badges";
+      cell.appendChild(tdStatus);
+      var out = state.outcomes[d.device_id];
+      if (out) {
+        tdStatus.appendChild(outcomeBadge(out));
+      } else if (d.registered_device_id) {
+        var a = document.createElement("a");
+        a.href = "/device/" + encodeURIComponent(d.registered_device_id);
+        a.appendChild(discoveryBadge("green", "REGISTERED"));
+        tdStatus.appendChild(a);
+      }
+      if (d.factory_default) tdStatus.appendChild(discoveryBadge("amber", "FACTORY DEFAULT"));
+      if (d.vapix_available) tdStatus.appendChild(discoveryBadge("blue", "VAPIX"));
+      var why = out ? out.error : (d.registered_device_id ? "" : d.add_blocker);
+      if (why) {
+        var note = document.createElement("div");
+        note.className = "dw-sub";
+        note.textContent = why;
+        tdStatus.appendChild(note);
+      }
+      tr.appendChild(cell);
+      return tr;
+    }
+
+    function outcomeBadge(out) {
+      var ok = ["provisioned", "admz_account_created", "already_credentialed"];
+      if (out.registered && ok.indexOf(out.status) >= 0) return discoveryBadge("green", "ADDED");
+      if (out.registered && out.status === "credentials_needed") return discoveryBadge("amber", "NEEDS CREDENTIALS");
+      if (out.registered) return discoveryBadge("amber", "ADDED · NO CREDENTIALS");
+      if (out.status === "already_registered") return discoveryBadge("grey", "ALREADY REGISTERED");
+      if (out.status === "identity_unconfirmed") return discoveryBadge("red", "SKIPPED");
+      return discoveryBadge("red", "FAILED");
+    }
+
+    function refreshControls() {
+      var scan = state.scan;
+      var policy = scan && scan.add_policy;
+      var addableShown = visibleDevices().filter(addable);
+      var n = state.selected.size;
+      allBox.disabled = state.busy || !addableShown.length;
+      allBox.checked = addableShown.length > 0 &&
+        addableShown.every(function (d) { return state.selected.has(d.device_id); });
+      w.querySelector(".dw-selcount").textContent = n ? n + " selected" : "";
+      w.querySelector(".dw-add .lbl").textContent = n ? "Add " + n + " selected" : "Add selected";
+
+      var hint = "";
+      if (policy && !policy.may_approve) {
+        hint = "You can't add devices: approving requires an approver group" +
+          (policy.not_approver_reason ? " (" + policy.not_approver_reason + ")" : "") + ".";
+      } else if (policy && isStale()) {
+        hint = "This scan is over an hour old — ask for a new scan to add devices.";
+      } else if (policy && n > policy.max_batch) {
+        hint = "At most " + policy.max_batch + " devices can be added at once.";
+      } else if (state.locked) {
+        hint = "Too many wrong passwords — try again in a few minutes.";
+      }
+      setRow(w.querySelector(".dw-hint"), hint);
+      addBtn.disabled = !policy || state.busy || !state.turnDone || !n || !!hint;
+      addBtn.title = state.turnDone ? "" : "Available when the reply finishes";
+    }
+
+    function showError(msg) { setRow(w.querySelector(".dw-error"), msg); }
+
+    function errorText(body, status) {
+      var d = body && body.detail;
+      if (d && typeof d === "object") {
+        var lines = [d.error || "Nothing was added."];
+        (d.rejected || []).forEach(function (r) { lines.push(r.device_id + ": " + r.reason); });
+        return lines.join(" ");
+      }
+      return (typeof d === "string" && d) || (body && (body.error || body.status)) || ("HTTP " + status);
+    }
+
+    function setBusy(busy) {
+      state.busy = busy;
+      w.querySelectorAll("tbody input[type=checkbox]").forEach(function (cb) { cb.disabled = busy; });
+      refreshControls();
+      if (busy) addBtn.querySelector(".lbl").textContent = "Adding…";
+    }
+
+    function createSession(ids) {
+      var key = ids.slice().sort().join(",");
+      if (state.token && state.tokenKey === key) return Promise.resolve(state.token);
+      return fetch("/api/discovery/scans/" + encodeURIComponent(scanId) + "/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ device_ids: ids }),
+      })
+        .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, status: r.status, body: b }; }); })
+        .then(function (resp) {
+          if (!resp.ok || !resp.body || !resp.body.token) {
+            throw new Error(errorText(resp.body, resp.status));
+          }
+          state.token = resp.body.token;
+          state.tokenKey = key;
+          return state.token;
+        });
+    }
+
+    function approve(token) {
+      var params = new URLSearchParams();
+      if (state.scan && state.scan.add_policy.needs_password) {
+        params.set("confirm_password", pwInput.value);
+      }
+      return fetch("/api/chat/confirm/" + encodeURIComponent(token), {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: params.toString(),
+      }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, status: r.status, body: b }; }); });
+    }
+
+    function onApproved(outcome) {
+      state.token = ""; state.tokenKey = "";
+      state.selected.clear();
+      pwInput.value = "";
+      var rows = (outcome && outcome.devices) || [];
+      rows.forEach(function (row) {
+        state.outcomes[row.device_id] = row;
+        var m = /^\/capture\/([A-Za-z0-9_-]{20,})$/.exec(String(row.capture_url || ""));
+        if (m && !seenTokens.has("capture:" + m[1])) {
+          seenTokens.add("capture:" + m[1]);
+          renderCaptureCard(m[1]);
+          addPinnedAction("capture", m[1]);
+        }
+      });
+      var box = w.querySelector(".dw-outcome");
+      box.textContent = "";
+      var row = document.createElement("div");
+      var good = outcome && outcome.success;
+      row.className = "result-row " + (good ? "green" : "amber");
+      row.innerHTML = ico(good ? "check-circle-2" : "alert-triangle") + "<span></span>";
+      row.querySelector("span").textContent = (outcome && (outcome.message || outcome.error)) ||
+        "Approved.";
+      box.appendChild(row);
+      box.hidden = false;
+      icons();
+      return fetchScan();
+    }
+
+    addBtn.addEventListener("click", function () {
+      var ids = Array.from(state.selected);
+      if (!ids.length || state.busy) return;
+      if (state.scan.add_policy.needs_password && !pwInput.value) {
+        showError("Enter the confirmation password.");
+        return;
+      }
+      showError("");
+      setBusy(true);
+      var stopWait = startApprovalWait(w.querySelector(".dw-foot"), "add_discovered_devices");
+      createSession(ids)
+        .then(approve)
+        .then(function (resp) {
+          stopWait();
+          var body = resp.body || {};
+          if (resp.ok && body.status === "completed") {
+            setBusy(false);
+            // The approval POST already wrote the console note, so the
+            // continuation is owed now (#444).
+            return onApproved(body.outcome).then(function () { maybeResumeConversation(); });
+          }
+          if (body.status === "expired_or_not_found") { state.token = ""; state.tokenKey = ""; }
+          if (body.status === "locked") {
+            // The server's per-token lockout lasts five minutes; mirror it so
+            // the button does not invite attempts the gate will refuse.
+            state.locked = true;
+            setTimeout(function () { state.locked = false; refreshControls(); }, 5 * 60 * 1000);
+          }
+          setBusy(false);
+          showError(body.status === "expired_or_not_found"
+            ? "The approval expired before it ran — press Add again."
+            : errorText(body, resp.status));
+        })
+        .catch(function (err) {
+          stopWait();
+          setBusy(false);
+          showError(err && err.message ? err.message : String(err));
+          fetchScan();
+        });
+    });
+
+    allBox.addEventListener("change", function () {
+      visibleDevices().filter(addable).forEach(function (d) {
+        if (allBox.checked) state.selected.add(d.device_id);
+        else state.selected.delete(d.device_id);
+      });
+      render();
+    });
+
+    w.querySelectorAll(".dw-seg-btn").forEach(function (b) {
+      b.addEventListener("click", function () {
+        if (b.disabled) return;
+        state.filter = b.dataset.filter;
+        render();
+      });
+    });
+
+    fetchScan();
+    return w;
+  }
+
   // ──────────────────────────────────────────────────────────────────────────
   // Conversation history drawer (left slide-out pane)
   // ──────────────────────────────────────────────────────────────────────────
@@ -1219,6 +1653,7 @@
             sendBtn.classList.remove("disabled");
             resolveAllPending(assistantBubble);
             removeTyping(assistantBubble);
+            finishTurnWidgets(assistantBubble);
             // The continuation's tools may have resolved a notice.
             loadNotices(true);
           });

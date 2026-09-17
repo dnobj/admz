@@ -187,30 +187,12 @@ async def _run_onboarding(device_id: str, registry: DeviceRegistry, *, adopt: bo
         if result.get("status") == APPROVAL_REQUIRED:
             return result
         if result.get("status") == CREDENTIALS_NEEDED:
-            from admz.api.capture import (
-                KIND_ACCOUNT, KIND_ROOT_ADOPT, capture_store,
-            )
-            from admz.onboarding import REASON_ENTRY_EXHAUSTED
+            from admz.api.capture import open_onboarding_capture
 
-            # FR-CRED-014 / ADR-0068. Only ONE of the reasons for
-            # `credentials_needed` means "ask for the device's root password so
-            # ADMZ can let itself in": the entry list was put to the device and
-            # refused. For an unreachable or never-probed device the root-adopt
-            # submit would fail at its TCP preflight *after* the operator had
-            # typed a password, so those keep the ordinary capture form.
-            #
-            # Keyed on `reason_code`, never on the prose `reason` — that string
-            # is operator copy and will be reworded.
-            exhausted = result.get("reason_code") == REASON_ENTRY_EXHAUSTED
-            session = capture_store.create_session(
-                device_id=device_id,
-                kind=KIND_ROOT_ADOPT if exhausted else KIND_ACCOUNT,
-                purpose=(
-                    "Let ADMZ in — every stored credential was refused"
-                    if exhausted else
-                    "Device onboarding — automatic resolution failed"
-                ),
-            )
+            # Which form (account or root-adopt) is chosen by `reason_code`,
+            # in one place shared with the discovery widget's add (ADR-0072).
+            session = open_onboarding_capture(
+                device_id, result.get("reason_code") or "")
             result["capture_url"] = f"/capture/{session.token}"
             result["capture_kind"] = session.kind
         return result
