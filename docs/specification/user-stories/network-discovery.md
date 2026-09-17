@@ -37,8 +37,8 @@ Finding Axis devices on the local network without manually typing IPs or serials
 **Acceptance criteria:**
 1. Discovery returns factory-default devices (HTTP probe sees the `Axis-Setup: vapix` header / 401-with-Negotiate).
 2. The operator calls `register_discovered_device(device_id, ip_address, ...)` for each one to be managed — typically using MAC as device_id.
-3. `provision_device(device_id, password=...)` then probes auth state and either creates the admin user (factory-default) or stores the existing credentials.
-4. The flow surfaces the per-device outcome (`status: provisioned | already_authenticated | unreachable | auth_failed`) so the operator can spot devices needing manual attention.
+3. Registration then runs onboarding, and `provision_device(device_id)` runs the same resolution. A factory-default device gets `root` set to the operator-known fleet root password, then ADMZ's own `admz` account with a generated password, and only `admz` is stored (FR-CRED-014, ADR-0068). A device already set up gets an `admz` account if the fleet root password or an entry credential logs in. The credential ADMZ came in on is never stored for the device.
+4. The flow surfaces the per-device outcome (for example `status: provisioned | already_credentialed | admz_account_created | approval_required | credentials_needed | root_password_not_configured | admz_account_failed`, or `unreachable` for a host-only `provision_device`) so the operator can spot devices needing manual attention.
 
 **Related requirements:** [discovery](../requirements/discovery.md), [credential-storage](../requirements/credential-storage.md).
 

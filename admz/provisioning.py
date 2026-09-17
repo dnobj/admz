@@ -6,10 +6,14 @@ Extracted from the MCP server so the API-process health loop can run the same
 credential-creation logic the MCP tool uses (the MCP server runs as a separate
 subprocess).
 
-SECURITY: this creates an admin account on a device and stores the password in
-the registry. The password is NEVER returned, logged, or exposed; ADMZ uses it
-only to reach the device. The caller is responsible for authorization (the MCP
-tool gates; the recovery handler runs only pre-approved deferred actions).
+SECURITY: on a factory-defaulted device this writes **two** admin accounts —
+``root`` with the operator-known fleet root password, then ADMZ's own ``admz``
+account with a generated one — and stores only the ``admz`` password in the
+registry; a root credential is never stored per device (FR-CRED-014,
+ADR-0068). No password is ever returned, logged, or exposed; ADMZ uses the
+stored one only to reach the device. The caller is responsible for
+authorization (onboarding gates at the decision point, ADR-0059; the
+unattended recovery handler is refused outright).
 """
 
 from __future__ import annotations
@@ -180,8 +184,10 @@ async def adopt_with_admz_account(
         auth=(device_info or {}).get("auth"),
     )
     if not ok:
-        # The entry credential still works even though this did not, so the
-        # caller can fall back to storing it rather than losing the device.
+        # The entry credential still works even though this did not, but the
+        # caller must NOT fall back to storing it: ADR-0068 retired that
+        # fallback. Nothing is stored, and the credential that got ADMZ in
+        # stays the way back.
         return {"success": False, "status": "admz_account_failed",
                 "device_id": device_id, "error": error}
 

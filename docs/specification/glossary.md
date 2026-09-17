@@ -100,7 +100,7 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **Fleet** — The collection of devices known to one ADMZ instance.
 
-**Fleet capture session** — A capture session for setting a fleet-wide value (not a per-device credential), e.g. the default password used during provisioning.
+**Fleet capture session** — A capture session for setting a fleet-wide value (not a per-device credential), e.g. the fleet `default_password` — an entry credential onboarding tries on devices set up elsewhere, never written to a device.
 
 **Fleet settings** — Key-value pairs in SQLite that govern fleet-wide behavior: default passwords, confirmation levels, the `get_credentials` toggle.
 
@@ -188,7 +188,7 @@ Terms, abbreviations, and concepts used throughout the ADMZ specification and co
 
 **Protected settings keys** — Fleet-setting keys the MCP server refuses to write (e.g. `confirm_level_*`, `confirm_password_hash`, `confirm_approver_groups`). Since ADR-0053, protection is deny-by-default: every key outside the LLM-writable allow-set (the fleet credential pair) is protected. Only the web UI may change them.
 
-**Provision** — Bring a new device under management: probe credentials, create or rotate admin user, store creds in registry.
+**Provision** — Bring a factory-defaulted device under management: set `root` to the operator-known fleet root password, create ADMZ's own `admz` account with a generated password, and store only `admz` in the registry — never a root credential (FR-CRED-014, ADR-0068).
 
 ## R
 

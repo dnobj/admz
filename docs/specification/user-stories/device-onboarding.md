@@ -60,13 +60,14 @@ How devices get added to ADMZ. Three paths exist — manual, discovery-driven, a
 **As an** operator looking at a brand-new camera, **I want** ADMZ to set up the admin user automatically **so that** I don't have to use the device's first-boot web page.
 
 **Acceptance criteria:**
-1. The LLM (or REST caller) invokes `provision_device(host=…, username="root", password=…)`.
-2. ADMZ probes the device:
-   - **Factory default** → calls `pwdgrp.cgi:add-user` to create the admin user; stores credentials in the registry.
-   - **Legacy default `root/pass`** → stores credentials; if `force_change=True`, rotates the password.
-   - **Authenticated already** → stores the supplied credentials if they work.
-   - **Unreachable** → returns a structured error with `host` and `detail`.
-3. Generated passwords default to 24 chars (mixed case + digit) and are **never returned in the tool response** — nor retrievable afterwards (`get_credentials` was removed, CR-1). ADMZ uses the stored credential internally; for ad-hoc device access, mint a short-lived account via `create_temp_credentials`.
+1. The LLM invokes `provision_device(host=…)` or `provision_device(device_id=…)`; a REST caller uses `POST /api/devices/{id}/onboard`. Both run the same onboarding resolution. `username`, `password` and `force_change` are retired and refused (ADR-0068 S2).
+2. ADMZ resolves the device's credential:
+   - **Stored credential works** → nothing is written (`already_credentialed`).
+   - **Factory default** (`needsetup=yes`) → after one approval, calls `pwdgrp.cgi:add-user` twice: `root` with the operator-set fleet root password (`fleet_root_password`), then ADMZ's own `admz` account with a generated password. Only `admz` is stored in the registry; a root credential is never stored per device (FR-CRED-014, ADR-0068). With no fleet root password set, it refuses (`root_password_not_configured`) and writes nothing.
+   - **Already set up, and the fleet root password or an entry credential logs in** → after one approval, creates ADMZ's own `admz` account and stores only that (`admz_account_created`); the credential it came in on is never stored for the device.
+   - **Nothing logs in** → `credentials_needed`, with a capture session for the operator.
+   - **Unreachable** → a host-only call returns a structured error with `host` and `detail`; for a registered device, onboarding reports `credentials_needed` with `reason_code: unreachable`.
+3. The generated `admz` password is 24 chars (mixed case + digit) and is **never returned in the tool response** — nor retrievable afterwards (`get_credentials` was removed, CR-1). ADMZ uses the stored credential internally; for ad-hoc device access, mint a short-lived account via `create_temp_credentials`.
 4. Per-protocol auth (`http`: digest, `https`: basic, etc.) is auto-detected via `WWW-Authenticate` and stored on the device profile so the executor uses the right scheme.
 
 **Related requirements:** [mcp-server](../requirements/mcp-server.md), [credential-storage](../requirements/credential-storage.md), [discovery](../requirements/discovery.md).
@@ -81,7 +82,7 @@ How devices get added to ADMZ. Three paths exist — manual, discovery-driven, a
 1. `discover_network_devices(subnet="10.0.0.0/16")` enumerates devices on the larger network.
 2. For each discovered device, `register_discovered_device` adds it to the registry.
 3. For each registered factory-default device, `provision_device` is called.
-4. A fleet credential set via `set_fleet_setting("default_password", …)` is tried as an entry credential on devices set up elsewhere; a factory-default device is provisioned with a **generated** per-device password whether or not one is set (FR-CRED-007, ADR-0064 slice E).
+4. A fleet credential set via `set_fleet_setting("default_password", …)` is tried as an entry credential on devices set up elsewhere, and is never written to a device (FR-CRED-007). A factory-default device instead gets `root` from the separate fleet root password (`fleet_root_password`, set by an operator and never from chat), then ADMZ's own `admz` account with a **generated** password; only `admz` is stored (FR-CRED-014, ADR-0068). With no fleet root password set, ADMZ refuses to provision the device.
 5. The fleet-default password is **set via the OOB `/capture/fleet/{token}` flow** — never typed into the LLM chat.
 
 **Related requirements:** [discovery](../requirements/discovery.md), [mcp-server](../requirements/mcp-server.md), [performance](../requirements/performance.md).

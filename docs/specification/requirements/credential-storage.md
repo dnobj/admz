@@ -62,17 +62,33 @@ uses the right scheme per request. See
 [ADR-0007](../decisions/0007-per-protocol-auth.md).
 
 ### FR-CRED-007 — Auto-provisioning ✅
-`provision_device(host_or_device_id, password=...)`:
-- Detects factory-default state → calls `pwdgrp.cgi:add-user` to
-  create admin user, stores creds.
-- Detects legacy default `root/pass` → stores creds (or rotates
-  if `force_change=true`).
-- Returns structured outcome; generated passwords are never echoed
-  in the response.
+Provisioning a factory-defaulted device (`needsetup=yes`) writes **two**
+accounts and stores **one** (FR-CRED-014,
+[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md),
+shipped 2026-09-14):
+- `pwdgrp.cgi:add-user` creates `root` with the operator-known fleet root
+  password (`fleet_root_password`), then ADMZ's own `admz` account with a
+  24-char password generated per device.
+- Only `admz` is stored. A root credential is never stored per device, so the
+  generated password is never the device's only credential.
+- With no fleet root password set, provisioning refuses
+  (`root_password_not_configured`) and writes nothing. The unattended
+  `reprovision` handler always refuses (`unattended_not_permitted`).
+- Returns a structured outcome; no password is ever echoed in the response.
 
-Password source: explicit arg > 24-char generated, per device. The fleet
-`default_password` is **never written to a device**: it is an entry credential
-(FR-CRED-011) — an input for authentication on a device set up elsewhere.
+`provision_device(device_id | host)` runs the same onboarding resolution as
+`onboard_device`; its `username`, `password` and `force_change` arguments are
+retired and refused (ADR-0068 S2). The fleet `default_password` is **never
+written to a device**: it is an entry credential (FR-CRED-011) — an input for
+authentication on a device set up elsewhere. (`provision_factory_default`
+still accepts an explicit `password=` for `root`, reported as
+`root_password_source: "provided"`; no caller passes one.)
+
+The first block below is history: before ADR-0068 the password source was
+*explicit arg > 24-char generated*, per device — the ordering it describes. The
+ADR-0068 block after it records why that changed. _(Corrected 2026-09-16: until
+then this body still described that behaviour — a generated `root` password,
+stored per device — two days after ADR-0068 shipped.)_
 
 > **This ordering was changed by [ADR-0061](../decisions/0061-entry-credentials-and-the-admz-account.md)**
 > and shipped by **ADR-0064 slice E ✅ (2026-09-06)**. Until then it was
@@ -205,7 +221,7 @@ onto the `admz` account in place, keeping the credential it came in on.
 [ADR-0064](../decisions/0064-a-device-admz-cannot-authenticate-to-is-never-online.md)
 as slices C–F together with #443: the per-pass attempt bound (FR-CRED-013,
 slice C — shipped 2026-09-06), the promote checkbox (FR-CRED-012, slice D — shipped 2026-09-06),
-FR-CRED-007's generated-wins ordering (slice E — shipped 2026-09-06), and most-recently-successful
+FR-CRED-007's generated-wins ordering (slice E — shipped 2026-09-06; reversed for `root` by ADR-0068 on 2026-09-14), and most-recently-successful
 ordering (FR-CRED-013, slice F — not yet built; the lockout measurement that gated it was made on 2026-09-09). Two facts to hold while reading the
 rest: the list has three writers — `python -m admz settings set entry_credentials`,
 the capture form's promote checkbox (since slice D), and the Fleet Settings page,
@@ -350,14 +366,20 @@ than used — so turning it on stops ADMZ using a credential immediately, with
 nothing to delete first. Nothing is deleted on the operator's behalf, so turning
 it off restores what was there.
 
-It costs less than it appears. Nothing requires a stored fleet password: since
-ADR-0064 slice E `provision_factory_default` never writes one (the generated
-password wins, FR-CRED-007), as the deferred reprovision path has since #185.
-The only thing the posture gives up
-is that adopting an **already-set-up** device always asks a human — which is
-precisely what it is choosing.
+It costs less than it appears, though not nothing. No stored *entry* credential
+is required: `provision_factory_default` never writes the fleet
+`default_password` (FR-CRED-007, since ADR-0064 slice E), and the deferred
+reprovision path has not written it since #185. For entry credentials, the
+posture gives up only that adopting an **already-set-up** device always asks a
+human — which is precisely what it is choosing. What it cannot remove is the
+fleet root password: provisioning a **factory-defaulted** device writes
+`fleet_root_password` to `root` and refuses without it (FR-CRED-014,
+ADR-0068), and neither this posture nor the entry list's storage cap governs
+that setting. _(Corrected 2026-09-16: this paragraph said nothing requires a
+stored fleet password because the generated password won — true under slice E,
+false since ADR-0068 S1.)_
 
-**[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) adds one attempt and falsifies the paragraph above (✅ shipped
+**[ADR-0068](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) adds one attempt (✅ shipped
 2026-09-14, ADR-0068 S1).** After ADMZ sets `root` from the break-glass password, a pass that
 fails partway leaves a device whose root password ADMZ *holds* but
 `attempt_order()` does not know — so a retry would fail even though a working

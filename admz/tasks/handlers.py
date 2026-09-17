@@ -364,10 +364,10 @@ async def _run_acs_action(task: Task, ctx: TaskContext) -> Dict[str, Any]:
 
 @register_task_handler("reprovision")
 async def _run_reprovision(task: Task, ctx: TaskContext) -> Dict[str, Any]:
-    """Re-provision a factory-defaulted device — create the admin account with
-    a freshly generated, per-call password (never logged/returned). Moved from
-    recovery_actions.py; now reads deps from ``ctx`` instead of a startup
-    closure.
+    """Deferred re-provision of a factory-defaulted device — ADR-0037's
+    ``reprovision`` detection task, which since ADR-0068 is refused rather than
+    performed (below). Moved from recovery_actions.py; now reads deps from
+    ``ctx`` instead of a startup closure.
 
     ``attended=False`` (ADR-0068) — **this handler no longer provisions.** It
     reports a refusal instead, and that is the point rather than a regression.
