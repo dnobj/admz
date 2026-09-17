@@ -67,7 +67,9 @@ devices first).
 ### FR-DISC-008 — Discovered devices are not auto-registered ✅
 `discover_network_devices` returns the list. Operators (or LLM agents)
 explicitly call `register_discovered_device(device_id, ip_address, ...)`
-for each one to be managed.
+for each one to be managed. In the console, the operator can instead
+select devices in the discovery widget and add them together
+(FR-DISC-011). A scan never registers anything by itself.
 
 ### FR-DISC-009 — MAC-based IP reconciliation ✅
 `reconcile_device_addresses` (MCP) runs a discovery scan and updates any
@@ -79,6 +81,47 @@ which returns the list of `{device_id, old_host, new_ip}` changes. This is the
 discovery-side fix for the "device moved IP → ADMZ says unreachable" failure
 (the real-world I8016: `.207` → `.208`). Devices discovery didn't see are left
 untouched; nothing is auto-registered.
+
+### FR-DISC-010 — A scan is kept server-side and says what is already registered 📋
+`discover_network_devices` saves each scan (principal, subnet, `axis_only`, every device
+with its registry fields) to `discovery_scans` and keeps it for 24 hours. The result
+gains `scan_id`, `scan_url`, `axis_count`, `new_axis_count`, `factory_default_count`,
+and per device `registered_device_id`, matched by canonical MAC, the same rule the deep
+survey uses. `GET /api/discovery/scans/{scan_id}` returns a scan only to the principal
+that ran it, and computes registration state when it is read, so a device added after the
+scan shows as registered. A scan run under the `mcp-standalone` principal is not saved.
+A scan is a record of one run, not an accumulating cache (KL-DISC-002 stands). See
+[ADR-0072](../decisions/0072-discovered-devices-are-added-from-the-chat-in-one-click.md).
+
+### FR-DISC-011 — Selected discovered devices are added under one approval 📋
+`POST /api/discovery/scans/{scan_id}/add` takes the selected device ids and opens **one**
+`add_discovered_devices` action session. The request is refused before any side effect when
+it is cross-origin, and refused outright when the scan belongs to another principal or is
+more than 60 minutes old.
+
+- **Validation is all-or-nothing.** Every id must be an Axis device in the scan, with an
+  IP and an identity (canonical MAC, or a 12-hex serial), and not registered. Duplicates
+  collapse, and a batch holds at most 20 devices. One bad id rejects the request and
+  creates nothing.
+- **The session comes from the scan row, not the request body.** It is created through
+  `gate_scan_write`, so its level is the operator-configurable provisioning level. Its
+  sentence names every device by id and IP and states the account writes.
+- **Approval is the existing `POST /api/chat/confirm/{token}`.**
+
+On approval, each device is handled in turn:
+
+1. **Identity is checked first.** `basicdeviceinfo.cgi:getAllUnrestrictedProperties` is
+   read without authentication at the scanned host, and its `SerialNumber` is compared
+   with the device id. A mismatch or no answer skips that device and writes nothing to it.
+2. **Registration.** The device is registered unless something registered it since the scan.
+3. **Onboarding runs under the one approval,** at most four devices at a time. The action
+   is in both provisioning-authority lists, so no nested per-device card is raised. A
+   device left needing credentials gets a capture session.
+
+**Success means every listed device was registered and ended with working credentials.**
+Otherwise the result names each device and what it lacks. The `confirm.approve` row
+carries `added_devices`, `provisioned_devices` and `failed_devices`. See
+[ADR-0072](../decisions/0072-discovered-devices-are-added-from-the-chat-in-one-click.md).
 
 ## Non-functional requirements
 
@@ -121,7 +164,7 @@ to the orchestrator. Operators add such devices manually.
 
 ## References
 
-- ADRs: [0016](../decisions/0016-merge-discovery-by-mac.md), [0017](../decisions/0017-two-phase-discovery.md), [0007](../decisions/0007-per-protocol-auth.md)
+- ADRs: [0016](../decisions/0016-merge-discovery-by-mac.md), [0017](../decisions/0017-two-phase-discovery.md), [0007](../decisions/0007-per-protocol-auth.md), [0072](../decisions/0072-discovered-devices-are-added-from-the-chat-in-one-click.md)
 - Cross-cutting: [reliability.md](reliability.md), [performance.md](performance.md)
 - Design notes: [NETWORK_DISCOVERY_RESEARCH.md](../../NETWORK_DISCOVERY_RESEARCH.md)
 - Code: `admz/discovery/`
