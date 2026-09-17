@@ -1,6 +1,6 @@
 # ADR-0072 — Discovered devices are added from the chat in one click
 
-**Status:** Accepted — 2026-09-16 · **Shipped:** not yet (plan PR; the code follows in one implementation PR)
+**Status:** Accepted — 2026-09-16 · **Shipped:** 2026-09-16 (#512 plan, #514 code — see [As built](#as-built))
 **Relates to:** [ADR-0059](0059-gate-provisioning-at-the-decision-point.md) (account creation is gated where it is decided; this keeps that gate and changes how many devices one approval covers) · [ADR-0069](0069-removing-several-devices-takes-one-approval.md) (one approval for a batch, for removal) · [ADR-0034](0034-uniform-widget-gating.md) (every destructive action goes through the approval widget) · [ADR-0066](0066-an-out-of-band-resolution-resumes-the-promised-turn.md) (the continuation that answers a `[console]` note) · [ADR-0016](0016-merge-discovery-by-mac.md) (a device is its MAC) · #404 (discovery reports; adding a new device is a manual, batched click)
 
 _Plan-first per `process.md`: this document merges before any code. File:line references are against master `eaeec9d`._
@@ -219,3 +219,27 @@ One implementation PR, after this merges:
 - A scan turn is cheaper: the model summarises instead of re-typing the table, and the widget shows every device, past the 50-item display cap.
 - The console gains its first data widget. It is built only from a structured tool result, as the approval and capture cards are.
 - The provisioning-authority list grows by one entry. The two lists that grant that authority are now held equal by a test.
+
+## As built
+
+Shipped as decided, in #514 after #512. Where the code settled a detail this document left open:
+
+- **Where things live.**
+  - `admz/discovery/scan_store.py` (`discovery_scans`, store #22).
+  - `admz/discovery/candidates.py`: identity, registration index, add blockers, counts and the batch, age and concurrency constants.
+  - `admz/discovery/identity.py`: the unauthenticated serial read.
+  - `admz/discovery/gated.py`: `add_reason` / `add_consequence`, plus the survey wording moved into a shared constant; the survey card reads exactly as before.
+- **One consequence sentence.** The widget shows `add_consequence()` above the button before anything is ticked, and the session's `danger_description` is the device list followed by that same sentence.
+- **One approver decision.** `confirm.approval_decision` is what `_approve_session` enforces and what the scan GET reports as `may_approve`.
+- **One capture-form choice.** `api/capture.open_onboarding_capture` picks the account or root-adopt form by `reason_code`. The REST add/onboard routes and the executor both use it, so the REST behaviour is unchanged.
+- **Only console turns get the prompt section.** `_run_chat_turn(console=…)` renders the section for `/chat/stream` and the continuation, and passes `False` for the JSON `/api/chat`. The no-JS form and voice never render it.
+- **When Add is enabled.** Add enables when the turn's response *closes*, not at its `done` event. The server binds the scan after `done` is written.
+- **Retries and lockout — enforced on the server.** The scan row remembers the pending session opened for a selection, and the add route hands that same session back while it is pending. So re-clicking Add, or re-posting the add, cannot reset the per-token password lockout. A different selection opens a new session, and the superseded one is unlinked from the conversation (no re-pinned card, no note) and left to expire. Across different selections the per-address `confirm` rate limit remains the bound, as it is for every other session-creating route. A `locked` answer disables Add for the lockout's five minutes.
+- **The console note names every device.** The executor returns a `console_summary` that groups every device by outcome in fixed wording, with device ids only. `_note_resolution_to_chat` uses it in place of the 200-character error, so the model sees every outcome and never a device's own text. It still reaches no audit row.
+- **Captures the add opens are linked** to the scan's conversation, so submitting the form writes its note and a reload re-pins the card.
+- **A 410 is checked before it is reported.** The widget asks `/api/confirm/{token}/status`, so a session that already ran (a lost response, or approval from a re-pinned card) reads as done, not "expired".
+- **A raised level is picked up.** If the add answers `url_and_password` while the widget showed no password field, or the approval answers `wrong_password`, the widget refreshes its policy.
+- **Voice is not told about the table.** The tool description names only the new fields; how the console shows `scan_url` lives in the console-only prompt section.
+- **Audit.** Creating the session writes a `discovery.add_requested` row (count and device ids), beside the `confirm.approve` row the approval writes.
+- **Untrusted text in the executor's reasons.** A device's reported serial is quoted only when it has a serial's shape. Onboarding error text is flattened and bounded before it reaches the console note.
+- **Not yet verified against live devices.** The identity check assumes configured devices still report `SerialNumber` without credentials (the catalog says they return "a subset" of the unrestricted properties). If one does not, it is skipped with "could not confirm", which is the fail-closed direction; the owner's lab check decides whether that needs revisiting.

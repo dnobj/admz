@@ -1,6 +1,7 @@
 """REST routes for network discovery."""
 
-from typing import List, Optional
+import logging
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -8,6 +9,8 @@ from pydantic import BaseModel, Field
 from admz.api.context import AppContext, get_context
 from admz.discovery import discover_devices as run_network_discovery
 from admz.validators import validate_scan_subnet
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -122,4 +125,209 @@ async def register_discovered(
             "to set credentials."
         ),
         "device_id": req.device_id,
+    }
+
+
+# ── The console's discovery widget (ADR-0072) ────────────────────────────
+
+
+class AddDiscoveredRequest(BaseModel):
+    device_ids: List[str] = Field(default_factory=list)
+
+
+def _owned_scan(scan_id: str, principal: Any):
+    """The scan, only for the principal that ran it. Another principal's scan
+    and an unknown one look the same: 404."""
+    from admz.discovery.scan_store import discovery_scans
+
+    scan = discovery_scans.get_scan(scan_id)
+    if scan is None or scan.principal != getattr(principal, "name", None):
+        raise HTTPException(status_code=404, detail="scan not found")
+    return scan
+
+
+def _add_policy(principal: Any, scan: Any) -> dict:
+    """What the widget needs to know before the operator clicks Add.
+
+    The level is the one ``gate_scan_write`` will resolve, and ``may_approve``
+    is the decision the approval gate will make — both read from the same
+    functions, so the widget cannot promise what the gate then refuses.
+    """
+    from admz import operations
+    from admz.api.routes.confirm import approval_decision
+    from admz.discovery.candidates import MAX_ADD_BATCH, MAX_SCAN_AGE_SECONDS
+    from admz.discovery.gated import add_consequence
+    from admz.fleet_settings import fleet_settings
+
+    level = operations.resolve_confirmation("service-affecting")
+    # Same fallback as the approval card: with no confirmation password set,
+    # a url_and_password session is approved without one.
+    needs_password = (level == "url_and_password"
+                      and bool(fleet_settings.get("confirm_password_hash")))
+    may_approve, reason = approval_decision(principal)
+    age = scan.age_seconds()
+    return {
+        "confirmation_level": level,
+        "needs_password": needs_password,
+        "may_approve": may_approve,
+        "not_approver_reason": "" if may_approve else reason,
+        "consequence": add_consequence(),
+        "age_s": int(age),
+        "max_age_s": MAX_SCAN_AGE_SECONDS,
+        "stale": age > MAX_SCAN_AGE_SECONDS,
+        "max_batch": MAX_ADD_BATCH,
+    }
+
+
+@router.get("/discovery/scans/{scan_id}")
+async def get_discovery_scan(
+    request: Request,
+    scan_id: str,
+    ctx: AppContext = Depends(get_context),
+):
+    """A recorded scan with live registration state (FR-DISC-010)."""
+    from admz.auth import get_current_principal
+    from admz.discovery import candidates
+
+    principal = await get_current_principal(request)
+    scan = _owned_scan(scan_id, principal)
+    views = candidates.annotate(
+        scan.devices, candidates.registered_index(ctx.registry))
+    return {
+        "scan_id": scan.scan_id,
+        "subnet": scan.subnet,
+        "axis_only": scan.axis_only,
+        "created_at": scan.created_at,
+        "count": len(views),
+        **candidates.summary_counts(views),
+        "devices": views,
+        "add_policy": _add_policy(principal, scan),
+    }
+
+
+@router.post("/discovery/scans/{scan_id}/add")
+async def add_discovered_devices(
+    request: Request,
+    scan_id: str,
+    req: AddDiscoveredRequest,
+    ctx: AppContext = Depends(get_context),
+):
+    """Open ONE approval for the selected devices (FR-DISC-011).
+
+    Never approves: the widget sends the returned token straight to
+    ``POST /api/chat/confirm/{token}``, so the approver check, the password,
+    the per-token lockout, the audit row and the console note are the
+    approval gate's own. A retry reuses this token.
+    """
+    from admz.audit import record_event
+    from admz.auth import get_current_principal
+    from admz.csrf import check_same_origin
+    from admz.discovery import candidates
+    from admz.discovery.gated import (
+        ACTION_ADD_DISCOVERED, add_reason, gate_scan_write,
+    )
+
+    # CSRF first, before any side effect: the scan id has been in the model's
+    # context and the event stream, so it is not a secret.
+    check_same_origin(request)
+    principal = await get_current_principal(request)
+    scan = _owned_scan(scan_id, principal)
+
+    if scan.age_seconds() > candidates.MAX_SCAN_AGE_SECONDS:
+        raise HTTPException(status_code=409, detail=(
+            "This scan is more than an hour old — addresses may have changed. "
+            "Ask for a new scan and add from that one."))
+
+    ids: List[str] = []
+    for raw in req.device_ids:
+        device_id = candidates.device_identity(raw)
+        if not device_id:
+            raise HTTPException(status_code=400, detail=(
+                "Every selected id must be a device id from this scan."))
+        if device_id not in ids:
+            ids.append(device_id)
+    if not ids:
+        raise HTTPException(status_code=400, detail="Select at least one device.")
+    if len(ids) > candidates.MAX_ADD_BATCH:
+        raise HTTPException(status_code=400, detail=(
+            f"At most {candidates.MAX_ADD_BATCH} devices can be added at once."))
+
+    # All-or-nothing, as for a batch removal (ADR-0069): one device that
+    # cannot be added rejects the request and nothing is created.
+    index = candidates.registered_index(ctx.registry)
+    rejected = []
+    devices = []
+    for device_id in ids:
+        record = candidates.find_record(scan.devices, device_id)
+        if record is None:
+            rejected.append({"device_id": device_id, "reason": "not in this scan"})
+            continue
+        blocker = candidates.add_blocker(record, index.get(device_id, ""))
+        if blocker:
+            rejected.append({"device_id": device_id, "reason": blocker})
+            continue
+        # From the scan row, never from the request body.
+        info = dict(record.get("registry_info") or {})
+        devices.append({
+            "device_id": device_id,
+            "host": info.get("host") or record.get("ip_address") or "",
+            "model": record.get("model") or "",
+            "registry_info": info,
+        })
+    if rejected:
+        raise HTTPException(status_code=400, detail={
+            "error": "Nothing was added: some selected devices cannot be added.",
+            "rejected": rejected,
+        })
+
+    from admz.api.confirm_store import ConfirmStatus, confirm_store
+    from admz.discovery.scan_store import discovery_scans
+
+    # The same selection again reuses its pending session: the password
+    # lockout counts failures per token, so a fresh token per attempt would
+    # reset it.
+    add_key = ",".join(sorted(ids))
+    if scan.add_token and scan.add_key == add_key:
+        pending = confirm_store.get_session(scan.add_token)
+        if pending is not None and pending.effective_status == ConfirmStatus.PENDING:
+            return _pending_response(pending)
+
+    target = ids[0] if len(ids) == 1 else "multiple"
+    env = gate_scan_write(
+        ACTION_ADD_DISCOVERED, target,
+        {"device_ids": ids, "scan_id": scan.scan_id, "devices": devices},
+        add_reason(devices),
+    )
+    token = env["confirm_token"]
+    discovery_scans.remember_add(scan.scan_id, principal.name, add_key, token)
+    try:
+        from admz.chatbot.sessions import chat_sessions
+
+        if scan.add_token and scan.add_token != token:
+            # A new selection supersedes the old session. Unlinked, it stays
+            # out of the conversation — no re-pinned card after a reload, no
+            # note — and expires on its own; the widget never showed its URL.
+            chat_sessions.pop_action_link(scan.add_token)
+        if scan.conversation_id:
+            # So the approval writes its [console] note into the conversation
+            # the scan came from, and a reload re-pins a still-pending card.
+            chat_sessions.link_action(
+                token, principal.name, scan.conversation_id, "confirm",
+                label=ACTION_ADD_DISCOVERED)
+    except Exception:  # noqa: BLE001 — a missing note never blocks an add
+        logger.warning("could not link the add approval to its conversation",
+                       exc_info=True)
+    record_event(principal, "discovery.add_requested",
+                 resource=f"discovery_scan:{scan.scan_id[:8]}",
+                 details={"count": len(ids), "device_ids": ",".join(ids)})
+    return _pending_response(confirm_store.get_session(token))
+
+
+def _pending_response(session: Any) -> dict:
+    return {
+        "status": "pending",
+        "token": session.token,
+        "confirm_url": f"/confirm/{session.token}",
+        "confirmation_level": session.confirmation_level,
+        "danger_description": session.danger_description,
     }

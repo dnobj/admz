@@ -65,7 +65,7 @@ Finding Axis devices on the local network without manually typing IPs or serials
 2. Non-Axis devices are still returned with whatever metadata each protocol surfaced.
 3. The `is_axis` field distinguishes them; `discovered_by` reveals which protocols picked them up.
 
-## US-ND-006 — Pick discovered devices in the chat and add them in one click 📋
+## US-ND-006 — Pick discovered devices in the chat and add them in one click ✅
 
 **As an** operator in the console, **I want to** see a scan's results as a table I can tick, and add the new cameras with one click, so that I neither re-read a markdown table nor approve one card per device.
 

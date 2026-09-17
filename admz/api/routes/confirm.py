@@ -14,7 +14,7 @@ from fastapi import APIRouter, Request, Form, HTTPException, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +186,31 @@ def _approved_work_fields(session) -> Dict[str, Any]:
 _SECRET_FIELD_PREFIX = "secret__"
 
 
+#: The decision recorded when there is no identity to evaluate (see below).
+ANONYMOUS_NO_IDENTITY = "anonymous-no-identity"
+
+
+def approval_decision(principal) -> Tuple[bool, str]:
+    """Whether ``principal`` may approve a held action, and why (#178).
+
+    The one place this is decided, so a surface that asks in advance — the
+    discovery widget greys its Add button on it (ADR-0072) — cannot disagree
+    with the gate that later enforces it.
+
+    ANONYMOUS is handled here rather than inside the predicate — the same
+    split ``principal_can_reveal`` documents. Under ``ADMZ_AUTH_BACKEND=none``
+    there is no identity at all, so group membership is not absent but
+    *undefined*; refusing would make a fresh install unable to approve
+    anything. So it is allowed, and the reason says so on every audit row.
+    """
+    from admz.authz import principal_can_approve
+
+    may_approve, reason = principal_can_approve(principal)
+    if not may_approve and reason == "anonymous":
+        return True, ANONYMOUS_NO_IDENTITY
+    return may_approve, reason
+
+
 async def _approve_session(
     request: Request,
     token: str,
@@ -260,15 +285,14 @@ async def _approve_session(
     # hold under windows-local". So: allow, but never silently. Unlike the
     # password fail-open #178 was filed for, which left no trace whatsoever,
     # this records the decision on every approval and warns in the log.
-    from admz.authz import principal_can_approve, approver_groups
-    may_approve, authz_reason = principal_can_approve(principal)
-    if not may_approve and authz_reason == "anonymous":
+    from admz.authz import approver_groups
+    may_approve, authz_reason = approval_decision(principal)
+    if authz_reason == ANONYMOUS_NO_IDENTITY:
         logger.warning(
             "Approving with NO identity: ADMZ_AUTH_BACKEND has no authentication "
             "backend, so the approver group (%s) cannot be evaluated. Possession "
             "of the token is sufficient on this install.",
             ", ".join(approver_groups()))
-        may_approve, authz_reason = True, "anonymous-no-identity"
     if not may_approve:
         record_event(
             principal, "confirm.denied_unauthorized",
@@ -424,13 +448,19 @@ def _note_resolution_to_chat(
             if confirmed_by == "chat" else "the confirmation web page"
         )
         target = _note_target(session)
+        # A batch executor may name every item's outcome in its own words
+        # (ADR-0072); the model needs all of it, where a truncated error would
+        # carry only the first failure — and could quote a device.
+        summary = outcome.get("console_summary")
+        summary = str(summary)[:1200] if isinstance(summary, str) and summary else ""
         if outcome.get("success"):
             text = (
                 f"[console] The user approved \"{what}\" {target} "
                 f"via {surface}; it executed successfully."
+                + (f" {summary}." if summary else "")
             )
         else:
-            err = str(outcome.get("error") or "unknown error")[:200]
+            err = summary or str(outcome.get("error") or "unknown error")[:200]
             text = (
                 f"[console] The user approved \"{what}\" {target} "
                 f"via {surface}, but execution FAILED: {err}"

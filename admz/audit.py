@@ -340,6 +340,12 @@ audit_log = AuditLog()
 #: ``removed_devices`` / ``failed_devices`` (ADR-0069) are the device ids a batch
 #: removal did and did not remove, each list one comma-separated string because
 #: only scalars are recorded. Device ids are short, non-secret identifiers.
+#: ``failed_devices`` is shared with the discovery widget's add (ADR-0072), where
+#: it names the devices that did not end with working credentials.
+#:
+#: ``added_devices`` / ``provisioned_devices`` (ADR-0072) are the device ids an
+#: approved discovery add registered, and the subset it created an account on —
+#: comma-separated, like the removal keys.
 #:
 #: ``ignore_added_keys`` (ADR-0070) are the drift-tracking exclusions an
 #: approved accept added — canonical config keys or globs, one comma-separated
@@ -347,6 +353,7 @@ audit_log = AuditLog()
 OUTCOME_IDENTITY_KEYS = (
     "rule_id", "config_id", "removed_rule", "removed_config",
     "removed_devices", "failed_devices", "ignore_added_keys",
+    "added_devices", "provisioned_devices",
 )
 
 

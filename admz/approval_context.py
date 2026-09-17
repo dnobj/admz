@@ -55,10 +55,13 @@ operator approved *that survey*, including every device it provisions.
    For the survey this is exactly what is wanted. It is a hazard for any
    *other* detached task an action executor might spawn, which would carry
    provisioning authority it was never meant to have. Two things bound it
-   today: only the two provisioning actions establish the marker at all (see
+   today: only the provisioning actions establish the marker at all (see
    ``operations._PROVISIONING_APPROVAL_ACTIONS``), and consumers gate on
-   :func:`is_approved_for` rather than "any approval". If a third action is
-   ever added to that set, check what it spawns.
+   :func:`is_approved_for` rather than "any approval". Whenever an action is
+   added to that set, check what it spawns. The discovery widget's add
+   (ADR-0072) was checked when it joined: it runs each device's onboarding
+   through an awaited ``asyncio.gather``, whose children end before the
+   executor returns, and a test forbids ``create_task`` in it.
 
    Found in review of #361; recorded rather than designed away, because
    removing propagation would break the survey — the one caller that needs it.

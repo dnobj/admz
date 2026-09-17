@@ -598,6 +598,20 @@ def _scan_action_tokens(result: object, tool_name: str) -> list:
     return found
 
 
+# A discovery scan the console renders as a widget (ADR-0072). Mirrors the
+# pattern chat.js matches, so the scan the browser shows is the scan bound here.
+_SCAN_URL_RE = re.compile(r"^/api/discovery/scans/([A-Za-z0-9_-]{20,})$")
+_DISCOVERY_TOOL = "discover_network_devices"
+
+
+def _scan_id_from_result(result: object, tool_name: str) -> Optional[str]:
+    """The ``scan_id`` a discovery result names, or ``None``. Never raises."""
+    if tool_name != _DISCOVERY_TOOL or not isinstance(result, dict):
+        return None
+    m = _SCAN_URL_RE.match(str(result.get("scan_url") or ""))
+    return m.group(1) if m else None
+
+
 @dataclass
 class _TurnSummary:
     """Aggregated result of one chat turn — what /api/chat returns."""
@@ -615,6 +629,9 @@ class _TurnSummary:
     # tools created — linked to the conversation after the turn so their
     # out-of-band resolution can be noted back into it.
     action_tokens: list = field(default_factory=list)
+    # Discovery scans this turn recorded (ADR-0072) — bound to the
+    # conversation after the turn, beside the action tokens.
+    scan_ids: list = field(default_factory=list)
     # Set when budget gate rejected the turn before the SDK ran.
     rejected_by_budget: bool = False
 
@@ -628,6 +645,7 @@ async def _run_chat_turn(
     use_tools: bool = True,
     conversation_id: Optional[str] = None,
     resume: bool = False,
+    console: bool = True,
 ):
     """Async generator: yields (event, summary) tuples per chat event.
 
@@ -649,6 +667,10 @@ async def _run_chat_turn(
     "continued" in the audit row, which is the question this feature
     exists to make answerable. An empty ``message`` is what actually makes
     the turn seed-free.
+
+    ``console`` says the turn renders in the web console, which shows some
+    tool results as widgets (ADR-0072); the JSON endpoint passes ``False``
+    so the prompt does not tell the model about a table nobody sees.
     """
     summary = _TurnSummary()
     chosen_model = (
@@ -703,6 +725,7 @@ async def _run_chat_turn(
         inference_section=build_inference_section(),
         capabilities_section=build_capabilities_section(),
         attention_section=build_attention_section(),
+        console_widgets=console,
     )
 
     logger.debug(
@@ -774,6 +797,12 @@ async def _run_chat_turn(
                         chat_event.payload.get("name", "?"),
                     )
                 )
+                scan_id = _scan_id_from_result(
+                    chat_event.payload.get("result"),
+                    chat_event.payload.get("name", "?"),
+                )
+                if scan_id and scan_id not in summary.scan_ids:
+                    summary.scan_ids.append(scan_id)
             yield (chat_event, None)
     except ChatbotDependencyMissing as exc:
         summary.success = False
@@ -931,6 +960,25 @@ async def _run_chat_turn(
                     )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning("Failed to link action tokens: %s", exc)
+
+    # ADR-0072: bind this turn's discovery scans to its conversation, so an
+    # add from the widget can note its outcome back here. The client never
+    # names the conversation. Same resolution and the same best-effort rule as
+    # the links above; the browser enables Add only once this response has
+    # closed, which is after this step.
+    if summary.scan_ids:
+        try:
+            target = conv_id or _sessions().get_active_conversation(
+                principal.name
+            )
+            if target:
+                from admz.discovery.scan_store import discovery_scans
+
+                for scan_id in summary.scan_ids:
+                    discovery_scans.bind_conversation(
+                        scan_id, principal.name, target)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("Failed to bind discovery scans: %s", exc)
 
     # Record usage + audit (best-effort).
     try:
@@ -1100,6 +1148,8 @@ async def chat_json(
         model_request=body.model or "",
         config=config,
         use_tools=body.use_tools,
+        # A JSON client renders no widget (ADR-0072).
+        console=False,
     ):
         if summary is not None:
             final_summary = summary

@@ -49,6 +49,16 @@ sees.
 ADR-0059's plan said slice 3 would retire *both* entry-point gates. Half of
 that was right; see the ADR's amendment for why the survey one stays.
 
+**A second entry gate, for the same reason (ADR-0072).** The console's
+discovery widget adds the devices an operator ticked, under one approval
+(``api/routes/discovery.py``, action :data:`ACTION_ADD_DISCOVERED`). It is an
+entry gate like the survey's because what it approves — *these N devices, their
+registration and their accounts* — is a batch the per-device chokepoint cannot
+express; without it the chokepoint would raise one card per device. It is not a
+gate on the registry write alone, so the objection that retired the
+``register_discovered_device`` gate does not reach it: the approval carries
+provisioning authority, and ``register_device`` offers no ungated path to that.
+
 One entry point, one helper
 ---------------------------
 Splitting a gate across call sites is how a guard ends up half-implemented
@@ -68,7 +78,7 @@ would have left the REST survey exactly as it was.
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from admz import operations
 
@@ -101,6 +111,19 @@ def gate_scan_write(action: str, target: str, payload: Mapping[str, Any],
     return env
 
 
+#: The account writes one approval of a discovery-driven add authorises. Shared
+#: by the survey card and the widget's add card (ADR-0072), so the two cannot
+#: describe the same writes differently.
+_ACCOUNT_WRITES = (
+    "create an admin account for ADMZ — on a factory-defaulted device TWO "
+    "accounts: 'root' set to the fleet root password, then ADMZ's own "
+    "'admz' account (only 'admz' is stored); or on a device that is "
+    "already set up, just ADMZ's own 'admz' account if the fleet root "
+    "password or an entry credential can log in (that credential is "
+    "left in place)"
+)
+
+
 def survey_reason(subnet: Any, register_new: bool) -> str:
     """The operator-facing sentence on the approval card.
 
@@ -115,13 +138,46 @@ def survey_reason(subnet: Any, register_new: bool) -> str:
     # affecting, so the level is already the max). Under-describing it here
     # would mean the operator approved something the card never mentioned,
     # which is the failure #411's review caught in the first draft.
-    tail = ("register unknown devices it finds and, on each, create an admin "
-            "account for ADMZ — on a factory-defaulted device TWO accounts: "
-            "'root' set to the fleet root password, then ADMZ's own "
-            "'admz' account (only 'admz' is stored); or on a device that is "
-            "already set up, just ADMZ's own 'admz' account if the fleet root "
-            "password or an entry credential can log in (that credential is "
-            "left in place)"
+    tail = (f"register unknown devices it finds and, on each, {_ACCOUNT_WRITES}"
             if register_new else "register unknown devices it finds")
     return (f"Deep survey: scan {where}, then {tail}. This writes to devices "
             f"ADMZ has never seen.")
+
+
+#: Action registered in ``operations._ACTION_EXECUTORS`` for the console's
+#: discovery widget (ADR-0072).
+ACTION_ADD_DISCOVERED = "add_discovered_devices"
+
+
+def add_reason(devices: Sequence[Mapping[str, Any]]) -> str:
+    """The sentence on the widget's add approval (ADR-0072 §3).
+
+    Names every device — by canonical id and address, which ADMZ derived, plus
+    the model, sanitized, because it is the device's own claim — and then every
+    write the approval authorises, in the survey card's words. Every surface
+    that renders the session shows exactly this: the widget, a re-pinned card
+    after a reload, and ``/confirm/{token}``.
+    """
+    from admz.validators import sanitize_display_text
+
+    parts = []
+    for device in devices:
+        label = sanitize_display_text(device.get("model") or "", max_length=40)
+        ident = f"{device.get('device_id', '')} at {device.get('host', '')}"
+        parts.append(f"{label} ({ident})" if label else ident)
+    count = len(parts)
+    noun = "device" if count == 1 else "devices"
+    return (f"Add {count} discovered {noun} to ADMZ: {'; '.join(parts)}. "
+            + add_consequence())
+
+
+def add_consequence() -> str:
+    """What an add does to each device — the widget shows it above the Add
+    button before anything is selected, and :func:`add_reason` ends with it,
+    so the sentence the operator reads is the one the session records."""
+    return (
+        "For each device, ADMZ first checks that the device at that address "
+        "still reports that serial number and registers it; then it will "
+        f"{_ACCOUNT_WRITES}. A device whose identity cannot be confirmed is "
+        "skipped and nothing is written to it."
+    )

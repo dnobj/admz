@@ -509,3 +509,32 @@ class FleetCaptureSession:
 # Module-level singleton so the API routes and MCP server share state.
 # Both processes connect to the same SQLite file on disk.
 capture_store = CaptureStore()
+
+
+def open_onboarding_capture(device_id: str, reason_code: str = "") -> CaptureSession:
+    """The capture session a ``credentials_needed`` onboarding outcome opens.
+
+    FR-CRED-014 / ADR-0068. Only ONE of the reasons for ``credentials_needed``
+    means "ask for the device's root password so ADMZ can let itself in": the
+    entry list was put to the device and refused. For an unreachable or
+    never-probed device the root-adopt submit would fail at its TCP preflight
+    *after* the operator had typed a password, so those keep the ordinary
+    capture form.
+
+    Keyed on ``reason_code``, never on the prose ``reason`` — that string is
+    operator copy and will be reworded. Shared by the REST add/onboard routes
+    and the discovery widget's approved add (ADR-0072), so the two cannot pick
+    different forms for the same outcome.
+    """
+    from admz.onboarding import REASON_ENTRY_EXHAUSTED
+
+    exhausted = reason_code == REASON_ENTRY_EXHAUSTED
+    return capture_store.create_session(
+        device_id=device_id,
+        kind=KIND_ROOT_ADOPT if exhausted else KIND_ACCOUNT,
+        purpose=(
+            "Let ADMZ in — every stored credential was refused"
+            if exhausted else
+            "Device onboarding — automatic resolution failed"
+        ),
+    )

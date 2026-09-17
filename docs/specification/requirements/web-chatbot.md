@@ -329,7 +329,7 @@ devices, most recently checked first. Model, nickname and title are sanitized. D
 demo accounts for is left out. The section is wired into the text chat and voice prompts, and the prompt
 is byte-identical when nothing is open or drifted.
 
-### FR-CB-021 — A discovery scan renders as a widget, and its Add button is the approval 📋
+### FR-CB-021 — A discovery scan renders as a widget, and its Add button is the approval ✅
 When a `discover_network_devices` result carries a `scan_url` (FR-DISC-010), the console inserts a
 widget after that tool card. The widget is built from the structured result only, never from the
 model's prose, and each scan renders once.
@@ -352,6 +352,12 @@ reprint a scan's device list: summarise counts, new Axis devices and anything no
 and never register devices because a scan found them. Voice renders no widget and keeps its current
 wording. See
 [ADR-0072](../decisions/0072-discovered-devices-are-added-from-the-chat-in-one-click.md).
+
+_As built:_ Add enables when the turn's response **closes**, not at its `done` event, because the route
+binds the scan to the conversation after `done` is written (`finishTurnWidgets`, `chat.js`). The prompt
+section is rendered by `build_system_prompt(console_widgets=True)`: `/chat/stream` and the continuation
+set it, while `/api/chat`, the no-JS form and voice do not. A `locked` answer disables Add for the
+lockout's five minutes.
 
 ## Non-functional requirements
 
