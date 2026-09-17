@@ -65,6 +65,23 @@ Finding Axis devices on the local network without manually typing IPs or serials
 2. Non-Axis devices are still returned with whatever metadata each protocol surfaced.
 3. The `is_axis` field distinguishes them; `discovered_by` reveals which protocols picked them up.
 
+## US-ND-006 — Pick discovered devices in the chat and add them in one click 📋
+
+**As an** operator in the console, **I want to** see a scan's results as a table I can tick, and add the new cameras with one click, so that I neither re-read a markdown table nor approve one card per device.
+
+**Acceptance criteria:**
+1. After "discover devices on my network", a widget under the tool card lists the Axis devices by default, with a toggle to show everything. Each row shows name or model, device id, IP, firmware, and whether the device is factory-defaulted or already registered.
+2. Registered devices, non-Axis devices and devices with no MAC or serial cannot be ticked, and say why. Nothing is ticked for me; **Select all new** ticks every addable device.
+3. The widget says what Add will do (register each device and create ADMZ's own admin account on it) and asks for the confirmation password when my settings require one.
+4. One click on **Add** registers every ticked device and sets up its credentials under one audited approval. No separate approval card appears.
+5. A device whose address now answers with a different serial is not touched, and its row says so.
+6. Each row then shows what happened: added, needs credentials (with the credential form), or failed and why. The assistant follows up with a short summary.
+7. A selection with a device that cannot be added, a scan older than an hour, or more than 20 devices is refused with nothing created.
+
+**Related requirements:** [discovery](../requirements/discovery.md) FR-DISC-010/011, [web-chatbot](../requirements/web-chatbot.md) FR-CB-021.
+
+**Related stories:** US-ND-003, [device-onboarding](device-onboarding.md).
+
 ## Known limitations
 
 - ⚠️ **Unbounded fan-out at very large subnet scale.** Discovery itself doesn't currently semaphore phase-2 enrichment. A /16 with thousands of hosts opens many simultaneous HTTPS connections; tighten the subnet (`--subnet`) for those environments. Fleet *snapshot* concurrency is now bounded (Phase 3D), but discovery isn't yet.

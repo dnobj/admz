@@ -329,6 +329,30 @@ devices, most recently checked first. Model, nickname and title are sanitized. D
 demo accounts for is left out. The section is wired into the text chat and voice prompts, and the prompt
 is byte-identical when nothing is open or drifted.
 
+### FR-CB-021 — A discovery scan renders as a widget, and its Add button is the approval 📋
+When a `discover_network_devices` result carries a `scan_url` (FR-DISC-010), the console inserts a
+widget after that tool card. The widget is built from the structured result only, never from the
+model's prose, and each scan renders once.
+
+- **The table.** Model or name, device id, IP, firmware, and badges for VAPIX, factory default and
+  registered. It shows Axis devices by default, with an All toggle, and nothing is pre-checked.
+  Rows that cannot be added say why, and a registered row links to its device.
+- **Before Add.** The session's sentence sits above the button, with a password field when the
+  level requires one.
+- **When Add is disabled:** until the turn's `done` event, for a principal who may not approve,
+  for a stale scan, and for an empty or oversized selection.
+- **Add is one click and two requests** (FR-DISC-011): create the session, then the existing
+  `POST /api/chat/confirm/{token}`. A retry reuses the token, so the password lockout holds.
+- **After Add:** each row shows its outcome in place, a device needing credentials gets the standard
+  capture card, the widget refetches the scan, and the FR-CB-016 continuation answers the
+  `[console]` note once.
+
+Device-supplied strings are only ever written as text. The prompt tells the text console not to
+reprint a scan's device list: summarise counts, new Axis devices and anything notable, point to Add,
+and never register devices because a scan found them. Voice renders no widget and keeps its current
+wording. See
+[ADR-0072](../decisions/0072-discovered-devices-are-added-from-the-chat-in-one-click.md).
+
 ## Non-functional requirements
 
 ### NFR-CB-001 — Gemini API key never in client code ✅
@@ -504,9 +528,17 @@ Falls back to the per-turn spawn path (Phase 5B-MCP) when the
 `principal` argument is omitted — used by tests that don't want
 pool semantics.
 
+### KL-CB-008 — The discovery widget does not survive a reload ⚠️
+Tool results are not persisted with the conversation (`chat_history`
+stores text only), so after a page reload the discovery widget
+(FR-CB-021) is gone until the next scan. An approval that was still
+pending re-pins as the standard card, because its token is linked to
+the conversation, and that card lists every device it covers. See
+[ADR-0072](../decisions/0072-discovered-devices-are-added-from-the-chat-in-one-click.md).
+
 ## References
 
-- ADRs: [0024 — Bundled web chatbot](../decisions/0024-bundled-web-chatbot.md), [0025 — Gemini + native MCP](../decisions/0025-gemini-chatbot-mcp-native.md), [0020 — Protected fleet settings](../decisions/0020-protected-fleet-settings.md)
+- ADRs: [0024 — Bundled web chatbot](../decisions/0024-bundled-web-chatbot.md), [0025 — Gemini + native MCP](../decisions/0025-gemini-chatbot-mcp-native.md), [0020 — Protected fleet settings](../decisions/0020-protected-fleet-settings.md), [0072 — Discovered devices are added from the chat in one click](../decisions/0072-discovered-devices-are-added-from-the-chat-in-one-click.md)
 - Persona: [Web-Chatbot User](../personas/web-chatbot-user.md)
 - User stories: [Chatbot-driven workflows](../user-stories/chatbot-driven-workflows.md)
 - Cross-cutting: [authentication.md](authentication.md), [security.md](security.md)
