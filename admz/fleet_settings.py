@@ -10,11 +10,14 @@ allow-set that decides which of them the chat model may write (ADR-0053).
 The two it may write are the fleet credential pair:
 
   - ``default_password``: the fleet's first *entry* credential (FR-CRED-011):
-    onboarding tries it to get into a device set up elsewhere. It is never
-    written to a device — factory-default provisioning generates a per-device
-    password (FR-CRED-007, ADR-0064 slice E). Its *value* never comes from
-    chat — the model requests an out-of-band capture URL and a human types it
-    into a browser (ADR-0009, FR-MCP-008).
+    onboarding tries it to get into a device set up elsewhere. Its *value*
+    never comes from chat — the model requests an out-of-band capture URL and
+    a human types it into a browser (ADR-0009, FR-MCP-008). It is never
+    written to a device (FR-CRED-007). Provisioning a factory-defaulted device
+    uses a different setting, ``fleet_root_password`` — the operator-known
+    break-glass password, which the model can neither set nor read: ADMZ
+    writes it to ``root``, then creates its own ``admz`` account with a
+    generated password, and stores only ``admz`` (FR-CRED-014, ADR-0068).
   - ``default_username``: the username of that entry credential (unset reads
     as ``root``). Used together with ``default_password`` as the pair.
 

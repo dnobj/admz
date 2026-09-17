@@ -61,18 +61,21 @@ How device credentials are captured, stored, retrieved, and rotated — with spe
 
 **Related decisions:** [0020 — protected fleet settings](../decisions/0020-protected-fleet-settings.md).
 
-## US-CR-005 — Auto-provision a factory-default device with a generated password
+## US-CR-005 — Auto-provision a factory-default device: `root` from the fleet root password, `admz` generated
 
-**As an** operator unboxing a fresh camera, **I want** ADMZ to generate a strong password and create the admin user **without** me having to choose or type it.
+**As an** operator unboxing a fresh camera, **I want** ADMZ to set the device's `root` password to the fleet root password I already know, and to create its own admin account with a strong generated password, **without** me typing a password per device — **so that** I can still log in by hand if ADMZ's database is lost.
 
 **Acceptance criteria:**
-1. `provision_device(host=…)` probes the device and detects factory-default state.
-2. ADMZ calls `pwdgrp.cgi:add-user` to create the admin user with a 24-char generated password (mixed case + digit).
-3. The credential is stored in the registry under account `default`.
-4. The generated password is **never returned** in the response.
-5. The password is not retrievable afterwards — ADMZ uses it internally at execution time. For ad-hoc access to the device, the operator (or LLM) mints a short-lived account via `create_temp_credentials`.
+1. `provision_device(host=…)` (or onboarding) detects factory-default state (`needsetup=yes`). One approval covers both account writes.
+2. ADMZ calls `pwdgrp.cgi:add-user` twice, in order: `root` with the operator-set fleet root password (`fleet_root_password`), then ADMZ's own `admz` account with a 24-char generated password (mixed case + digit) (FR-CRED-014, ADR-0068).
+3. Only the `admz` credential is stored, in the registry under account `default`. A root credential is never stored per device, so the generated password is never the device's only credential.
+4. With no fleet root password set, ADMZ refuses (`root_password_not_configured`) and writes nothing to the device.
+5. No password — root's or `admz`'s — is **ever returned** in the response.
+6. The `admz` password is not retrievable afterwards — ADMZ uses it internally at execution time. For ad-hoc access to the device, the operator (or LLM) mints a short-lived account via `create_temp_credentials`; the fleet root password is the break-glass way in.
 
 **Related requirements:** [mcp-server](../requirements/mcp-server.md), [credential-storage](../requirements/credential-storage.md).
+
+**Related decisions:** [0068 — root is a break-glass credential ADMZ sets and never stores](../decisions/0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md).
 
 ## US-CR-006 — Fleet-wide entry credential set via OOB
 
@@ -83,7 +86,7 @@ How device credentials are captured, stored, retrieved, and rotated — with spe
 2. The MCP returns `{success, action: "capture", capture_url: "/capture/fleet/{token}", token}`.
 3. The user opens the URL, enters the password (and optionally a username) in the form.
 4. On submit, both `default_password` and `default_username` are written to `fleet_settings`.
-5. The pair is the fleet's first **entry credential** (FR-CRED-011): onboarding tries it to get into a device set up elsewhere. It is **never written to a device** — `provision_device` and factory-default onboarding generate a per-device password (FR-CRED-007; ADR-0061, shipped by ADR-0064 slice E on 2026-09-06).
+5. The pair is the fleet's first **entry credential** (FR-CRED-011): onboarding tries it to get into a device set up elsewhere. It is **never written to a device** (FR-CRED-007; ADR-0061, shipped by ADR-0064 slice E on 2026-09-06). Provisioning a factory-defaulted device — through `provision_device` or onboarding — uses a different setting: it writes the operator-known fleet root password (`fleet_root_password`) to `root`, then creates ADMZ's own `admz` account with a generated password, and stores only `admz` (FR-CRED-014, ADR-0068, shipped 2026-09-14).
 6. `get_fleet_settings` returns the password as a masked placeholder (e.g. `****** (12 chars)`) — both via MCP and via `GET /api/fleet/settings`.
 
 **Related requirements:** [credential-storage](../requirements/credential-storage.md), [mcp-server](../requirements/mcp-server.md), [web-api](../requirements/web-api.md).

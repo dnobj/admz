@@ -195,11 +195,25 @@ offline period followed by a healthy response.
 ### `queue_device_recovery`
 Pre-authorize a **trigger-based** recovery (the counterpart to the
 time-based snapshot schedules). When the device next reports
-factory-defaulted (`needsetup`), the health-monitor sweep automatically
-re-provisions it — so a factory reset from chat doesn't block on the
-~1–2 min reboot. The actual provision runs only because it was authorized
-here, up front; the password is generated per device (never the fleet
-default — FR-CRED-007) and is never shown.
+factory-defaulted (`needsetup`), the health-monitor sweep fires the queued
+`reprovision` task — so a factory reset from chat doesn't block on the
+~1–2 min reboot.
+
+> **Since ADR-0068 (2026-09-14) the fired task does not provision.**
+> Provisioning now writes the fleet root password, one value shared by every
+> device ADMZ provisions, and an unattended write to whatever answers at the
+> device's address could hand it to a spoofed peer. So the handler calls
+> `provision_factory_default(attended=False)`, which refuses
+> (`unattended_not_permitted`) and writes nothing; the task is marked `failed`
+> and a `deferred_action_failed` audit row is written. The device stays
+> `needs_setup` until it is onboarded attended — `onboard_device` or
+> `provision_device`, with an operator approving the write — which sets `root`
+> to the fleet root password, creates ADMZ's own `admz` account with a
+> generated password, and stores only `admz`.
+>
+> _Corrected 2026-09-16: this entry said the sweep re-provisions the device
+> with a generated per-device password. The tool's own description and the
+> chat prompt still say so._
 - **Args:** `device_id` (required); `intent` (only `reprovision` for now);
   `username` (default `root`)
 - **Returns:** `{success, queued, pending_id, device_id, trigger, message}`

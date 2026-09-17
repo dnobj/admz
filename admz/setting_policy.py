@@ -99,7 +99,8 @@ KNOWN_SETTING_KEYS: FrozenSet[str] = frozenset({
     # The entry-credential LIST (FR-CRED-011, ADR-0061). The pair above stays:
     # it is read as entry #1 so an existing install keeps working with no
     # migration step (since ADR-0064 slice E it is no longer written to a
-    # factory-defaulted device — the generated password wins, FR-CRED-007).
+    # factory-defaulted device, FR-CRED-007; under ADR-0068 `root` gets
+    # `fleet_root_password`, below, instead).
     # Deliberately NOT LLM-writable — it holds
     # passwords, and widening it widens what ADMZ tries against every device.
     "entry_credentials",
