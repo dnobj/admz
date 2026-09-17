@@ -387,6 +387,25 @@ class TestOutcome:
         assert out["success"] is True
 
     @pytest.mark.asyncio
+    async def test_the_console_summary_groups_every_device_in_admz_words(
+        self, serials, monkeypatch
+    ):
+        serials[HOSTS[C]] = None
+        statuses = {A: {"status": "provisioned"},
+                    B: {"status": "credentials_needed", "reason_code": "unreachable"}}
+
+        async def _onboard(**kw):
+            return statuses[kw["device_id"]]
+
+        monkeypatch.setattr("admz.onboarding.onboard_device_credentials", _onboard)
+        out = await operations._action_add_discovered_devices(
+            _action(A, B, C), FakeRegistry())
+        assert out["console_summary"] == (
+            f"added with working credentials: {A}; "
+            f"added, needs credentials (form opened): {B}; "
+            f"skipped, identity not confirmed: {C}")
+
+    @pytest.mark.asyncio
     async def test_a_malformed_batch_runs_nothing(self, serials, onboard):
         action = _action(A, B)
         action["device_ids"] = [A, C]  # C was never in the payload's devices

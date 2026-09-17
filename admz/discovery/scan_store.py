@@ -46,14 +46,16 @@ CREATE TABLE IF NOT EXISTS discovery_scans (
     subnet           TEXT NOT NULL DEFAULT '',
     axis_only        INTEGER NOT NULL DEFAULT 0,
     created_at       REAL NOT NULL,
-    devices_json     TEXT NOT NULL DEFAULT '[]'
+    devices_json     TEXT NOT NULL DEFAULT '[]',
+    add_key          TEXT NOT NULL DEFAULT '',
+    add_token        TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_discovery_scans_created
     ON discovery_scans(created_at);
 """
 
 _COLS = ("scan_id", "principal", "conversation_id", "subnet", "axis_only",
-         "created_at", "devices_json")
+         "created_at", "devices_json", "add_key", "add_token")
 _SELECT = f"SELECT {', '.join(_COLS)} FROM discovery_scans"
 
 
@@ -73,6 +75,11 @@ class DiscoveryScan:
     axis_only: bool = False
     created_at: float = 0.0
     devices: List[Dict[str, Any]] = field(default_factory=list)
+    #: The selection the last add approval was opened for, and its token —
+    #: so a retry of the same selection reuses the session (and its
+    #: per-token password lockout) instead of minting a fresh one.
+    add_key: str = ""
+    add_token: str = ""
 
     def age_seconds(self, now: Optional[float] = None) -> float:
         return max(0.0, (time.time() if now is None else now) - self.created_at)
@@ -93,6 +100,8 @@ def _row_to_scan(row: tuple) -> DiscoveryScan:
         created_at=float(d["created_at"] or 0),
         devices=[x for x in devices if isinstance(x, dict)]
         if isinstance(devices, list) else [],
+        add_key=d["add_key"] or "",
+        add_token=d["add_token"] or "",
     )
 
 
@@ -188,6 +197,20 @@ class DiscoveryScanStore:
                 (conversation_id, scan_id, principal),
             )
             return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    def remember_add(
+        self, scan_id: str, principal: str, add_key: str, add_token: str,
+    ) -> None:
+        """Record the approval session opened for a selection of this scan."""
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE discovery_scans SET add_key = ?, add_token = ? "
+                "WHERE scan_id = ? AND principal = ?",
+                (add_key, add_token, scan_id, principal),
+            )
         finally:
             conn.close()
 

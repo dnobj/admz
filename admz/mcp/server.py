@@ -1653,11 +1653,11 @@ class ADMZMCPServer:
                         "`registered_device_id` names the managed device it "
                         "already is (null when it is new), and `axis_count`, "
                         "`new_axis_count` and `factory_default_count` summarise "
-                        "the scan. In the web console the result is shown to the "
-                        "user as an interactive table (`scan_url`) whose Add "
-                        "button registers the devices they select under one "
-                        "approval. Devices are NOT automatically registered — "
+                        "the scan. Devices are NOT automatically registered — "
                         "use register_discovered_device to add a specific one."
+                        # How the web console shows `scan_url` is taught in the
+                        # console-only prompt section (ADR-0072): voice shares
+                        # this description and renders no table.
                     ),
                     inputSchema={
                         "type": "object",

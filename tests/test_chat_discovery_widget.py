@@ -184,6 +184,29 @@ class TestTheWidgetSource:
         assert "td.textContent = v;" in src
         assert "note.textContent = why;" in src
 
+    def test_a_widget_failure_cannot_stop_the_stream(self):
+        js = CHAT_JS.read_text(encoding="utf-8")
+        assert ("try { maybeRenderDiscoveryWidget(assistantBubble, parsed.data); }"
+                " catch (_) {}") in js
+
+    def test_device_names_are_not_scanned_as_model_links(self):
+        """A device named /confirm/<20+ chars> is not an invented approval."""
+        js = CHAT_JS.read_text(encoding="utf-8")
+        done = js[js.index('case "done":'):js.index('case "error":')]
+        assert 'querySelectorAll(".discovery-widget")' in done
+        assert "flagUnbackedLinks(blocksCopy.textContent" in done
+
+    def test_a_gone_session_is_checked_before_saying_nothing_ran(self):
+        src = _widget_source()
+        assert 'fetch("/api/confirm/" + encodeURIComponent(token) + "/status")' in src
+        assert 'st.status === "completed"' in src
+        assert "return explainGone(state.token);" in src
+
+    def test_a_raised_level_or_wrong_password_refreshes_the_policy(self):
+        src = _widget_source()
+        assert 'resp.body.confirmation_level === "url_and_password"' in src
+        assert 'if (body.status === "wrong_password") fetchScan();' in src
+
     def test_nothing_is_preselected(self):
         src = _widget_source()
         assert "selected: new Set()" in src

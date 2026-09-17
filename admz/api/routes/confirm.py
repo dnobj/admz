@@ -448,13 +448,19 @@ def _note_resolution_to_chat(
             if confirmed_by == "chat" else "the confirmation web page"
         )
         target = _note_target(session)
+        # A batch executor may name every item's outcome in its own words
+        # (ADR-0072); the model needs all of it, where a truncated error would
+        # carry only the first failure — and could quote a device.
+        summary = outcome.get("console_summary")
+        summary = str(summary)[:1200] if isinstance(summary, str) and summary else ""
         if outcome.get("success"):
             text = (
                 f"[console] The user approved \"{what}\" {target} "
                 f"via {surface}; it executed successfully."
+                + (f" {summary}." if summary else "")
             )
         else:
-            err = str(outcome.get("error") or "unknown error")[:200]
+            err = summary or str(outcome.get("error") or "unknown error")[:200]
             text = (
                 f"[console] The user approved \"{what}\" {target} "
                 f"via {surface}, but execution FAILED: {err}"

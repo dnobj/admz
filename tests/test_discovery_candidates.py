@@ -282,6 +282,9 @@ class TestTheToolResult:
         end = src.index("inputSchema", start)
         # Join the adjacent string literals the description is written as.
         desc = re.sub(r'"\s*\n\s*"', "", src[start:end])
-        for word in ("registered_device_id", "new_axis_count", "scan_url",
-                     "one approval"):
+        for word in ("registered_device_id", "new_axis_count",
+                     "factory_default_count"):
             assert word in desc
+        # Voice shares this description and renders no table, so the console
+        # widget is taught in the console-only prompt section instead.
+        assert "Add button" not in desc and "interactive table" not in desc

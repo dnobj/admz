@@ -1100,8 +1100,56 @@ _ADD_CREDENTIALED = frozenset({
 _ADD_ACCOUNT_CREATED = frozenset({"provisioned", "admz_account_created"})
 
 
+def _link_capture_to_scan_conversation(capture_token: str, scan_id: str) -> None:
+    """Link a capture the add opened to the scan's conversation, as the chat
+    route links the captures a tool opens — so submitting the form writes its
+    ``[console]`` note, and a reload re-pins the card. Best-effort."""
+    if not scan_id:
+        return
+    try:
+        from admz.chatbot.sessions import chat_sessions
+        from admz.discovery.scan_store import discovery_scans
+
+        scan = discovery_scans.get_scan(scan_id)
+        if scan is not None and scan.conversation_id:
+            chat_sessions.link_action(
+                capture_token, scan.principal, scan.conversation_id, "capture",
+                label="add_discovered_devices")
+    except Exception:  # noqa: BLE001
+        logger.warning("could not link a capture to its conversation", exc_info=True)
+
+
+#: How the console note names each outcome — ADMZ's own words, so the note
+#: never carries a device's text (ADR-0072).
+_ADD_SUMMARY_GROUPS = (
+    ("added with working credentials", lambda r: r.get("status") in _ADD_CREDENTIALED),
+    ("added, needs credentials (form opened)",
+     lambda r: r.get("registered") and r.get("status") == "credentials_needed"),
+    ("added without working credentials",
+     lambda r: r.get("registered") and r.get("status") not in _ADD_CREDENTIALED
+     and r.get("status") != "credentials_needed"),
+    ("skipped, identity not confirmed",
+     lambda r: r.get("status") == "identity_unconfirmed"),
+    ("skipped, already registered", lambda r: r.get("status") == "already_registered"),
+    ("not added, error",
+     lambda r: not r.get("registered") and r.get("status") not in (
+         "identity_unconfirmed", "already_registered")
+     and r.get("status") not in _ADD_CREDENTIALED),
+)
+
+
+def _add_console_summary(rows: Sequence[Mapping[str, Any]]) -> str:
+    parts = []
+    for label, match in _ADD_SUMMARY_GROUPS:
+        ids = [str(r["device_id"]) for r in rows if match(r)]
+        if ids:
+            parts.append(f"{label}: {', '.join(ids)}")
+    return "; ".join(parts)
+
+
 async def _add_one_discovered_device(
     device_id: str, entry: Mapping[str, Any], registry: Any, ctx: Any,
+    scan_id: str = "",
 ) -> Dict[str, Any]:
     """Confirm, register and onboard one device of an approved add.
 
@@ -1169,6 +1217,7 @@ async def _add_one_discovered_device(
             session = open_onboarding_capture(
                 device_id, str(onboarding.get("reason_code") or ""))
             row["capture_url"] = f"/capture/{session.token}"
+            _link_capture_to_scan_conversation(session.token, scan_id)
         except Exception:  # noqa: BLE001 — never turn a status into a crash
             logger.exception("could not open a capture session for %s", device_id)
     if status not in _ADD_CREDENTIALED:
@@ -1221,10 +1270,12 @@ async def _action_add_discovered_devices(
     ctx = get_context()
     gate = asyncio.Semaphore(ADD_CONCURRENCY)
 
+    scan_id = str(action.get("scan_id") or "")
+
     async def bounded(device_id: str) -> Dict[str, Any]:
         async with gate:
             return await _add_one_discovered_device(
-                device_id, entries[device_id], registry, ctx)
+                device_id, entries[device_id], registry, ctx, scan_id)
 
     outcomes = await asyncio.gather(
         *(bounded(d) for d in listed), return_exceptions=True)
@@ -1253,6 +1304,9 @@ async def _action_add_discovered_devices(
         "failed": failed,
         "message": (f"Added {len(added)} of {len(rows)} {noun}; "
                     f"{credentialed} with working credentials."),
+        # What the [console] note says, in place of the truncated `error`:
+        # every device, grouped by outcome, in ADMZ's own words.
+        "console_summary": _add_console_summary(rows),
     }
     # Identity fields for the approval's audit row (audit.OUTCOME_IDENTITY_KEYS
     # records scalars only, so each list is one comma-separated string).

@@ -154,7 +154,8 @@
               scanForTokens(s, CONFIRM_URL_RE, "confirm");
               scanForTokens(s, CAPTURE_URL_RE, "capture");
             } catch (_) {}
-            maybeRenderDiscoveryWidget(assistantBubble, parsed.data);
+            // A widget that fails to build must not stop the rest of the reply.
+            try { maybeRenderDiscoveryWidget(assistantBubble, parsed.data); } catch (_) {}
             break;
           case "done":
             renderUsageFooter(assistantBubble, parsed.data);
@@ -167,8 +168,11 @@
             // model's prose was fabricated — flag it honestly instead of
             // rendering a phantom "invalid or has expired" widget.
             try {
-              var fullText = assistantBubble.querySelector(".at-blocks").textContent;
-              flagUnbackedLinks(fullText, assistantBubble);
+              // The model's text only: a discovery widget holds device-written
+              // names, which are not the model's links (ADR-0072).
+              var blocksCopy = assistantBubble.querySelector(".at-blocks").cloneNode(true);
+              blocksCopy.querySelectorAll(".discovery-widget").forEach(function (n) { n.remove(); });
+              flagUnbackedLinks(blocksCopy.textContent, assistantBubble);
             } catch (_) {}
             break;
           case "error": renderError(assistantBubble, parsed.data.message); break;
@@ -1211,7 +1215,47 @@
           }
           state.token = resp.body.token;
           state.tokenKey = key;
+          // The level can have been raised since the scan loaded; refresh the
+          // policy so the password field appears, and let the operator fill it.
+          if (resp.body.confirmation_level === "url_and_password" &&
+              !(state.scan && state.scan.add_policy.needs_password)) {
+            return fetchScan().then(function () {
+              if (state.scan && state.scan.add_policy.needs_password && !pwInput.value) {
+                throw new Error("Enter the confirmation password, then press Add again.");
+              }
+              return state.token;
+            });
+          }
           return state.token;
+        });
+    }
+
+    // A 410 means "not pending", which is also what a session that already
+    // ran looks like — e.g. its response was lost, or it was approved from the
+    // re-pinned card. Ask before telling the operator nothing happened.
+    function explainGone(token) {
+      return fetch("/api/confirm/" + encodeURIComponent(token) + "/status")
+        .then(function (r) { return r.json(); })
+        .catch(function () { return {}; })
+        .then(function (st) {
+          state.token = ""; state.tokenKey = "";
+          if (st && st.status === "completed") {
+            state.selected.clear();
+            var box = w.querySelector(".dw-outcome");
+            box.textContent = "";
+            var row = document.createElement("div");
+            row.className = "result-row green";
+            row.innerHTML = ico("check-circle-2") + "<span></span>";
+            row.querySelector("span").textContent =
+              "This add was already approved — the table now shows the result.";
+            box.appendChild(row);
+            box.hidden = false;
+            icons();
+            return fetchScan().then(function () { maybeResumeConversation(); });
+          }
+          showError(st && st.status === "denied"
+            ? "That approval was denied — press Add to ask again."
+            : "The approval expired before it ran — press Add again.");
         });
     }
 
@@ -1276,7 +1320,11 @@
             // continuation is owed now (#444).
             return onApproved(body.outcome).then(function () { maybeResumeConversation(); });
           }
-          if (body.status === "expired_or_not_found") { state.token = ""; state.tokenKey = ""; }
+          if (body.status === "expired_or_not_found") {
+            setBusy(false);
+            return explainGone(state.token);
+          }
+          if (body.status === "wrong_password") fetchScan();
           if (body.status === "locked") {
             // The server's per-token lockout lasts five minutes; mirror it so
             // the button does not invite attempts the gate will refuse.
@@ -1284,9 +1332,7 @@
             setTimeout(function () { state.locked = false; refreshControls(); }, 5 * 60 * 1000);
           }
           setBusy(false);
-          showError(body.status === "expired_or_not_found"
-            ? "The approval expired before it ran — press Add again."
-            : errorText(body, resp.status));
+          showError(errorText(body, resp.status));
         })
         .catch(function (err) {
           stopWait();

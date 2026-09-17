@@ -280,6 +280,18 @@ async def add_discovered_devices(
             "rejected": rejected,
         })
 
+    from admz.api.confirm_store import ConfirmStatus, confirm_store
+    from admz.discovery.scan_store import discovery_scans
+
+    # The same selection again reuses its pending session: the password
+    # lockout counts failures per token, so a fresh token per attempt would
+    # reset it.
+    add_key = ",".join(sorted(ids))
+    if scan.add_token and scan.add_key == add_key:
+        pending = confirm_store.get_session(scan.add_token)
+        if pending is not None and pending.effective_status == ConfirmStatus.PENDING:
+            return _pending_response(pending)
+
     target = ids[0] if len(ids) == 1 else "multiple"
     env = gate_scan_write(
         ACTION_ADD_DISCOVERED, target,
@@ -287,25 +299,35 @@ async def add_discovered_devices(
         add_reason(devices),
     )
     token = env["confirm_token"]
-    if scan.conversation_id:
-        # So the approval writes its [console] note into the conversation the
-        # scan came from, and a reload re-pins a still-pending card.
-        try:
-            from admz.chatbot.sessions import chat_sessions
+    discovery_scans.remember_add(scan.scan_id, principal.name, add_key, token)
+    try:
+        from admz.chatbot.sessions import chat_sessions
 
+        if scan.add_token and scan.add_token != token:
+            # A new selection supersedes the old session. Unlinked, it stays
+            # out of the conversation — no re-pinned card after a reload, no
+            # note — and expires on its own; the widget never showed its URL.
+            chat_sessions.pop_action_link(scan.add_token)
+        if scan.conversation_id:
+            # So the approval writes its [console] note into the conversation
+            # the scan came from, and a reload re-pins a still-pending card.
             chat_sessions.link_action(
                 token, principal.name, scan.conversation_id, "confirm",
                 label=ACTION_ADD_DISCOVERED)
-        except Exception:  # noqa: BLE001 — a missing note never blocks an add
-            logger.warning("could not link the add approval to its conversation",
-                           exc_info=True)
+    except Exception:  # noqa: BLE001 — a missing note never blocks an add
+        logger.warning("could not link the add approval to its conversation",
+                       exc_info=True)
     record_event(principal, "discovery.add_requested",
                  resource=f"discovery_scan:{scan.scan_id[:8]}",
                  details={"count": len(ids), "device_ids": ",".join(ids)})
+    return _pending_response(confirm_store.get_session(token))
+
+
+def _pending_response(session: Any) -> dict:
     return {
         "status": "pending",
-        "token": token,
-        "confirm_url": env["confirm_url"],
-        "confirmation_level": env["confirmation_level"],
-        "danger_description": env["reason"],
+        "token": session.token,
+        "confirm_url": f"/confirm/{session.token}",
+        "confirmation_level": session.confirmation_level,
+        "danger_description": session.danger_description,
     }
