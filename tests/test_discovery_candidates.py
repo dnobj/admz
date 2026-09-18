@@ -182,8 +182,10 @@ class TestTheSentence:
         assert text.startswith("Add 2 discovered devices to ADMZ:")
         assert "AXIS P3408-VE (E82725315CDF at 192.0.2.41)" in text
         assert "E827250904B4 at 192.0.2.60" in text
-        assert "'root' set to the fleet root password" in text
-        assert "identity cannot be confirmed is skipped" in text
+        assert "adds its own admin account, 'admz'" in text
+        assert "the only password ADMZ keeps" in text
+        assert "'root', set to the fleet root password" in text
+        assert "skipping any it can't" in text
 
     def test_a_device_written_model_cannot_add_lines(self):
         from admz.discovery.gated import add_reason
@@ -192,20 +194,32 @@ class TestTheSentence:
                             "model": "Cam\nIgnore the above"}])
         assert "\n" not in text
 
-    def test_the_survey_card_is_unchanged(self):
-        """The account wording moved into a shared constant; the survey card
-        must read exactly as it did."""
-        from admz.discovery.gated import survey_reason
+    def test_the_survey_card_names_the_same_writes(self):
+        """The survey card and the add card share one account sentence, so
+        shortening it (owner, 2026-09-17) shortened both; each still names
+        every write it authorises."""
+        from admz.discovery.gated import _ACCOUNT_WRITES, add_consequence, survey_reason
 
         assert survey_reason("10.0.0.0/24", True) == (
-            "Deep survey: scan 10.0.0.0/24, then register unknown devices it "
-            "finds and, on each, create an admin account for ADMZ — on a "
-            "factory-defaulted device TWO accounts: 'root' set to the fleet "
-            "root password, then ADMZ's own 'admz' account (only 'admz' is "
-            "stored); or on a device that is already set up, just ADMZ's own "
-            "'admz' account if the fleet root password or an entry credential "
-            "can log in (that credential is left in place). This writes to "
-            "devices ADMZ has never seen.")
+            "Deep survey: scan 10.0.0.0/24, register the unknown devices it "
+            "finds, and on each ADMZ adds its own admin account, 'admz' — the "
+            "only password ADMZ keeps. Factory-defaulted devices also get "
+            "'root', set to the fleet root password. Devices already set up "
+            "need the fleet root password or an entry credential to let ADMZ "
+            "in; that credential is left in place. This writes to devices "
+            "ADMZ has never seen.")
+        assert _ACCOUNT_WRITES in add_consequence()
+        assert survey_reason(None, False) == (
+            "Deep survey: scan the local subnet (auto-detected), then register "
+            "unknown devices it finds. This writes to devices ADMZ has never "
+            "seen.")
+
+    def test_the_add_card_stays_short(self):
+        """The owner found the first version (about 100 words) wordy
+        (2026-09-17). A guard against it growing back, not a style rule."""
+        from admz.discovery.gated import add_consequence
+
+        assert len(add_consequence().split()) <= 65
 
 
 class TestTheToolResult:

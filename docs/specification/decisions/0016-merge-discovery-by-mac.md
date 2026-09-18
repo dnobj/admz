@@ -53,6 +53,19 @@ are typically known by the time enrichment runs against IPs.
 - Devices with multiple NICs (some AXIS Camera Stations) appear
   twice — once per MAC. The operator chooses one to register.
 
+## Amendment 2026-09-17 — a record without a MAC joins its device
+
+The IP fallback above was implemented as a separate key, not as a way to join a device's MAC record. SSDP reports a serial number and a model but never a MAC, so every Axis device SSDP answered for was listed twice. The mDNS/ARP record sat under the MAC and the SSDP record under the IP, both with the same device id. The console's discovery widget made it visible: 10 of 29 rows in the owner's first scan were duplicates.
+
+`_merge_all` now does what this record decided:
+
+- **Records with a MAC go first.** Every record that has a MAC is merged before any record that lacks one, whatever the protocol order. The key is the canonical 12-hex MAC, so `aa:bb:…` and `AA-BB-…` are one device.
+- **A record without a MAC then joins its device.** It joins the record whose MAC is its serial number, because an Axis serial *is* the MAC. Failing that, it joins the one MAC record at its IP.
+- **Otherwise it keeps its own IP key, as before.** That happens when two MAC records hold the IP, which is ambiguous, or when the two records disagree about identity: an Axis serial naming a different MAC, or two different serial numbers.
+- **An Axis claim joined only by IP does not override another vendor's MAC.** The "any signal says Axis" rule in *Consequences* still holds for records that share a MAC or whose serial is the MAC. A claim that arrives only through an IP join has no Axis identity behind it, so it does not make a non-Axis MAC an Axis device, nor lend it an Axis manufacturer or device type. The case that forced this was the PC running ADMZ. It answered SSDP with a SERVER header naming Axis software, and would otherwise have been offered as an Axis device to add.
+
+The accepted negative above is unchanged, and still bounded. A record without a MAC can now be merged, by IP, into a *different* device's MAC record only when that IP had just one MAC holder during the scan. Conflicting identities are never merged.
+
 ## References
 
 - [NETWORK_DISCOVERY_RESEARCH.md](../../NETWORK_DISCOVERY_RESEARCH.md)

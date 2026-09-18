@@ -113,14 +113,15 @@ def gate_scan_write(action: str, target: str, payload: Mapping[str, Any],
 
 #: The account writes one approval of a discovery-driven add authorises. Shared
 #: by the survey card and the widget's add card (ADR-0072), so the two cannot
-#: describe the same writes differently.
+#: describe the same writes differently. Kept short at the owner's request
+#: (2026-09-17), but it still names every write — ADMZ's own account on each
+#: device, and ``root`` on a factory-defaulted one — what is stored, and that
+#: the credential ADMZ came in on survives (ADR-0061).
 _ACCOUNT_WRITES = (
-    "create an admin account for ADMZ — on a factory-defaulted device TWO "
-    "accounts: 'root' set to the fleet root password, then ADMZ's own "
-    "'admz' account (only 'admz' is stored); or on a device that is "
-    "already set up, just ADMZ's own 'admz' account if the fleet root "
-    "password or an entry credential can log in (that credential is "
-    "left in place)"
+    "adds its own admin account, 'admz' — the only password ADMZ keeps. "
+    "Factory-defaulted devices also get 'root', set to the fleet root "
+    "password. Devices already set up need the fleet root password or an "
+    "entry credential to let ADMZ in; that credential is left in place"
 )
 
 
@@ -138,9 +139,10 @@ def survey_reason(subnet: Any, register_new: bool) -> str:
     # affecting, so the level is already the max). Under-describing it here
     # would mean the operator approved something the card never mentioned,
     # which is the failure #411's review caught in the first draft.
-    tail = (f"register unknown devices it finds and, on each, {_ACCOUNT_WRITES}"
-            if register_new else "register unknown devices it finds")
-    return (f"Deep survey: scan {where}, then {tail}. This writes to devices "
+    tail = (f"register the unknown devices it finds, and on each ADMZ "
+            f"{_ACCOUNT_WRITES}"
+            if register_new else "then register unknown devices it finds")
+    return (f"Deep survey: scan {where}, {tail}. This writes to devices "
             f"ADMZ has never seen.")
 
 
@@ -176,8 +178,6 @@ def add_consequence() -> str:
     button before anything is selected, and :func:`add_reason` ends with it,
     so the sentence the operator reads is the one the session records."""
     return (
-        "For each device, ADMZ first checks that the device at that address "
-        "still reports that serial number and registers it; then it will "
-        f"{_ACCOUNT_WRITES}. A device whose identity cannot be confirmed is "
-        "skipped and nothing is written to it."
+        "ADMZ confirms each device's serial number, skipping any it can't, "
+        f"then registers the device and {_ACCOUNT_WRITES}."
     )
