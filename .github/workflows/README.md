@@ -10,24 +10,27 @@
 | `suite (ubuntu-latest)` | ubuntu | Full suite | yes |
 | `suite (windows-latest)` | windows | Full suite on the deployment platform | yes, on any PR that can merge |
 
-`quick` gates `suite`, so a syntax error or bad import costs ~2 minutes instead
-of two full 15-minute runs.
+`quick` gates `suite`, so a syntax error or bad import costs ~1 minute instead
+of two full suite runs.
 
 ### Which events run which jobs
 
-Windows is **90% of the bill**: 797s wall against Linux's 135s, *and* billed at
-2x, so it is 1,594 of the ~1,770 billable seconds a full-matrix run costs. The
-free-tier private-repo allowance is 2,000 min/month — about 68 full runs — and
-in August 2026 we spent ~60 in a single day and GitHub started refusing jobs
-outright (11s, no steps, no runner). Hence:
+Windows is **~90% of the bill**. Measured 2026-09-18 with the suite in parallel
+(`-n auto`), its leg took 863s wall against Linux's 152s. It is also billed at
+2x, so it is 1,726 of the ~1,930 billable seconds (~32 min) a full-matrix run
+costs. Run serially the week before, the Windows leg alone took 21–28 min, so a
+full run cost ~47–61 billable minutes. The free-tier private-repo allowance is
+2,000 min/month — about 62 full runs at today's cost. In August 2026 we spent
+~60 in a single day, and GitHub started refusing jobs outright (11s, no steps,
+no runner). Hence:
 
 | Event | `preflight` | `quick` | `suite` legs | Billable |
 |---|---|---|---|---|
 | `push` to `master` (post-merge) | yes | yes | **skipped** | **0.7 min** |
-| PR — **draft** | yes | yes | ubuntu only | **3.0 min** |
-| PR — **not draft** | yes | yes | ubuntu + windows | 29.5 min |
-| `ready_for_review` | yes | yes | ubuntu + windows | 29.5 min |
-| `workflow_dispatch` | yes | yes | ubuntu + windows | 29.5 min |
+| PR — **draft** | yes | yes | ubuntu only | **3.4 min** |
+| PR — **not draft** | yes | yes | ubuntu + windows | 32 min |
+| `ready_for_review` | yes | yes | ubuntu + windows | 32 min |
+| `workflow_dispatch` | yes | yes | ubuntu + windows | 32 min |
 
 **Windows still gates everything that lands.** GitHub will not merge a draft PR,
 so "not a draft" is exactly the set of PRs that can land, and every one of them
@@ -39,7 +42,7 @@ would never have run Windows while the checks read green.
 
 **Draft-first iteration is an optional saving, not a requirement.** A non-draft
 PR behaves exactly as it always did. Open a PR as a draft while you iterate
-(~3 min a push instead of ~29.5) and mark it ready when you want the real gate.
+(~3.4 min a push instead of ~32) and mark it ready when you want the real gate.
 `workflow_dispatch` runs the full matrix on any branch if you want Windows
 without leaving draft.
 
@@ -229,10 +232,21 @@ dependency gets muted, and a muted signal is no signal.
   to ignore CI just as effectively. Adopting lint needs a line-length decision
   and a 350-file reformat commit sequenced against in-flight branches — its own
   PR. Tracked separately.
-* **No `pytest-xdist`.** `tests/conftest.py:1-14` documents order-dependent
-  shared singletons that already broke once when collection order shifted, and
-  there are 17 further singletons that connect and run DDL at *import*.
-  Parallelising this suite is the same project as issue #184.
+* ~~No `pytest-xdist`.~~ **Reversed 2026-09-18: the suite runs with
+  `-n auto --dist loadfile`.** This was a non-goal while stores connected and
+  ran DDL at import, and while nothing gave a test process its own
+  `ADMZ_HOME` — issue #184, closed 2026-08-05. Both are fixed. Stores resolve
+  their path at call time (#258), and `tests/conftest.py` redirects
+  `ADMZ_HOME` to a fresh temp directory in every process (#257). A worker is a
+  process, so each one gets its own. The order-dependent singletons in
+  `tests/conftest.py:1-14` are reset before every test and are per-process
+  anyway. The reason for doing it: run serially, the Windows leg took 21–28 min
+  against the 40-min cap, and a slow runner cancelled #515 at 83%. Measured on
+  #516, the Windows leg went from 21–24 min of test time to 12m50s, and the
+  ubuntu leg from ~3m20s to 91s. Parallel runs surfaced one timing-dependent
+  test: a raw-bytes scan read only the main database file while its write
+  still sat in the WAL. It now reads `-wal` and `-shm` too, as
+  `test_setting_encryption.py` already did.
 * **No `pytest-timeout`.** A hung test currently runs to the job timeout
   (40 min). Worth adding, but the per-test cap needs tuning against real CI
   timings — a follow-up, not a guess made here.

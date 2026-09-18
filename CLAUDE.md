@@ -181,11 +181,11 @@ Staging exists so UI and behavior can be exercised without touching production. 
 ## Running things
 
 ```
-C:/admz/admz-dev/.venv/Scripts/python.exe -m pytest -q
+C:/admz/admz-dev/.venv/Scripts/python.exe -m pytest -q -n 8 --dist loadfile
 ```
 
 - **Always use the `.venv` interpreter.** The base conda environment has an old `google-genai` that 400s on Gemini 3.x tool turns.
-- The full suite takes **10–12 minutes**. Run it in the **foreground with a long timeout** — a two-minute default will kill it, and a partial run is not a green run. (The test *count* is deliberately not stated: it changes every merge, and a number nobody updates is worse than no number — the #303 rule.)
+- **Run the full suite in parallel** (pytest-xdist, from `requirements-dev.txt`; CI uses `-n auto`). On the reference box, `-n 8 --dist loadfile` took **about 5 minutes** (2026-09-18). Serially it now takes far longer than the 10–12 minutes this file used to state: a 12-file subset alone took 8 minutes, and a backgrounded serial run was once mistaken for a hang at 33 minutes. Run it in the **foreground with a long timeout** — a two-minute default will kill it, and a partial run is not a green run. (The test *count* is deliberately not stated: it changes every merge, and a number nobody updates is worse than no number — the #303 rule.)
 - **Test isolation matters more than usual here.** A test that doesn't isolate `ADMZ_HOME` will write into the operator's real database. If you add a writer, prove it cannot reach a real DB from a test run. (The stores no longer bind their path at *import* — #258 moved all 17 to a call-time `_db_path` property with schema-ensure inside `_connect()`. The isolation requirement is unchanged; the mechanism this warning used to name is not, and a reader debugging it would have looked in the wrong place.)
 
 ## Worktrees

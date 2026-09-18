@@ -201,7 +201,16 @@ jobs:
           # unset; that is safety by accident, so it is excluded explicitly.
           # Setting ADMZ_LIVE_CHAT_TESTS or ADMZ_E2E_* in this workflow would
           # point CI at live hardware and a live fleet. Do not.
+          #
+          # -n auto: one pytest-xdist worker per runner CPU (4 on the standard
+          # hosted runners). Run serially, the Windows leg took 21-28 min
+          # against the 40-min cap, and a slow runner cancelled it at 83%
+          # (#515). Each worker is its own process, so each gets its own
+          # throwaway ADMZ_HOME from tests/conftest.py and its own copies of
+          # the process-wide singletons that conftest resets before every test.
+          # --dist loadfile keeps a file's tests on one worker, in file order.
           python -m pytest -q --no-cov -p no:cacheprovider \
+            -n auto --dist loadfile \
             --ignore=tests/e2e \
             --ignore=tests/test_chat_action_live.py \
             --durations=25
