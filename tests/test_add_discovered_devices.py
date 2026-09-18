@@ -134,13 +134,19 @@ async def _approve_and_run(registry, action):
         executors={"vapix": MagicMock()})
 
 
-def _open_provision_sessions():
+def _provision_session_tokens():
+    """Tokens of every per-device provisioning approval in the store.
+
+    A set, not a count. The store is process-wide, and creating any session
+    runs ``_cleanup``, which reaps other tests' abandoned sessions once they
+    have expired. Under parallel CI a count went 6 -> 0 mid-test and read as a
+    nested card (#516). A new token is what a nested card leaves behind.
+    """
     conn = confirm_store._connect()  # ensures the schema, like any store read
     try:
-        return conn.execute(
-            "SELECT COUNT(*) FROM confirm_sessions "
-            "WHERE operation_id = 'action:provision_device_credentials'"
-        ).fetchone()[0]
+        return {row[0] for row in conn.execute(
+            "SELECT token FROM confirm_sessions "
+            "WHERE operation_id = 'action:provision_device_credentials'")}
     finally:
         conn.close()
 
@@ -156,14 +162,14 @@ class TestOneApproval:
         self, serials, factory_default
     ):
         registry = FakeRegistry()
-        before = _open_provision_sessions()
+        before = _provision_session_tokens()
         out = await _approve_and_run(registry, _action(A, B))
 
         assert out["success"] is True, out
         assert out["added"] == [A, B]
         assert factory_default.await_count == 2
         assert [d["status"] for d in out["devices"]] == ["provisioned", "provisioned"]
-        assert _open_provision_sessions() == before, (
+        assert not _provision_session_tokens() - before, (
             "a per-device provisioning card was raised inside the approval")
 
     @pytest.mark.asyncio
@@ -177,11 +183,15 @@ class TestOneApproval:
             ("start_demo_survey", "register_discovered_device",
              "provision_device_credentials"),
         )
+        before = _provision_session_tokens()
         out = await _approve_and_run(FakeRegistry(), _action(A, B))
 
         assert out["success"] is False
         assert {d["status"] for d in out["devices"]} == {"approval_required"}
         factory_default.assert_not_awaited()
+        # The detector the test above relies on sees nested cards when they
+        # happen: one new provisioning session per device.
+        assert len(_provision_session_tokens() - before) == 2
 
     def test_the_two_authority_lists_are_equal(self):
         from admz.onboarding import _APPROVAL_ACTIONS
