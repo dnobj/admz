@@ -229,10 +229,18 @@ dependency gets muted, and a muted signal is no signal.
   to ignore CI just as effectively. Adopting lint needs a line-length decision
   and a 350-file reformat commit sequenced against in-flight branches — its own
   PR. Tracked separately.
-* **No `pytest-xdist`.** `tests/conftest.py:1-14` documents order-dependent
-  shared singletons that already broke once when collection order shifted, and
-  there are 17 further singletons that connect and run DDL at *import*.
-  Parallelising this suite is the same project as issue #184.
+* ~~No `pytest-xdist`.~~ **Reversed 2026-09-18: the suite runs with
+  `-n auto --dist loadfile`.** This was a non-goal while stores connected and
+  ran DDL at import, and while nothing gave a test process its own
+  `ADMZ_HOME` — issue #184, closed 2026-08-05. Both are fixed. Stores resolve
+  their path at call time (#258), and `tests/conftest.py` redirects
+  `ADMZ_HOME` to a fresh temp directory in every process (#257). A worker is a
+  process, so each one gets its own. The order-dependent singletons in
+  `tests/conftest.py:1-14` are reset before every test and are per-process
+  anyway. A full local run under 4 workers passed with no failures
+  (5983 passed, 14 skipped). The reason for doing it: run serially, the Windows
+  leg took 21–28 min against the 40-min cap, and a slow runner cancelled #515
+  at 83%.
 * **No `pytest-timeout`.** A hung test currently runs to the job timeout
   (40 min). Worth adding, but the per-test cap needs tuning against real CI
   timings — a follow-up, not a guess made here.
