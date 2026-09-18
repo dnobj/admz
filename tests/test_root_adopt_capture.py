@@ -159,9 +159,18 @@ class TestTheTypedPasswordIsNeverTheDeviceCredential:
 
         A control first — the generated admz password IS recoverable as
         ciphertext-bearing rows exist — so the absence below is not vacuous.
+
+        The WAL is read with the main file, as ``test_setting_encryption.py``
+        does. A fresh write sits in ``-wal`` until a checkpoint, which runs when
+        the last connection closes; under parallel CI another connection was
+        still open, the main file held only its header, and the control failed
+        (#516). A password in the WAL is on disk all the same.
         """
         client.post(f"/capture/{_token()}", data=FORM, headers=SAME_ORIGIN)
-        raw = Path(client.db_path).read_bytes()
+        raw = b"".join(
+            path.read_bytes()
+            for path in (Path(f"{client.db_path}{side}") for side in ("", "-wal", "-shm"))
+            if path.exists())
         assert b"cam-1" in raw, "CONTROL: nothing was written at all"
         assert TYPED.encode() not in raw, (
             "the typed root password is recoverable from the database file")
