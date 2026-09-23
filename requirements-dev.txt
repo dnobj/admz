@@ -26,6 +26,9 @@ pytest-asyncio>=1.4,<1.5  # installed 1.4.0 (= latest). Bounded at the MINOR, no
 pytest-cov>=7.0.0,<8      # installed 7.0.0; latest 7.1.0. Floor raised from >=4.0.0 — three
                           # majors below installed.
 pytest-mock>=3.10.0,<4    # installed 3.15.1 (= latest). Floor already at the installed major.
+pytest-xdist>=3.8,<4      # installed 3.8.0 (= latest). CI runs the suite with `-n auto`
+                          # (2026-09-18): serially, the Windows leg ran 21-28 min against a
+                          # 40-min job cap. Floor at the installed minor, the one CI measured.
 black>=26.0.0,<27         # installed 26.1.0; latest 26.5.1. Floor raised from >=23.0.0 —
                           # three majors below installed, and black's formatting output
                           # changes across majors, so a drift here fails the format check.
