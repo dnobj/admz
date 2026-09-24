@@ -103,8 +103,17 @@ def test_the_temp_password_is_never_written_to_the_database(db):
     TempCredentialManager(db_path=db).register(_cred())
 
     from pathlib import Path
-    assert b"tempsecret" not in Path(db).read_bytes(), (
-        "the temp password was persisted")
+    # The WAL too: a fresh write can sit in `-wal` until a checkpoint, and a
+    # password there is on disk all the same (#516).
+    for side in ("", "-wal", "-shm"):
+        f = Path(f"{db}{side}")
+        if f.exists():
+            assert b"tempsecret" not in f.read_bytes(), (
+                f"the temp password was persisted in {f.name}")
+    assert b"at_deadbeef" in b"".join(
+        Path(f"{db}{side}").read_bytes() for side in ("", "-wal")
+        if Path(f"{db}{side}").exists()), (
+        "CONTROL: the row itself is not on disk, so the absence proves nothing")
 
 
 def test_no_io_in_the_constructor(tmp_path):

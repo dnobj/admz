@@ -110,10 +110,13 @@ How device credentials are captured, stored, retrieved, and rotated — with spe
 **As an** operator following a security incident, **I want to** rotate the admin password on a device **so that** the old credential becomes invalid.
 
 **Acceptance criteria:**
-1. `provision_device(device_id, force_change=true, password="<new>")` calls `pwdgrp.cgi:update-user` on the device.
-2. On success, the new password replaces the stored one in the registry.
-3. On failure, the old credential remains stored (the rotation is atomic-from-ADMZ's-perspective).
-4. The web UI offers a "Rotate" action on the device's account page (which submits an `update_user` operation under the hood).
+1. **The device's own password** is changed with the VAPIX operation `pwdgrp.cgi:update-user` (`execute_operation` from the chat, or the REST API). It is `service-affecting`, so it raises an approval card like any other write.
+2. **ADMZ's stored copy** is updated through the out-of-band capture flow: the account page's **Change password** button opens a one-time `/capture/{token}` form bound to that device and account (ADR-0009). The new password never passes through the chat. The form changes only what ADMZ stores, not the device.
+3. `DeviceRegistry.update_account` replaces a stored credential atomically, so an account is never briefly missing. On a failed update, the old credential stays stored.
+4. `provision_device(..., force_change=true)` no longer exists. ADR-0068 S2 retired `force_change`, `password` and `username`, and the tool refuses them with an explanation.
+5. Since ADR-0068, the stored credential for a device ADMZ provisioned or adopted is its own `admz` account, with a generated password. Its `root` password is the fleet root password (FR-CRED-014). Changing that setting does not change `root` on devices already provisioned: each keeps the value it was given.
+
+_Corrected 2026-09-23: criteria 1 and 4 described `provision_device(force_change=true)`, retired by ADR-0068 S2 on 2026-09-14._
 
 **Related requirements:** [credential-storage](../requirements/credential-storage.md), [web-ui](../requirements/web-ui.md).
 

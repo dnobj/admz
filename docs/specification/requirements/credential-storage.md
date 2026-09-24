@@ -612,7 +612,11 @@ no master-key wrap (see [ADR-0010](../decisions/0010-fernet-encryption.md)
 
 ### KL-CRED-002 — No automatic credential rotation ⚠️
 Manual rotation works via three paths:
-- `provision_device(..., force_change=true)` (LLM/MCP/CLI)
+- **On the device:** the VAPIX operation `pwdgrp.cgi:update-user`
+  (`execute_operation`, `service-affecting`, so it raises an approval
+  card). `provision_device(..., force_change=true)` used to be listed here;
+  ADR-0068 S2 retired `force_change` and the tool now refuses it
+  (corrected 2026-09-23).
 - **Web UI "Change password" button** on the account detail
   page — creates a one-time capture session bound to the
   existing device + account_id and redirects the operator to
