@@ -101,7 +101,15 @@ class TestSqliteUpdateAccount:
 
         db_file = tmp_path / "admz.db"
         assert db_file.exists()
-        raw = db_file.read_bytes()
+        # The WAL too: a fresh write can sit in `-wal` until a checkpoint, and
+        # a password there is on disk all the same (#516).
+        raw = b"".join(
+            f.read_bytes()
+            for f in (tmp_path / "admz.db", tmp_path / "admz.db-wal",
+                      tmp_path / "admz.db-shm")
+            if f.exists())
+        assert b"cam-01" in raw, (
+            "CONTROL: the device row is not on disk, so the absence proves nothing")
         assert b"very-distinctive-new-pw" not in raw, (
             "Updated password leaked to raw DB bytes!"
         )
