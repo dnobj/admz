@@ -24,6 +24,8 @@ below should ever be pointed at production.
 | M5 | With nothing pending, switch away from the chat tab and back several times. | No turn fires. The usage counter on `/settings/chat` does not move. |
 | M6 | Raise an approval card and **Deny** it. | The continuation acknowledges the denial and does **not** re-propose the action. (A denial note is an event row too, so it is "due" — due-ness is deliberately uniform rather than sniffing the note's text.) |
 | M7 | Start a capture, and **while it is open** click **New chat** so a different conversation is active. Complete the capture, return to `/chat`. | The answer lands in the conversation that resolved, and the **active conversation does not change** — your next typed message still goes to the new chat. |
+| M8 | Get **three** approval cards in one reply (e.g. a drift review: one revert, two accepts). Approve all three quickly, while the first continuation is still writing. | The first continuation reports the first action. Then **one more** continuation runs by itself and reports the other two as done. No reply says an approved card is still awaiting approval. |
+| M9 | Type a message, and while its reply is still streaming, approve a card from an earlier reply. | The typed reply finishes on its own. Then a continuation answers the approval. The two never stream into the transcript at the same time. |
 
 ## What a failure looks like
 
@@ -35,3 +37,9 @@ below should ever be pointed at production.
   are racing ahead of it.
 - **M7 moves your active chat** → the turn is resolving the active conversation
   instead of the one passed to it.
+- **M8 says an approved card is still pending, and nothing follows** → notes
+  written mid-turn are not being re-filed after the reply
+  (`_refile_unseen_notes`), or the console dropped the request that arrived
+  mid-reply (`resumeWanted`).
+- **M9 streams two replies at once** → `maybeResumeConversation` is not treating
+  a typed reply as in flight.

@@ -398,3 +398,192 @@ class TestTheContinuationKeepsTheModel:
         call = re.search(r'fetch\("/api/chat/resume",\s*\{.*?\}\)', src, re.S)
         assert call, "the continuation request moved — re-pin this test"
         assert "model:" in call.group(0)
+
+
+# ---------------------------------------------------------------------------
+# A note that lands while a turn is running (2026-09-23)
+#
+# Three cards were approved within six seconds. The first approval's
+# continuation read the conversation, then the other two approvals wrote their
+# notes, then the continuation saved its reply — after them. The trailing row
+# was a model row, so nothing was due, and the reply told the operator two
+# accepts were still awaiting approval although both had run.
+# ---------------------------------------------------------------------------
+
+
+def _mid_turn_stream(store, conv, notes, captured=None, text="Reverted SSH."):
+    """A fake stream_turn that, while the turn is running, has approvals land:
+    it appends console notes AFTER the turn read its history."""
+    from admz.chatbot.events import event_done, event_text
+
+    async def stream(**kwargs):
+        if captured is not None:
+            captured.update(kwargs)
+        for note in notes:
+            store.append_event(PRINCIPAL, conv, note)
+        yield event_text(text)
+        yield event_done(interaction_id="int-9", input_tokens=10, output_tokens=5)
+
+    return stream
+
+
+class TestANoteThatLandsMidTurn:
+    def test_a_note_written_during_a_continuation_stays_due(self, client):
+        store = _store()
+        conv = _resolved_conversation(store)
+        _, seen = store.get_history_and_watermark(PRINCIPAL, conversation_id=conv)
+        store.append_event(PRINCIPAL, conv, "[console] second card approved")
+        store.append_model_turn(PRINCIPAL, conv, "The first one is done.",
+                                seen_upto=seen)
+
+        rows = store.get_messages(PRINCIPAL, conv)
+        assert [m["role"] for m in rows] == [
+            "user", "model", "event", "model", "event"]
+        assert rows[-1]["text"] == "[console] second card approved"
+        assert store.resume_due(PRINCIPAL, conv) is not None
+
+    def test_a_note_the_turn_saw_is_left_where_it_is(self, client):
+        """Control: only notes newer than the watermark move."""
+        store = _store()
+        conv = _resolved_conversation(store)
+        _, seen = store.get_history_and_watermark(PRINCIPAL, conversation_id=conv)
+        store.append_model_turn(PRINCIPAL, conv, "Done.", seen_upto=seen)
+
+        assert [m["role"] for m in store.get_messages(PRINCIPAL, conv)] == [
+            "user", "model", "event", "model"]
+        assert store.resume_due(PRINCIPAL, conv) is None
+
+    def test_refiled_notes_keep_their_text_time_and_order(self, client):
+        store = _store()
+        conv = _resolved_conversation(store)
+        _, seen = store.get_history_and_watermark(PRINCIPAL, conversation_id=conv)
+        store.append_event(PRINCIPAL, conv, "[console] second")
+        store.append_event(PRINCIPAL, conv, "[console] third")
+        before = {m["text"]: m["created_at"] for m in store.get_messages(PRINCIPAL, conv)}
+
+        store.append_model_turn(PRINCIPAL, conv, "First done.", seen_upto=seen)
+
+        rows = store.get_messages(PRINCIPAL, conv)
+        assert [m["text"] for m in rows[-3:]] == [
+            "First done.", "[console] second", "[console] third"]
+        for m in rows[-2:]:
+            assert m["created_at"] == before[m["text"]]
+
+    def test_a_typed_turn_refiles_them_too(self, client):
+        """An approval that lands while a typed message is being answered."""
+        store = _store()
+        store.append_turn(PRINCIPAL, "hi", "hello")
+        conv = store.get_active_conversation(PRINCIPAL)
+        _, seen = store.get_history_and_watermark(PRINCIPAL, conversation_id=conv)
+        store.append_event(PRINCIPAL, conv, "[console] approved mid-reply")
+        store.append_turn(PRINCIPAL, "status?", "All good.", seen=(conv, seen))
+
+        assert [m["role"] for m in store.get_messages(PRINCIPAL, conv)] == [
+            "user", "model", "user", "model", "event"]
+        assert store.resume_due(PRINCIPAL, conv) is not None
+
+    def test_nothing_moves_when_the_reply_lands_in_another_conversation(self, client):
+        """The active conversation can change mid-turn; the watermark belongs
+        to the conversation it was read in."""
+        store = _store()
+        store.append_turn(PRINCIPAL, "hi", "hello")
+        conv = store.get_active_conversation(PRINCIPAL)
+        store.append_event(PRINCIPAL, conv, "[console] a note")
+        store.append_turn(PRINCIPAL, "status?", "All good.", seen=("other-conv", 0))
+
+        assert [m["role"] for m in store.get_messages(PRINCIPAL, conv)] == [
+            "user", "model", "event", "user", "model"]
+
+    def test_a_claim_follows_its_note(self, client):
+        """A tab already answering a note keeps its claim after the note moves,
+        so the same note is not answered twice."""
+        store = _store()
+        conv = _resolved_conversation(store)
+        _, seen = store.get_history_and_watermark(PRINCIPAL, conversation_id=conv)
+        store.append_event(PRINCIPAL, conv, "[console] second")
+        note = store.resume_due(PRINCIPAL, conv)
+        assert store.try_claim_resume(PRINCIPAL, conv, note) is True
+
+        store.append_model_turn(PRINCIPAL, conv, "First done.", seen_upto=seen)
+
+        moved = store.resume_due(PRINCIPAL, conv)
+        assert moved is not None and moved != note
+        assert store.try_claim_resume(PRINCIPAL, conv, moved) is False
+
+    def test_the_watermark(self, client):
+        store = _store()
+        assert store.get_history_and_watermark(PRINCIPAL) == ([], None)
+        conv = store.create_conversation(PRINCIPAL)
+        assert store.get_history_and_watermark(
+            PRINCIPAL, conversation_id=conv) == ([], 0)
+        store.append_event(PRINCIPAL, conv, "[console] x")
+        newest = store.resume_due(PRINCIPAL, conv)
+        _, seen = store.get_history_and_watermark(PRINCIPAL, conversation_id=conv)
+        assert seen == newest
+        _, seen0 = store.get_history_and_watermark(
+            PRINCIPAL, max_turns=0, conversation_id=conv)
+        assert seen0 == newest
+
+    def test_the_2026_09_23_sequence(self, client):
+        """End to end: the first approval's continuation runs while two more
+        approvals land. The next continuation is still owed, and it sees both
+        notes last, as the thing to answer."""
+        store = _store()
+        conv = _resolved_conversation(store)
+        _seed_api_key()
+        with patch("admz.api.routes.chat.stream_turn", _mid_turn_stream(
+                store, conv, ["[console] accept on cam-2 executed",
+                              "[console] accept on cam-3 executed"])):
+            r = client.post("/api/chat/resume", json={"conversation_id": conv})
+        assert r.status_code == 200
+        assert client.get("/api/chat/resume-due").json()["due"] is True
+
+        captured = {}
+        with patch("admz.api.routes.chat.stream_turn",
+                   _capturing_stream(captured, text="All three are done.")):
+            r = client.post("/api/chat/resume", json={"conversation_id": conv})
+        assert r.status_code == 200
+        assert [h["text"] for h in captured["history"][-3:]] == [
+            "Reverted SSH.",
+            "[console] accept on cam-2 executed",
+            "[console] accept on cam-3 executed",
+        ]
+        assert client.get("/api/chat/resume-due").json()["due"] is False
+
+    def test_a_typed_turn_end_to_end(self, client):
+        store = _store()
+        store.append_turn(PRINCIPAL, "hi", "hello")
+        conv = store.get_active_conversation(PRINCIPAL)
+        _seed_api_key()
+        with patch("admz.api.routes.chat.stream_turn", _mid_turn_stream(
+                store, conv, ["[console] approved mid-reply"], text="Status ok.")):
+            r = client.post("/api/chat", json={"message": "status?"})
+        assert r.status_code == 200
+        assert [m["role"] for m in store.get_messages(PRINCIPAL, conv)] == [
+            "user", "model", "user", "model", "event"]
+        assert client.get("/api/chat/resume-due").json()["due"] is True
+
+    def test_the_console_answers_a_note_after_the_reply_instead_of_dropping_it(self):
+        """No JS test tooling here, so the browser half is pinned by source: a
+        continuation asked for while any reply streams is remembered, and both
+        kinds of reply look again when they finish."""
+        import re
+        from pathlib import Path
+
+        import admz.api as api_pkg
+
+        src = (Path(api_pkg.__file__).parent / "static" / "chat.js").read_text(
+            encoding="utf-8")
+        body = re.search(
+            r"function maybeResumeConversation\(\) \{\s*(.*?)\n    return fetch",
+            src, re.S)
+        assert body, "maybeResumeConversation moved — re-pin this test"
+        assert "resumeWanted = true" in body.group(1)
+        assert "if (resumeInFlight) return;" not in src, (
+            "a note that lands mid-reply is dropped again")
+        typed = re.search(r'fetch\("/chat/stream".*?\.finally\(function \(\) \{(.*?)\}\);',
+                          src, re.S)
+        assert typed and "answerDeferredNotes()" in typed.group(1)
+        resumed = re.search(r'fetch\("/api/chat/resume".*?\.finally\(function \(\) \{(.*?)\}\);',
+                            src, re.S)
+        assert resumed and "answerDeferredNotes()" in resumed.group(1)

@@ -26,6 +26,9 @@
   var transcript = document.getElementById("chat-transcript");
   var sendBtn = document.getElementById("chat-send");
   var emptyState = document.getElementById("chat-empty");
+  // A typed reply is streaming. Tracked on its own rather than read off
+  // sendBtn.disabled, which is also true on a page with no API key.
+  var typedTurnInFlight = false;
 
   if (!form || !transcript || !sendBtn) return;
 
@@ -99,6 +102,7 @@
 
     sendBtn.disabled = true;
     sendBtn.classList.add("disabled");
+    typedTurnInFlight = true;
 
     var body = new URLSearchParams();
     body.set("message", message);
@@ -115,6 +119,7 @@
       })
       .catch(function (err) { renderError(assistantBubble, String(err)); })
       .finally(function () {
+        typedTurnInFlight = false;
         sendBtn.disabled = false;
         sendBtn.classList.remove("disabled");
         messageEl.focus();  // composer was already cleared on send
@@ -122,6 +127,7 @@
         removeTyping(assistantBubble);
         finishTurnWidgets(assistantBubble);
         loadNotices(false); // the turn's tools may have resolved one
+        answerDeferredNotes(); // an approval may have landed mid-reply
       });
   });
 
@@ -1658,13 +1664,29 @@
   // The turn is gated exactly like a typed one, so anything risky raises a
   // fresh card rather than running.
   var resumeInFlight = false;
+  // One reply at a time, and nothing dropped. A note that lands while a reply
+  // is streaming — the operator approving a second card while the first
+  // card's continuation is still answering — is answered AFTER that reply.
+  // It used to be dropped: the in-flight check returned early and nothing
+  // looked again, so the reply reported two approvals as still pending after
+  // both had run (2026-09-23). The server re-files a note the finishing reply
+  // never saw, so "due" is still true when this looks again.
+  var resumeWanted = false;
+  function turnInFlight() { return resumeInFlight || typedTurnInFlight; }
+  function answerDeferredNotes() {
+    // Once per finished reply, and only if something asked while it ran — a
+    // failed continuation stays due but claimed, and must not loop on 409s.
+    if (!resumeWanted) return;
+    resumeWanted = false;
+    maybeResumeConversation();
+  }
   function maybeResumeConversation() {
-    if (resumeInFlight) return;
+    if (turnInFlight()) { resumeWanted = true; return; }
     return fetch("/api/chat/resume-due", { headers: { Accept: "application/json" } })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (data) {
         if (!data || !data.due || !data.conversation_id) return;
-        if (resumeInFlight) return;
+        if (turnInFlight()) { resumeWanted = true; return; }
         resumeInFlight = true;
         if (emptyState) emptyState.style.display = "none";
         var assistantBubble = renderAssistantBubble();
@@ -1702,6 +1724,7 @@
             finishTurnWidgets(assistantBubble);
             // The continuation's tools may have resolved a notice.
             loadNotices(true);
+            answerDeferredNotes();
           });
       })
       .catch(function () {});

@@ -267,6 +267,20 @@ assistant finishes the work it said it would. See
   claim** on the trailing note's id stops both firing. The lease is deliberately
   not a tombstone: a *failed* resume stays due and retries on a later reload,
   rather than never firing again.
+- **A note that lands while a reply is running is still answered** (✅
+  2026-09-23). A turn reads its history when it starts and writes its reply when
+  it ends. So a note written in between (a second card approved while the first
+  card's continuation is answering, or while a typed message is) used to sit
+  *before* the reply and read as answered by a reply that never saw it. On
+  2026-09-23 the chat reported two baseline accepts as "awaiting approval" after
+  both had run. Now:
+  - A turn records the newest row it read. When it persists its reply, the notes
+    newer than that are re-filed after the reply, keeping their text and time,
+    so they stay due.
+  - The console runs one reply at a time. A continuation asked for while any
+    reply streams is remembered and fired once that reply ends, never alongside
+    it.
+  - A claim on a re-filed note follows it.
 - **Both flows.** Approvals — whose held work already executed on approval — gain
   the missing narration; captures — whose follow-on never ran — get it run. A
   denial is also an event row and is due too; the continuation acknowledges it.
