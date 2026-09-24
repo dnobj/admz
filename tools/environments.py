@@ -26,7 +26,7 @@ import re
 import subprocess
 import sys
 import tarfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 REPO = Path(__file__).resolve().parents[1]
 DOC = REPO / "docs" / "ENVIRONMENTS.md"
@@ -571,7 +571,9 @@ def restricted_problems(name: str, spec: dict, read=acl_sddl) -> list:
         return []
     targets = [spec.get("checkout")]
     if spec.get("venv"):
-        targets.append(str(Path(spec["venv"], "Scripts", "python.exe")))
+        # A Windows path wherever this runs: the declaration describes a
+        # Windows service, and the tests run on Linux too.
+        targets.append(str(PureWindowsPath(spec["venv"], "Scripts", "python.exe")))
     problems = []
     for target in filter(None, targets):
         sddl = read(target)
