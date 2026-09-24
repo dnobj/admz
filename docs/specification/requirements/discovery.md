@@ -19,7 +19,7 @@ Each is a separate module under `admz/discovery/` implementing
 | ONVIF (WS-Discovery) | NetworkVideoTransmitter via UDP multicast | Library: `WSDiscovery` |
 | ARP scanner | scapy ARP scan + OS `arp -a` fallback | Falls back when no admin/root |
 | Ping sweep | ICMP via system `ping` | Opt-in (disabled by default) |
-| HTTP probe | `Server`, `AXIS-Setup` headers, basicdeviceinfo | Phase-2 enrichment |
+| HTTP probe | `Server`, `AXIS-Setup` headers, basicdeviceinfo | Phase-2 enrichment. Plain HTTP first; HTTPS when HTTP does not answer at all, so a device set up HTTPS-only is still recognised (and gets its VAPIX tag, model and serial). Follow-up calls use the scheme that answered; no credentials are sent on either (2026-09-23) |
 | SNMP | sysDescr + sysName | Phase-2 enrichment |
 
 ### FR-DISC-002 — Two-phase orchestration ✅
