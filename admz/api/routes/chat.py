@@ -713,7 +713,13 @@ async def _run_chat_turn(
     conv_id = conversation_id or _sessions().get_active_conversation(
         principal.name
     )
-    history = _sessions().get_history(principal.name, conversation_id=conv_id)
+    # The watermark is the newest row this turn's model will see. A console
+    # note written after it (an approval landing mid-turn) was never seen, and
+    # persisting the reply re-files it after the reply so it is still owed a
+    # continuation — rather than reading as answered by a reply that never
+    # saw it.
+    history, seen_upto = _sessions().get_history_and_watermark(
+        principal.name, conversation_id=conv_id)
     system_prompt = build_system_prompt(
         principal_name=principal.name,
         display_name=principal.display_name,
@@ -886,7 +892,8 @@ async def _run_chat_turn(
         try:
             if message:
                 _sessions().append_turn(
-                    principal.name, message, summary.response
+                    principal.name, message, summary.response,
+                    seen=(conv_id, seen_upto) if conv_id else None,
                 )
                 # append_turn lazily CREATES the active conversation on a
                 # first turn, so a typed turn's id may only exist now — the
@@ -905,7 +912,8 @@ async def _run_chat_turn(
                 # answered again once its claim lease lapses. That is the
                 # deliberate choice over a tombstone (ADR-0066 §4).
                 _sessions().append_model_turn(
-                    principal.name, conv_id, summary.response
+                    principal.name, conv_id, summary.response,
+                    seen_upto=seen_upto,
                 )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning("Failed to append chat history: %s", exc)

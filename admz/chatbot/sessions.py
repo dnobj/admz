@@ -22,6 +22,7 @@ model; WAL mode makes the active-conversation pointer cross-process safe.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sqlite3
@@ -30,7 +31,9 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 _SCHEMA = """
@@ -607,7 +610,11 @@ class ChatSessionStore:
     # doesn't support MCP tools — so we maintain history ourselves.
 
     def append_turn(
-        self, principal: str, user_message: str, assistant_message: str
+        self,
+        principal: str,
+        user_message: str,
+        assistant_message: str,
+        seen: Optional[Tuple[str, Optional[int]]] = None,
     ) -> None:
         """Record one turn (user + assistant) on the active conversation.
 
@@ -619,6 +626,12 @@ class ChatSessionStore:
         Empty assistant responses (e.g. budget rejections, errors) skip
         the record — replaying them in subsequent turns would confuse the
         LLM with messages it didn't actually send.
+
+        ``seen`` is ``(conversation_id, watermark)`` from
+        :meth:`get_history_and_watermark` at the start of the turn. Console
+        notes that arrived while the turn ran are re-filed after it (see
+        :meth:`_refile_unseen_notes`), but only when the rows land in that same
+        conversation — the active one can change mid-turn.
         """
         if not assistant_message:
             return
@@ -626,18 +639,22 @@ class ChatSessionStore:
         try:
             conv_id = self._ensure_active_conversation(conn, principal)
             now = _utc_iso()
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO chat_history "
                 "(principal, role, text, created_at, conversation_id) "
                 "VALUES (?, 'user', ?, ?, ?)",
                 (principal, user_message, now, conv_id),
             )
+            first_new_id = cur.lastrowid
             conn.execute(
                 "INSERT INTO chat_history "
                 "(principal, role, text, created_at, conversation_id) "
                 "VALUES (?, 'model', ?, ?, ?)",
                 (principal, assistant_message, now, conv_id),
             )
+            if seen is not None and seen[0] == conv_id and seen[1] is not None:
+                self._refile_unseen_notes(
+                    conn, principal, conv_id, seen[1], first_new_id)
             # Provisional snippet title until the LLM title lands.
             conn.execute(
                 "UPDATE chat_conversations SET title=?, title_source='snippet' "
@@ -800,7 +817,11 @@ class ChatSessionStore:
     _RESUME_CLAIM_LEASE_SECONDS = 150.0
 
     def append_model_turn(
-        self, principal: str, conversation_id: str, text: str
+        self,
+        principal: str,
+        conversation_id: str,
+        text: str,
+        seen_upto: Optional[int] = None,
     ) -> bool:
         """Append ONE ``role='model'`` row to a specific conversation.
 
@@ -809,6 +830,10 @@ class ChatSessionStore:
         exists, so there is no user message to invent and nothing to lazily
         create. It leaves the title alone for the same reason — a resume must
         never title a conversation from a message the operator never sent.
+
+        ``seen_upto`` is the watermark the turn's history was read at; notes
+        that arrived after it are re-filed after this row
+        (:meth:`_refile_unseen_notes`).
 
         No-ops (returns False) when the conversation doesn't exist, belongs to
         someone else, or the text is empty.
@@ -824,12 +849,15 @@ class ChatSessionStore:
             if owned is None:
                 return False
             now = _utc_iso()
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO chat_history "
                 "(principal, role, text, created_at, conversation_id) "
                 "VALUES (?, 'model', ?, ?, ?)",
                 (principal, text, now, conversation_id),
             )
+            if seen_upto is not None:
+                self._refile_unseen_notes(
+                    conn, principal, conversation_id, seen_upto, cur.lastrowid)
             conn.execute(
                 "UPDATE chat_conversations SET updated_at=? WHERE id=?",
                 (now, conversation_id),
@@ -838,6 +866,55 @@ class ChatSessionStore:
         finally:
             conn.close()
         return True
+
+    def _refile_unseen_notes(
+        self,
+        conn: sqlite3.Connection,
+        principal: str,
+        conversation_id: str,
+        seen_upto: int,
+        first_new_id: int,
+    ) -> int:
+        """Move console notes the finishing turn never saw to after its rows.
+
+        A turn reads its history when it starts and writes its reply when it
+        ends. A note that lands in between — the operator approving a second
+        card while the first card's continuation is still answering — gets an
+        id *before* the reply, so :meth:`resume_due` read it as answered and
+        nothing ever answered it. On 2026-09-23 that told the operator two
+        baseline accepts were still awaiting approval after both had run.
+
+        Re-filed rows keep their role, text and timestamp; only their position
+        changes, which is exactly the claim being corrected: this reply came
+        before them. A claim on a moved note follows it, so a continuation
+        another tab is already running for it is not started twice.
+
+        Runs inside the caller's write transaction. Returns how many moved.
+        """
+        rows = conn.execute(
+            "SELECT id, text, created_at FROM chat_history "
+            "WHERE principal=? AND conversation_id=? AND role='event' "
+            "AND id > ? AND id < ? ORDER BY id",
+            (principal, conversation_id, seen_upto, first_new_id),
+        ).fetchall()
+        for old_id, text, created_at in rows:
+            conn.execute("DELETE FROM chat_history WHERE id=?", (old_id,))
+            cur = conn.execute(
+                "INSERT INTO chat_history "
+                "(principal, role, text, created_at, conversation_id) "
+                "VALUES (?, 'event', ?, ?, ?)",
+                (principal, text, created_at, conversation_id),
+            )
+            conn.execute(
+                "UPDATE chat_resume_claims SET history_id=? WHERE history_id=?",
+                (cur.lastrowid, old_id),
+            )
+        if rows:
+            logger.info(
+                "chat: %d console note(s) arrived while a turn in %s ran; "
+                "re-filed after its reply so they are still answered",
+                len(rows), conversation_id)
+        return len(rows)
 
     def resume_due(self, principal: str, conversation_id: str) -> Optional[int]:
         """``chat_history.id`` of a trailing ``role='event'`` note, else None.
@@ -960,27 +1037,50 @@ class ChatSessionStore:
         shape. Returns ``[]`` when the principal has no active conversation
         (e.g. a brand-new conversation before its first turn).
         """
-        if max_turns <= 0:
-            return []
+        return self.get_history_and_watermark(
+            principal, max_turns, conversation_id)[0]
+
+    def get_history_and_watermark(
+        self,
+        principal: str,
+        max_turns: int = DEFAULT_HISTORY_TURNS,
+        conversation_id: Optional[str] = None,
+    ) -> Tuple[list, Optional[int]]:
+        """:meth:`get_history`, plus the id of the newest row that existed
+        when it was read — ``0`` for a conversation with no rows yet, ``None``
+        when there is no conversation at all.
+
+        A turn hands the watermark back when it persists its reply, so any
+        console note newer than it is known to be one the model never saw
+        (:meth:`_refile_unseen_notes`). It comes from the same query as the
+        history, so the two cannot disagree.
+        """
         # An explicit conversation wins: a continuation turn (#444) runs in the
         # conversation that RESOLVED, which need not be the active one.
         active = conversation_id or self.get_active_conversation(principal)
         if not active:
-            return []
-        # 2 rows per turn (user + model). Fetch the latest 2*max_turns
-        # rows, then reverse to chronological order.
-        limit = max_turns * 2
+            return [], None
         conn = self._connect()
         try:
+            if max_turns <= 0:
+                newest = conn.execute(
+                    "SELECT MAX(id) FROM chat_history "
+                    "WHERE principal=? AND conversation_id=?",
+                    (principal, active),
+                ).fetchone()[0]
+                return [], int(newest or 0)
+            # 2 rows per turn (user + model). Fetch the latest 2*max_turns
+            # rows, then reverse to chronological order.
             rows = conn.execute(
-                "SELECT role, text FROM chat_history "
+                "SELECT id, role, text FROM chat_history "
                 "WHERE principal=? AND conversation_id=? "
                 "ORDER BY id DESC LIMIT ?",
-                (principal, active, limit),
+                (principal, active, max_turns * 2),
             ).fetchall()
         finally:
             conn.close()
-        return [{"role": r, "text": t} for r, t in reversed(rows)]
+        watermark = int(rows[0][0]) if rows else 0
+        return [{"role": r, "text": t} for _, r, t in reversed(rows)], watermark
 
     def clear_history(self, principal: str) -> int:
         """Delete ALL history rows for ``principal`` across every

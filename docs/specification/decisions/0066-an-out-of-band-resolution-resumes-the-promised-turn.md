@@ -1,6 +1,6 @@
 # ADR-0066 — A resolved out-of-band step resumes the turn it was waiting on: the browser fires one gated continuation, as the operator, once
 
-**Status:** Accepted — 2026-09-14 · **Shipped:** 2026-09-14 (#482 plan, #483 code) — #444 closed
+**Status:** Accepted — 2026-09-14 · **Shipped:** 2026-09-14 (#482 plan, #483 code) — #444 closed · **Amended:** 2026-09-23 (a note that lands while a reply is running is still answered)
 **Closes when shipped:** #444
 **Relates to:** [ADR-0009](0009-oob-credential-capture.md) (the out-of-band capture this resumes after) · [ADR-0034](0034-uniform-widget-gating.md) (the one gate every follow-on write still hits) · [ADR-0038](0038-chat-conversation-history.md) (the conversation the note lands in) · [ADR-0062](0062-approve-an-envelope-not-a-step-list.md) / #440 (what an approval authorises when work continues) · [ADR-0064](0064-a-device-admz-cannot-authenticate-to-is-never-online.md) / #443 (an unwatched state, one layer up) · #438 (the chat never plans — why this job was a sequence of one-off gates in the first place) · FR-CB-004/005/006, and the new FR-CB-016
 
@@ -185,6 +185,26 @@ Then per the playbook: an adversarial review in its own worktree, a mutation har
 - `_run_chat_turn` gains an explicit conversation scope it should arguably always have had; the implicit active-conversation coupling is now visible at its call sites.
 - Approvals gain the narration they were missing, so both out-of-band flows behave the same way.
 - Every resumed turn is attended and attributed, so the audit log still answers "who" for every tool call — the property ADR-0062 protects. `chat_turn` rows now also answer "typed or resumed?".
+
+## Amendment 2026-09-23 — a note that lands while a reply is running
+
+§4's predicate, "due iff the newest row is a console note", assumed the reply to a note is filed after everything it saw. It is not: a turn reads its history when it **starts** and writes its reply when it **ends**. Any note written in between gets an id before the reply, so the reply "answers" it by position although the model never saw it.
+
+The owner hit exactly that. A drift review raised three cards, and they were approved within six seconds. The first approval's continuation read the conversation and claimed its note. The other two approvals wrote their notes while it ran. Then it saved its reply after all three. The browser had also skipped both later requests: `maybeResumeConversation` returned early while a continuation was in flight, and nothing looked again. The final reply told the operator that two baseline accepts were still awaiting approval. Both had executed at 18:12:01 and 18:12:03 (audit, notices and the three completed confirm sessions agree).
+
+**Decision: a reply is filed before the notes it never saw.**
+
+- **Server.** `get_history_and_watermark` returns the id of the newest row the turn read. When the turn persists its reply (`append_turn` for a typed turn, `append_model_turn` for a continuation), console notes newer than that watermark are re-filed after the reply: deleted and re-inserted with the same role, text and timestamp. So §4's predicate now tells the truth, and they stay due.
+  - A typed turn re-files only when its rows land in the conversation the watermark was read from, because the active conversation can change mid-turn.
+  - A resume claim on a re-filed note follows it, so a tab already answering it is not doubled.
+- **Browser.** One reply at a time, and nothing dropped. A continuation requested while any reply is streaming (typed or continued) sets a flag instead of returning. When that reply ends, the console looks again once. Once, so a failed continuation, which stays due and claimed, cannot loop on 409s.
+
+Considered and not taken:
+
+- **Reserving the reply's row when the turn starts.** Every reader would then have to skip half-written rows, a failed turn would have to clean up, and a first message would create its conversation at a different moment. Re-filing touches only the two writers.
+- **Ordering history by a per-turn snapshot.** Every reader of `chat_history` would have to agree on a second ordering. §4 chose ordering by id for exactly that reason.
+
+Concurrent turns in one conversation from two tabs remain possible. There the worst case is a note acknowledged twice, never one lost.
 
 ## What would falsify this
 
