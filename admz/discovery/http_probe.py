@@ -2,7 +2,8 @@
 HTTP / VAPIX device probing.
 
 For each IP discovered by other protocols, makes a lightweight HTTP
-request and checks for Axis-specific response headers and endpoints:
+request (HTTPS when plain HTTP does not answer at all, for a device set up
+HTTPS-only) and checks for Axis-specific response headers and endpoints:
 
 - ``Server`` header containing 'Boa' or 'AXIS'
 - ``AXIS-Setup: vapix`` header on factory-default devices
@@ -81,9 +82,25 @@ class HTTPProbe(DiscoveryProtocolBase):
         async with httpx.AsyncClient(
             timeout=timeout, verify=verify_ssl_default(), follow_redirects=True
         ) as client:
-            # 1. Basic HTTP GET on port 80
+            # 1. GET the root page: plain HTTP first, then HTTPS if HTTP does
+            #    not answer at all. An Axis device set up HTTPS-only never
+            #    answers on port 80, so it went unrecognised here — the
+            #    console's scan table showed no VAPIX tag on exactly the
+            #    registry's HTTPS devices (2026-09-17). The scheme that
+            #    answers is the one the calls below use. No credentials are
+            #    ever sent, so the fallback discloses nothing.
+            base = f"http://{ip}"
+            resp = None
+            for scheme in ("http", "https"):
+                try:
+                    resp = await client.get(f"{scheme}://{ip}/")
+                except Exception:
+                    continue
+                base = f"{scheme}://{ip}"
+                break
             try:
-                resp = await client.get(f"http://{ip}/")
+                if resp is None:
+                    raise ConnectionError(f"{ip} answered neither http nor https")
                 server = resp.headers.get("server", "")
                 dev.http_server_header = server
 
@@ -122,14 +139,14 @@ class HTTPProbe(DiscoveryProtocolBase):
                         {"apiVersion": "1.0", "method": "getAllProperties"}
                     )
                     resp = await client.post(
-                        f"http://{ip}/axis-cgi/basicdeviceinfo.cgi",
+                        f"{base}/axis-cgi/basicdeviceinfo.cgi",
                         content=post_body,
                         headers={"Content-Type": "application/json"},
                     )
                     # Fall back to GET for older firmware
                     if resp.status_code in (405, 404):
                         resp = await client.get(
-                            f"http://{ip}/axis-cgi/basicdeviceinfo.cgi"
+                            f"{base}/axis-cgi/basicdeviceinfo.cgi"
                         )
 
                     if resp.status_code == 200:
@@ -152,7 +169,7 @@ class HTTPProbe(DiscoveryProtocolBase):
                             if not dev.factory_default:
                                 try:
                                     pr = await client.get(
-                                        f"http://{ip}/axis-cgi/param.cgi"
+                                        f"{base}/axis-cgi/param.cgi"
                                         "?action=list&group=root.Brand"
                                     )
                                     if pr.status_code == 200:
@@ -178,7 +195,7 @@ class HTTPProbe(DiscoveryProtocolBase):
                             # GET may still work without auth for device info
                             try:
                                 get_resp = await client.get(
-                                    f"http://{ip}/axis-cgi/basicdeviceinfo.cgi"
+                                    f"{base}/axis-cgi/basicdeviceinfo.cgi"
                                 )
                                 if get_resp.status_code == 200:
                                     body = get_resp.text
