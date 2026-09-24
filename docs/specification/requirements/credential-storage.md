@@ -72,8 +72,10 @@ shipped 2026-09-14):
 - Only `admz` is stored. A root credential is never stored per device, so the
   generated password is never the device's only credential.
 - With no fleet root password set, provisioning refuses
-  (`root_password_not_configured`) and writes nothing. The unattended
-  `reprovision` handler always refuses (`unattended_not_permitted`).
+  (`root_password_not_configured`) and writes nothing. Nothing provisions
+  unattended. A queued recovery (`reprovision`) raises a `setup` notice for a
+  person to onboard the device (since 2026-09-23). `attended=False` still
+  refuses (`unattended_not_permitted`) for any caller that tries.
 - Returns a structured outcome; no password is ever echoed in the response.
 
 `provision_device(device_id | host)` runs the same onboarding resolution as

@@ -66,5 +66,5 @@ when the device is actually up but rejecting credentials.
   card yet — a long reboot relies on the assistant re-invoking with the
   `baseline_bootid`. The job-store + live-card design is open in #49 as v2.
 - 📋 **No automatic post-reboot reconciliation.** Recovery reports the device
-  is back; acting on a `needsetup` device (re-provisioning) is a separate,
+  is back; acting on a `needsetup` device (setting it up) is a separate,
   explicit follow-up.

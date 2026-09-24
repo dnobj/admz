@@ -279,7 +279,7 @@ const JOB_LABELS = {
   drift_audit: { label: 'Check drift', hint: 'Re-reads live config and records drift vs. the blessed baseline, raising a Console notice when drift appears. Read-only on devices.', icon: 'radar' },
   notify:      { label: 'Notify (raise a Console notice)', hint: 'Raises a notice in the Console’s Needs attention strip.', icon: 'bell-ring' },
   survey:      { label: 'Survey (contribute to the API atlas)', hint: 'Bundles anonymized capability data for the axis-api-atlas project.', icon: 'upload-cloud' },
-  reprovision: { label: 'Re-provision', hint: 'Creates the admin with a generated password when the device returns factory-defaulted.', icon: 'wrench' },
+  reprovision: { label: 'Setup notice', hint: 'Raises a Console notice to set the device up when it returns factory-defaulted. Never sets it up unattended.', icon: 'bell-ring' },
 };
 const EVENT_LABELS = { on_needs_setup: 'when factory-defaulted', on_online: 'when back online' };
 

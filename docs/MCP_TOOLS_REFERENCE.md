@@ -193,29 +193,32 @@ offline period followed by a healthy response.
   from the catalog)
 
 ### `queue_device_recovery`
-Pre-authorize a **trigger-based** recovery (the counterpart to the
-time-based snapshot schedules). When the device next reports
-factory-defaulted (`needsetup`), the health-monitor sweep fires the queued
-`reprovision` task — so a factory reset from chat doesn't block on the
-~1–2 min reboot.
+Queue a **trigger-based** follow-up for a factory reset (the counterpart to
+the time-based snapshot schedules), so a reset from chat doesn't block on the
+~1–2 min reboot. When the device next reports factory-defaulted
+(`needsetup`), the health-monitor sweep fires the queued task, and the task
+raises a **`setup` notice** in the Console: *"Factory-reset — onboard it to set
+it up"*. Reviewing that notice brings the device back to the chat. There,
+`onboard_device` asks for approval, then sets `root` to the fleet root
+password, creates ADMZ's own `admz` account and stores only `admz`. A successful
+onboarding closes the notice.
 
-> **Since ADR-0068 (2026-09-14) the fired task does not provision.**
-> Provisioning now writes the fleet root password, one value shared by every
-> device ADMZ provisions, and an unattended write to whatever answers at the
-> device's address could hand it to a spoofed peer. So the handler calls
-> `provision_factory_default(attended=False)`, which refuses
-> (`unattended_not_permitted`) and writes nothing; the task is marked `failed`
-> and a `deferred_action_failed` audit row is written. The device stays
-> `needs_setup` until it is onboarded attended — `onboard_device` or
-> `provision_device`, with an operator approving the write — which sets `root`
-> to the fleet root password, creates ADMZ's own `admz` account with a
-> generated password, and stores only `admz`.
->
-> _Corrected 2026-09-16: this entry said the sweep re-provisions the device
-> with a generated per-device password. The tool's own description and the
-> chat prompt still say so._
-- **Args:** `device_id` (required); `intent` (only `reprovision` for now);
-  `username` (default `root`)
+**It never sets the device up by itself.** Provisioning writes the fleet root
+password, one value shared by every device ADMZ provisions (ADR-0068). This
+task fires unattended against whatever answers at the device's address, which a
+spoofed peer could be, so it hands the moment to a person instead.
+- **History:**
+  - From ADR-0068 (2026-09-14), the fired task called
+    `provision_factory_default(attended=False)`, which refused. Every fired task
+    therefore failed, while this entry, the tool description and the chat
+    prompt still promised a re-provision.
+  - 2026-09-16: this entry was corrected to describe the refusal.
+  - 2026-09-23: the task raises the notice instead.
+- For a device **already** in `needs_setup`, don't queue anything: call
+  `onboard_device` now.
+- **Args:** `device_id` (required); `intent` (only `reprovision` — the name is
+  historical). `username` was removed; the REST route still accepts it and
+  ignores it.
 - **Returns:** `{success, queued, pending_id, device_id, trigger, message}`
 - Requires an authenticated principal (anonymous may not arm it) and the
   health monitor to be enabled (it is the evaluator). The pending action
@@ -237,7 +240,7 @@ Cancel a still-pending deferred recovery by id.
 ### `list_tasks`
 Unified view of ALL automated tasks (ADR-0037): time-based **schedules**
 (recurring snapshot / drift_audit / survey) AND trigger-based **detection** tasks
-(one-shot — e.g. re-provision when a device returns factory-defaulted). Use for
+(one-shot — e.g. a setup notice when a device returns factory-defaulted). Use for
 "what's scheduled or queued?". Read-only. Creating/managing still uses the
 per-kind tools (`create_snapshot_schedule` …, `queue_device_recovery` …), which
 share the same store.

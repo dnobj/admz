@@ -289,15 +289,26 @@ class TestTheLegitimateCallersAreUntouched:
     """The measured claim behind gating the entry points rather than the
     provisioning step. If any of these became gated, the design is wrong."""
 
-    def test_the_scheduled_reprovision_task_reaches_provisioning_directly(self):
-        """The decisive one. Nothing can approve a widget on the scheduler's
-        behalf, so a gate here would not delay the write — it would fail it."""
+    def test_the_scheduled_recovery_task_no_longer_provisions_at_all(self):
+        """This used to pin the opposite: that the scheduled reprovision reached
+        provisioning directly, because nothing can approve a widget on the
+        scheduler's behalf. ADR-0068 moved the line. An unattended write of the
+        fleet root password is refused outright, so since 2026-09-23 the task
+        raises a setup notice and a person onboards the device through the gated
+        path. It must neither provision nor raise a gate nobody can answer.
+        Checked on the parsed code: the docstring names the functions it avoids.
+        """
+        import ast
         import inspect
+        import textwrap
 
         from admz.tasks import handlers
-        src = inspect.getsource(handlers._run_reprovision)
-        assert "provision_factory_default" in src
-        assert "gate_scan_write" not in src and "blocked" not in src
+        tree = ast.parse(textwrap.dedent(inspect.getsource(handlers._run_reprovision)))
+        names = {getattr(n.func, "id", getattr(n.func, "attr", ""))
+                 for n in ast.walk(tree) if isinstance(n, ast.Call)}
+        assert "provision_factory_default" not in names
+        assert "gate_scan_write" not in names
+        assert "setup_notice" in names
 
     def test_the_rest_single_device_onboard_is_ungated(self):
         """The operator typed this device's address; intent is explicit and

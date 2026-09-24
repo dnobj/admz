@@ -14,7 +14,7 @@ from __future__ import annotations
 import time
 from typing import Iterable, List, Optional
 
-from admz.notices.store import KIND_DRIFT, Notice
+from admz.notices.store import KIND_DRIFT, KIND_SETUP, Notice
 
 PREFIX = "[console] The user opened"
 CLOSING = "Nothing has been changed."
@@ -71,6 +71,16 @@ def describe(notice: Notice, now: Optional[float] = None) -> str:
         return (
             f"configuration drift on device {device} — {' and '.join(parts)}; "
             f"{seen}, last confirmed {_ago(confirmed, now)} by {source}"
+        )
+    if notice.kind == KIND_SETUP:
+        # Says what onboarding will do, because onboarding is the one action
+        # this notice exists to prompt — and it is gated, so saying it here
+        # commits nothing.
+        return (
+            f"device {device} came back factory-defaulted — {source} noticed it "
+            f"{_ago(notice.created_at, now)}. ADMZ has no working credential for "
+            f"it until it is onboarded; onboarding sets 'root' to the fleet root "
+            f"password and creates ADMZ's own 'admz' account, behind one approval"
         )
     where = f"on device {device}" if device else "fleet-wide"
     return (

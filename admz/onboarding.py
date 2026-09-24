@@ -157,11 +157,25 @@ def _with_survey(result: Dict[str, Any]) -> Dict[str, Any]:
     gated/failed exits, and never as a side effect of a gate firing. For
     ``already_credentialed`` (which fires on every re-onboard of a healthy
     device) the queue is first-sight only: a device with capability rows has
-    been surveyed or audited already."""
+    been surveyed or audited already.
+
+    Every success exit also closes the device's ``setup`` notice (ADR-0071),
+    the one a queued recovery raises when the device comes back
+    factory-defaulted."""
     status = result.get("status")
     device_id = result.get("device_id") or ""
     if not device_id:
         return result
+    if status in (PROVISIONED, OWN_ACCOUNT_CREATED, ALREADY_CREDENTIALED):
+        # The device has working credentials, so it no longer needs setting up:
+        # close the setup notice a queued recovery raised for it, if there is
+        # one. A notice is attention, never a blocker, so a failure is logged.
+        try:
+            from admz.notices.producers import resolve_setup
+
+            resolve_setup(device_id, by="onboarding")
+        except Exception:  # noqa: BLE001
+            logger.debug("setup notice not closed for %s", device_id, exc_info=True)
     from admz.device_capabilities import capability_store, enqueue_capability_survey
 
     # ENTRY_CREDENTIALS_SAVED is deliberately absent (ADR-0068): it is no longer

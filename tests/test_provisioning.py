@@ -239,79 +239,83 @@ class TestProvisionFactoryDefault:
 
 
 class TestReprovisionHandler:
-    @pytest.mark.asyncio
-    async def test_handler_provisions(self, monkeypatch):
-        from admz.fleet.pending_actions import execute_pending_action
-        from admz.recovery_actions import register_recovery_handlers
+    """A queued recovery that fires raises a ``setup`` notice and never
+    provisions (ADR-0068; changed 2026-09-23).
 
-        called = {}
+    Provisioning writes the fleet root password, and this handler fires
+    unattended against whatever answers at the device's address hours after
+    the approval (#185/#326). From ADR-0068 until 2026-09-23 it called
+    ``provision_factory_default(attended=False)``, which refused, so every fired
+    task failed while the chat still promised a re-provision. It now hands the
+    moment to a person: a Console notice that leads to an attended onboarding.
+    """
 
-        async def fake_provision(catalog, executors, registry, *, device_id, host,
-                                  username="root", attended=True):
-            called["args"] = (device_id, host, username)
-            called["attended"] = attended
-            return {"success": True}
-
-        monkeypatch.setattr(
-            "admz.provisioning.provision_factory_default", fake_provision
-        )
-
-        class _Ctx:
-            registry = _Registry()
-            catalog = object()
-            executors = {}
-
-        register_recovery_handlers(_Ctx())
-        await execute_pending_action({"action": "reprovision"}, "cam-1")
-        assert called["args"] == ("cam-1", "1.2.3.4", "root")
-        # ADR-0068 (was GH #185's `allow_fleet_default=False`): the unattended
-        # handler must declare itself unattended at the call site. Removing that
-        # declaration would make it silently start writing the fleet break-glass
-        # root password to whatever answered.
-        assert called["attended"] is False
+    @staticmethod
+    def _live_setup(device_id):
+        from admz.notices.producers import setup_subject
+        from admz.notices.store import notices_store
+        return notices_store.get_live(setup_subject(device_id))
 
     @pytest.mark.asyncio
-    async def test_handler_raises_on_provision_failure(self, monkeypatch):
-        from admz.fleet.pending_actions import execute_pending_action
-        from admz.recovery_actions import register_recovery_handlers
+    async def test_it_raises_a_setup_notice_and_never_provisions(self, monkeypatch):
+        from admz.tasks.handlers import execute_task_action
+        from admz.tasks.store import Task
 
-        async def fake_provision(*a, **k):
-            return {"success": False, "error": "device rejected user"}
+        async def must_not_run(*a, **k):
+            raise AssertionError("the unattended handler reached provisioning")
 
         monkeypatch.setattr(
-            "admz.provisioning.provision_factory_default", fake_provision
-        )
+            "admz.provisioning.provision_factory_default", must_not_run)
 
-        class _Ctx:
-            registry = _Registry()
-            catalog = object()
-            executors = {}
+        out = await execute_task_action(Task(
+            id="t-setup-1", device_id="cam-setup-1", action_type="reprovision"))
 
-        register_recovery_handlers(_Ctx())
-        with pytest.raises(RuntimeError):
-            await execute_pending_action({"action": "reprovision"}, "cam-1")
+        assert out["success"] is True
+        notice = self._live_setup("cam-setup-1")
+        assert notice is not None and out["notice_id"] == notice.id
+        assert (notice.kind, notice.task_id) == ("setup", "t-setup-1")
+
+    @pytest.mark.asyncio
+    async def test_a_second_firing_bumps_the_same_notice(self):
+        from admz.tasks.handlers import execute_task_action
+        from admz.tasks.store import Task
+
+        first = await execute_task_action(Task(
+            id="t-a", device_id="cam-setup-2", action_type="reprovision"))
+        second = await execute_task_action(Task(
+            id="t-b", device_id="cam-setup-2", action_type="reprovision"))
+        assert first["notice_id"] == second["notice_id"]
+        assert self._live_setup("cam-setup-2").occurrences == 2
+
+    @pytest.mark.asyncio
+    async def test_a_notice_store_failure_is_reported(self, monkeypatch):
+        """#455: a handler that cannot do its job says so, rather than
+        reporting a success the task row would then show as done."""
+        from admz.tasks.handlers import execute_task_action
+        from admz.tasks.store import Task
+
+        def broken(*a, **k):
+            raise RuntimeError("no such table")
+
+        monkeypatch.setattr("admz.notices.producers.setup_notice", broken)
+        out = await execute_task_action(Task(
+            id="t-c", device_id="cam-setup-3", action_type="reprovision"))
+        assert out["success"] is False
+        assert "notice not raised" in out["error"]
 
     @pytest.mark.asyncio
     async def test_unattended_reprovision_never_sends_a_SHARED_secret(
         self, monkeypatch
     ):
-        """GH #185/#326, end to end through the REAL provision_factory_default
-        (not mocked) — unlike the two tests above, which stub it out entirely
-        and so cannot see what actually reaches the (fake) device.
+        """GH #185/#326, end to end through the real wiring and the REAL
+        provision_factory_default (not mocked): with a fleet root password
+        configured, nothing leaves the process for the device — the queued
+        recovery raises a notice and touches nothing.
 
-        Deliberately an outcome test, not an implementation test: it names no
-        keyword argument. If a future change "simplifies" the interactive and
-        unattended call sites back into one path, this goes red on the fact that
-        matters — a fleet-wide credential left the process bound for an address
-        ADMZ cannot verify.
-
-        **Inverted by ADR-0068.** It used to assert the handler *generated* a
-        per-device password instead of sending the shared one. Now provisioning
-        writes the shared break-glass password by design, so the only safe
-        unattended behaviour is not to provision at all: the handler must fail
-        loudly and touch nothing. A spoofed peer on a reassigned DHCP lease
-        would otherwise walk away with a credential valid on every device ADMZ
-        has provisioned.
+        Deliberately an outcome test, not an implementation test. If a future
+        change routes this handler back into provisioning, this goes red on the
+        fact that matters: a fleet-wide credential bound for an address ADMZ
+        cannot verify.
         """
         from admz.fleet.pending_actions import execute_pending_action
         from admz.recovery_actions import register_recovery_handlers
@@ -328,15 +332,39 @@ class TestReprovisionHandler:
             executors = {"vapix": execr}
 
         register_recovery_handlers(_Ctx())
-        with pytest.raises(RuntimeError, match="attended"):
-            await execute_pending_action({"action": "reprovision"}, "cam-1")
+        await execute_pending_action({"action": "reprovision"}, "cam-setup-4")
 
         assert execr.sent == [], (
-            "the unattended reprovision handler contacted the device; under "
-            "ADR-0068 the next thing it would send is the fleet-wide "
-            "break-glass root password (GH #185/#326)")
+            "the unattended recovery contacted the device; under ADR-0068 the "
+            "next thing it would send is the fleet-wide root password "
+            "(GH #185/#326)")
         assert BREAK_GLASS_SECRET not in repr(execr.sent)
         assert reg.accounts == {}
+        assert self._live_setup("cam-setup-4") is not None
+
+    @pytest.mark.asyncio
+    async def test_onboarding_closes_the_notice(self):
+        """The notice asks for an onboarding; a successful one answers it."""
+        from admz.notices.producers import RESOLUTION_ONBOARDED, setup_notice
+        from admz.notices.store import notices_store
+        from admz.onboarding import PROVISIONED, _with_survey
+
+        notice = setup_notice("cam-setup-5")
+        _with_survey({"status": PROVISIONED, "device_id": "cam-setup-5"})
+
+        assert self._live_setup("cam-setup-5") is None
+        closed = notices_store.get(notice.id)
+        assert (closed.status, closed.resolution) == ("handled", RESOLUTION_ONBOARDED)
+
+    @pytest.mark.asyncio
+    async def test_a_gated_or_failed_onboarding_leaves_it_open(self):
+        """Control: only a success exit closes it."""
+        from admz.notices.producers import setup_notice
+        from admz.onboarding import APPROVAL_REQUIRED, _with_survey
+
+        setup_notice("cam-setup-6")
+        _with_survey({"status": APPROVAL_REQUIRED, "device_id": "cam-setup-6"})
+        assert self._live_setup("cam-setup-6") is not None
 
 
 class TestAdoptWithAdmzAccount:

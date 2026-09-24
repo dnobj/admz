@@ -4971,19 +4971,20 @@ class ADMZMCPServer:
 
         device_id = arguments.get("device_id")
         intent = (arguments.get("intent") or "reprovision").strip()
-        username = arguments.get("username", "root")
+        # `username` used to name the admin to create on re-provision. Nothing
+        # is provisioned unattended any more (ADR-0068), so it is ignored.
         if not device_id:
             return {"success": False, "error": "device_id is required"}
-        # Queuing is a pre-authorization for a destructive provision — the
-        # anonymous principal may not arm it (mirrors the REST gate).
+        # Queuing arms standing behaviour — the anonymous principal may not arm
+        # it (mirrors the REST gate).
         if getattr(self.principal, "is_anonymous", False):
             return {
                 "success": False,
                 "error": "PermissionDenied",
                 "message": (
-                    "Queuing a recovery pre-authorizes a future re-provision and "
-                    "requires an authenticated principal (not the anonymous "
-                    "default). Authenticate to the web/REST surface first."
+                    "Queuing a recovery arms a standing task and requires an "
+                    "authenticated principal (not the anonymous default). "
+                    "Authenticate to the web/REST surface first."
                 ),
             }
         if not self.registry.device_exists(device_id):
@@ -5001,17 +5002,19 @@ class ADMZMCPServer:
             "action_type": "reprovision",
             "device_id": device_id,
             "event": "on_needs_setup",
-            "action_params": {"username": username},
+            "action_params": {},
             "description": (
-                f"Re-provision {device_id} when it returns factory-defaulted"
+                f"Raise a setup notice when {device_id} returns factory-defaulted"
             ),
         }
         env = gate_task_write(
             "create_task", device_id, spec, describe_create(spec))
         env["message"] = (
-            f"{env.get('message', '')} The re-provision is armed only when "
-            "the user approves the confirmation card; it then fires on the "
-            "next health check once the device reports factory-defaulted."
+            f"{env.get('message', '')} It is armed only when the user "
+            "approves the confirmation card. When the device next reports "
+            "factory-defaulted, the health check raises a Console notice asking "
+            "for it to be onboarded — it does not set the device up by itself "
+            "(ADR-0068)."
         ).strip()
         return env
 

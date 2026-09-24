@@ -1200,27 +1200,25 @@ class TestDeferredActionAuditRecordsPasswordSource:
     it from whichever code path happened to be live at the time.
     """
 
-    def test_the_handler_carries_the_source_forward(self, monkeypatch):
+    def test_the_handler_names_its_notice_for_the_audit_row(self):
+        """Since 2026-09-23 a fired recovery raises a setup notice rather than
+        provisioning, so what the audit row can attribute is the notice it
+        raised — `notice_id`, already on the allow-list below."""
         import asyncio
         from types import SimpleNamespace
 
+        from admz.fleet.health import _AUDITABLE_OUTCOME_KEYS
         from admz.tasks import handlers as h
 
-        async def fake_provision(*a, **kw):
-            return {"success": True, "password_source": "generated"}
-
-        import admz.provisioning as prov
-        monkeypatch.setattr(prov, "provision_factory_default", fake_provision)
-
-        task = SimpleNamespace(device_id="cam-01", device_ids=None,
-                               action_params={}, action_type="reprovision")
-        ctx = SimpleNamespace(
-            registry=SimpleNamespace(
-                get_device_info=lambda d: {"host": "192.0.2.1"}),
-            catalog=None, executors={})
-        out = asyncio.run(
-            h.get_task_handler("reprovision")(task, ctx))
-        assert out["password_source"] == "generated"
+        task = SimpleNamespace(id="t-audit", device_id="cam-audit-01",
+                               device_ids=None, action_params={},
+                               action_type="reprovision")
+        out = asyncio.run(h.get_task_handler("reprovision")(
+            task, SimpleNamespace(registry=None, catalog=None, executors={})))
+        assert out["success"] is True
+        assert isinstance(out["notice_id"], int)
+        assert "notice_id" in _AUDITABLE_OUTCOME_KEYS
+        assert "password_source" not in out
 
     def test_the_audit_row_carries_it(self):
         """The other half — the handler's return used to be thrown away."""
@@ -1268,24 +1266,34 @@ class TestDeferredActionAuditRecordsPasswordSource:
             "the fleet default_password is an entry credential; no provisioning "
             "mode may name it as something written to a device (FR-CRED-007)")
 
-    def test_the_deferred_handler_no_longer_emits_a_source_at_all(self):
+    def test_the_deferred_handler_never_reaches_provisioning(self):
         """ADR-0068's mitigation, pinned where #326's guard lives.
 
         This class exists because a fired reprovision created a credential and
         the audit row could not say which mode produced it. Under ADR-0068 the
-        unattended handler does not provision at all — it refuses, because the
-        value it would now write is the FLEET-WIDE break-glass root password and
-        the peer is unverified (#185/#326). So the forensic question this class
-        asks is answered a stronger way: there is no unattended provision to
-        attribute. The allow-list above stays as the guard for any handler that
-        starts returning an outcome again.
+        unattended handler must not provision at all: the value it would write
+        is the FLEET-WIDE root password and the peer is unverified (#185/#326).
+        So there is no unattended provision to attribute.
+
+        Checked on the parsed code, not the text: the docstring names
+        ``provision_factory_default`` to explain why it is not called, and a
+        substring test would pass on that alone.
         """
+        import ast
         import inspect
+        import textwrap
 
         from admz.tasks import handlers
 
-        src = inspect.getsource(handlers._run_reprovision)
-        assert "attended=False" in src, (
-            "the unattended reprovision handler must declare itself unattended; "
-            "without it provision_factory_default writes the shared break-glass "
-            "root password to whatever answered")
+        tree = ast.parse(textwrap.dedent(inspect.getsource(handlers._run_reprovision)))
+        called = {
+            (n.func.id if isinstance(n.func, ast.Name) else getattr(n.func, "attr", ""))
+            for n in ast.walk(tree) if isinstance(n, ast.Call)
+        }
+        imported = {a.name for n in ast.walk(tree)
+                    if isinstance(n, ast.ImportFrom) for a in n.names}
+        assert "setup_notice" in called, "the handler no longer raises the notice"
+        assert not ({"provision_factory_default", "write_root_account",
+                     "adopt_with_admz_account"} & (called | imported)), (
+            "the unattended recovery reaches provisioning again; it would write "
+            "the shared fleet root password to whatever answered")
