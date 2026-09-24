@@ -142,6 +142,17 @@ One PR (ADR-0070's PR 3); the two MCP tools ride ADR-0070's tool module.
 - One table, one router, one prompt slot, one strip; no new principal, no new gate, no change to the note mechanism ADR-0066 built.
 - The strip can briefly disagree with reality after a successful revert until the next check; stated above rather than hidden.
 
+## Amendment 2026-09-23 — a third kind: `setup`
+
+A queued recovery (`queue_device_recovery`, ADR-0037's `reprovision` detection task) now raises a notice instead of provisioning.
+
+From ADR-0068 until this date it called `provision_factory_default(attended=False)`. That refused, because provisioning writes the fleet root password and must not do so unattended against whatever answers at the device's address. So every fired task failed, while the chat still offered "queue a re-provision" after a factory reset. ADR-0068 asked for this path to defer to an attended flow. A notice is that flow, built from this ADR's parts:
+
+- **Kind `setup`, subject `setup:<device_id>`.** There is one live notice per device, whichever task noticed. Its title is *"Factory-reset — onboard it to set it up"*, its source is `recovery` ("a queued recovery"), and its severity is medium.
+- **The review note says what onboarding will do**: the device came back factory-defaulted, ADMZ has no working credential for it, and onboarding sets `root` to the fleet root password and creates `admz` behind one approval. It carries identifiers only, like every note (§4). The prompt tells the model to answer it with `onboard_device`.
+- **Any successful onboarding closes it** (`onboarded`): `provisioned`, `admz_account_created` or `already_credentialed`, through the same success hook that queues the capability survey. A gated or failed onboarding leaves it open.
+- **The handler never reaches provisioning.** A test pins that on the parsed code, not the text.
+
 ## What would falsify this
 
 If operators dismiss rather than review, the strip is noise and the fix is the trigger policy — quieter cadence, `notify_console=false` on the hourly audit — not a chattier assistant. If `occurrences` climbs into the hundreds on a device, the signature is too sensitive for a notice and the producer needs a debounce. If the `continuation_in_flight` refusal is never hit, the claim check is ceremony and the trailing-row predicate alone was enough.

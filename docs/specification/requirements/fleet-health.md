@@ -74,7 +74,9 @@ The sweep **classifies and never resolves**: it does not re-run onboarding,
 try entry credentials, or open capture sessions (NFR-HLT-002; ADR-0034's one
 gate) — the one exception being a *pre-authorised* detection task (ADR-0037's
 `reprovision` on `on_needs_setup`), which is an approval deferred to a trigger,
-not a sweep decision. Leaving the state is the operator's — capture from the device page or
+not a sweep decision. Since 2026-09-23 even that one resolves nothing: it raises
+a `setup` notice for a person to onboard the device (ADR-0068 forbids an
+unattended write of the fleet root password). Leaving the state is the operator's — capture from the device page or
 the chat card — or a deliberate `onboard_device` re-run. The seven-hour trace
 that forced this: an A1210 registered without credentials read `online` on
 every surface until a baseline capture happened to need a password.

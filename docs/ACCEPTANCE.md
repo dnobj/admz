@@ -305,7 +305,8 @@ deliberately does not perform:
 - [`tests/e2e/MANUAL_password_tests.md`](../tests/e2e/MANUAL_password_tests.md)
   — real device-password rotation.
 - [`tests/e2e/MANUAL_recovery_tests.md`](../tests/e2e/MANUAL_recovery_tests.md)
-  — factory-defaulted device detection and re-provision.
+  — factory-defaulted device detection and setup (a queued recovery raises
+  a setup notice; the device is set up through the chat, behind approval).
 
 > Both predate #180 and name `:4242` in their prerequisites. **Read that as
 > production and substitute staging**, or you are running the exact procedure

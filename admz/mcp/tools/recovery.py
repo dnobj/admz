@@ -1,9 +1,10 @@
-"""MCP Tool definitions: deferred device recovery (factory-defaulted → re-provision).
+"""MCP Tool definitions: deferred device recovery (factory-defaulted → setup notice).
 
-These let the chatbot queue a *pre-authorized* follow-up that fires when a device
-next reports factory-defaulted (needsetup) — the trigger-based counterpart to the
-time-based snapshot schedules. The health-monitor sweep is the evaluator; the
-actual re-provision runs only because the operator authorized it here, up front.
+These let the chatbot queue a follow-up that fires when a device next reports
+factory-defaulted (needsetup) — the trigger-based counterpart to the time-based
+snapshot schedules. The health-monitor sweep is the evaluator. Since ADR-0068 the
+follow-up never provisions unattended: it raises a Console notice so a person
+onboards the device, behind the usual approval.
 """
 
 from typing import List
@@ -14,16 +15,18 @@ TOOLS: List[Tool] = [
     Tool(
         name="queue_device_recovery",
         description=(
-            "Pre-authorize a recovery that runs automatically when a device next "
-            "reports factory-defaulted (needsetup). Use this AFTER a factory reset "
-            "(or for a device already showing 'Needs setup') so the chat doesn't "
-            "have to wait ~1-2 min for the reboot: the queued action fires on the "
-            "next health check once the device comes back. Currently supports "
-            "intent='reprovision' — re-creates the admin account with a generated "
-            "per-device password (never the fleet default, and never shown). The device must be a "
-            "registered device_id. This is a deliberate authorization: only queue "
-            "it when the operator has asked to recover the device. Returns a "
-            "pending_id you can later cancel. Requires an authenticated principal."
+            "Queue a follow-up for when a device next reports factory-defaulted "
+            "(needsetup). Use it AFTER a factory reset, so the chat doesn't have to "
+            "wait ~1-2 min for the reboot. When the device comes back, the next health "
+            "check raises a Console notice ('Factory-reset — onboard it to set it "
+            "up'); reviewing that notice brings the device back to the chat to be "
+            "onboarded with onboard_device, behind the usual approval. It does NOT "
+            "set the device up by itself: since ADR-0068 ADMZ never writes the fleet "
+            "root password unattended. For a device ALREADY showing 'Needs setup', "
+            "don't queue anything — call onboard_device now. The only intent is "
+            "'reprovision' (the name is historical). The device must be a "
+            "registered device_id. Returns a pending_id you can later cancel. "
+            "Requires an authenticated principal."
         ),
         inputSchema={
             "type": "object",
@@ -37,14 +40,9 @@ TOOLS: List[Tool] = [
                 },
                 "intent": {
                     "type": "string",
-                    "description": "Recovery to run when it returns. Only 'reprovision' for now.",
+                    "description": "What to do when it returns. Only 'reprovision', which raises a setup notice.",
                     "enum": ["reprovision"],
                     "default": "reprovision",
-                },
-                "username": {
-                    "type": "string",
-                    "description": "Admin username to create on re-provision (default 'root').",
-                    "default": "root",
                 },
             },
             "required": ["device_id"],

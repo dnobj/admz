@@ -275,8 +275,8 @@
         <div id="pending-list"><p class="page-sub" style="margin:0;padding:10px 16px">No pending actions.</p></div>
         <div class="setting-row" style="border-top:1px solid var(--border)">
           <div style="display:flex;gap:8px;width:100%;align-items:center;flex-wrap:wrap">
-            <span class="page-sub" style="margin:0;flex:1;min-width:160px">Re-provision this device (create an admin with a generated password) when it next reports factory-defaulted.</span>
-            <button class="btn ghost sm" id="rec-queue-btn" onclick="recQueue()"><i data-lucide="wrench"></i> Queue re-provision</button>
+            <span class="page-sub" style="margin:0;flex:1;min-width:160px">When this device next reports factory-defaulted, raise a notice in the Console so you can set it up. ADMZ never sets a device up unattended.</span>
+            <button class="btn ghost sm" id="rec-queue-btn" onclick="recQueue()"><i data-lucide="bell-ring"></i> Queue setup notice</button>
           </div>
         </div>
         <div id="rec-msg" class="page-sub" style="display:none;padding:0 16px 10px"></div>
@@ -776,7 +776,7 @@ async function recQueue() {
     });
     const data = await r.json();
     const ok = r.ok && data && data.success;
-    recMsg(ok ? (data.message || 'Queued — will re-provision when it returns factory-defaulted.')
+    recMsg(ok ? (data.message || 'Queued — a Console notice will ask you to set it up when it returns factory-defaulted.')
               : ('Error: ' + ((data && data.detail) || 'failed')), ok);
     if (ok) loadPending();
   } catch (e) { recMsg('Request failed.', false); }
@@ -801,15 +801,24 @@ function recMsg(text, ok) {
     const d = await r.json();
     const me = (d.devices || []).find(function (x) { return x.device_id === DEVICE_ID; });
     if (me && me.status === 'needs_setup') {
+      // ADR-0068: setting it up is attended, behind one approval — 'root' from
+      // the fleet root password, then ADMZ's own 'admz' account. The button
+      // runs the same onboarding as the credential banner below and follows
+      // its approval link.
       const b = document.getElementById('recovery-banner'); if (!b) return;
       b.innerHTML = '<div style="padding:10px 16px;color:var(--fg-amber,#fbbf24);font-size:13px;'
-        + 'border-bottom:1px solid var(--border)"><i data-lucide="alert-triangle" '
-        + 'style="width:14px;height:14px;vertical-align:-2px"></i> This device is '
-        + 'factory-defaulted (needs setup). Queue a re-provision below, or '
+        + 'border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+        + '<i data-lucide="alert-triangle" style="width:14px;height:14px;vertical-align:-2px"></i> '
+        + '<span>This device is factory-defaulted (needs setup). Setting it up gives '
+        + '<code>root</code> the fleet root password and creates ADMZ\'s own '
+        + '<code>admz</code> account, after you approve. Or '
         + '<a href="#" style="color:inherit;text-decoration:underline" '
         + 'onclick="var x=document.getElementById(\'delete-device-btn\');if(x)x.click();return false;">'
-        + 'decommission</a> it.</div>';
+        + 'decommission</a> it.</span>'
+        + '<button type="button" class="btn sm" id="run-onboarding-btn">Set it up</button>'
+        + '<span id="onboarding-outcome"></span></div>';
       if (window.lucide) lucide.createIcons();
+      wireRunOnboarding();
     } else if (me && (me.status === 'no_credentials' || me.status === 'auth_failed')) {
       // ADR-0064 slice B: the durable way back in. The chat's capture card
       // lasts five minutes and the session ten; this banner lasts as long as
@@ -845,6 +854,13 @@ function recMsg(text, ok) {
         + '<button type="button" class="btn ghost sm" id="run-onboarding-btn">Run onboarding</button>'
         + '<span id="onboarding-outcome"></span></div>';
       if (window.lucide) lucide.createIcons();
+      wireRunOnboarding();
+    }
+  } catch (e) { /* non-fatal */ }
+})();
+// One onboarding handler for both banners above: it follows a capture or
+// approval link when onboarding ends in one.
+function wireRunOnboarding() {
       const btn = document.getElementById('run-onboarding-btn');
       if (btn) btn.addEventListener('click', async () => {
         btn.disabled = true;
@@ -861,9 +877,7 @@ function recMsg(text, ok) {
         } catch (e) { out.textContent = 'onboarding request failed'; }
         finally { btn.disabled = false; }
       });
-    }
-  } catch (e) { /* non-fatal */ }
-})();
+}
 loadPending();
 </script>
 {% endblock %}

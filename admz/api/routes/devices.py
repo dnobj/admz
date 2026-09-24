@@ -849,7 +849,8 @@ async def reveal_fleet_setting(key: str, request: Request):
 # --------------------------------------------------------------------------
 
 class RecoveryRequest(BaseModel):
-    # Only 'reprovision' is queued (runs when the device returns factory-default);
+    # Only 'reprovision' is queued (raises a setup notice when the device returns
+    # factory-defaulted; the name is historical, nothing is provisioned);
     # 'remove' is immediate via DELETE /devices/{id}, so it isn't queued here.
     intent: str = "reprovision"
     username: str = "root"
@@ -862,10 +863,12 @@ async def queue_recovery(
     req: RecoveryRequest,
     registry: DeviceRegistry = Depends(get_registry),
 ):
-    """Queue a pre-authorized recovery for a factory-defaulted device: when it
-    next reports needsetup (now, or after a future factory reset) the health
-    sweep re-provisions it (creates the admin account with a generated
-    password — never the fleet default: #185, FR-CRED-007). Authenticated + audited."""
+    """Queue a follow-up for a factory-defaulted device: when it next reports
+    needsetup (now, or after a future factory reset) the health sweep raises a
+    ``setup`` notice in the Console so a person onboards it. It never provisions
+    unattended — that would write the fleet root password to whatever answers
+    (ADR-0068). ``username`` is accepted for old callers and ignored.
+    Authenticated + audited."""
     from admz.audit import record_event
     from admz.auth import get_current_principal
     from admz.authz import require_authenticated_principal
@@ -888,9 +891,9 @@ async def queue_recovery(
         spec = {
             "trigger_kind": "detection", "action_type": "reprovision",
             "device_id": device_id, "event": "on_needs_setup",
-            "action_params": {"username": req.username},
+            "action_params": {},
             "description": (
-                f"Re-provision {device_id} when it returns factory-defaulted"
+                f"Raise a setup notice when {device_id} returns factory-defaulted"
             ),
         }
         return gate_task_write("create_task", device_id, spec,
@@ -898,17 +901,17 @@ async def queue_recovery(
 
     pid = pending_actions.create(
         device_id=device_id,
-        action={"action": "reprovision", "username": req.username},
+        action={"action": "reprovision"},
         trigger=TRIGGER_NEEDS_SETUP,
         approved_by=str(principal),
-        description=f"Re-provision {device_id} when it returns factory-defaulted",
+        description=f"Raise a setup notice when {device_id} returns factory-defaulted",
     )
     record_event(principal, "device.queue_recovery", resource=f"device:{device_id}",
                  details={"intent": "reprovision", "pending_id": pid})
     return {
         "success": True, "queued": True, "pending_id": pid,
-        "message": ("Re-provision queued — runs on the next health check, or "
-                    "after a future factory reset."),
+        "message": ("Queued — when the device reports factory-defaulted, a "
+                    "Console notice asks for it to be onboarded."),
     }
 
 

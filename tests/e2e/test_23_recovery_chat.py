@@ -20,6 +20,7 @@ _RECOVERY_WORDS = (
     "recover", "recovery", "decommission", "remove", "leave it",
     "afterward", "afterwards", "after the reset", "once it", "comes back",
     "when it returns", "when it comes back", "needs setup", "factory", "queue",
+    "set it up", "notice",
 )
 
 

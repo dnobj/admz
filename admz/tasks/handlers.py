@@ -364,69 +364,48 @@ async def _run_acs_action(task: Task, ctx: TaskContext) -> Dict[str, Any]:
 
 @register_task_handler("reprovision")
 async def _run_reprovision(task: Task, ctx: TaskContext) -> Dict[str, Any]:
-    """Deferred re-provision of a factory-defaulted device — ADR-0037's
-    ``reprovision`` detection task, which since ADR-0068 is refused rather than
-    performed (below). Moved from recovery_actions.py; now reads deps from
-    ``ctx`` instead of a startup closure.
+    """A queued recovery fired: the device came back factory-defaulted.
 
-    ``attended=False`` (ADR-0068) — **this handler no longer provisions.** It
-    reports a refusal instead, and that is the point rather than a regression.
+    ADR-0037's ``reprovision`` detection task. **It never provisions.** It
+    raises a ``setup`` notice in the Console (ADR-0071), so a person onboards
+    the device; the notice's review asks the chat to do exactly that, behind
+    the usual approval, and a successful onboarding closes it.
 
-    Since ADR-0068 provisioning writes the fleet **break-glass** root password
-    — one value, shared across every device ADMZ provisions, known to the
+    Why not provision here: since ADR-0068 provisioning writes the fleet root
+    password — one value, shared by every device ADMZ provisions, known to the
     operator by design. This handler fires unattended, on the health sweep's
-    schedule, up to 24h after an operator approved the task, against whatever
-    host answers at the device's registered address *at that later moment*. The
+    schedule, up to 24h after the task was approved, against whatever host
+    answers at the device's registered address *at that later moment*. The
     trigger (``needsetup=yes``) is itself an unauthenticated device response and
-    nothing on this path re-verifies the peer (#185; #326 for the residual). So
-    a spoofed peer — a reassigned DHCP lease, ARP spoofing, the port a
-    decommissioned camera vacated — would walk away with a credential valid on
-    every device ADMZ has provisioned. That is a fleet-wide credential handed to
-    whoever answered, which is categorically worse than the per-device generated
-    password this path used to write.
+    nothing here re-verifies the peer (#185; #326). A spoofed peer — a
+    reassigned DHCP lease, ARP spoofing, the port a decommissioned camera
+    vacated — would walk away with a credential valid on every device ADMZ
+    provisioned.
 
-    The previous answer was ``allow_fleet_default=False``: opt out of the shared
-    secret and generate per device. ADR-0068 removes that flag, because the root
-    password now has its own setting — and removing it *without* this refusal
-    would have made this handler silently START sending the shared value, which
-    is the exposure the ADR exists to prevent. The refusal is therefore
-    structural, not a comment.
+    From ADR-0068 until 2026-09-23 this handler called
+    ``provision_factory_default(attended=False)``, which refused, so every fired
+    task failed while the chat still promised a re-provision. Handing the
+    moment to a person is the attended flow ADR-0068 asked for.
 
-    **Deferring to an attended flow is what this file already recommended** as
-    the honest fix for #185/#326, alongside real peer identity (unverified as
-    buildable today). This is that deferral. The visible cost: a factory-
-    defaulted device that appears while nobody is watching stays
-    ``needs_setup`` until an operator onboards it, where before it would have
-    been provisioned with a password only ADMZ held.
+    A store failure is a failure (#455), never a silent success.
     """
-    from admz.provisioning import provision_factory_default
+    from admz.notices.producers import setup_notice
 
     device_id = task.device_id or (task.device_ids or [""])[0]
-    if ctx.registry is None:
-        raise RuntimeError("reprovision: task context has no registry")
-    info = ctx.registry.get_device_info(device_id)
-    host = info.get("host") or info.get("ip_address")
-    if not host:
-        raise ValueError(f"device {device_id} has no host to provision")
-    result = await provision_factory_default(
-        ctx.catalog, ctx.executors, ctx.registry,
-        device_id=device_id, host=host,
-        username=(task.action_params or {}).get("username", "root"),
-        attended=False,
-    )
-    if not result.get("success"):
-        raise RuntimeError(result.get("error") or "provision failed")
-    logger.info("deferred reprovision succeeded for %s", device_id)
-    # Carry the SOURCE forward, never the password (GH #326). `provisioning`
-    # already distinguishes provided / fleet_default / generated, and this
-    # handler was dropping it on the floor — so the audit row for a fired
-    # reprovision could not say which mode produced the credential it just
-    # created. That is the forensic question #326's phantom-provision gap makes
-    # worth answering: an operator looking at a suspect provision needs to know
-    # what was set, and the alternative is inferring it from the code path that
-    # was live at the time.
+    if not device_id:
+        raise ValueError("reprovision: the task names no device")
+    try:
+        notice = setup_notice(device_id, task_id=str(getattr(task, "id", "") or ""))
+    except Exception as exc:  # noqa: BLE001 — reported, not swallowed
+        logger.warning("reprovision: could not raise a setup notice for %s: %s",
+                       device_id, exc)
+        return {"success": False, "error": f"notice not raised: {exc}",
+                "summary": f"setup notice failed: {exc}"}
+    logger.info("deferred recovery for %s raised setup notice #%s",
+                device_id, notice.id)
     return {
         "success": True,
-        "summary": f"re-provisioned {device_id}",
-        "password_source": result.get("password_source"),
+        "notice_id": notice.id,
+        "summary": (f"{device_id} is factory-defaulted: raised notice "
+                    f"#{notice.id} to onboard it"),
     }

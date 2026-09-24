@@ -10,7 +10,9 @@ resolves the notice as ``accepted`` with the person's name.
 Provenance rides a context variable: the ``drift_audit`` handler wraps its
 sweep in :func:`notice_provenance`, and anything else reads as a manual
 ``check_drift``. The ``notify`` task action raises an ``event`` notice, keyed
-per task and device, so a detection that fires ten times bumps one row.
+per task and device, so a detection that fires ten times bumps one row. A
+queued re-provision raises a ``setup`` notice — one per device — when the
+device comes back factory-defaulted, and a successful onboarding closes it.
 
 Rows carry identifiers, counts and class names only (see the store).
 """
@@ -23,7 +25,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, Optional
 
-from admz.notices.store import KIND_DRIFT, KIND_EVENT, SEVERITIES, Notice
+from admz.notices.store import KIND_DRIFT, KIND_EVENT, KIND_SETUP, SEVERITIES, Notice
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,7 @@ SOURCE_CHECK_DRIFT = "check_drift"
 SOURCE_DRIFT_AUDIT = "drift_audit"
 SOURCE_BACKFILL = "backfill"
 SOURCE_NOTIFY = "notify"
+SOURCE_RECOVERY = "recovery"
 
 #: How a note or the prompt names a source.
 SOURCE_LABELS = {
@@ -38,7 +41,11 @@ SOURCE_LABELS = {
     SOURCE_DRIFT_AUDIT: "the scheduled drift audit",
     SOURCE_BACKFILL: "the drift cache at startup",
     SOURCE_NOTIFY: "an event detection",
+    SOURCE_RECOVERY: "a queued recovery",
 }
+
+#: What a setup notice is closed with once the device has working credentials.
+RESOLUTION_ONBOARDED = "onboarded"
 
 TRANSITIONS_THAT_RAISE = ("appeared", "changed")
 
@@ -194,6 +201,37 @@ def event_notice(task: Any, message: str) -> Notice:
         source=SOURCE_NOTIFY,
         task_id=task_id,
     )
+
+
+def setup_subject(device_id: str) -> str:
+    return f"setup:{device_id}"
+
+
+def setup_notice(device_id: str, task_id: str = "") -> Notice:
+    """Raise (or bump) the notice that a device is factory-defaulted and
+    waiting to be onboarded.
+
+    This is what a queued re-provision does now. Provisioning writes the fleet
+    root password, and ADR-0068 forbids doing that unattended — against
+    whatever answers at the device's address hours after the approval — so the
+    task hands the moment to a person instead. One live notice per device,
+    whichever task noticed; onboarding closes it (:func:`resolve_setup`).
+    """
+    return _store().raise_notice(
+        kind=KIND_SETUP,
+        subject_key=setup_subject(device_id),
+        title="Factory-reset — onboard it to set it up",
+        summary={"action": "onboard"},
+        device_id=device_id,
+        severity="medium",
+        source=SOURCE_RECOVERY,
+        task_id=task_id or "",
+    )
+
+
+def resolve_setup(device_id: str, by: str = "") -> Optional[Notice]:
+    """Close the device's setup notice: it has working credentials now."""
+    return _store().resolve(setup_subject(device_id), RESOLUTION_ONBOARDED, by=by)
 
 
 def backfill_drift_notices(registry: Any) -> int:

@@ -36,7 +36,10 @@ from typing import Any, Dict, List, Optional
 
 KIND_DRIFT = "drift"
 KIND_EVENT = "event"
-KINDS = (KIND_DRIFT, KIND_EVENT)
+#: A device came back factory-defaulted and is waiting to be onboarded — what a
+#: queued re-provision now raises instead of provisioning unattended (ADR-0068).
+KIND_SETUP = "setup"
+KINDS = (KIND_DRIFT, KIND_EVENT, KIND_SETUP)
 
 STATUS_OPEN = "open"
 STATUS_SNOOZED = "snoozed"
