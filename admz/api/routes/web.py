@@ -1436,11 +1436,18 @@ def _entry_credentials_view(desc: dict) -> dict:
     live one "never tried". ``entries_tried`` counts the entry credentials a
     pass tries, leaving out ADMZ's fleet root password attempt when ``in_use``
     starts with one (``fleet_root_first``), so the page names it apart from the
-    count rather than reporting "4 (at most 3)". Redacted dicts in, redacted
+    count rather than reporting "4 (at most 3)". ``last_worked`` is the local
+    date an entry last got ADMZ into a device, since the one that did most
+    recently is tried first (ADR-0064 slice F). Redacted dicts in, redacted
     dicts out.
     """
+    import time as _time
+
     flags = desc.get("stored_tried") or []
-    rows = [{**c, "tried": bool(flags[i]) if i < len(flags) else False}
+    when = desc.get("stored_last_success") or []
+    rows = [{**c, "tried": bool(flags[i]) if i < len(flags) else False,
+             "last_worked": (_time.strftime("%Y-%m-%d", _time.localtime(when[i]))
+                             if i < len(when) and when[i] else None)}
             for i, c in enumerate(desc.get("stored", []))]
     entries_tried = len(desc.get("in_use", [])) - (1 if desc.get("fleet_root_first") else 0)
     return {**desc, "rows": rows, "entries_tried": max(entries_tried, 0)}

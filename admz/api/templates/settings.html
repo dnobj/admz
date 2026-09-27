@@ -131,7 +131,7 @@
             {% endif %}
             <span class="icon-btn xs" style="cursor:help" title="A working entry is used once, to create the admz account. It is never stored as that device's credential."><i data-lucide="circle-help"></i></span>
           </div>
-          <div class="sr-desc">Only used to get into a device that already has a root password, so ADMZ can create its own <span class="mono text">admz</span> account. Tried top to bottom{% if entry_credentials.fleet_root_first %}, after the fleet root password{% endif %}.</div>
+          <div class="sr-desc">Only used to get into a device that already has a root password, so ADMZ can create its own <span class="mono text">admz</span> account. Tried{% if entry_credentials.fleet_root_first %} after the fleet root password,{% endif %} starting with the one that last worked, then top to bottom.</div>
 
           {% if entry_credentials.error %}
           <div class="note-band" style="margin-top:10px"><i data-lucide="triangle-alert"></i>
@@ -154,7 +154,7 @@
               <span class="type-tile" style="width:28px;height:28px"><i data-lucide="user"></i></span>
               <span style="flex:1;min-width:0">
                 <span class="mono text" style="font-weight:600;font-size:13px">{{ c.get('username', '?') }}</span>
-                <span style="display:block;font-size:11.5px;color:var(--text-faint)">{{ c.get('label') or '—' }}</span>
+                <span style="display:block;font-size:11.5px;color:var(--text-faint)">{{ c.get('label') or '—' }}{% if c.last_worked %} · <span data-last-worked title="The last day this credential got ADMZ into a device. The most recent one is tried first.">last worked {{ c.last_worked }}</span>{% endif %}</span>
               </span>
               {# The form carries the list's revision as rendered, so a removal
                  applies only to the list this page showed: a stale tab, or this

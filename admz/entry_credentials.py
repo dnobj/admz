@@ -30,6 +30,13 @@ root password instead), so it is purely an entry credential; retiring it
 into the list is still a separate decision with its own blast radius — every
 install's effective list is its legacy pair — and this module only stops it
 being the *whole* answer.
+
+ORDER
+-----
+The credential that last got ADMZ into a device is tried first next time
+(ADR-0064 slice F): :func:`note_success` records it, and the rest keep their
+stored order, the legacy pair first. So with no history the order is the stored
+one, and it is that order the settings page lists and removes by.
 """
 
 from __future__ import annotations
@@ -39,6 +46,7 @@ import hmac
 import json
 import logging
 import secrets
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -48,6 +56,12 @@ logger = logging.getLogger(__name__)
 
 #: One encrypted fleet setting holding the JSON list.
 SETTING_KEY = "entry_credentials"
+
+#: When each stored entry credential last got ADMZ into a device (ADR-0064
+#: slice F): one encrypted JSON object, ``{"salt", "last_success": {fingerprint:
+#: unix time}}``. Its own setting rather than a field in the list — see
+#: :func:`note_success` for why.
+HISTORY_KEY = "entry_credentials_history"
 
 #: Legacy single pair — an entry credential only: nothing writes it to a device
 #: (FR-CRED-007). Read here as the first entry so an existing install keeps
@@ -272,27 +286,112 @@ def list_entry_credentials() -> List[EntryCredential]:
     the operator to delete anything first — and turning it off restores what
     was there, which is why nothing is deleted on their behalf.
 
-    Otherwise the legacy pair comes first when set: it is the one an operator
-    has most recently confirmed by hand, and trying it first means an install
-    that has never touched this feature behaves exactly as it did before.
+    Otherwise the credential that most recently got ADMZ into a device comes
+    first (ADR-0064 slice F, :func:`_recent_first`), and the rest keep their
+    stored order with the legacy pair first: it is the one an operator has
+    most recently confirmed by hand, and trying it first means an install that
+    has never touched this feature behaves exactly as it did before.
     """
     if prompt_always():
         return []
     creds: List[EntryCredential] = []
-    legacy_pass = fleet_settings.get(LEGACY_PASS_KEY)
-    if legacy_pass:
-        creds.append(EntryCredential(
-            username=fleet_settings.get(LEGACY_USER_KEY) or "root",
-            password=legacy_pass,
-            label=LEGACY_LABEL,
-        ))
-    seen = {(c.username, c.password) for c in creds}
-    for cred in _parse(fleet_settings.get(SETTING_KEY)):
+    seen = set()
+    for cred in _stored_rows(fleet_settings.get(SETTING_KEY)):
         if (cred.username, cred.password) in seen:
             continue
         seen.add((cred.username, cred.password))
         creds.append(cred)
-    return creds
+    return _recent_first(creds)
+
+
+def _stored_rows(raw: Optional[str]) -> List[EntryCredential]:
+    """What is stored, in stored order: the legacy pair first when set, then
+    the list parsed from ``raw``. Duplicates kept — this is what the settings
+    page lists and removes by position; :func:`list_entry_credentials` dedupes.
+    The prompt-always posture is not consulted: it governs what is TRIED."""
+    rows = _parse(raw)
+    legacy_pass = fleet_settings.get(LEGACY_PASS_KEY)
+    if legacy_pass:
+        rows.insert(0, EntryCredential(
+            fleet_settings.get(LEGACY_USER_KEY) or "root", legacy_pass, LEGACY_LABEL))
+    return rows
+
+
+def _fingerprint(salt: str, cred: EntryCredential) -> str:
+    """Names one (username, password) pair in the history without holding it.
+
+    Keyed with the history's own random salt, so the value is not a bare hash
+    of a password even though it sits encrypted beside the list it names."""
+    return hmac.new(bytes.fromhex(salt), f"{cred.username}\x00{cred.password}".encode("utf-8"),
+                    hashlib.sha256).hexdigest()[:32]
+
+
+def _read_history() -> Tuple[str, Dict[str, float]]:
+    """``(salt, {fingerprint: unix time of the last success})``.
+
+    Unset, undecryptable or malformed reads as no history at all, which is the
+    stored order: ordering is a courtesy, so it degrades to the old order and
+    never to an error."""
+    try:
+        data = json.loads(fleet_settings.get(HISTORY_KEY) or "{}")
+        salt, seen = data.get("salt"), data.get("last_success")
+        bytes.fromhex(salt)
+        return salt, {str(k): float(v) for k, v in seen.items()}
+    except (TypeError, ValueError, AttributeError):
+        return "", {}
+
+
+def _recent_first(creds: List[EntryCredential]) -> List[EntryCredential]:
+    """``creds`` with those that got ADMZ in most recently first; the rest keep
+    their order (``sorted`` is stable, and no history sorts as 0)."""
+    salt, seen = _read_history()
+    if not seen:
+        return list(creds)
+    return sorted(creds, key=lambda c: -seen.get(_fingerprint(salt, c), 0.0))
+
+
+def note_success(cred: EntryCredential) -> None:
+    """Record that ``cred`` just got ADMZ into a device, so the next pass tries
+    it first (ADR-0064 slice F, FR-CRED-013).
+
+    Ignored for ADMZ's own fleet root attempt, which goes first anyway, and for
+    a pair that is no longer stored. The history drops every fingerprint that
+    no longer names a stored credential, so a removed one leaves nothing behind.
+
+    **Written to its own setting, never into the list.** The list is recovery
+    material (ADR-0061), and the settings store has no compare-and-set: a
+    success rewritten into the list could land between an operator's add and
+    its write — from the settings page, the CLI, or the chat's own MCP process
+    on the same database — and silently drop the credential just added. A lost
+    write to the history costs only a slightly stale order. It also leaves
+    :func:`list_revision` alone, so a settings page open while a device is
+    onboarded keeps working Remove buttons.
+
+    Never raises: the onboarding that just succeeded must not fail over the
+    order of the next one.
+    """
+    if cred.fleet_root:
+        return
+    try:
+        salt, seen = _read_history()
+        if not salt:
+            salt, seen = secrets.token_hex(16), {}
+        stored = {_fingerprint(salt, c) for c in _stored_rows(fleet_settings.get(SETTING_KEY))}
+        this = _fingerprint(salt, cred)
+        if this not in stored:
+            return
+        seen = {fp: when for fp, when in seen.items() if fp in stored}
+        seen[this] = time.time()
+        fleet_settings.set(HISTORY_KEY, json.dumps({"salt": salt, "last_success": seen}))
+    except Exception:  # noqa: BLE001 — see the docstring
+        logger.warning("could not record which entry credential got in; the next pass "
+                       "keeps the stored order (ADR-0064 slice F)")
+
+
+def last_successes(rows: List[EntryCredential]) -> List[Optional[float]]:
+    """When each of ``rows`` last got ADMZ in (unix time), or ``None``."""
+    salt, seen = _read_history()
+    return [seen.get(_fingerprint(salt, c)) if seen else None for c in rows]
 
 
 def _fleet_root_attempt() -> List[EntryCredential]:
@@ -383,11 +482,11 @@ def attempt_order(*, warn: bool = True) -> List[EntryCredential]:
     Composed in one place (:func:`_attempts`): the onboarding loop iterates
     this and :func:`describe` reports the same attempts as ``in_use``, so what
     is tried and what the settings page says is tried cannot drift. The entry
-    credentials keep their stored order (the legacy pair first). Reordering
-    them most-recently-successful-first is ADR-0064 slice F — not yet built;
-    the lockout measurement that gated it was made on 2026-09-09 — and it must
-    sort *before* the slice, or success history could never pull a tail entry
-    into the tried set.
+    credential that most recently got ADMZ in comes first and the rest keep
+    their stored order, the legacy pair first (ADR-0064 slice F,
+    :func:`note_success`). That sort happens in
+    :func:`list_entry_credentials`, *before* :func:`_attempts` slices to the
+    bound, or success history could never pull a tail entry into the tried set.
 
     ``warn=False`` is for readers (:func:`describe`, the settings page): the
     WARNING about a list stored over the bound belongs to the pass that
@@ -518,6 +617,11 @@ def describe() -> dict:
     the fleet root pair counts as tried, because that pair is put to the device
     (first), and under :func:`prompt_always` nothing stored counts, even then.
 
+    ``stored_last_success`` also runs alongside ``stored``: when each last got
+    ADMZ into a device (unix time), or ``None``. The most recent is tried first
+    (:func:`note_success`), so ``stored`` and ``in_use`` can differ in order;
+    ``stored`` stays in stored order because Remove works by that position.
+
     ``in_use`` starts with ADMZ's fleet root password when one is configured
     (ADR-0068), and ``fleet_root_first`` says so — letting a page count the
     entry credentials apart from it, rather than report four tried "at most
@@ -527,11 +631,7 @@ def describe() -> dict:
     :func:`list_revision`, for a page's Remove buttons.
     """
     raw = fleet_settings.get(SETTING_KEY)
-    stored = _parse(raw)
-    legacy_pass = fleet_settings.get(LEGACY_PASS_KEY)
-    if legacy_pass:
-        stored.insert(0, EntryCredential(
-            fleet_settings.get(LEGACY_USER_KEY) or "root", legacy_pass, LEGACY_LABEL))
+    stored = _stored_rows(raw)
     fleet_root, entries = _attempts(warn=False)
     tried = {(c.username, c.password) for c in entries}
     seen = set()
@@ -546,6 +646,7 @@ def describe() -> dict:
         "max_attempts_per_pass": MAX_ATTEMPTS_PER_PASS,
         "stored": [c.redacted() for c in stored],
         "stored_tried": stored_tried,
+        "stored_last_success": last_successes(stored),
         "in_use": [c.redacted() for c in _in_order(fleet_root, entries)],
         "fleet_root_first": bool(fleet_root),
         "unreadable": _unreadable(raw),

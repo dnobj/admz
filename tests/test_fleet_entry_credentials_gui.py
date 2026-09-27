@@ -547,12 +547,28 @@ class TestThePageSaysWhatIsTried:
         ec.add_entry_credential("u0", "zz-pw-0")
         client.fs.set("fleet_root_password", "FleetRoot-entry-gui-1")
         page = " ".join(client.get("/settings").text.split())
-        assert "Tried top to bottom, after the fleet root password" in page
+        assert ("Tried after the fleet root password, starting with the one that "
+                "last worked, then top to bottom.") in page
         assert "first password ADMZ tries on a device" in page
         assert "final fallback" not in page
 
     def test_without_a_fleet_root_password_it_is_not_mentioned(self, client):
         ec.add_entry_credential("u0", "zz-pw-0")
         page = " ".join(client.get("/settings").text.split())
-        assert "Tried top to bottom." in page
+        assert "Tried starting with the one that last worked, then top to bottom." in page
         assert "after the fleet root password" not in page
+
+    def test_a_row_says_when_it_last_got_in(self, client):
+        """The one that last worked is tried first (ADR-0064 slice F), so the
+        page says which that is. A fleet-wide fact about the credential, not
+        a claim about any one device; a row that never got in says nothing."""
+        import time
+
+        ec.add_entry_credential("u0", "zz-pw-0")
+        ec.add_entry_credential("u1", "zz-pw-1")
+        ec.note_success(ec.EntryCredential("u1", "zz-pw-1"))
+        section = " ".join(_section(client.get("/settings").text).split())
+        assert section.count("data-last-worked") == 1
+        assert f"last worked {time.strftime('%Y-%m-%d')}</span>" in section
+        assert section.index("data-last-worked") > section.index(">u1<"), "on u1's row"
+        assert "zz-pw-1" not in section

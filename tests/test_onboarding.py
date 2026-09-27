@@ -61,9 +61,14 @@ def _seed_entry_list(pairs):
     fleet_settings.set(ec.SETTING_KEY, _json.dumps(
         [{"username": u, "password": p} for u, p in pairs]))
     fleet_settings.delete(ec.LEGACY_PASS_KEY)
+    # Success history reorders the list (ADR-0064 slice F), and these tests
+    # share one database: a pair one test logged in with would otherwise go
+    # first in the next test that seeds it.
+    fleet_settings.delete(ec.HISTORY_KEY)
 
     def _cleanup():
         fleet_settings.delete(ec.SETTING_KEY)
+        fleet_settings.delete(ec.HISTORY_KEY)
         if previous_legacy:
             fleet_settings.set(ec.LEGACY_PASS_KEY, previous_legacy)
 
@@ -972,6 +977,24 @@ class TestTheFleetRootPasswordIsAskedFirst:
         assert len(patch_probes["confirm_calls"]) == 1, "the entry list was never needed"
         assert fleet_root not in repr(out)
 
+    def test_getting_in_with_it_records_no_history(self, patch_probes, fleet_root):
+        """It is asked first anyway, and it is not an entry credential, so
+        slice F's history has nothing to learn from it."""
+        from admz import entry_credentials as ec
+        from admz.approval_context import approved
+
+        cleanup = _seed_entry_list([("u0", "p0")])
+        try:
+            patch_probes["confirm"] = [(True, {})]
+            with approved("register_discovered_device", "tok-test"):
+                out = _run(registry=_Registry())
+            history = ec._read_history()
+        finally:
+            cleanup()
+
+        assert out["via_fleet_root"] is True, out
+        assert history == ("", {})
+
     def test_the_approval_card_names_it(self, patch_probes, fleet_root):
         """The card says which credential got in. "An entry credential" would
         be wrong, and the operator knows this password by its name."""
@@ -1020,3 +1043,62 @@ class TestTheFleetRootPasswordIsAskedFirst:
         assert out["reason"] == "the fleet root password was rejected by the device"
         assert len(patch_probes["confirm_calls"]) == 1
         assert len(patch_probes["confirm"]) == 1, "nothing else was asked"
+
+
+class TestTheEntryThatGotInGoesFirst:
+    """ADR-0064 slice F: the entry credential that logged in is asked first on
+    the next pass. Recorded on authentication, not on adoption, because the
+    order exists to spend fewer failed logins."""
+
+    @staticmethod
+    def _next_pass_order(patch_probes):
+        """Run a pass the device refuses outright, and return the usernames it
+        asked, in order."""
+        before = len(patch_probes.get("confirm_calls", []))
+        patch_probes["confirm"] = [(False, {})] * 4
+        _run(registry=_Registry())
+        return [c["username"] for c in patch_probes["confirm_calls"][before:]]
+
+    def test_the_next_pass_asks_it_first(self, patch_probes):
+        from admz.approval_context import approved
+
+        cleanup = _seed_entry_list([("u0", "p0"), ("u1", "p1"), ("u2", "p2")])
+        try:
+            patch_probes["confirm"] = [(False, {}), (True, {})]
+            with approved("register_discovered_device", "tok-test"):
+                out = _run(registry=_Registry())
+            order = self._next_pass_order(patch_probes)
+        finally:
+            cleanup()
+
+        assert out["status"] == "admz_account_created", out
+        assert order == ["u1", "u0", "u2"]
+
+    def test_it_counts_even_when_the_admz_account_is_not_created(self, patch_probes):
+        from admz.approval_context import approved
+
+        cleanup = _seed_entry_list([("u0", "p0"), ("u1", "p1")])
+        try:
+            patch_probes["confirm"] = [(False, {}), (True, {})]
+            patch_probes["adopt"] = {"success": False, "error": "device said no"}
+            with approved("register_discovered_device", "tok-test"):
+                out = _run(registry=_Registry())
+            order = self._next_pass_order(patch_probes)
+        finally:
+            cleanup()
+
+        assert out["status"] != "admz_account_created", out
+        assert order == ["u1", "u0"]
+
+    def test_a_pass_the_device_refused_records_nothing(self, patch_probes):
+        from admz import entry_credentials as ec
+
+        cleanup = _seed_entry_list([("u0", "p0"), ("u1", "p1")])
+        try:
+            order = self._next_pass_order(patch_probes)
+            history = ec._read_history()
+        finally:
+            cleanup()
+
+        assert order == ["u0", "u1"]
+        assert history == ("", {})
