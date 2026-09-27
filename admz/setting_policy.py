@@ -108,6 +108,10 @@ KNOWN_SETTING_KEYS: FrozenSet[str] = frozenset({
     # secret — declared here so it is a known key, and deliberately not
     # LLM-writable, since turning it OFF would re-enable stored credentials.
     "entry_credentials_prompt_always",
+    # Which entry credential last got ADMZ in, so it is tried first (ADR-0064
+    # slice F). Salted fingerprints and times, never a password; still not
+    # LLM-writable, since it decides which credential every device sees first.
+    "entry_credentials_history",
     # The break-glass root password ADMZ writes to every device it provisions
     # (FR-CRED-014, ADR-0068). Unlike the entry list this one IS written to a
     # device — deliberately, so a human has a way in after a database loss.
@@ -227,6 +231,10 @@ STORE_ENCRYPTED_SETTING_KEYS: FrozenSet[str] = frozenset({
     # route back into a fleet after a database loss, so they are recovery
     # material rather than merely sensitive.
     "entry_credentials",
+    # When each of those last worked (ADR-0064 slice F). No password, but a
+    # salted fingerprint of each, which someone holding it could test guesses
+    # against — so it is encrypted like the list it names.
+    "entry_credentials_history",
     # The break-glass root password (FR-CRED-014, ADR-0068). Recovery material
     # for the WHOLE fleet — it is the one value here whose disclosure is worst,
     # because ADMZ writes it to every device it provisions.

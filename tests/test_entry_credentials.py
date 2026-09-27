@@ -22,7 +22,7 @@ def isolated_settings(tmp_path, monkeypatch):
     monkeypatch.setenv("ADMZ_HOME", str(tmp_path))
     from admz.fleet_settings import fleet_settings
 
-    for key in (ec.SETTING_KEY, ec.LEGACY_USER_KEY, ec.LEGACY_PASS_KEY):
+    for key in (ec.SETTING_KEY, ec.LEGACY_USER_KEY, ec.LEGACY_PASS_KEY, ec.HISTORY_KEY):
         try:
             fleet_settings.delete(key)
         except Exception:  # noqa: BLE001 — absent is the normal case
@@ -131,7 +131,8 @@ def test_the_legacy_pair_occupies_a_slot(isolated_settings):
 
 
 def test_attempt_order_is_the_stored_list(isolated_settings):
-    """Under the bound nothing is trimmed: the stored order, legacy first."""
+    """Under the bound, with no success history, nothing is trimmed or moved:
+    the stored order, legacy first. The control for slice F's ordering."""
     isolated_settings.set(ec.LEGACY_PASS_KEY, "legacy")
     ec.add_entry_credential("a", "1")
     assert ec.attempt_order() == ec.list_entry_credentials()
@@ -608,3 +609,162 @@ def test_describe_reports_the_fleet_root_attempt_apart(isolated_settings):
     assert d["in_use"][0] == {"username": "root", "label": ec.FLEET_ROOT_LABEL}
     assert len(d["in_use"]) == 2, "in_use still reports every attempt"
     assert FLEET_ROOT not in json.dumps(d)
+
+
+# ── slice F: the one that last got in goes first ────────────────────────────
+#
+# ADR-0064 slice F / FR-CRED-013. With no history the stored order stands
+# (the two tests above named as controls); a success moves that credential to
+# the front of the next pass. The history lives in its own encrypted setting,
+# never in the list: rewriting recovery material on every success would race
+# an operator's add.
+
+@pytest.fixture
+def clock(monkeypatch):
+    """A settable time.time for the module, so "more recent" is exact."""
+    now = {"t": 1_000.0}
+    monkeypatch.setattr(ec.time, "time", lambda: now["t"])
+    return now
+
+
+def _stored(legacy=None, *pairs):
+    if legacy:
+        ec.fleet_settings.set(ec.LEGACY_PASS_KEY, legacy)
+    for user, password in pairs:
+        ec.add_entry_credential(user, password)
+
+
+def test_the_credential_that_last_got_in_is_tried_first(isolated_settings, clock):
+    _stored("legacy", ("a", "1"), ("b", "2"))
+    ec.note_success(ec.EntryCredential("b", "2"))
+    assert _pairs(ec.attempt_order()) == [("b", "2"), ("root", "legacy"), ("a", "1")]
+    assert ec.list_entry_credentials() == ec.attempt_order()
+
+
+def test_a_later_success_goes_ahead_of_an_earlier_one(isolated_settings, clock):
+    _stored("legacy", ("a", "1"), ("b", "2"))
+    ec.note_success(ec.EntryCredential("a", "1"))
+    clock["t"] = 2_000.0
+    ec.note_success(ec.EntryCredential("b", "2"))
+    assert _pairs(ec.attempt_order()) == [("b", "2"), ("a", "1"), ("root", "legacy")]
+    clock["t"] = 3_000.0
+    ec.note_success(ec.EntryCredential("root", "legacy"))
+    assert _pairs(ec.attempt_order()) == [("root", "legacy"), ("b", "2"), ("a", "1")]
+
+
+def test_the_order_is_sorted_before_the_bound_is_applied(isolated_settings, clock):
+    """ADR-0064's own warning: sort after the slice and a success could never
+    pull an entry stored past the bound into the pass."""
+    _store_raw(isolated_settings, ec.MAX_ATTEMPTS_PER_PASS + 2)
+    tail = ec.MAX_ATTEMPTS_PER_PASS + 1
+    ec.note_success(ec.EntryCredential(f"u{tail}", f"p{tail}"))
+    order = _pairs(ec.attempt_order(warn=False))
+    assert order[0] == (f"u{tail}", f"p{tail}")
+    assert len(order) == ec.MAX_ATTEMPTS_PER_PASS
+    assert ec.describe()["stored_tried"][tail] is True
+
+
+def test_the_fleet_root_attempt_is_not_recorded_and_stays_first(isolated_settings, clock):
+    """Not even when an entry holds the same pair: the attempt is ADMZ's own,
+    and it goes first whatever the history says. (Without that entry the pair
+    is not stored at all, and a second check would hide a missing guard.)"""
+    _stored(None, ("a", "1"), ("root", FLEET_ROOT))
+    isolated_settings.set("fleet_root_password", FLEET_ROOT)
+    ec.note_success(ec.attempt_order()[0])
+    assert isolated_settings.get(ec.HISTORY_KEY) is None
+    ec.note_success(ec.EntryCredential("a", "1"))
+    assert ec.attempt_order()[0].fleet_root is True
+
+
+def test_a_pair_that_is_not_stored_is_not_recorded(isolated_settings, clock):
+    _stored(None, ("a", "1"))
+    ec.note_success(ec.EntryCredential("a", "not-the-stored-password"))
+    ec.note_success(ec.EntryCredential("ghost", "1"))
+    assert isolated_settings.get(ec.HISTORY_KEY) is None
+
+
+def test_a_removed_credential_leaves_no_history_behind(isolated_settings, clock):
+    _stored(None, ("a", "1"), ("b", "2"))
+    ec.note_success(ec.EntryCredential("a", "1"))
+    ec.remove_entry_credential(0, revision=ec.list_revision())
+    ec.note_success(ec.EntryCredential("b", "2"))
+    _salt, seen = ec._read_history()
+    assert len(seen) == 1
+
+
+def test_recording_a_success_leaves_the_pages_revision_alone(isolated_settings, clock):
+    """The list itself is never rewritten, so a settings page open while a
+    device is onboarded keeps working Remove buttons."""
+    _stored("legacy", ("a", "1"))
+    before = ec.list_revision()
+    raw_before = isolated_settings._raw_get(ec.SETTING_KEY)
+    ec.note_success(ec.EntryCredential("a", "1"))
+    assert ec.list_revision() == before
+    assert isolated_settings._raw_get(ec.SETTING_KEY) == raw_before
+
+
+def test_the_history_is_encrypted_and_names_no_credential(isolated_settings, clock):
+    import sqlite3
+
+    from admz.paths import db_path
+
+    _stored("LEGACY-CANARY", ("user-canary", "PASS-CANARY"))
+    ec.note_success(ec.EntryCredential("user-canary", "PASS-CANARY"))
+    with sqlite3.connect(str(db_path())) as conn:
+        raw = conn.execute("SELECT value FROM fleet_settings WHERE key=?",
+                           (ec.HISTORY_KEY,)).fetchone()[0]
+    assert raw.startswith("gAAAAA"), "expected Fernet ciphertext"
+    plain = isolated_settings.get(ec.HISTORY_KEY)
+    for canary in ("user-canary", "PASS-CANARY", "LEGACY-CANARY"):
+        assert canary not in plain
+    assert set(json.loads(plain)) == {"salt", "last_success"}
+
+
+def test_the_history_key_is_declared(isolated_settings):
+    """Explicitly, not through a parametrized round-trip that cannot fail for
+    a key never added to the set."""
+    from admz.redact import is_sensitive_key
+    from admz.setting_policy import (
+        KNOWN_SETTING_KEYS,
+        LLM_WRITABLE_SETTING_KEYS,
+        STORE_ENCRYPTED_SETTING_KEYS,
+    )
+
+    assert ec.HISTORY_KEY in KNOWN_SETTING_KEYS
+    assert ec.HISTORY_KEY in STORE_ENCRYPTED_SETTING_KEYS
+    assert ec.HISTORY_KEY not in LLM_WRITABLE_SETTING_KEYS
+    assert is_sensitive_key(ec.HISTORY_KEY)
+
+
+@pytest.mark.parametrize("raw", [
+    "not json", "[]", "{}", '{"salt": "zz", "last_success": {}}',
+    '{"salt": "00", "last_success": []}', '{"salt": "00", "last_success": {"x": "y"}}',
+])
+def test_an_unusable_history_reads_as_the_stored_order(isolated_settings, clock, raw):
+    _stored("legacy", ("a", "1"))
+    isolated_settings.set(ec.HISTORY_KEY, raw)
+    assert _pairs(ec.attempt_order()) == [("root", "legacy"), ("a", "1")]
+    ec.note_success(ec.EntryCredential("a", "1"))
+    assert _pairs(ec.attempt_order()) == [("a", "1"), ("root", "legacy")]
+
+
+def test_a_failed_write_is_not_the_onboardings_problem(isolated_settings, clock,
+                                                       monkeypatch, caplog):
+    _stored(None, ("user-canary", "PASS-CANARY"))
+
+    def broken(key, value):
+        raise OSError("database is locked")
+
+    monkeypatch.setattr(ec.fleet_settings, "set", broken)
+    ec.note_success(ec.EntryCredential("user-canary", "PASS-CANARY"))
+    assert "stored order" in caplog.text
+    assert "PASS-CANARY" not in caplog.text and "user-canary" not in caplog.text
+
+
+def test_describe_reports_when_each_row_last_worked(isolated_settings, clock):
+    _stored("legacy", ("a", "1"))
+    ec.note_success(ec.EntryCredential("a", "1"))
+    d = ec.describe()
+    assert [c["username"] for c in d["stored"]] == ["root", "a"], "stored order"
+    assert d["stored_last_success"] == [None, 1_000.0]
+    assert [c["username"] for c in d["in_use"]] == ["a", "root"], "tried order"

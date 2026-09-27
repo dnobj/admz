@@ -172,7 +172,7 @@ is that the LLM uses these creds directly for a brief window).
 Max 3 temp creds per device. TTL 60–3600s. Background loop cleans
 expired ones via `pwdgrp.cgi:remove-user`.
 
-### FR-CRED-011 — Entry credentials get in; the `admz` account stays in 🚧
+### FR-CRED-011 — Entry credentials get in; the `admz` account stays in ✅
 A fleet credential authenticates ADMZ to a device it does not yet manage. It
 is **never** stored as that device's ongoing credential. See
 [ADR-0061](../decisions/0061-entry-credentials-and-the-admz-account.md).
@@ -219,12 +219,12 @@ happens.
 **Shipped since (#411 slice 3, #449):** adopting an already-credentialed device
 onto the `admz` account in place, keeping the credential it came in on.
 
-**Not yet shipped**, re-planned in
-[ADR-0064](../decisions/0064-a-device-admz-cannot-authenticate-to-is-never-online.md)
-as slices C–F together with #443: the per-pass attempt bound (FR-CRED-013,
+**The rest shipped** as slices C–F of
+[ADR-0064](../decisions/0064-a-device-admz-cannot-authenticate-to-is-never-online.md),
+re-planned there together with #443: the per-pass attempt bound (FR-CRED-013,
 slice C — shipped 2026-09-06), the promote checkbox (FR-CRED-012, slice D — shipped 2026-09-06),
 FR-CRED-007's generated-wins ordering (slice E — shipped 2026-09-06; reversed for `root` by ADR-0068 on 2026-09-14), and most-recently-successful
-ordering (FR-CRED-013, slice F — not yet built; the lockout measurement that gated it was made on 2026-09-09). Two facts to hold while reading the
+ordering (FR-CRED-013, slice F — shipped 2026-09-27, after the lockout measurement that gated it on 2026-09-09). Two facts to hold while reading the
 rest: the list has three writers — `python -m admz settings set entry_credentials`,
 the capture form's promote checkbox (since slice D), and the Fleet Settings page,
 which adds and removes entries (FR-CRED-012, 2026-09-14); and the lockout
@@ -260,7 +260,7 @@ live devices as a deploy side effect is a decision, not a consequence.
   break-glass value, which is how those 11 devices reach the target shape rather
   than stranding a generated root password nobody holds.
 
-### FR-CRED-013 — At most three entry credentials, or none at all 🚧
+### FR-CRED-013 — At most three entry credentials, or none at all ✅
 The list is capped at **three** where it is stored, so what the settings page
 shows is what exists; since ADR-0064 slice C the device-facing loop is bounded
 separately to the same number (below), and `describe()` reports both what is
@@ -312,12 +312,32 @@ once per pass, counts only, never from the settings page's read — and its tail
 is never tried; `describe()` also reports `max_attempts_per_pass`. This half
 needed no measurement and shipped first.
 
-**Most-recently-successful ordering (ADR-0064 slice F) 📋.** `attempt_order`
-tries the most-recently-successful credential first; with no history the
-legacy pair is first, which is today's behaviour and the control. This half was
-gated on the lockout behaviour being measured (ADR-0064, decision 7); that
-measurement is now done and recorded below, so the gate is lifted — slice F is
-free to plan and build, and its 📋 marks only that it has not yet shipped.
+**Most-recently-successful ordering (ADR-0064 slice F) ✅ (2026-09-27).**
+`attempt_order` tries the entry credential that most recently got ADMZ into a
+device first; the rest keep their stored order, so with no history the legacy
+pair is first, which was the behaviour before and is the control. ADMZ's fleet
+root password stays ahead of all of them (ADR-0068) and is not part of the
+history. The sort happens **before** the slice to the bound, so a success can
+pull an entry stored past it into the pass.
+
+- **Recorded on authentication, not on adoption.** Onboarding notes the pair
+  the moment it logs in, even if creating `admz` then fails: the order exists
+  to spend fewer failed logins, and that pair has just proved it logs in.
+- **Kept in its own setting, `entry_credentials_history`, never in the list.**
+  It is encrypted like the list, holds a salted fingerprint and a time per
+  credential, and never holds a username or password. Writing a time into the
+  list itself (the plan's first shape) would rewrite recovery material on
+  every success, and the settings store has no compare-and-set. So a success
+  landing between an operator's add and its write, from the settings page,
+  the CLI or the chat's MCP process, could silently drop the new credential. A
+  lost write to the history costs a slightly stale order, and the settings
+  page's Remove tokens stay valid.
+- **The settings page** lists entries in stored order, because Remove works by
+  position. It says the one that last worked is tried first, and shows each
+  row's last-worked date.
+
+This half was gated on the lockout behaviour being measured (ADR-0064,
+decision 7); that measurement is recorded below.
 
 **Lockout measurement (ADR-0064 decision 7) — 2026-09-09.** Run directly over
 Digest against a live fleet device — an AXIS P3408-VE on AXIS OS 12.10.68 — not

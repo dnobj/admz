@@ -549,6 +549,12 @@ async def onboard_device_credentials(
                 break
             continue
 
+        # This credential got in, so the next pass asks it first (ADR-0064
+        # slice F). Recorded on authentication, not on adoption: the order
+        # exists to spend fewer failed logins, and this pair just proved it
+        # logs in. A no-op for the fleet root attempt; never raises.
+        _entry.note_success(cred)
+
         # This credential works. Persist what we learned about REACHING the
         # device before anything else — the health monitor reads it, and a
         # device whose profile is missing reports auth_failed while a working
