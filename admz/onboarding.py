@@ -389,11 +389,13 @@ async def onboard_device_credentials(
         # Rejected or indeterminate: fall through — a stale stored password
         # is exactly what the fleet-pair try below may repair.
 
-    # ---- 2. Factory-defaulted → provision with a generated password -------
-    ready = await read_systemready(
-        catalog, executor, probe_info,
-        stored or {"username": "", "password": ""},
-    )
+    # ---- 2. Factory-defaulted → provision root, then admz (ADR-0068) -------
+    #
+    # Asked with no credential (#479). Step 1 may just have watched the device
+    # refuse the stored pair, and `needsetup` is readable without one: that is
+    # the premise of this whole path. read_systemready sends none, as the
+    # health sweep's read always has.
+    ready = await read_systemready(catalog, executor, probe_info)
     if ready and ready.get("needsetup"):
         host = device_info.get("host") or device_info.get("ip_address")
 
@@ -499,10 +501,9 @@ async def onboard_device_credentials(
     # credential above it, one pass is at most 10 operations / 20 sends
     # (FR-CRED-013). A pair step 1 saw refused
     # is skipped here rather than asked twice (#475, ADR-0065) — the maximum
-    # is unchanged, but no pair is ever put to the device to AUTHENTICATE
-    # twice in one pass. Step 2's systemready read still carries `stored`
-    # (#479): auth-free by design, but not forced off the way the health
-    # sweep forces it.
+    # is unchanged, but a refused pair is not put to the device again in this
+    # pass. Step 2's systemready read carries no credential at all (#479), so
+    # those counts are every credentialed send in the pass.
     candidates = _entry.attempt_order()
     if not candidates:
         reason = ("no entry credentials configured"

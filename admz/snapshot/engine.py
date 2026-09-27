@@ -694,11 +694,12 @@ class SnapshotEngine:
             return True, ""
         if getattr(result, "status_code", None) == 401:
             # A factory-defaulted device 401s on every authed read but reports
-            # needsetup via systemready (no auth) — tell the two apart.
+            # needsetup via systemready (no auth) — tell the two apart. The
+            # credential it just refused is not sent again (#479).
             try:
                 from admz.fleet.systemready import read_systemready
                 sr = await read_systemready(
-                    catalog, executor, device_info, credentials, family
+                    catalog, executor, device_info, family=family
                 )
                 if sr and sr.get("needsetup"):
                     return False, "needs_setup"
