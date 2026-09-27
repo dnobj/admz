@@ -289,11 +289,16 @@ added the attempt, until then, the pass read 8 / 16 and the loop left it out.)
 
 ✅ **(ADR-0065 decision 4, #475 — shipped 2026-09-07.)** A pair the
 stored-credential check saw **refused** is skipped when the loop reaches it:
-the maximum is unchanged, but no pair is put to a device to **authenticate**
-twice in one pass. A refusal only — an unanswered check says nothing about the
-credential, and skipping on silence would drop a pair that works. (Step 2's
-`systemready` read still carries the stored credential; that op is auth-free by
-design but, unlike the health sweep's, its auth is not forced off — #479.)
+the maximum is unchanged, but a refused pair is not put to the device again in
+that pass. A refusal only — an unanswered check says nothing about the
+credential, and skipping on silence would drop a pair that works.
+
+✅ **(#479 — 2026-09-27.)** Step 2's `systemready` read carries no credential,
+so every credentialed send in a pass is in the counts above. Until then it
+presented the stored pair once more, with the device's auth profile, right after
+step 1 had seen that pair refused; the counts left it out. `read_systemready`
+now takes no credential and switches auth off itself, so the health sweep, the
+drift readability probe and onboarding all ask it the same way.
 
 The
 pass stops on the first success and breaks on an unreachable (`None`) answer. The

@@ -1426,7 +1426,8 @@ async def _unauth_systemready(
     bound it by the sweep's budget rather than the executor's 15 s; and send
     it with auth switched off — the op is auth-free by design, and a `basic`
     profile would otherwise put an empty Basic header on the wire every 60 s,
-    which is a credentialed request from a sweep (NFR-HLT-002).
+    which is a credentialed request from a sweep (NFR-HLT-002). The third is
+    now ``read_systemready``'s own contract (#479), so every caller gets it.
     """
     if catalog is None or executor is None:
         return None
@@ -1435,18 +1436,10 @@ async def _unauth_systemready(
     _row, _stale, skip_read = _systemready_record(device_id, device_info)
     if skip_read:
         return None
-    unauth_info = {
-        **device_info,
-        "device_id": device_id,
-        "auth": {**(device_info.get("auth") or {}),
-                 "http": "none", "https": "none"},
-        "auth_method": "none",
-    }
     try:
         return await asyncio.wait_for(
             read_systemready(
-                catalog, executor, unauth_info,
-                {"username": "", "password": ""},
+                catalog, executor, {**device_info, "device_id": device_id},
             ),
             timeout=timeout_seconds + 2,
         )
