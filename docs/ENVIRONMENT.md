@@ -194,8 +194,10 @@ principal which is **not anonymous** but carries **no groups**. So it clears
 gates that only require an authenticated identity, and is refused by every
 group-gated surface — reveal, approve, `/settings/advanced`.
 
-`ADMZ_MCP_NO_SCHEDULER` is likewise internal: it stops the MCP subprocess
-starting a second scheduler alongside the web process's.
+`ADMZ_MCP_NO_SCHEDULER` is likewise internal: it marks an MCP process as a
+pool subprocess the web process spawned, which caps how long its temporary
+credentials may live. Despite the name it no longer changes scheduling: no MCP
+process starts a scheduler (ADR-0073).
 
 ### Two names in `ORDINARY_CONFIG` that are not environment variables
 

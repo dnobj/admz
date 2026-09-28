@@ -69,6 +69,14 @@ MCP server ready for connections
 
 Press `Ctrl+C` to stop.
 
+### What the MCP server does not do
+
+It is a tool server, not a runtime
+([ADR-0073](specification/decisions/0073-the-mcp-server-is-a-tool-server-not-a-runtime.md)).
+It starts no scheduler, health monitor or event ingest; those run in the ADMZ
+web service. A schedule you create through the MCP tools is stored, and the
+web service runs it. If only the MCP server is running, nothing scheduled runs.
+
 ## Configuration
 
 ### For Claude Code

@@ -14,6 +14,12 @@ The server runs as `python -m admz mcp`, communicating with the
 client over stdin/stdout. No protocol-level auth needed — the trust
 boundary is "the user that launched the process."
 
+It is a **tool server, not a runtime** ([ADR-0073](../decisions/0073-the-mcp-server-is-a-tool-server-not-a-runtime.md)):
+no MCP process, whether a chat pool subprocess or launched standalone by a
+client, starts the scheduler, the health monitor, event ingest or any other
+background work. Those run in the web service alone, so an install with no web
+service running runs no schedules.
+
 ### FR-MCP-002 — Catalog-in-the-loop tool surface ✅
 The primary workflow tools:
 - `query_catalog(device_id, intent)` — filtered operations + parameter docs
@@ -52,7 +58,10 @@ approval, ADR-0069), `list_accounts`, `add_account`,
 ### FR-MCP-007 — Scheduling tools ✅
 `create_snapshot_schedule`, `list_snapshot_schedules`,
 `update_snapshot_schedule`, `delete_snapshot_schedule`,
-`run_snapshot_schedule`. Persisted to `~/.admz/schedules.json`.
+`run_snapshot_schedule`. Persisted in the unified task store
+([ADR-0037](../decisions/0037-unified-tasks.md)); the web service's scheduler
+adopts what these tools write and runs it on its interval. `run_snapshot_schedule`
+runs the job inline in the MCP process.
 
 ### FR-MCP-008 — Out-of-band credential capture tools ✅
 `capture_credentials` returns a URL the user clicks in a browser;

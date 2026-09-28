@@ -178,8 +178,10 @@ class TestMcpScheduler:
     """``ADMZ_MCP_NO_SCHEDULER`` → ``runtime.no_scheduler``.
 
     Exercised through the real ``ADMZMCPServer.run`` coroutine with the stdio
-    transport stubbed, because the whole point of the flag is what ``run``
-    does with it — H-1, the duplicate-scheduler fix.
+    transport stubbed. The flag used to decide whether ``run`` started a
+    scheduler (H-1, the duplicate-scheduler fix). Since ADR-0073 (#375) no MCP
+    process starts one either way, and the flag survives as the pool-subprocess
+    marker the temporary-credential ceiling reads.
     """
 
     class _Scheduler:
@@ -223,18 +225,20 @@ class TestMcpScheduler:
         asyncio.run(srv.ADMZMCPServer.run(fake))
         return fake.scheduler
 
-    def test_the_old_env_var_still_suppresses_the_scheduler(
+    def test_with_the_marker_no_scheduler_starts(
         self, clean_env, isolated_settings, monkeypatch
     ):
         clean_env.setenv("ADMZ_MCP_NO_SCHEDULER", "1")
         sched = self._run(monkeypatch)
         assert (sched.started, sched.stopped) == (0, 0)
 
-    def test_without_it_the_scheduler_runs(
+    def test_without_it_no_scheduler_starts_either(
         self, clean_env, isolated_settings, monkeypatch
     ):
+        """ADR-0073: a standalone MCP used to start one here, beside the web
+        service's, and the two fired every schedule twice."""
         sched = self._run(monkeypatch)
-        assert (sched.started, sched.stopped) == (1, 1)
+        assert (sched.started, sched.stopped) == (0, 0)
 
     def test_the_value_admz_actually_sets_is_the_one_that_works(self):
         """``mcp_pool.py`` and ``voice.py`` both set the literal ``"1"``; the
