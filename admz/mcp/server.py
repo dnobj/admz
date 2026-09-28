@@ -6016,30 +6016,32 @@ class ADMZMCPServer:
                 await self._remove_temp_user(cred)
 
     async def run(self):
-        """Run the MCP server with stdio transport."""
-        # H-1: when spawned as a pool subprocess by the chatbot, the uvicorn
-        # process already owns the SnapshotScheduler.  Skip starting it here
-        # to avoid N+1 schedulers firing duplicate jobs and contending on the
-        # git lock.  Standalone `python -m admz mcp` usage is unaffected.
-        # Declared as the `runtime.no_scheduler` advanced capability (GH #132)
-        # — class `internal`, so it shows in diagnostics (answering "why
-        # didn't my schedule fire?") but never chips and is never toggleable.
-        from admz import capabilities as _capabilities
+        """Run the MCP server with stdio transport.
 
-        _pool_subprocess = _capabilities.is_active("runtime.no_scheduler")
-        if not _pool_subprocess:
-            # GH #172: standalone `python -m admz mcp` runs its own scheduler
-            # and never goes through the API lifespan, so the module task
-            # handlers must be installed here too — otherwise a scheduled
-            # module action dispatches to nothing and fails with "no handler
-            # registered". Idempotent, so the two entry points cannot conflict.
-            try:
-                from admz.tasks.handlers import install_module_task_handlers
-                install_module_task_handlers(self.module_registry)
-            except Exception:  # noqa: BLE001 — never block the server starting
-                logger.warning("module task-handler install failed",
-                               exc_info=True)
-            await self.scheduler.start()
+        **A tool server, never a runtime (ADR-0073, #375).** No MCP process —
+        a chat pool subprocess or a standalone ``python -m admz mcp`` — starts
+        the scheduler, the health monitor, event ingest or any other background
+        owner. Those run in the web service alone. A schedule created here is
+        written to the shared task store and the web service's scheduler adopts
+        it (its reconcile loop is cross-process); a schedule run from here with
+        ``run_snapshot_schedule`` runs inline, as any tool call does.
+
+        Standalone MCP used to start a scheduler and nothing it depends on
+        (#375), and the scheduler has no cross-process claim: beside the web
+        service on the same data it fired every schedule twice.
+        """
+        # GH #172: module task handlers, so a task run inline from a tool call
+        # (`run_snapshot_schedule`) finds its handler in THIS process. Every MCP
+        # process, pool or standalone: a chat pool subprocess used to skip this
+        # and fail a module action with "no handler registered". Idempotent.
+        try:
+            from admz.tasks.handlers import install_module_task_handlers
+            install_module_task_handlers(self.module_registry)
+        except Exception:  # noqa: BLE001 — never block the server starting
+            logger.warning("module task-handler install failed", exc_info=True)
+        logger.info(
+            "ADMZ MCP server is a tool server: scheduled tasks, health sweeps "
+            "and deferred actions run in the web service, not here (ADR-0073)")
         cleanup_task = asyncio.create_task(self._temp_credential_cleanup_loop())
         try:
             async with stdio_server() as (read_stream, write_stream):
@@ -6055,8 +6057,6 @@ class ADMZMCPServer:
                 await cleanup_task
             except asyncio.CancelledError:
                 pass
-            if not _pool_subprocess:
-                await self.scheduler.stop()
 
 
 def _log_active_capabilities() -> None:

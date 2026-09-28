@@ -11,8 +11,9 @@ TOOLS: List[Tool] = [
             "Create a recurring scheduled job. Despite the legacy "
             "name, this can schedule any registered job type — set "
             "`job_type` to 'snapshot' (default) or 'drift_audit' "
-            "(periodic config-audit). Jobs run automatically at the "
-            "specified interval. Use interval like '30m', '2h', '1d', "
+            "(periodic config-audit). The ADMZ web service runs the job "
+            "automatically at the specified interval; this server runs "
+            "none itself (ADR-0073). Use interval like '30m', '2h', '1d', "
             "or '12h'. See FR-SCH-010..014 and ADR-0026."
         ),
         inputSchema={

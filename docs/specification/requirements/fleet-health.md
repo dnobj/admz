@@ -384,11 +384,9 @@ question right after a restart, use `await_device_recovery`
 ([device-recovery.md](device-recovery.md)), which live-polls instead.
 
 ### KL-HLT-002 — One monitor per process ⚠️
-Like the scheduler, the monitor is per-process state. The uvicorn process is
-the intended owner; pool-spawned MCP subprocesses should not run their own
-(see the scheduler's `ADMZ_MCP_NO_SCHEDULER` pattern — the health monitor is
-gated behind its opt-in fleet flag, which subprocesses inherit but typically
-leave off).
+Like the scheduler, the monitor is per-process state. The web service is its
+only owner: no MCP process, pool or standalone, starts either one
+([ADR-0073](../decisions/0073-the-mcp-server-is-a-tool-server-not-a-runtime.md)).
 
 ### KL-HLT-004 — `limited_api` / `reachable_no_api` are only reachable from the authenticated tier ⚠️
 Both statuses are produced when the *authenticated* probe gets an unusable

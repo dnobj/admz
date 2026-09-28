@@ -178,7 +178,10 @@ _As built:_ the notice title is the operator's message, sanitized. An event-patt
 There is no distributed scheduler. Running two ADMZ instances
 against the same `~/.admz/` would double-fire every schedule.
 Multi-instance deployment is not currently supported — see
-KL-SCH-002.
+KL-SCH-002. A standalone `python -m admz mcp` beside the web service was
+exactly such a second instance until
+[ADR-0073](../decisions/0073-the-mcp-server-is-a-tool-server-not-a-runtime.md):
+no MCP process starts a scheduler now, so the web service's is the only one.
 
 ### NFR-SCH-002 — Schedule store is small ✅
 `schedules.json` is a flat list, expected to stay under 100 KB

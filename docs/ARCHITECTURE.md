@@ -285,4 +285,5 @@ ADMZ deliberately does **not**:
 - Federate multiple Experience Centers (one ADMZ instance per fleet;
   multi-fleet federation is out of scope)
 - Run its own scheduler daemon — schedules run as asyncio tasks inside
-  the MCP server process
+  the web service process; the MCP server runs none
+  ([ADR-0073](specification/decisions/0073-the-mcp-server-is-a-tool-server-not-a-runtime.md))

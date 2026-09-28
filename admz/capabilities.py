@@ -224,10 +224,11 @@ CAPABILITIES: Tuple[Capability, ...] = (
     ),
     Capability(
         id="runtime.no_scheduler",
-        title="Subprocess scheduler suppression",
+        title="MCP pool subprocess marker",
         description=(
-            "Tells an MCP process not to start a SnapshotScheduler because the "
-            "parent uvicorn process already owns one."
+            "Marks an MCP process as one the web service spawned for the chat "
+            "or voice console, whose idle reaper bounds how long its temporary "
+            "credentials may live."
         ),
         danger="internal",
         production_appropriate=True,
@@ -236,9 +237,11 @@ CAPABILITIES: Tuple[Capability, ...] = (
         since="review-2026-06-10 H-1",
         notes=(
             "ADMZ sets this for its own pool subprocesses "
-            "(chatbot/mcp_pool.py, chatbot/voice.py), never an operator. "
-            "Declared so 'why didn't my schedule fire?' is answerable from "
-            "diagnostics; it never chips and is never offered as a toggle."
+            "(chatbot/mcp_pool.py, chatbot/voice.py), never an operator. The "
+            "name is historical: it once kept a pool subprocess from starting "
+            "a second scheduler, but since ADR-0073 no MCP process starts one, "
+            "pool or standalone. It never chips and is never offered as a "
+            "toggle."
         ),
     ),
     Capability(
