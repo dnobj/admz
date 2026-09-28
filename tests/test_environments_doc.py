@@ -33,8 +33,9 @@ REQUIRED = {
 #: The only values the checker knows how to act on.
 ATLAS_KINDS = {"copy", "editable", "none"}
 
-#: Keys that are allowed but optional.
-OPTIONAL = {"note"}
+#: Keys that are allowed but optional. `restricted` is observed: the checker
+#: reads the tree's security descriptor (#442).
+OPTIONAL = {"note", "restricted"}
 
 
 @pytest.fixture(scope="module")
