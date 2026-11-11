@@ -218,6 +218,7 @@ Approved implementation plans for staged work (design fixed, build pending — t
 
 Point-in-time production-readiness reviews and their follow-up trackers.
 
+- [review-2026-11-09.md](review-2026-11-09.md) — where the project stands, security, operations and architecture, with a recommended order of work. Each open finding names its issue; [#541](https://github.com/dnobj/admz/issues/541) is the live queue. Also records which development conveniences stay on in the lab by the owner's decision
 - [review-2026-06-10.md](review-2026-06-10.md) — exhaustive architecture / security / vestigial-code / duplication / docs review, with a prioritized action plan and per-finding status
 - [review-followup.md](review-followup.md) — the 2026-05-17 review's follow-up tracker
 
