@@ -26,7 +26,7 @@ import re
 import subprocess
 import sys
 import tarfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 REPO = Path(__file__).resolve().parents[1]
 DOC = REPO / "docs" / "ENVIRONMENTS.md"
@@ -494,6 +494,101 @@ def atlas_problem(name: str, venv: str | None, declared: str | None) -> str | No
 
 # ── launch configs ──────────────────────────────────────────────────────────
 
+# ── who may write a tree a service runs (#442) ──────────────────────────────
+
+#: Trustees meaning "any account on this machine", as SDDL writes them: an
+#: abbreviation for the well-known ones, or the raw SID.
+BROAD_TRUSTEES = {
+    "AU": "Authenticated Users", "S-1-5-11": "Authenticated Users",
+    "BU": "Users", "S-1-5-32-545": "Users",
+    "WD": "Everyone", "S-1-1-0": "Everyone",
+    "IU": "Interactive", "S-1-5-4": "Interactive",
+}
+#: SDDL rights that let a trustee change what runs: file or generic write and
+#: all, delete, and rewriting the ACL or the owner.
+_WRITE_TOKENS = {"FA", "FW", "GA", "GW", "SD", "WD", "WO"}
+#: The same, as access-mask bits: write data, append, write EA, write
+#: attributes, delete, write DAC, write owner, generic all, generic write.
+_WRITE_BITS = (0x2 | 0x4 | 0x10 | 0x100 | 0x10000 | 0x40000 | 0x80000
+               | 0x10000000 | 0x40000000)
+
+
+def _grants_write(rights: str) -> bool:
+    if rights.lower().startswith("0x"):
+        try:
+            return bool(int(rights, 16) & _WRITE_BITS)
+        except ValueError:
+            return True  # unparseable: assume the worst
+    tokens = {rights[i:i + 2] for i in range(0, len(rights), 2)}
+    return bool(tokens & _WRITE_TOKENS)
+
+
+def broad_writers(sddl: str) -> list:
+    """Broad trustees that an Allow ACE in ``sddl``'s DACL lets write.
+
+    Inherit-only ACEs count: they are how everything below a folder becomes
+    writable, which is the #442 finding exactly (``(A;OICIIOID;...;;;AU)`` on
+    ``C:\\admz`` and everything under it).
+    """
+    dacl = sddl.split("D:", 1)[1] if "D:" in sddl else ""
+    dacl = dacl.split("S:", 1)[0]  # a SACL, if printed, follows the DACL
+    found: list = []
+    for ace in re.findall(r"\(([^)]*)\)", dacl):
+        parts = ace.split(";")
+        if len(parts) < 6 or parts[0] not in ("A", "OA"):
+            continue
+        who = BROAD_TRUSTEES.get(parts[5])
+        if who and _grants_write(parts[2]) and who not in found:
+            found.append(who)
+    return found
+
+
+def acl_sddl(path: str) -> str | None:
+    """``path``'s security descriptor as SDDL; None off Windows or on error."""
+    if os.name != "nt" or not path or not Path(path).exists():
+        return None
+    quoted = str(path).replace("'", "''")
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             f"(Get-Acl -LiteralPath '{quoted}').Sddl"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() or None
+
+
+def restricted_problems(name: str, spec: dict, read=acl_sddl) -> list:
+    """Problems for an environment declared ``restricted``: its checkout, and
+    the interpreter its service runs, must be writable by no broad group.
+
+    A LocalSystem service executes this tree, so an account able to write it
+    can run code as SYSTEM at the next restart (#442). Fails closed: a
+    descriptor that cannot be read is reported, not assumed fine.
+    """
+    if not spec.get("restricted"):
+        return []
+    targets = [spec.get("checkout")]
+    if spec.get("venv"):
+        # A Windows path wherever this runs: the declaration describes a
+        # Windows service, and the tests run on Linux too.
+        targets.append(str(PureWindowsPath(spec["venv"], "Scripts", "python.exe")))
+    problems = []
+    for target in filter(None, targets):
+        sddl = read(target)
+        if sddl is None:
+            problems.append(
+                f"{name}: declared restricted, but the ACL of {target} could not be read")
+            continue
+        broad = broad_writers(sddl)
+        if broad:
+            problems.append(
+                f"{name}: {target} is writable by {', '.join(broad)}; a SYSTEM "
+                f"service runs it, so any such account can gain SYSTEM (#442)")
+    return problems
+
+
 def audit_launch_configs(roots) -> list:
     """Every launch.json, and the ADMZ_HOME each config would ACTUALLY use."""
     rows = []
@@ -561,6 +656,12 @@ def main() -> int:
             atlas_issue = atlas_problem(name, venv, spec.get("atlas"))
             if atlas_issue:
                 problems.append(atlas_issue)
+
+        if spec.get("restricted"):
+            acl_issues = restricted_problems(name, spec)
+            print(f"    write ACL  : "
+                  f"{'restricted' if not acl_issues else 'NOT restricted — see below'}")
+            problems.extend(acl_issues)
         print()
 
     rows = audit_launch_configs([r"C:\admz"])

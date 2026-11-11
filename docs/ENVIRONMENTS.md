@@ -100,6 +100,18 @@ the venv the service runs as LocalSystem, and declaring no atlas is not a reason
 that. A test keeps `atlas: none` and `venv: null` from drifting apart, since the checker
 itself cannot notice the combination.
 
+**`restricted: true`** means the environment's tree is run by a service as LocalSystem, so no
+broad group may be able to write it (#442). The checker reads the security descriptor of the
+checkout, and of the interpreter in its venv. It reports any Allow entry that grants write,
+delete or ACL-change rights to Authenticated Users, Users, Everyone or Interactive, including
+inherit-only entries, which are how everything below a folder becomes writable. Any account
+able to write there could run code as SYSTEM at the next restart.
+
+- **Fails closed.** A descriptor it cannot read is reported, not assumed fine.
+- **Why it is checked here.** A folder created under `C:\` inherits "Authenticated Users:
+  Modify" from the drive root, so a re-cloned production tree would quietly be writable
+  again. That is why this is a checked fact rather than a one-time fix.
+
 ## The declaration
 
 <!-- tools/environments.py parses this block. Keep it valid YAML. -->
@@ -113,6 +125,7 @@ environments:
     venv: 'C:\admz\admz-prod\.venv'
     atlas: copy
     expect_listening: true
+    restricted: true
     touch: 'never without explicit authorization'
     note: >-
       Its own clone, not a worktree, checked out detached at a pinned commit with a
