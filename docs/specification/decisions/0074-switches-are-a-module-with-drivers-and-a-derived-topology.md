@@ -1,6 +1,6 @@
 # ADR-0074 — Switches are a module: drivers behind one contract, and a topology ADMZ derives
 
-**Status:** Proposed (2026-11-10). Docs-only. This is the decision half of #15; a plan with PR-sized slices follows acceptance.
+**Status:** Proposed (2026-11-11). Docs-only. This is the decision half of #15; a plan with PR-sized slices follows acceptance.
 **Relates to:** [ADR-0039](0039-platform-and-pluggable-modules.md) (platform + modules) · [ADR-0040](0040-acs-pro-module.md) (ACS Pro, the module this one takes its shape from) · [ADR-0034](0034-uniform-widget-gating.md) (one human gate, no flat refusals) · [ADR-0037](0037-unified-tasks.md) (tasks) · [ADR-0071](0071-a-task-raises-a-notice-the-console-delivers-it.md) (notices) · [ADR-0072](0072-discovered-devices-are-added-from-the-chat-in-one-click.md) (discovered devices are added from the chat) · [ADR-0073](0073-the-mcp-server-is-a-tool-server-not-a-runtime.md) (the web service is the only runtime) · [ADR-0009](0009-oob-credential-capture.md) (credential capture) · [ADR-0029](0029-axis-api-atlas-as-maintained-reusable-asset.md) (the atlas) · review-2026-11-09 S-1 (the gate reads only the operation's risk word)
 
 ## Context
