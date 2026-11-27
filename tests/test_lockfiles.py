@@ -722,6 +722,29 @@ def test_ci_installs_from_the_dev_lock_in_hash_mode_and_resolves_nothing_else():
     ]
 
 
+def test_ci_installs_into_an_environment_of_its_own():
+    """The runner's Python is not empty. On the Windows image it carries pipx
+    and what pipx needs, none of it pinned by the lock. The environment check
+    found that on its first run, and this is what was done about it."""
+    steps = _steps()
+    making = [n for n, step in enumerate(steps)
+              if any(cmd.startswith("python -m venv ") for cmd in _commands(step))]
+    installing = [n for n, step in enumerate(steps)
+                  if any("pip install" in cmd for cmd in _commands(step))]
+    assert len(making) == 1, "exactly one step creates the virtual environment"
+    assert making[0] < min(installing), (
+        "and it is an earlier step than the first install: a PATH change made "
+        "through GITHUB_PATH only reaches the steps after the one that made it")
+    assert "GITHUB_PATH" in steps[making[0]]["run"], (
+        "the environment has to come first on PATH, or every later `python` is the runner's")
+    first_install = _commands(steps[min(installing)])
+    proof = [n for n, cmd in enumerate(first_install) if "sys.prefix != sys.base_prefix" in cmd]
+    first_pip = min(n for n, cmd in enumerate(first_install) if "pip install" in cmd)
+    assert proof and proof[0] < first_pip, (
+        "the install step proves it is inside that environment before it installs "
+        "anything; on Linux the runner's Python is clean, so nothing else would notice")
+
+
 def test_ci_then_checks_that_the_environment_is_the_lock():
     steps = _steps()
     installing = [n for n, step in enumerate(steps)

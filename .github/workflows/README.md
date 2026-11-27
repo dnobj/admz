@@ -232,14 +232,18 @@ ran versions this suite had never executed.
 Now every package and every transitive is pinned, with hashes, in two files:
 `requirements.lock` (the runtime) and `requirements-dev.lock` (the runtime plus
 the test tools). One file serves both legs, with platform markers where
-Windows and Linux differ. `setup-admz` does three things with them:
+Windows and Linux differ. `setup-admz` does four things with them:
 
-1. `pip install --require-hashes -r requirements-dev.lock`.
-2. `pip install -e ".[atlas]"`, as before. The catalog is a git reference, pip
+1. Creates a new virtual environment and puts it first on `PATH` for the rest
+   of the job. The runner's own Python is not empty: on the Windows image it
+   ships with pipx and what pipx needs, none of it pinned by the lock. Step 4
+   found that on its first run.
+2. `pip install --require-hashes -r requirements-dev.lock`.
+3. `pip install -e ".[atlas]"`, as before. The catalog is a git reference, pip
    refuses one in hash mode, and `ATLAS_SHA` already pins it by commit.
-3. `python tools/lock.py --verify-installed dev`, which fails unless every
+4. `python tools/lock.py --verify-installed dev`, which fails unless every
    pinned package is installed at its version and nothing else is installed
-   beyond ADMZ, the catalog and pip's own tools. Step 2 runs outside hash mode,
+   beyond ADMZ, the catalog and pip's own tools. Step 3 runs outside hash mode,
    so this step is what makes "CI tests the lock" a checked fact. **It must not
    become skippable or non-blocking.**
 

@@ -85,7 +85,7 @@ the rest took a year.
   objections to a lock are answered by a universal lock, by the catalog staying outside it, and by
   guard tests standing in for line-by-line review.
 
-**As built (2026-11-26).** Four things differ from the list above.
+**As built (2026-11-26).** Five things differ from the list above.
 
 - **The suite needed no fixes.** On the lab instance's versions it gave 6112 passed and 1 failed,
   and the one failure was the test that compares the installed starlette with the old bound. The
@@ -94,6 +94,9 @@ the rest took a year.
   `python tools/lock.py --verify-installed dev`, which fails if any pinned package is missing or
   at another version, or if anything is installed that the lock does not pin. The catalog is
   installed outside hash mode, so the install commands alone could not promise that.
+- **CI installs into a virtual environment of its own.** The check above failed on its first
+  Windows run: the runner's Python ships with pipx and three packages pipx needs, none pinned by
+  the lock. The suite had been running with them present all along.
 - **`locked: true` compares with the lock in the environment's own checkout,** and a checkout with
   no lock fails closed. Comparing a deployment with the development tree's lock would report it as
   wrong whenever a pin moved here first. So the lab instance is not declared `locked` in this PR.

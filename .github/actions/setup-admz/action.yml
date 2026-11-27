@@ -134,10 +134,33 @@ runs:
         fi
         echo "Deploy key authenticates to mrdnlabs/axis-api-atlas."
 
+    - name: Create an environment of our own
+      shell: bash
+      # The runner's Python is not empty. On the Windows image it ships with
+      # pipx and what pipx needs (argcomplete, filelock, userpath), none of
+      # which the lock pins. Installing into it would test the lock plus
+      # whatever the image carried that week. The check further down found
+      # this on its first run, which is what it is for.
+      #
+      # So everything goes into a new virtual environment, and that
+      # environment is put first on PATH for every later step of the job:
+      # `python`, `pip` and `pytest` mean this environment from here on. PATH
+      # changes made through GITHUB_PATH take effect in the NEXT step, which is
+      # why this is a step of its own.
+      run: |
+        set -euo pipefail
+        python -m venv "$RUNNER_TEMP/admz-venv"
+        python - >> "$GITHUB_PATH" <<'PY'
+        import os, pathlib
+        venv = pathlib.Path(os.environ["RUNNER_TEMP"]) / "admz-venv"
+        print(venv / ("Scripts" if os.name == "nt" else "bin"))
+        PY
+
     - name: Install dependencies
       shell: bash
       run: |
         set -euo pipefail
+        python -c "import sys; assert sys.prefix != sys.base_prefix, 'not in the virtual environment: ' + sys.prefix"
         python -m pip install --upgrade pip
         # FROM THE LOCK, in hash mode (ADR-0075, FR-DEP-003). Every package and
         # every transitive at one exact version, the same on both legs, and the

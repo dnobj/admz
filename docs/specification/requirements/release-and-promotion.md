@@ -34,8 +34,9 @@ then moves on to the next number. Promotion itself is FR-DEP-010.
 ### FR-DEP-003 — Dependencies are locked, and CI tests the lock ✅
 Every runtime package has one locked version, with hashes, in a file that serves both Windows and
 Linux: `requirements.lock`. `requirements-dev.lock` holds the same pins plus the test tools. CI
-installs the dev lock in hash mode, and then checks that the environment it is about to test is
-that lock and nothing else, so what is tested is what a build installs. A lock that no longer
+installs the dev lock in hash mode into a virtual environment of its own, and then checks that
+the environment it is about to test is that lock and nothing else, so what is tested is what a
+build installs. A lock that no longer
 matches the files it was made from fails a test. The catalog stays outside the locks, pinned by
 commit. The first lock was aligned to the lab instance's own versions, so nothing it runs moved.
 `tools/lock.py`; `tests/test_lockfiles.py`; `.github/actions/setup-admz/action.yml`.
