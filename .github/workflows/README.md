@@ -222,6 +222,48 @@ dependency gets muted, and a muted signal is no signal.
 
 ---
 
+## CI installs a lock, and checks that it did (ADR-0075)
+
+Until 2026-11, `setup-admz` ran `pip install -r requirements-dev.txt`, which
+resolved afresh from the bounds on every run. A transitive package nobody had
+chosen could arrive between two runs of one commit, and the reference install
+ran versions this suite had never executed.
+
+Now every package and every transitive is pinned, with hashes, in two files:
+`requirements.lock` (the runtime) and `requirements-dev.lock` (the runtime plus
+the test tools). One file serves both legs, with platform markers where
+Windows and Linux differ. `setup-admz` does four things with them:
+
+1. Creates a new virtual environment and puts it first on `PATH` for the rest
+   of the job. The runner's own Python is not empty: on the Windows image it
+   ships with pipx and what pipx needs, none of it pinned by the lock. Step 4
+   found that on its first run.
+2. `pip install --require-hashes -r requirements-dev.lock`.
+3. `pip install -e ".[atlas]"`, as before. The catalog is a git reference, pip
+   refuses one in hash mode, and `ATLAS_SHA` already pins it by commit.
+4. `python tools/lock.py --verify-installed dev`, which fails unless every
+   pinned package is installed at its version and nothing else is installed
+   beyond ADMZ, the catalog and pip's own tools. Step 3 runs outside hash mode,
+   so this step is what makes "CI tests the lock" a checked fact. **It must not
+   become skippable or non-blocking.**
+
+**To change a dependency:** edit the bound in `requirements.txt` or
+`requirements-dev.txt`, run `python tools/lock.py` (the one step that needs
+[`uv`](https://docs.astral.sh/uv/)), and commit both locks with the change.
+`python tools/lock.py --upgrade-package NAME` moves one package inside its
+bound and leaves the rest alone.
+
+What a failure means:
+
+| Message | Cause |
+|---|---|
+| `tests/test_lockfiles.py`: "the locks were not regenerated" | a requirements file changed and `tools/lock.py` was not run |
+| pip: `THESE PACKAGES DO NOT MATCH THE HASHES` | the file on the index is not the one that was locked. Stop and find out why before regenerating |
+| pip: `all requirements must have their versions pinned` | something needs a package the lock does not hold, usually a lock compiled without `--universal`. Regenerate with `tools/lock.py` |
+| the verify step lists differences | the catalog install pulled in or moved a package. Pin it by adding it to a requirements file and regenerating |
+
+---
+
 ## Deliberate non-goals
 
 * **No lint job.** `master` is not currently conformant: `black --check` would

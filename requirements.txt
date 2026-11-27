@@ -6,10 +6,11 @@
 #   version 0.y.z    ->  <0.(minor+1)     (under 0.x, the minor IS the major)
 #
 # Above INSTALLED, not above LATEST. The purpose of the ceiling is that a clean
-# `pip install -r requirements.txt` in CI resolves the set production actually
-# runs. A ceiling above latest leaves CI green on a set production has never
-# executed — which is exactly what #222 caught, when a clean install resolved
-# majors ahead of dev and prod and failed 182 tests on both Linux and Windows.
+# resolution of this file lands on the set production actually runs. A ceiling
+# above latest leaves CI green on a set production has never executed — which
+# is exactly what #222 caught, when a clean install resolved majors ahead of
+# dev and prod and failed 182 tests on both Linux and Windows. (CI resolved
+# this file on every run then. It installs the lock now; see below.)
 #
 # Floors are raised to the installed major (0.x: installed minor) only where
 # they sat BELOW it. A floor under the installed major lets a resolver backtrack
@@ -27,23 +28,36 @@
 # package with a proven break (#223) yet no effective ceiling — and cffi,
 # cryptography's native-ABI axis. pydantic, anyio, h11 and watchfiles remain
 # unbounded except where an upstream happens to cap them. This shrinks the
-# rolling surface; it does not close it. A constraints file (#233) is the
-# proportionate follow-up.
+# rolling surface; it does not close it.
+#
+# WHAT CLOSES IT IS THE LOCK (ADR-0075, #233). `requirements.lock` pins every
+# package here AND every transitive, exactly, with hashes, for Windows and Linux
+# in one file. CI installs from `requirements-dev.lock`, and a build installs
+# from `requirements.lock`, so a version nobody chose can no longer arrive.
+#
+# These bounds still matter, for two reasons. They are the reviewable intent: a
+# human can read twenty lines and their reasons, and cannot read a thousand
+# hashes. And they are what `python tools/lock.py` resolves within, so a bound
+# is how you say which versions the lock may move to.
+#
+# After changing a line here:   python tools/lock.py
+# "installed X" below means the version the lock pins.
 
 hvac>=2.0.0,<3            # installed 2.4.0 (= latest). Vault client for credential-at-rest.
-cryptography>=46.0.0,<47  # installed 46.0.5; latest 50.0.0 is FOUR majors ahead. Fernet
+cryptography>=46.0.0,<47  # installed 46.0.7; latest 50.0.0 is FOUR majors ahead. Fernet
                           # credential-at-rest + hazmat in the GitHub App client. Floor
                           # raised from >=41 (five majors below installed): a backtrack to
                           # 41 must not be legal on this path. 50 also needs cffi>=2.0.0,
                           # i.e. a native rebuild on Windows, not just a Python-level major.
-cffi>=2.0,<3              # installed 2.0.0. TRANSITIVE — cryptography's C FFI layer, not
+cffi>=2.0,<3              # installed 2.1.1. TRANSITIVE — cryptography's C FFI layer, not
                           # imported by admz — and the one deliberate pseudo-direct entry
                           # (#241): nothing else caps it (cryptography sets only a floor),
                           # and a cffi major is a native ABI change requiring a Windows
                           # rebuild, not a Python-level bump. Requires-Dist consequence
                           # acknowledged: this reads as a direct dep of the admz
-                          # distribution; the constraints file (#233) is its correct
-                          # eventual home, this line moves there when #233 lands.
+                          # distribution. #233 landed as the lock, which pins cffi
+                          # exactly; the line stays, because this ceiling is what stops
+                          # `tools/lock.py --upgrade` from crossing a cffi major.
 
 # fastapi and mcp: bounds shipped in #222 and resolved in #223. UNCHANGED by
 # #227 — the reasoning below is merged and still current.
@@ -55,14 +69,16 @@ cffi>=2.0,<3              # installed 2.0.0. TRANSITIVE — cryptography's C FFI
 #   FastAPI >= 0.130 broke (see tests/route_inventory.py).
 #
 #   The floor deliberately stays low: both the migrated call signature and the
-#   route-inventory helper work on the old AND new router layouts, so
-#   production's existing 0.129 venv stays in spec while a clean install now
-#   correctly resolves 0.141+. The `<1` cap is the lesson of #222 kept rather
-#   than discarded — bounded at the next major boundary, not unbounded again.
+#   route-inventory helper work on the old AND new router layouts. The `<1` cap
+#   is the lesson of #222 kept rather than discarded — bounded at the next
+#   major boundary, not unbounded again.
 #
-#   This is the one package where CI does NOT test what production runs: a
-#   clean install resolves 0.141 while production stays on 0.129. That is
-#   #223's deliberate choice, not an oversight of the rule above.
+#   For a while this was the one package where CI did NOT test what production
+#   ran: a clean install resolved 0.141 while production stayed on 0.129. That
+#   ended twice over. Production moved to 0.141.1 in 2026-08, and since the
+#   lock (ADR-0075) CI installs that exact version too. The starlette bound
+#   below now excludes every fastapi old enough to need starlette 0.x, so the
+#   low floor here no longer admits anything the lock could pick.
 #
 # mcp: RESOLVED (#223, mcp half). The 1.x low-level decorators
 #   `@server.list_tools()` / `@server.call_tool()` are gone; handlers are now
@@ -87,20 +103,27 @@ cffi>=2.0,<3              # installed 2.0.0. TRANSITIVE — cryptography's C FFI
 #   tool dispatch. admz/mcp/server.py now performs that check itself — do not
 #   delete it assuming the SDK still does it.
 fastapi>=0.104.0,<1
-starlette>=0.52,<0.53     # installed 0.52.1. Imported directly (admz/security_headers.py) —
-                          # same rule as jsonschema and websockets below. Until #241 its only
-                          # ceiling was fastapi's `<1`, which is no boundary at all on a
-                          # 0.y.z package's own breaking axis — and starlette is the package
-                          # whose 1.x break cost 70 TemplateResponse call sites and 82 tests
-                          # (#223/#224). Pre-1.0 minor axis; one-minor window, deliberate,
-                          # same as uvicorn and zeroconf: the bump is visible and CI proves it.
+starlette>=1.3,<2         # installed 1.3.1. Imported directly (admz/security_headers.py) —
+                          # same rule as jsonschema and websockets below. starlette is the
+                          # package whose 1.x break cost 70 TemplateResponse call sites and
+                          # 82 tests (#223/#224).
+                          #
+                          # This line read `>=0.52,<0.53` until 2026-11, while the lab
+                          # instance ran 1.3.1: the one declared bound it violated, for
+                          # three months, because nothing built its environment from a
+                          # fixed list (review-2026-11-09 O-2). The code had been migrated
+                          # in #224 and runs on both lines; the full suite passes on
+                          # 1.3.1. The floor sits at 1.3, not 1.0, because 1.3.1 is the
+                          # only 1.x release this code has run on. It does not reach back
+                          # to 0.52 either, although the dev environment ran that until
+                          # this change: one line is what the lock holds and CI tests.
 uvicorn[standard]>=0.40.0,<0.41  # installed 0.40.0; latest 0.52.1. Pre-1.0, so EVERY minor
                           # is a permitted breaking change and `<1` would be useless. Floor
                           # raised from >=0.24 (16 minors below installed). One-minor window
                           # is deliberate: it needs bumping, but the bump is visible and CI
                           # proves it. Widen only with CI green on the wider range.
 jinja2>=3.1.2,<4          # installed 3.1.6 (= latest). Template engine for every HTML route.
-python-multipart>=0.0.6,<0.1  # installed 0.0.22; latest 0.0.32. EXCEPTION to the rule: this
+python-multipart>=0.0.6,<0.1  # installed 0.0.32. EXCEPTION to the rule: this
                           # project has never left 0.0.z, so the rule would emit `<0.0.23`.
                           # `<0.1` is the real next boundary. Form parsing for POST routes.
 mcp>=2.0,<3
@@ -161,14 +184,14 @@ WSDiscovery>=2.0.0,<3     # installed 2.1.2 (= latest).
 httpx>=0.28.0,<0.29       # installed 0.28.1 (= latest). Pre-1.0 minor axis. Floor raised
                           # from >=0.27. Every outbound VAPIX call goes through this.
 scapy>=2.5.0,<3           # installed 2.7.0 (= latest).
-pysnmp>=7.0.0,<8          # installed 7.1.22; latest 7.1.28. Floor raised from >=6.0.0,
+pysnmp>=7.0.0,<8          # installed 7.1.28. Floor raised from >=6.0.0,
                           # which sat a full major BELOW installed — pysnmp 6 and 7 differ
                           # in the async API this code calls.
 
 # ADR-0041: outbound WebSocket client for the live device-event stream
 # (VAPIX ws-data-stream). Already present transitively via google-genai;
 # pinned explicitly since admz/events/wsstream.py depends on it directly.
-websockets>=16.0,<17      # installed 16.0. Floor raised from >=13.0 (three majors below).
+websockets>=16.0,<17      # installed 16.1.1. Floor raised from >=13.0 (three majors below).
                           # NB: 17.0.1 is already unreachable — google-genai requires
                           # websockets<17.0 in both 2.5.0 and 2.16.0. This cap is a no-op
                           # today and becomes load-bearing the moment google-genai relaxes.

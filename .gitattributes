@@ -14,3 +14,8 @@
 # carries 12 LF bytes, so without this a Windows checkout would produce a
 # different hash than a Linux one and the guard would fail on one leg only.
 admz/api/static/vendor/** -text
+
+# The dependency locks (ADR-0075). uv writes them with LF and pip reads them in
+# hash mode. Keeping LF on every platform means the file a maintainer generated
+# is byte for byte the file both CI legs and a build install from.
+requirements*.lock text eol=lf
