@@ -112,6 +112,54 @@ able to write there could run code as SYSTEM at the next restart.
   Modify" from the drive root, so a re-cloned production tree would quietly be writable
   again. That is why this is a checked fact rather than a one-time fix.
 
+### It also answers "does this run the versions that were tested?" (ADR-0075)
+
+Production ran a starlette outside its declared bound for three months, and this page could
+not have said so. It printed three watched versions and compared them with nothing.
+
+Dependencies are now locked: `requirements.lock` pins every runtime package, exactly, and
+`requirements-dev.lock` adds the test tools. CI installs the dev lock, so the lock is what
+is tested. The checker asks each environment's interpreter what it has installed and prints
+a `lock` line:
+
+```
+lock       : is requirements.lock: 64 packages at the pinned versions, nothing else
+lock       : DIFFERS from requirements-dev.lock: 28 at another version, 17 not pinned
+```
+
+Three kinds of difference are reported. A pinned package that is missing, one at another
+version, and one that is installed although the lock does not pin it. The last is the
+quiet one: a version nobody chose, running. The application, the catalog and pip's own
+tools are excused, and nothing else is.
+
+- **Which lock.** An environment that has the test tools installed is compared with the
+  dev lock. One that does not is compared with the runtime lock.
+- **Whose copy.** The lock in the environment's own checkout, because that is the commit it
+  runs. A checkout from before the locks has none. Then the checker uses the copy in the
+  tree it was run from, and the line says so.
+- **A difference is information, not a failure,** unless the environment is declared
+  `locked`. The dev environment drifts by design. The first few differences are listed;
+  `python tools/environments.py --full` lists them all.
+
+**`locked: true`** means the environment must be exactly its runtime lock. Every difference
+then fails the run, and each is listed under MISMATCHES.
+
+- **It is held to the runtime lock even if test tools are present.** A deployment carries
+  none, so finding them is a difference and does not switch the comparison to the lock
+  that allows them.
+- **Fails closed,** like `restricted`. Packages that cannot be listed, a lock that cannot
+  be read, or a checkout with no lock of its own are each reported. The borrowed copy
+  described above is never used to pass a `locked` environment: this tree's lock moves
+  whenever a pin is changed here, and a deployment that has not been upgraded yet would
+  then be reported as wrong when it is only behind.
+- **No environment declares it yet.** Production's checkout predates the locks. Its
+  packages already match (the `lock` line shows it, against this tree's copy). It gets
+  `locked: true` with the first upgrade that puts a lock in its own tree.
+
+The same comparison runs in CI straight after the install, as
+`python tools/lock.py --verify-installed dev`, so "CI tests the lock" is observed on every
+run and not assumed from the install command.
+
 ## The declaration
 
 <!-- tools/environments.py parses this block. Keep it valid YAML. -->

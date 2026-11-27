@@ -26,7 +26,13 @@ import re
 import subprocess
 import sys
 import tarfile
+from collections import Counter
 from pathlib import Path, PureWindowsPath
+
+try:                                   # imported as part of a package: the tests
+    from tools import lock as locks
+except ImportError:                    # run as `python tools/environments.py`
+    import lock as locks
 
 REPO = Path(__file__).resolve().parents[1]
 DOC = REPO / "docs" / "ENVIRONMENTS.md"
@@ -589,6 +595,102 @@ def restricted_problems(name: str, spec: dict, read=acl_sddl) -> list:
     return problems
 
 
+# ── does it run what the lock pins (ADR-0075, FR-DEP-004) ──────────────────
+
+#: How many differences are listed for an environment that is not declared
+#: ``locked``. A development environment drifts by design, so the count is the
+#: news there; ``--full`` lists them all.
+SHOWN_UNLOCKED = 6
+
+_KINDS = (
+    ("version", "at another version"),
+    ("missing", "missing"),
+    ("unpinned", "not pinned"),
+    ("twice", "installed twice"),
+    ("lock", "pinned twice"),
+)
+
+
+def _interpreter(venv: str | None) -> Path | None:
+    if not venv:
+        return None
+    for tail in (("Scripts", "python.exe"), ("bin", "python")):
+        candidate = Path(venv, *tail)
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def lock_state(name: str, spec: dict, *, ask=None,
+               repo: Path = REPO, full: bool = False) -> tuple[list, list]:
+    """``(lines to print, problems)`` for this environment's packages against a lock.
+
+    WHICH LOCK. The runtime lock for an environment declared ``locked``: that is
+    a deployment, and it carries no test tools. For any other, the dev lock when
+    the test tools are installed and the runtime lock when they are not.
+
+    WHOSE COPY. The one in the environment's own checkout, because that is the
+    commit it runs. A checkout from before the locks has none; then this tree's
+    copy is used and the line says so. That fallback is for information only.
+    For an environment declared ``locked`` a missing lock is itself a problem:
+    "this runs exactly its lock" cannot be shown against another commit's file,
+    and comparing with this tree's would report a deployment as wrong every
+    time a pin moved here before it was upgraded.
+
+    ``locked`` fails closed, like ``restricted``. Packages that cannot be
+    listed, or a lock that cannot be read, are reported and not assumed fine.
+    """
+    python = _interpreter(spec.get("venv"))
+    if python is None:
+        return [], []                 # no interpreter: the venv line already said so
+    strict = bool(spec.get("locked"))
+    ask = ask or locks.installed      # looked up now, so a test can replace it
+
+    try:
+        packages, markers = ask(python)
+    except locks.LockError as exc:
+        problems = [f"{name}: declared locked, but its packages could not be listed: {exc}"]
+        return [f"cannot compare: {exc}"], problems if strict else []
+
+    has_test_tools = "pytest" in {locks.canonical(n) for n in packages}
+    lock_name = locks.RUNTIME_LOCK if strict or not has_test_tools else locks.DEV_LOCK
+    checkout = spec.get("checkout")
+    own = Path(checkout, lock_name) if checkout else None
+    borrowed = own is None or not own.exists()
+    whose = " (this tree's copy; its own checkout has none)" if borrowed else ""
+    problems = []
+    if strict and borrowed:
+        problems.append(
+            f"{name}: declared locked, but its checkout has no {lock_name}, so there "
+            f"is nothing of its own to compare with")
+
+    try:
+        pins = locks.read_lock(repo / lock_name if borrowed else own)
+        found = locks.differences(pins, packages, markers)
+        count = locks.applicable(pins, markers)
+    except (locks.LockError, OSError) as exc:
+        if strict:
+            problems.append(f"{name}: declared locked, but {lock_name} could not be read: {exc}")
+        return [f"cannot compare with {lock_name}{whose}: {exc}"], problems
+
+    if not found:
+        return [f"is {lock_name}{whose}: {count} packages at the pinned versions, "
+                f"nothing else"], problems
+
+    kinds = Counter(d.kind for d in found)
+    summary = ", ".join(f"{kinds[kind]} {label}" for kind, label in _KINDS if kinds[kind])
+    lines = [f"DIFFERS from {lock_name}{whose}: {summary}"]
+    if strict:
+        # Each one is a problem in its own right, listed under MISMATCHES.
+        problems.extend(f"{name}: {d} ({lock_name})" for d in found)
+    else:
+        shown = found if full else found[:SHOWN_UNLOCKED]
+        lines.extend(str(d) for d in shown)
+        if len(found) > len(shown):
+            lines.append(f"... and {len(found) - len(shown)} more (--full lists them)")
+    return lines, problems
+
+
 def audit_launch_configs(roots) -> list:
     """Every launch.json, and the ADMZ_HOME each config would ACTUALLY use."""
     rows = []
@@ -611,7 +713,15 @@ def audit_launch_configs(roots) -> list:
 
 # ── report ──────────────────────────────────────────────────────────────────
 
-def main() -> int:
+def main(argv=None) -> int:
+    args = sys.argv[1:] if argv is None else list(argv)
+    unknown = [a for a in args if a != "--full"]
+    if unknown:
+        print(f"usage: python tools/environments.py [--full]   (unknown: {' '.join(unknown)})",
+              file=sys.stderr)
+        return 2
+    full = "--full" in args
+
     declared = load_declaration()
     ports = listening_ports()
     problems = []
@@ -656,6 +766,11 @@ def main() -> int:
             atlas_issue = atlas_problem(name, venv, spec.get("atlas"))
             if atlas_issue:
                 problems.append(atlas_issue)
+
+        lock_lines, lock_issues = lock_state(name, spec, full=full)
+        for n, line in enumerate(lock_lines):
+            print(f"    {'lock       :' if n == 0 else '            '} {line}")
+        problems.extend(lock_issues)
 
         if spec.get("restricted"):
             acl_issues = restricted_problems(name, spec)

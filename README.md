@@ -92,6 +92,31 @@ extra is `dev` (test + lint tooling):
 pip install -e ".[dev]"          # development / test dependencies
 ```
 
+### The exact versions that are tested
+
+The commands above resolve from the bounds in `requirements.txt`, so two installs a month
+apart can differ. CI does not work that way, and neither does a deployment. Every package and
+every transitive is pinned, with hashes, in two lock files:
+
+| File | Holds | Installed by |
+|---|---|---|
+| `requirements.lock` | the runtime | a deployment |
+| `requirements-dev.lock` | the runtime plus the test tools | CI, and a development environment |
+
+To get what CI tests:
+
+```bash
+pip install --require-hashes -r requirements-dev.lock
+pip install -e ../axis-api-atlas                # the catalog; it is not in a lock
+pip install -e .
+python tools/lock.py --verify-installed dev     # lists every difference from the lock
+```
+
+After changing a bound in `requirements.txt` or `requirements-dev.txt`, regenerate both locks
+with `python tools/lock.py` and commit them with the change. That one step needs
+[`uv`](https://docs.astral.sh/uv/); installing from a lock needs only pip. A test fails if a
+requirements file changed and the locks did not.
+
 ## Quick start
 
 ### As a Python library

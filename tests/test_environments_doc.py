@@ -34,8 +34,10 @@ REQUIRED = {
 ATLAS_KINDS = {"copy", "editable", "none"}
 
 #: Keys that are allowed but optional. `restricted` is observed: the checker
-#: reads the tree's security descriptor (#442).
-OPTIONAL = {"note", "restricted"}
+#: reads the tree's security descriptor (#442). `locked` is observed: the
+#: checker lists the environment's packages and compares them with the lock in
+#: its checkout (ADR-0075).
+OPTIONAL = {"note", "restricted", "locked"}
 
 
 @pytest.fixture(scope="module")
@@ -101,6 +103,26 @@ def test_no_environment_declares_atlas_none_with_a_venv(declared):
         f"{wrong} declare atlas 'none' but have a venv. Either the venv has an "
         f"atlas (declare copy/editable) or it does not (declare venv: null)."
     )
+
+
+def test_no_environment_declares_locked_without_a_venv(declared):
+    """``locked`` is a claim about installed packages.
+
+    With no interpreter there is nothing to list, and the checker prints no
+    lock line at all, so the key would sit in the declaration looking enforced
+    while checking nothing. Same shape as the ``atlas: none`` guard above.
+    """
+    wrong = [name for name, spec in declared.items()
+             if spec.get("locked") and not spec.get("venv")]
+    assert not wrong, f"{wrong} declare locked: true but have no venv to compare"
+
+
+def test_locked_is_declared_as_a_plain_yes_or_no(declared):
+    """The checker treats any truthy value as yes. ``locked: false`` written as
+    the string ``'false'`` would therefore mean yes; keep it a boolean."""
+    wrong = {name: spec["locked"] for name, spec in declared.items()
+             if "locked" in spec and not isinstance(spec["locked"], bool)}
+    assert not wrong, f"locked must be true or false, got {wrong}"
 
 
 def test_production_declares_a_non_editable_atlas(declared):

@@ -115,8 +115,9 @@ install does not — pointing at a working tree is the point of one.
 
 `C:\admz\admz-prod` is an independent **clone** — not a `git worktree`, so a `git gc`,
 branch delete or prune in the dev tree cannot reach production's object store. It is
-checked out **detached at a pinned commit**, with its own `.venv` built from that commit's
-`requirements.txt` and its own **non-editable** copy of `axis-api-atlas`.
+checked out **detached at a pinned commit**, with its own `.venv` and its own
+**non-editable** copy of `axis-api-atlas`. That `.venv` holds exactly the packages
+`requirements.lock` pins (ADR-0075); `tools/environments.py` prints the comparison.
 
 **So `C:\admz\admz-dev` is now purely a dev workspace.** Pulling, branching, installing and
 breaking it is no longer a production event. That is the point of the split.
@@ -131,8 +132,14 @@ Note that ADR-0042 had already separated production's *data*, and staging existe
 made it easy to believe the environments were fully separated. They were not: code and
 interpreter were shared until this landed.
 
-**Two things that are easy to get wrong when updating production:**
+**Three things that are easy to get wrong when updating production:**
 
+- **Install from the lock, never from the bounds.**
+  `pip install --require-hashes -r requirements.lock` installs the versions CI tested.
+  `pip install -r requirements.txt` resolves afresh, which is how production came to run a
+  starlette outside its declared bound for three months (review-2026-11-09, O-2). After
+  changing a bound, run `python tools/lock.py` and commit both locks; a test fails if you
+  do not.
 - **`pip install -r requirements.txt` does not install atlas.** #235/#236 moved it to an
   `extras_require` entry, so a venv built from `requirements.txt` alone cannot
   `import admz` at all. Install it **non-editable** — the dev venv has it *editable* from
@@ -185,7 +192,8 @@ C:/admz/admz-dev/.venv/Scripts/python.exe -m pytest -q -n 8 --dist loadfile
 ```
 
 - **Always use the `.venv` interpreter.** The base conda environment has an old `google-genai` that 400s on Gemini 3.x tool turns.
-- **Run the full suite in parallel** (pytest-xdist, from `requirements-dev.txt`; CI uses `-n auto`). On the reference box, `-n 8 --dist loadfile` took **about 5 minutes** (2026-09-18). Serially it now takes far longer than the 10–12 minutes this file used to state: a 12-file subset alone took 8 minutes, and a backgrounded serial run was once mistaken for a hang at 33 minutes. Run it in the **foreground with a long timeout** — a two-minute default will kill it, and a partial run is not a green run. (The test *count* is deliberately not stated: it changes every merge, and a number nobody updates is worse than no number — the #303 rule.)
+- **That `.venv` should be the dev lock** (ADR-0075), because CI is. `python tools/lock.py --verify-installed dev` lists every difference, and `python -m pip install --require-hashes -r requirements-dev.lock` removes the version ones. A suite that is green here and red in CI, or the reverse, is usually this.
+- **Run the full suite in parallel** (pytest-xdist, from `requirements-dev.lock`; CI uses `-n auto`). On the reference box, `-n 8 --dist loadfile` took **about 5 minutes** (2026-09-18). Serially it now takes far longer than the 10–12 minutes this file used to state: a 12-file subset alone took 8 minutes, and a backgrounded serial run was once mistaken for a hang at 33 minutes. Run it in the **foreground with a long timeout** — a two-minute default will kill it, and a partial run is not a green run. (The test *count* is deliberately not stated: it changes every merge, and a number nobody updates is worse than no number — the #303 rule.)
 - **Test isolation matters more than usual here.** A test that doesn't isolate `ADMZ_HOME` will write into the operator's real database. If you add a writer, prove it cannot reach a real DB from a test run. (The stores no longer bind their path at *import* — #258 moved all 17 to a call-time `_db_path` property with schema-ensure inside `_connect()`. The isolation requirement is unchanged; the mechanism this warning used to name is not, and a reader debugging it would have looked in the wrong place.)
 
 ## Worktrees

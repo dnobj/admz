@@ -35,9 +35,14 @@ runs:
         # revision assertion in assert_atlas_provenance.py exists to catch —
         # this line is what stops it happening in the first place, and the
         # assertion is the backstop for when it does anyway.
+        #
+        # The two locks joined the list with ADR-0075. They are what pip
+        # installs now, so they are what the cache has to be keyed on.
         cache-dependency-path: |
           requirements.txt
           requirements-dev.txt
+          requirements.lock
+          requirements-dev.lock
           setup.py
 
     - name: Require the axis-api-atlas deploy key
@@ -134,14 +139,43 @@ runs:
       run: |
         set -euo pipefail
         python -m pip install --upgrade pip
-        python -m pip install -r requirements-dev.txt
+        # FROM THE LOCK, in hash mode (ADR-0075, FR-DEP-003). Every package and
+        # every transitive at one exact version, the same on both legs, and the
+        # same set a build installs from requirements.lock.
+        #
+        # This used to be `pip install -r requirements-dev.txt`, which resolved
+        # afresh from the bounds on every run. A transitive nobody chose could
+        # arrive between two runs of one commit, and the lab instance ran
+        # versions this suite had never executed (review-2026-11-09, O-2).
+        #
+        # --require-hashes is spelled out although the hashes in the file would
+        # switch it on anyway: a lock that had lost its hashes then fails here,
+        # instead of installing files nothing verified.
+        python -m pip install --require-hashes -r requirements-dev.lock
         # axis-api-atlas is NOT in requirements.txt any more (#235). It lives in
         # the `atlas` extra, so that off-CI installs — the operator's host, a
         # fresh developer checkout — stop demanding a deploy key that only this
         # runner has. CI is the machine that HAS the key, so CI is where the
         # extra gets installed. Everything above this line now works with no
         # credential at all.
+        #
+        # It is also not in a lock, and cannot be: it is a git reference, and
+        # pip refuses one in hash mode. ATLAS_SHA pins it more tightly than a
+        # version could.
         python -m pip install -e ".[atlas]"
+
+    - name: Assert the environment is the lock (ADR-0075)
+      shell: bash
+      # The second install above runs outside hash mode, so nothing in the
+      # command itself stops it pulling in a package the lock does not pin, or
+      # moving one that it does. Either would mean the suite runs something
+      # nobody chose. This step observes the result instead of trusting the two
+      # commands: every pinned package at its version, and nothing else beyond
+      # the application, the catalog and pip's own tools.
+      #
+      # It must not become skippable or non-blocking. "CI tests the lock" is
+      # true because this step fails when it is not.
+      run: python tools/lock.py --verify-installed dev
 
     - name: Assert axis-api-atlas provenance (guards #179)
       shell: bash

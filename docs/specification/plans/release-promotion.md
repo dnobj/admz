@@ -1,6 +1,6 @@
 # Plan: Release promotion — identity, locked versions, the upgrade command, the artifact, the hardened install
 
-Status: **approved 2026-11-26; PR 1 built.** The owner accepted
+Status: **approved 2026-11-26; PR 1 and PR 2 built.** The owner accepted
 [ADR-0075](../decisions/0075-a-release-is-built-once-and-installed-everywhere.md) and asked for
 building to start. Six slices, built one at a time. Requirements are
 [release and promotion](../requirements/release-and-promotion.md). File references are against
@@ -85,6 +85,25 @@ the rest took a year.
   objections to a lock are answered by a universal lock, by the catalog staying outside it, and by
   guard tests standing in for line-by-line review.
 
+**As built (2026-11-26).** Four things differ from the list above.
+
+- **The suite needed no fixes.** On the lab instance's versions it gave 6112 passed and 1 failed,
+  and the one failure was the test that compares the installed starlette with the old bound. The
+  risk this slice carried turned out to be empty.
+- **CI checks the result of its own install.** After installing, it runs
+  `python tools/lock.py --verify-installed dev`, which fails if any pinned package is missing or
+  at another version, or if anything is installed that the lock does not pin. The catalog is
+  installed outside hash mode, so the install commands alone could not promise that.
+- **`locked: true` compares with the lock in the environment's own checkout,** and a checkout with
+  no lock fails closed. Comparing a deployment with the development tree's lock would report it as
+  wrong whenever a pin moved here first. So the lab instance is not declared `locked` in this PR.
+  Its packages were shown to match (64 of 64, nothing else installed), and it gets the key in
+  PR 3, after the first upgrade that puts a lock in its tree.
+- **The tool reads the lock's platform markers itself,** with the standard library. `packaging`
+  is a test tool and is not installed in a deployment, and PR 3 needs this comparison to run on
+  the instance's own interpreter. A test holds the reader to `packaging`'s answer on every marker
+  in the locks.
+
 ## PR 3 — `upgrade` for the lab instance, in its present layout
 
 The checklist of 2026-11-13 as one command. New package `admz/release/`.
@@ -97,7 +116,10 @@ The checklist of 2026-11-13 as one command. New package `admz/release/`.
     target's lock differs from what is installed, unless `--sync-env`; import every module on the
     instance's interpreter with a throwaway `ADMZ_HOME`; back up the database and its key; check
     out; restart; wait for health carrying the new build; roll back on failure; write the deploy
-    log.
+    log. The lock comparison is PR 2's (`tools/lock.py`), which runs on the standard library.
+- **After the first real upgrade** the instance's tree holds a lock of its own. `production` is
+  then declared `locked: true` in `docs/ENVIRONMENTS.md`, and from there a difference fails
+  `tools/environments.py`.
 - **Pieces, each small and testable alone:**
   - `walk.py`: the import walk. It passes `onerror` to `pkgutil.walk_packages`, which otherwise
     swallows an `ImportError` raised while descending, and it refuses an `ADMZ_HOME` it was not

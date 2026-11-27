@@ -6,8 +6,10 @@ sites. Decided in
 order of the [release promotion plan](../plans/release-promotion.md). Stories are in
 [install and upgrade](../user-stories/install-and-upgrade.md).
 
-The first slice is built: a build reports its version and its build id (FR-DEP-001, FR-DEP-002).
-Everything else is 📋, and each marker flips to ✅ in the PR that ships it.
+Two slices are built. A build reports its version and its build id (FR-DEP-001, FR-DEP-002).
+Dependencies are locked, CI tests the lock, and an environment that differs from it is reported
+(FR-DEP-003, FR-DEP-004). Everything else is 📋, and each marker flips to ✅ in the PR that ships
+it.
 
 ## Status legend
 
@@ -29,14 +31,24 @@ artifact (FR-DEP-008).
 this scheme. Several builds may carry the same version. One of them is promoted, and the source
 then moves on to the next number. Promotion itself is FR-DEP-010.
 
-### FR-DEP-003 — Dependencies are locked, and CI tests the lock 📋
+### FR-DEP-003 — Dependencies are locked, and CI tests the lock ✅
 Every runtime package has one locked version, with hashes, in a file that serves both Windows and
-Linux. CI installs from the lock, so what is tested is what is built. A lock that no longer
-matches the files it was made from fails a test.
+Linux: `requirements.lock`. `requirements-dev.lock` holds the same pins plus the test tools. CI
+installs the dev lock in hash mode, and then checks that the environment it is about to test is
+that lock and nothing else, so what is tested is what a build installs. A lock that no longer
+matches the files it was made from fails a test. The catalog stays outside the locks, pinned by
+commit. The first lock was aligned to the lab instance's own versions, so nothing it runs moved.
+`tools/lock.py`; `tests/test_lockfiles.py`; `.github/actions/setup-admz/action.yml`.
 
-### FR-DEP-004 — An environment that differs from the lock is reported 📋
-`tools/environments.py` compares each environment's installed packages with the lock and prints
-the differences. An environment declared `locked: true` fails the run when it differs.
+### FR-DEP-004 — An environment that differs from the lock is reported ✅
+`tools/environments.py` asks each environment's interpreter what it has installed, compares that
+with the lock in the environment's own checkout, and prints the differences: a package missing,
+at another version, or installed although the lock does not pin it. An environment declared
+`locked: true` fails the run when it differs, when its packages cannot be listed, or when its
+checkout holds no lock to compare with. `python tools/lock.py --verify-installed` makes the same
+comparison for one interpreter. `tests/test_environments_lock.py`. No environment is declared
+`locked` yet: the lab instance's packages match, and it gets the key with the first upgrade that
+puts a lock in its own tree.
 
 ### FR-DEP-005 — An upgrade is one command, with a rollback 📋
 One command verifies what it is about to install, imports every module on the interpreter that
