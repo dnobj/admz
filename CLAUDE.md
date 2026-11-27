@@ -132,7 +132,23 @@ Note that ADR-0042 had already separated production's *data*, and staging existe
 made it easy to believe the environments were fully separated. They were not: code and
 interpreter were shared until this landed.
 
-**Three things that are easy to get wrong when updating production:**
+**Production is updated with one command, and only on the owner's word** (ADR-0075):
+
+```
+python -m admz upgrade --tree C:\admz\admz-prod --home C:\ProgramData\admz --to <commit> --check
+```
+
+`--check` runs every check and changes nothing; the same line without it upgrades. It
+refuses unless the tree is clean, the packages are exactly the target's lock, the catalog
+pin does not move and every module of the target imports on production's interpreter. Then
+it copies the database and its key, stops the service, switches, starts, and waits for a
+healthy answer from the new build, going back to the old commit if that does not come.
+Every attempt is one line in `C:\ProgramData\admz\deployed.log`. It needs no elevation. It
+does **not** make the authorization unnecessary: running it without `--check` restarts the
+live service. [`docs/DEPLOYMENT_WINDOWS.md`](docs/DEPLOYMENT_WINDOWS.md#upgrading) has the
+steps and the exit codes.
+
+**Three things that are easy to get wrong when updating production by hand:**
 
 - **Install from the lock, never from the bounds.**
   `pip install --require-hashes -r requirements.lock` installs the versions CI tested.

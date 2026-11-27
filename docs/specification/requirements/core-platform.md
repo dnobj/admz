@@ -91,6 +91,10 @@ scheduler instance even when both surfaces run in one process.
 - `admz mcp` — start MCP server (stdio)
 - `admz discover` — one-shot network discovery
 - `admz api-key {create,list,revoke}` — API key management
+- `admz maintenance {stats,gc,migrate}` — snapshot-repo maintenance
+- `admz settings {list,get,set,delete}` — fleet settings, including protected keys
+- `admz upgrade` — upgrade an instance that is a git checkout, with a backup and a
+  rollback ([release and promotion](release-and-promotion.md), FR-DEP-005)
 
 ## Non-functional requirements
 

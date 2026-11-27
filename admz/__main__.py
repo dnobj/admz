@@ -240,6 +240,19 @@ def main():
     )
     settings_delete.add_argument("key", help="Setting key")
 
+    # Upgrade an instance (ADR-0075). The checklist of #426 as one command:
+    # check, back up, switch, wait for health, and go back if it does not come.
+    from admz.release import upgrade as release_upgrade
+
+    upgrade_parser = subparsers.add_parser(
+        "upgrade",
+        help=(
+            "Upgrade an instance that is a git checkout to another commit: "
+            "checks first, a backup, then the switch, with a rollback"
+        ),
+    )
+    release_upgrade.add_arguments(upgrade_parser)
+
     args = parser.parse_args()
 
     if args.command == "api":
@@ -254,6 +267,8 @@ def main():
         run_maintenance(args)
     elif args.command == "settings":
         run_settings(args, settings_parser)
+    elif args.command == "upgrade":
+        sys.exit(release_upgrade.main(args))
     else:
         parser.print_help()
         sys.exit(1)
