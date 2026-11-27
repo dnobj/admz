@@ -147,12 +147,12 @@
     </main>
     {% endblock %}
 
-{% if build_id %}
-    <div class="build-id" title="Running commit. '-dirty' means files were edited in place; '-unverified' means git could not be asked."
+{% if app_version or build_id %}
+    <div class="build-id" title="Version and build. A build shaped like a date (2026.11.26.1) is an installed build. A commit id means a checkout: '-dirty' means files were edited in place, '-unverified' means git could not be asked."
          style="position:fixed;right:10px;bottom:6px;z-index:5;font-size:11px;
                 font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
                 color:var(--ink-3,#8b8b8b);opacity:.65;pointer-events:auto;user-select:all;">
-      build {{ build_id }}
+      {{ app_version }}{% if build_id %} · build {{ build_id }}{% endif %}
     </div>
     {% endif %}
     <div class="console-dock" id="console-dock"></div>

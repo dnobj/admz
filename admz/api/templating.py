@@ -496,6 +496,9 @@ def configure(templates) -> None:
     # would answer by showing nothing, which reads as "no build info" rather
     # than "this route forgot". Resolved once and cached in build_info.
     env.globals["build_id"] = build_info.build_id()
+    # The other half of "what is this?" (ADR-0075): the release the build
+    # belongs to. Shown beside the build, so a footer reads `2.1.0 · build …`.
+    env.globals["app_version"] = build_info.describe().version
     env.filters["health_sem"] = health_sem
     env.filters["health_label"] = health_label
     env.filters["risk_sem"] = risk_sem

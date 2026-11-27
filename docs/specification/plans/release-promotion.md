@@ -1,6 +1,6 @@
 # Plan: Release promotion — identity, locked versions, the upgrade command, the artifact, the hardened install
 
-Status: **approved 2026-11-26.** The owner accepted
+Status: **approved 2026-11-26; PR 1 built.** The owner accepted
 [ADR-0075](../decisions/0075-a-release-is-built-once-and-installed-everywhere.md) and asked for
 building to start. Six slices, built one at a time. Requirements are
 [release and promotion](../requirements/release-and-promotion.md). File references are against

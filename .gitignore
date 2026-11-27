@@ -45,6 +45,11 @@ cameras.yaml
 *.pem
 *.key
 
+# The stamp a build step writes into an installed package (ADR-0075). A checkout
+# never carries one: with a stray stamp, every dev instance would report a build
+# it is not. tests/test_build_id.py fails if one appears in the source tree.
+admz/_build.json
+
 # OS
 .DS_Store
 Thumbs.db

@@ -14,7 +14,10 @@ from admz.exceptions import (
     BackendError,
 )
 
-__version__ = "2.0.0"
+#: The release the source is working towards (ADR-0075 §2). Several builds may
+#: carry it; one of them is promoted, and this then moves on to the next number.
+#: The build that is actually running is `admz.build_info.build_id()`.
+__version__ = "2.1.0"
 
 __all__ = [
     "DeviceRegistry",
