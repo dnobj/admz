@@ -6,10 +6,11 @@ sites. Decided in
 order of the [release promotion plan](../plans/release-promotion.md). Stories are in
 [install and upgrade](../user-stories/install-and-upgrade.md).
 
-Two slices are built. A build reports its version and its build id (FR-DEP-001, FR-DEP-002).
+Three slices are built. A build reports its version and its build id (FR-DEP-001, FR-DEP-002).
 Dependencies are locked, CI tests the lock, and an environment that differs from it is reported
-(FR-DEP-003, FR-DEP-004). Everything else is 📋, and each marker flips to ✅ in the PR that ships
-it.
+(FR-DEP-003, FR-DEP-004). An instance that is a git checkout is upgraded by one command, with a
+backup first, a rollback, and a log on the host (FR-DEP-005 in part, FR-DEP-006, FR-DEP-007).
+Everything else is 📋, and each marker flips to ✅ in the PR that ships it.
 
 ## Status legend
 
@@ -51,18 +52,41 @@ comparison for one interpreter. `tests/test_environments_lock.py`. No environmen
 `locked` yet: the lab instance's packages match, and it gets the key with the first upgrade that
 puts a lock in its own tree.
 
-### FR-DEP-005 — An upgrade is one command, with a rollback 📋
+### FR-DEP-005 — An upgrade is one command, with a rollback 🚧
 One command verifies what it is about to install, imports every module on the interpreter that
 will run it, switches, restarts the service, and waits for a healthy answer that carries the new
 build id. If that answer does not come, it switches back, restarts, and reports the failure.
 
-### FR-DEP-006 — The host records what it runs 📋
-Every install, upgrade and rollback appends one line to a deploy log on that host: when, from
-what, to what, by whom, and how it ended.
+Built for an instance that is a git checkout, which is the lab instance today:
+`python -m admz upgrade --tree <tree> --home <data folder> --to <commit>`. Before changing
+anything it checks that the tree is clean and at the commit it started from, that the target is
+ahead of it, that the catalog pin does not move, that the installed packages are exactly the
+target's lock, that the service is running and the instance on the port reports this tree's
+build, and that every module of the target imports on the instance's interpreter. A failed check
+is a refusal and changes nothing. `--check` stops there. Then it stops the service, checks out
+the target, starts the service and waits for health from the target's build. Any failure from the
+stop onwards, an interrupt from the keyboard included, goes back to the old commit and waits for
+health from the old build. Four exit codes tell the endings apart: upgraded, refused, rolled
+back, and a rollback that itself failed. The command runs in two stages so that every check is
+the target's own code. `admz/release/`; `tests/test_release_*.py`.
 
-### FR-DEP-007 — An upgrade backs up the database and its key first 📋
+Not built: installing packages or the catalog (it refuses when either would have to change), and
+the same command for a self-contained build, which arrives with FR-DEP-008 and FR-DEP-009.
+
+### FR-DEP-006 — The host records what it runs ✅
+Every install, upgrade and rollback appends one line to a deploy log on that host: when, from
+what, to what, by whom, and how it ended. The log is `deployed.log` in the instance's data
+folder, one JSON object per line. A refused attempt is recorded too, with its reason. A line is
+never written into a folder that does not hold an instance's database, so a mistyped data folder
+gains no log. `admz/release/deploylog.py`.
+
+### FR-DEP-007 — An upgrade backs up the database and its key first ✅
 Before anything is switched, the upgrade takes a consistent copy of the database and a copy of
-its key, with a manifest of sizes and hashes. A failed backup stops the upgrade.
+its key, with a manifest of sizes and hashes. A failed backup stops the upgrade. The copy is made
+with SQLite's backup API while the service runs, never as a file copy, so writes still in the
+write-ahead log are included; a test builds that state and shows a file copy missing them. The
+copy is opened and checked before it is trusted. Backups go to `backups\` in the data folder and
+are not pruned. A rollback does not restore the database (FR-DEP-012). `admz/release/backup.py`.
 
 ### FR-DEP-008 — A build is one self-contained artifact 📋
 A build carries the interpreter, every locked package, the catalog at its pinned commit, the

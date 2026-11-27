@@ -1,6 +1,12 @@
 # User stories: install and upgrade
 
-> **Status:** 📋 Planned. Nothing here is built. The decision is
+> **Status:** 🚧 Partly built, and only for an instance that is a git checkout, which is the lab
+> instance today. Built: the upgrade with a backup first and a rollback (US-INS-002, criteria 1, 3
+> and 4), the version and build in health and the footer, and the host's deploy log (US-INS-003,
+> criteria 1 and 2). Not built, because each needs the self-contained build: installing at a site
+> (US-INS-001), unpacking a release beside the running one (US-INS-002, criteria 2 and 5), an
+> answer that needs no git on an installed build (US-INS-003, criterion 3), `doctor`
+> (US-INS-004), and promotion (US-INS-005). The decision is
 > [ADR-0075](../decisions/0075-a-release-is-built-once-and-installed-everywhere.md), the build
 > order is the [release promotion plan](../plans/release-promotion.md), and the requirements are
 > [release and promotion](../requirements/release-and-promotion.md).

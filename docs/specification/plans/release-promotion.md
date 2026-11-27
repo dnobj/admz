@@ -1,6 +1,6 @@
 # Plan: Release promotion — identity, locked versions, the upgrade command, the artifact, the hardened install
 
-Status: **approved 2026-11-26; PR 1 and PR 2 built.** The owner accepted
+Status: **approved 2026-11-26; PR 1, PR 2 and PR 3 built.** The owner accepted
 [ADR-0075](../decisions/0075-a-release-is-built-once-and-installed-everywhere.md) and asked for
 building to start. Six slices, built one at a time. Requirements are
 [release and promotion](../requirements/release-and-promotion.md). File references are against
@@ -141,6 +141,29 @@ The checklist of 2026-11-13 as one command. New package `admz/release/`.
   point at the command.
 - Flips FR-DEP-005, FR-DEP-006 and FR-DEP-007. Closes #426. It is the first slice of #534, which
   stays open for scheduled backups, the config history and a checked restore.
+
+**As built (2026-11-26).** Six things differ from the list above.
+
+- **There is no `--sync-env`.** When the target's lock differs from what is installed, the command
+  refuses and lists the differences. Replacing packages under a running interpreter fails on
+  Windows for every loaded binary, and stage 2 runs on that interpreter. Doing it safely means a
+  second environment beside the first, which is exactly what PR 4's artifact is. Until then a
+  lock change is installed by hand with the service stopped.
+- **The catalog pin is checked too.** If `ATLAS_SHA` differs between the two commits the command
+  refuses, because it does not install the catalog and the instance would run new code on the old
+  one. That is the failure of #424, and the manual checklist caught it only by a person reading a
+  diff of `setup.py`.
+- **The service is stopped before the tree is switched,** not restarted after it. The manual
+  procedure checked out under a running service, which leaves a few seconds in which a late
+  import can load new code into an old process.
+- **The import walk does its own descent** and does not use `pkgutil.walk_packages`. With the
+  `onerror` hook that function still imports a failing package twice, and an exit raised at import
+  escapes it. The walk also runs as a file, not with `-m`, so its check of the data folder comes
+  before anything of the package is imported, and it checks that the package came from the target.
+- **`--check`** runs every check and changes nothing. It is how the first real upgrade starts.
+- **#426 stays open until that first real upgrade** has been made on the owner's word and
+  compared with the manual procedure. FR-DEP-005 is partly done for the same kind of reason: the
+  same command for a self-contained build arrives with PR 4.
 
 ## PR 4 — The artifact, and installing from it
 

@@ -207,6 +207,63 @@ configuration does**. `sc.exe config` also fails on this service's long
 `Invoke-CimMethod -MethodName Change`, which passes the string as a parameter
 rather than a command line.
 
+## Upgrading
+
+An instance set up as above is a git checkout with its own interpreter. One
+command moves it to a newer commit, and puts it back if the new one does not
+come up (ADR-0075). It needs no elevation.
+
+```powershell
+# From any checkout that has the command. Start with --check.
+python -m admz upgrade --tree C:\admz\admz-prod --home C:\ProgramData\admz --to origin/master --check
+```
+
+`--check` runs every check, changes nothing and writes nothing. Run the same
+line without it to upgrade. `--home` is always given: the command never takes
+the data folder from `ADMZ_HOME`, because that variable belongs to whoever
+opened the shell.
+
+What it does, in order:
+
+1. Fetches, and resolves `--to` in the instance's own clone.
+2. Checks the tree is clean and at the commit it started from, and that the
+   target is ahead of it.
+3. Checks the catalog pin does not move, and that the installed packages are
+   exactly the target's `requirements.lock`.
+4. Checks the service is running, and that the instance answering on the port
+   reports the build of this tree.
+5. Imports every module of the target on the instance's own interpreter, in a
+   separate process with a throwaway data folder.
+6. Copies the database and its key to `<home>\backups\`, and checks the copy.
+7. Stops the service, checks out the target, starts the service.
+8. Waits for a healthy answer that reports the target's build.
+9. If step 7 or 8 fails, goes back: stops, checks out the old commit, starts,
+   and waits for a healthy answer from the old build.
+10. Appends one line to `<home>\deployed.log`.
+
+Steps 1 to 6 change nothing, and a failure there is a refusal. The run uses the
+target's own code for every check: it makes a throwaway checkout of the target
+and continues from there on the instance's interpreter.
+
+| Exit code | Meaning | What to do |
+|---|---|---|
+| 0 | upgraded, and healthy on the new build | nothing |
+| 2 | refused, nothing was changed | read the reason; fix it; run again |
+| 1 | switched, failed, and rolled back; healthy on the old build | read the reason in the output and in `deployed.log` |
+| 3 | the rollback failed too | the instance may be down. The output says which commit to put the tree at and where the backup is |
+
+What it will not do:
+
+- **Install packages or the catalog.** If the target's lock or its `ATLAS_SHA`
+  differs from what is installed, it refuses and lists the differences.
+  Replacing packages under a running interpreter fails on Windows for every
+  loaded binary. The self-contained build planned in ADR-0075 carries its
+  packages, which removes the case.
+- **Restore the database.** Schema changes are additive, so the old code starts
+  on the new schema. The copy from step 6 is for a person to use, and restoring
+  it would discard whatever was written since.
+- **Prune old backups.** Each upgrade adds a folder under `<home>\backups\`.
+
 ## ACS Pro note
 
 The ACS connection authenticates as the service's Windows identity. If the ACS
