@@ -1,6 +1,6 @@
 # ADR-0075 — A release is built once and installed everywhere: dev, the lab instance, then production sites
 
-**Status:** Proposed (2026-11-23), revised 2026-11-25 with the owner's answers. Docs-only. A plan with PR-sized slices follows acceptance.
+**Status:** **Accepted** — 2026-11-26. The owner asked for #545 to be merged and for building to start. Proposed 2026-11-23, revised 2026-11-25 with the owner's answers. Nothing is built yet. The build order is the [release promotion plan](../plans/release-promotion.md).
 **Relates to:** [ADR-0054](0054-separate-production-tree-and-venv.md) (production's own tree and interpreter; its decisions 6, 7 and 8 were never built, and this record finishes them in a different shape) · [ADR-0042](0042-machine-level-data-directory.md) (the data directory and the Windows service) · [ADR-0052](0052-advanced-capability-switches.md) (capability switches) · [ADR-0010](0010-fernet-encryption.md) (the encryption key) · [ADR-0061](0061-entry-credentials-and-the-admz-account.md) and [ADR-0068](0068-root-is-a-break-glass-credential-admz-sets-and-never-stores.md) (the accounts an instance sets on a device) · [review-2026-11-09](../review-2026-11-09.md) O-1, O-2, O-3 and its lab-conveniences section · #426, #377, #233, #238, #534, #540, #546
 
 ## Context
