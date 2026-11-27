@@ -316,7 +316,7 @@ Verify uvicorn is up:
 
 ```powershell
 curl http://127.0.0.1:4242/health
-# {"status":"healthy","service":"admz","version":"2.0.0"}
+# {"status":"healthy","service":"admz","version":"2.1.0","build":"<build id or commit>","commit":"<commit>"}
 ```
 
 ## Step 2 — Configure IIS

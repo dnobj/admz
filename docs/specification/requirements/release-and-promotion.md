@@ -6,7 +6,8 @@ sites. Decided in
 order of the [release promotion plan](../plans/release-promotion.md). Stories are in
 [install and upgrade](../user-stories/install-and-upgrade.md).
 
-Nothing here is built yet. Every marker below is 📋, and each flips to ✅ in the PR that ships it.
+The first slice is built: a build reports its version and its build id (FR-DEP-001, FR-DEP-002).
+Everything else is 📋, and each marker flips to ✅ in the PR that ships it.
 
 ## Status legend
 
@@ -14,15 +15,19 @@ Nothing here is built yet. Every marker below is 📋, and each flips to ✅ in 
 
 ## Functional requirements
 
-### FR-DEP-001 — A build reports its version and its build id 📋
-`/api/health` and the page footer give the version and the build id of the running code. An
-installed build reads both from a stamp written when it was built, so it needs no git. A checkout
-with no stamp reads the commit from `.git`, as it does today. A stamp that cannot be read is
-reported as a fault, never silently replaced by another answer.
+### FR-DEP-001 — A build reports its version and its build id ✅
+`/health`, `/api/health` and the page footer give the version and the build id of the running
+code. An installed build reads its build id from a stamp, `admz/_build.json`, written when it was
+built, so it needs no git. A checkout has no stamp and reads the commit from `.git`, as before. A
+stamp that cannot be read or does not hold a valid build id and commit is reported as
+`invalid-stamp`, and is never silently replaced by another answer. Health also carries `commit`.
+`admz/build_info.py`; `tests/test_build_id.py`. The step that writes a stamp arrives with the
+artifact (FR-DEP-008).
 
-### FR-DEP-002 — The source carries the release it is working towards 📋
-`__version__` names the next release. Several builds may carry the same version. One of them is
-promoted, and the source then moves on to the next number.
+### FR-DEP-002 — The source carries the release it is working towards ✅
+`__version__` names the next release, as `major.minor.patch`. It is `2.1.0`, the first line under
+this scheme. Several builds may carry the same version. One of them is promoted, and the source
+then moves on to the next number. Promotion itself is FR-DEP-010.
 
 ### FR-DEP-003 — Dependencies are locked, and CI tests the lock 📋
 Every runtime package has one locked version, with hashes, in a file that serves both Windows and

@@ -51,7 +51,7 @@ from admz.api.routes import (
     web,
 )
 from admz import __version__
-from admz.build_info import build_id
+from admz.build_info import identity_fields
 from admz.auth import auth_middleware
 from admz.factory import create_device_registry
 
@@ -607,8 +607,7 @@ async def whoami(request: Request):
 @app.get("/health", tags=["health"])
 async def health_check():
     """Liveness probe. Returns 200 if the process is up; doesn't check deps."""
-    return {"status": "healthy", "service": "admz", "version": __version__,
-            "build": build_id()}
+    return {"status": "healthy", "service": "admz", **identity_fields()}
 
 
 @app.get("/api/health", tags=["health"])
@@ -620,8 +619,7 @@ async def api_health_check():
             content={
                 "status": "unhealthy",
                 "service": "admz-api",
-                "version": __version__,
-                "build": build_id(),
+                **identity_fields(),
                 "registry": "not_initialized",
                 "error": "Registry has not been initialized (lifespan not run)",
                 "advanced_capabilities": _advanced_capability_ids(),
@@ -637,8 +635,7 @@ async def api_health_check():
             content={
                 "status": "unhealthy",
                 "service": "admz-api",
-                "version": __version__,
-                "build": build_id(),
+                **identity_fields(),
                 "registry": "error",
                 "error": f"{type(exc).__name__}: {exc}",
                 "advanced_capabilities": _advanced_capability_ids(),
@@ -647,8 +644,9 @@ async def api_health_check():
     return {
         "status": "healthy",
         "service": "admz-api",
-        "version": __version__,
-                "build": build_id(),
+        # version + build + commit (ADR-0075): what a deploy check reads to know
+        # that the code answering is the code it just installed.
+        **identity_fields(),
         "registry": "connected",
         # GH #132: ids of the active advanced capabilities, so a curl or a
         # support bundle answers "what mode was this running in?" without auth

@@ -1,8 +1,9 @@
 """Which build is this? (GH #432, fixed for the service in #434)
 
-``__version__`` is ``2.0.0`` and has been for months, so it cannot answer the
-question an operator asks after a deploy: *am I looking at the latest code, or
-the previous one?*
+When this was written ``__version__`` had read ``2.0.0`` for months, so it could
+not answer the question an operator asks after a deploy: *am I looking at the
+latest code, or the previous one?* A version names a release line, not a build
+(see the last section), so that is still true of a version alone.
 
 READ THE FILES, NOT `git`
 ------------------------
@@ -36,12 +37,39 @@ answer and the wrong one to guess at, which is exactly the mistake that produced
 So in production the marker reads ``fcd22e1-unverified``: the commit is known
 and true, and ADMZ is being honest that it cannot check for local edits from
 where it stands.
+
+A BUILD NAMES ITSELF (ADR-0075)
+-------------------------------
+Everything above is about a *checkout*. A site machine has no checkout: it
+installs a build, and a build has no ``.git`` to read. So the step that makes a
+build writes a stamp, ``admz/_build.json``, into the package, and the stamp
+answers first::
+
+    {"build": "2026.11.26.1", "commit": "<40 hex>",
+     "catalog_commit": "<40 hex>", "built_at": "2026-11-26T14:03:00Z"}
+
+Two rules, both about not rendering a failure as reassurance:
+
+* **A stamp that cannot be trusted is reported as ``invalid-stamp``.** It does
+  not fall back to git. An installed build with a broken stamp is a fault
+  somebody has to see, and "the commit, from a ``.git`` that happens to be
+  nearby" would hide it.
+* **A checkout never carries a stamp.** The file is git-ignored and a test fails
+  if one appears in the source tree, because a stray stamp would make every dev
+  instance report a build it is not.
+
+The version is the other half. ``__version__`` names the release the source is
+working towards, several builds may carry it, and one of them is promoted. So
+the full answer to "what is this?" is the pair: ``2.1.0 (2026.11.26.1)``.
 """
 
 from __future__ import annotations
 
 import functools
+import json
+import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -49,6 +77,62 @@ from typing import Optional
 _ROOT = Path(__file__).resolve().parents[1]
 
 _SHORT = 7
+
+#: Written into the installed package by the build step. Never in a checkout.
+STAMP_NAME = "_build.json"
+
+#: What ``build_id()`` answers for a stamp that exists and cannot be trusted.
+INVALID_STAMP = "invalid-stamp"
+
+#: A build id is a date and that day's count: ``2026.11.26.1`` (ADR-0075 §2).
+_BUILD_ID = re.compile(r"^\d{4}\.(0[1-9]|1[0-2])\.(0[1-9]|[12]\d|3[01])\.[1-9]\d*$")
+_FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+@dataclass(frozen=True)
+class Stamp:
+    """What a build step recorded about the build it made."""
+
+    build: str
+    commit: str
+    catalog_commit: Optional[str] = None
+    built_at: Optional[str] = None
+
+
+def _stamp_path() -> Path:
+    """Beside this module, so it travels with the installed package."""
+    return Path(__file__).with_name(STAMP_NAME)
+
+
+def _read_stamp(path: Path):
+    """``None`` when there is no stamp, a :class:`Stamp` when there is a good
+    one, and :data:`INVALID_STAMP` when one exists and cannot be trusted.
+
+    Three answers, because the third is the one that must not collapse into
+    either of the others: a missing stamp means "this is a checkout, ask git",
+    and a broken one means "this is an installed build that cannot say what it
+    is".
+    """
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return INVALID_STAMP
+    if not isinstance(raw, dict):
+        return INVALID_STAMP
+    build, commit = raw.get("build"), raw.get("commit")
+    if not isinstance(build, str) or not _BUILD_ID.match(build):
+        return INVALID_STAMP
+    if not isinstance(commit, str) or not _FULL_SHA.match(commit):
+        return INVALID_STAMP
+    catalog = raw.get("catalog_commit")
+    if catalog is not None and not (isinstance(catalog, str) and _FULL_SHA.match(catalog)):
+        return INVALID_STAMP
+    built_at = raw.get("built_at")
+    if built_at is not None and not isinstance(built_at, str):
+        return INVALID_STAMP
+    return Stamp(build=build, commit=commit, catalog_commit=catalog, built_at=built_at)
 
 
 def _common_dir(git_dir: Path) -> Path:
@@ -119,22 +203,8 @@ def _worktree_is_dirty(root: Path) -> Optional[bool]:
     return bool(r.stdout.strip())
 
 
-@functools.lru_cache(maxsize=1)
-def build_id() -> Optional[str]:
-    """Short commit of the running code, with a suffix when relevant.
-
-    * ``fcd22e1`` — clean tree.
-    * ``fcd22e1-dirty`` — files edited in place. Production is meant to be a
-      clean detached checkout, so this is the state that makes a commit alone a
-      lie about what is running.
-    * ``fcd22e1-unverified`` — the commit is known; git could not be asked about
-      local edits. Normal for the service (see the module docstring).
-
-    ``None`` only when there is no readable ``.git`` at all — an installed
-    wheel, a container layer, a source tarball. Those are real deployment
-    shapes, and ``None`` renders as nothing while "unknown" would read as a
-    fault.
-    """
+def _git_dir() -> Optional[Path]:
+    """The gitdir of the checkout this module sits in, or ``None``."""
     git_dir = _ROOT / ".git"
     if not git_dir.exists():
         return None
@@ -150,7 +220,41 @@ def build_id() -> Optional[str]:
         git_dir = Path(pointer.split(":", 1)[1].strip())
         if not git_dir.is_absolute():
             git_dir = (_ROOT / git_dir).resolve()
+    return git_dir
 
+
+@functools.lru_cache(maxsize=1)
+def build_id() -> Optional[str]:
+    """Which build is running.
+
+    **An installed build** answers from its stamp:
+
+    * ``2026.11.26.1`` — the build id the build step recorded.
+    * ``invalid-stamp`` — a stamp exists and cannot be trusted. Deliberately not
+      a fallback to git (see the module docstring).
+
+    **A checkout** has no stamp and answers with the short commit:
+
+    * ``fcd22e1`` — clean tree.
+    * ``fcd22e1-dirty`` — files edited in place. The lab instance is meant to be
+      a clean detached checkout, so this is the state that makes a commit alone
+      a lie about what is running.
+    * ``fcd22e1-unverified`` — the commit is known; git could not be asked about
+      local edits. Normal for the service (see the module docstring).
+
+    ``None`` only when there is neither a stamp nor a readable ``.git`` — a bare
+    source tarball. ``None`` renders as nothing, while "unknown" would read as
+    a fault.
+    """
+    stamp = _read_stamp(_stamp_path())
+    if stamp is INVALID_STAMP:
+        return INVALID_STAMP
+    if stamp is not None:
+        return stamp.build
+
+    git_dir = _git_dir()
+    if git_dir is None:
+        return None
     build = _read_head(git_dir)
     if not build:
         return None
@@ -158,3 +262,62 @@ def build_id() -> Optional[str]:
     if dirty is None:
         return f"{build}-unverified"
     return f"{build}-dirty" if dirty else build
+
+
+@dataclass(frozen=True)
+class BuildInfo:
+    """The whole answer to "what is this?": a version and a build.
+
+    ``source`` says which of the two answered for the build: ``"stamp"`` for an
+    installed build, ``"git"`` for a checkout, ``None`` when neither could.
+    ``commit`` is the full commit for a stamped build and the short one for a
+    checkout, which is all a checkout's ``HEAD`` is read for.
+    """
+
+    version: str
+    build: Optional[str]
+    commit: Optional[str]
+    source: Optional[str]
+    catalog_commit: Optional[str] = None
+    built_at: Optional[str] = None
+
+    @property
+    def label(self) -> str:
+        """``2.1.0 (2026.11.26.1)``, or just the version when no build is known."""
+        return f"{self.version} ({self.build})" if self.build else self.version
+
+
+@functools.lru_cache(maxsize=1)
+def describe() -> BuildInfo:
+    """Version, build, commit and where the answer came from.
+
+    ``build`` is :func:`build_id` itself, so the two can never disagree about
+    what is running.
+    """
+    from admz import __version__
+
+    build = build_id()
+    stamp = _read_stamp(_stamp_path())
+    if stamp is INVALID_STAMP:
+        return BuildInfo(version=__version__, build=build, commit=None, source="stamp")
+    if stamp is not None:
+        return BuildInfo(
+            version=__version__, build=build, commit=stamp.commit, source="stamp",
+            catalog_commit=stamp.catalog_commit, built_at=stamp.built_at,
+        )
+    if build is None:
+        return BuildInfo(version=__version__, build=None, commit=None, source=None)
+    git_dir = _git_dir()
+    commit = _read_head(git_dir) if git_dir is not None else None
+    return BuildInfo(version=__version__, build=build, commit=commit, source="git")
+
+
+def identity_fields() -> dict:
+    """The three keys every health answer carries, in one place.
+
+    ``version`` and ``build`` are what a deploy check reads. ``commit`` is
+    additive: the full commit for an installed build, the short one for a
+    checkout, ``None`` when it is not known.
+    """
+    info = describe()
+    return {"version": info.version, "build": info.build, "commit": info.commit}
